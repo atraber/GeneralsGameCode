@@ -75,6 +75,11 @@ public:
 	static void shutdown();	///<release resources used by shaders
 	static void updateCloud();	///<update the cloud position once every render frame.
 
+	// Programmable (D3D9) unit render path.
+	static void initUnitShaders();	///<create the vertex declaration and load the unit vertex/pixel shaders.
+	static void shutdownUnitShaders();	///<release the unit shaders and vertex declaration.
+	static void getCloudOffset(float& x, float& y); ///<current scrolling cloud-overlay offset.
+
 	static ChipsetType getChipset();	///<return current device chipset.
 	static GraphicsVenderID getCurrentVendor() {return m_currentVendor;}	///<return current card vendor.
 	static __int64 getCurrentDriverVersion() {return m_driverVersion; }	///<return current driver version.

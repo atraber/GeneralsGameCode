@@ -1220,7 +1220,12 @@ Int ShroudTextureShader::set(Int stage)
 
 	DX8Wrapper::Set_DX8_Texture_Stage_State(stage,  D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_CAMERASPACEPOSITION);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(stage,  D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
-	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC,D3DCMP_EQUAL);
+	// The base terrain is now transformed by the programmable terrain shader, whose
+	// depth differs from this fixed-function shroud pass by a few ULPs. A ZFUNC of
+	// EQUAL then fails in a camera-dependent pattern, punching gaps in the shroud, so
+	// use LESSEQUAL (as the flat-map shroud path already does) to tolerate the tiny
+	// depth mismatch while still rejecting geometry in front of the terrain.
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);
 
 	//We need to scale so shroud texel stretches over one full terrain cell.  Each texel
 	//is 1/128 the size of full texture. (assuming 128x128 vid-mem texture).
@@ -2475,6 +2480,10 @@ void W3DShaderManager::init()
 	{
 		m_currentChipset = res;	//cache the current chipset.
 
+		// Load the programmable unit shaders (safe no-op if the compiled
+		// shaders are missing or the hardware is too old).
+		W3DShaderManager::initUnitShaders();
+
 		//Some of our effects require an offscreen render target, so try creating it here.
 		HRESULT hr=DX8Wrapper::_Get_D3D_Device8()->GetRenderTarget(0,&m_oldRenderSurface);
 
@@ -2543,11 +2552,70 @@ void W3DShaderManager::init()
 	DEBUG_LOG(("ShaderManager ChipsetID %d", res));
 }
 
+//=============================================================================
+/** Create the vertex declaration and load the compiled unit vertex/pixel
+    shaders used by the programmable object-mesh render path. */
+//=============================================================================
+void W3DShaderManager::initUnitShaders()
+{
+	if (DX8Wrapper::_Get_D3D_Device8() == nullptr)
+		return;
+
+	// No explicit vertex declaration: the mesh FVF (set on the device before the
+	// draw) is used as the declaration, so a single shader serves every format.
+	if (DX8Wrapper::m_dwUnitVS == 0) {
+		LoadAndCreateD3DShader("shaders\\unit_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwUnitVS);
+	}
+	if (DX8Wrapper::m_dwUnitPS == 0) {
+		LoadAndCreateD3DShader("shaders\\unit_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUnitPS);
+	}
+	if (DX8Wrapper::m_dwTerrainVS == 0) {
+		LoadAndCreateD3DShader("shaders\\terrain_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwTerrainVS);
+	}
+	if (DX8Wrapper::m_dwTerrainPS == 0) {
+		LoadAndCreateD3DShader("shaders\\terrain_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwTerrainPS);
+	}
+}
+
+//=============================================================================
+/** Release the unit shaders and vertex declaration. */
+//=============================================================================
+void W3DShaderManager::shutdownUnitShaders()
+{
+	if (DX8Wrapper::m_dwUnitVS != 0) {
+		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwUnitVS)->Release();
+		DX8Wrapper::m_dwUnitVS = 0;
+	}
+	if (DX8Wrapper::m_dwUnitPS != 0) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwUnitPS)->Release();
+		DX8Wrapper::m_dwUnitPS = 0;
+	}
+	if (DX8Wrapper::m_dwTerrainVS != 0) {
+		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwTerrainVS)->Release();
+		DX8Wrapper::m_dwTerrainVS = 0;
+	}
+	if (DX8Wrapper::m_dwTerrainPS != 0) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwTerrainPS)->Release();
+		DX8Wrapper::m_dwTerrainPS = 0;
+	}
+	DX8Wrapper::m_bUnitShaderBound = false;
+}
+
+//=============================================================================
+/** Current scrolling cloud-overlay offset (kept up to date by updateCloud). */
+//=============================================================================
+void W3DShaderManager::getCloudOffset(float& x, float& y)
+{
+	x = terrainShader2Stage.m_xOffset;
+	y = terrainShader2Stage.m_yOffset;
+}
+
 // W3DShaderManager::shutdown =======================================================
 /** Any shaders which allocate resources will be allowed to free them */
 //=============================================================================
 void W3DShaderManager::shutdown()
 {
+	shutdownUnitShaders();
 	SAFE_RELEASE(m_newRenderSurface);
 	SAFE_RELEASE(m_renderTexture);
 	SAFE_RELEASE(m_oldRenderSurface);
