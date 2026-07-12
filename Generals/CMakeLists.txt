@@ -43,6 +43,11 @@ if(RTS_INSTALL_PREFIX_GENERALS)
     install(TARGETS g_generals RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}")
     install(FILES $<TARGET_PDB_FILE:g_generals> DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}" OPTIONAL)
 
+    # Compiled HLSL shaders for the programmable render path.
+    if(EXISTS "${RTS_SHADER_OUT_DIR}")
+        install(DIRECTORY "${RTS_SHADER_OUT_DIR}/" DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}/shaders")
+    endif()
+
     if(TARGET g_worldbuilder)
         install(TARGETS g_worldbuilder RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}")
         install(FILES $<TARGET_PDB_FILE:g_worldbuilder> DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}" OPTIONAL)

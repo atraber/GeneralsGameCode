@@ -43,6 +43,11 @@ if(RTS_INSTALL_PREFIX_ZEROHOUR)
     install(TARGETS z_generals RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}")
     install(FILES $<TARGET_PDB_FILE:z_generals> DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}" OPTIONAL)
 
+    # Compiled HLSL shaders for the programmable render path.
+    if(EXISTS "${RTS_SHADER_OUT_DIR}")
+        install(DIRECTORY "${RTS_SHADER_OUT_DIR}/" DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}/shaders")
+    endif()
+
     if(TARGET z_worldbuilder)
         install(TARGETS z_worldbuilder RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}")
         install(FILES $<TARGET_PDB_FILE:z_worldbuilder> DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}" OPTIONAL)

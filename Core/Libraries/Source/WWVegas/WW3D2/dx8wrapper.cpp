@@ -172,6 +172,19 @@ D3DADAPTER_IDENTIFIER8		DX8Wrapper::CurrentAdapterIdentifier;
 
 unsigned long DX8Wrapper::FrameCount = 0;
 
+// Programmable (D3D9) unit render path
+DWORD							DX8Wrapper::m_dwUnitVS = 0;
+DWORD							DX8Wrapper::m_dwUnitPS = 0;
+DWORD							DX8Wrapper::m_dwTerrainVS = 0;
+DWORD							DX8Wrapper::m_dwTerrainPS = 0;
+bool							DX8Wrapper::m_bUnitShaderBound = false;
+bool							DX8Wrapper::m_bTerrainShaderPass = false;
+float							DX8Wrapper::m_terrainCloudOffX = 0.0f;
+float							DX8Wrapper::m_terrainCloudOffY = 0.0f;
+bool							DX8Wrapper::m_terrainCloudEnable = false;
+bool							DX8Wrapper::m_terrainNoiseEnable = false;
+static DWORD s_dwOriginalPS = 0;  // fixed-function pixel shader to restore after unit draws
+
 bool								_DX8SingleThreaded										= false;
 
 INT g_D3D9_BaseVertexIndex = 0;
@@ -431,6 +444,25 @@ void DX8Wrapper::Invalidate_Cached_Render_States()
 
 	// (gth) clear the matrix shadows too
 	memset(&DX8Transforms, 0, sizeof(DX8Transforms));
+
+	// Poison the shader-constant shadow caches so the next Set_*_Shader_Constant
+	// always writes through. Set_Vertex/Pixel_Shader_Constant skip the device
+	// write when the value matches its cache; a device reset zeroes the device
+	// constants but leaves these caches intact, so a constant-valued register
+	// (e.g. an overlay-enable flag) would stay stuck at the reset value. Filling
+	// the caches with a sentinel that no real value matches forces a resend,
+	// mirroring the 0x12345678 render-state sentinel above.
+	memset(Vertex_Shader_Constants, 0xFF, sizeof(Vertex_Shader_Constants));
+	memset(Pixel_Shader_Constants, 0xFF, sizeof(Pixel_Shader_Constants));
+
+	// The transform shadows were just zeroed, but render_state still holds the
+	// correct world/view. Mark them changed so the next Apply_Render_State_Changes
+	// re-uploads them. The fixed-function terrain used to re-touch these every pass;
+	// the programmable terrain shader instead carries the view in its WVP constant
+	// and never re-applies D3DTS_VIEW, so without this a later fixed-function pass
+	// that reads the cached view -- the shroud builds its projection from
+	// inverse(D3DTS_VIEW) -- would read a zero matrix and swim with the camera.
+	render_state_changed |= (unsigned)WORLD_CHANGED | (unsigned)VIEW_CHANGED;
 }
 
 void DX8Wrapper::Do_Onetime_Device_Dependent_Shutdowns()
@@ -2359,6 +2391,313 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				nullptr,
 				0));
 			DX8_RECORD_INDEX_BUFFER_CHANGE();
+		}
+	}
+
+	// --- Programmable object render path -----------------------------------
+	// Route any lit, textured 3D mesh (FVF with XYZ position + NORMAL and a base
+	// texture) through the HLSL unit shader in place of the fixed-function
+	// transform & lighting. The mesh's FVF doubles as the vertex declaration, so a
+	// single shader handles every vertex format.
+	//
+	// The decision reads the *current* draw's vertex buffer directly, and only for
+	// real DX8/dynamic-DX8 buffers. Sorting buffers and 2D/UI draws have no FVF
+	// here, so they are never mistaken for a 3D mesh and keep the fixed-function
+	// pipeline (this is what was corrupting the 2D menu textures).
+	{
+		DWORD curFVF = 0;
+		if (render_state.vertex_buffers[0] != nullptr &&
+			(render_state.vertex_buffer_types[0] == BUFFER_TYPE_DX8 ||
+			 render_state.vertex_buffer_types[0] == BUFFER_TYPE_DYNAMIC_DX8)) {
+			curFVF = render_state.vertex_buffers[0]->FVF_Info().Get_FVF();
+		}
+
+		// The dynamic vertex format used for 2D UI (Render2DClass) also carries a
+		// NORMAL, so FVF alone can't tell menus from 3D meshes. 2D/UI draws render
+		// with an identity view (Set_View_Identity); real 3D meshes use the camera
+		// view. Require a non-identity view so the menu path is excluded.
+		// Terrain tiles are drawn with a HeightMap-set flag (they have no NORMAL --
+		// lighting is baked into the vertex colour -- so they take a dedicated shader).
+		// Fixed-function texture-coordinate generation (D3DTSS_TCI_CAMERASPACE*, used by
+		// the shroud's camera-space projection and similar effects) has no equivalent in
+		// these vertex shaders, which only pass the mesh UVs through. When a texgen is
+		// active on stage 0 the generated coordinates would be lost and the projection
+		// swims with the camera, so such draws must stay on the fixed-function pipeline.
+		// The TCI_* selector lives in the high 16 bits of D3DTSS_TEXCOORDINDEX; match the
+		// camera-space values explicitly so the 0x12345678 "invalidated" sentinel that
+		// Invalidate_Cached_Render_States writes is not mistaken for a texgen.
+		const DWORD texCoordGen = TextureStageStates[0][D3DTSS_TEXCOORDINDEX] & 0xFFFF0000u;
+		const bool texgenActive =
+			texCoordGen == D3DTSS_TCI_CAMERASPACENORMAL ||
+			texCoordGen == D3DTSS_TCI_CAMERASPACEPOSITION ||
+			texCoordGen == D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR;
+
+		const bool useTerrainShader =
+			m_bTerrainShaderPass && m_dwTerrainVS != 0 && m_dwTerrainPS != 0 &&
+			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
+			!texgenActive;
+
+		// The frame-buffer blend is applied by hardware after the shader, so the shader's
+		// "texture * light" output composites exactly as the equivalent fixed-function
+		// single-texture pass did -- for opaque, standard SRCALPHA/INVSRCALPHA, additive
+		// and multiply blends alike. Routing these (rather than leaving them on the fixed
+		// pipeline) matters because such overlay passes are frequently drawn co-planar
+		// over a shader-drawn base pass; splitting the two across the shader and fixed
+		// pipelines gave them slightly different depth and they z-fought (surface shimmer)
+		// as the camera rotates. Exotic blends we do not recognise stay on the fixed path.
+		const bool alphaBlendOn = RenderStates[D3DRS_ALPHABLENDENABLE] != FALSE;
+		const DWORD srcBlend = RenderStates[D3DRS_SRCBLEND];
+		const DWORD dstBlend = RenderStates[D3DRS_DESTBLEND];
+		const bool standardAlphaBlend =
+			srcBlend == D3DBLEND_SRCALPHA && dstBlend == D3DBLEND_INVSRCALPHA;
+		const bool additiveBlend =
+			(srcBlend == D3DBLEND_ONE || srcBlend == D3DBLEND_SRCALPHA) &&
+			dstBlend == D3DBLEND_ONE;
+		const bool multiplyBlend =
+			(srcBlend == D3DBLEND_ZERO && dstBlend == D3DBLEND_SRCCOLOR) ||
+			(srcBlend == D3DBLEND_DESTCOLOR && dstBlend == D3DBLEND_ZERO);
+		const bool reproducibleBlend =
+			!alphaBlendOn || standardAlphaBlend || additiveBlend || multiplyBlend;
+
+		// The unit shader samples a single base texture and takes its alpha straight
+		// through. Multi-textured draws (a detail / house-colour second stage) combine
+		// stages in the fixed-function pipeline -- including the alpha that drives the
+		// frame-buffer blend -- which this shader cannot reproduce. House-colour
+		// building emblems are drawn this way: reproducing only stage 0 renders their
+		// background as opaque black (or drops them entirely). Leave multi-texture
+		// draws to the fixed-function path.
+		const bool singleTexture = render_state.Textures[1] == nullptr;
+
+		// Untextured meshes: a multi-pass mesh often draws an untextured, lit sub-pass
+		// (stage 0 selects the diffuse alone -- SELECTARG2/DISABLE, no texture bound)
+		// alongside textured passes over the same geometry. Leaving it on the fixed
+		// pipeline while its siblings run through the shader gives the two slightly
+		// different depth, and the coincident passes then z-fight (the mottled pattern on
+		// civilian buildings, whose untextured pass shows through as flat lit white).
+		// The shader reproduces this exactly -- lit colour with no texture modulation --
+		// so route it too and keep the whole mesh on one pipeline.
+		const DWORD s0ColorOp = TextureStageStates[0][D3DTSS_COLOROP];
+		const DWORD s0ColorArg2 = TextureStageStates[0][D3DTSS_COLORARG2] & D3DTA_SELECTMASK;
+		const bool untexturedDiffuseOnly =
+			render_state.Textures[0] == nullptr &&
+			!alphaBlendOn &&
+			((s0ColorOp == D3DTOP_SELECTARG2 && s0ColorArg2 == D3DTA_DIFFUSE) ||
+			 s0ColorOp == D3DTOP_DISABLE);
+
+		// Additive geometry (destination blend ONE) is transparent effect work -- muzzle
+		// flashes, beam weapons, mine markers -- that sits on or just in front of another
+		// surface, tests depth (LESSEQUAL) and does not write it. That makes it the
+		// category most exposed to the split between this path and the fixed-function one:
+		// the effect gets shader-computed depth while the surface behind it is still drawn
+		// fixed-function, the two do not agree to the last bit, and the effect loses the
+		// depth test and never produces a pixel. Symptom is a whole class of effects simply
+		// missing, with nothing wrong in the shading at all.
+		// Keeping it fixed-function costs nothing: it writes no depth, so it cannot z-fight
+		// anything drawn here, which is the split this routing exists to avoid.
+		const bool useUnitShader =
+			!additiveBlend &&
+			!m_bTerrainShaderPass &&
+			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
+			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
+			(curFVF & D3DFVF_XYZ) && (curFVF & D3DFVF_NORMAL) &&
+			(render_state.Textures[0] != nullptr || untexturedDiffuseOnly) &&
+			reproducibleBlend &&
+			singleTexture &&
+			!texgenActive;
+
+		if (useTerrainShader) {
+			if (!m_bUnitShaderBound) {
+				s_dwOriginalPS = Pixel_Shader;
+				m_bUnitShaderBound = true;
+			}
+			Set_Vertex_Shader(m_dwTerrainVS);
+			Set_Pixel_Shader(m_dwTerrainPS);
+
+			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+			D3DXMATRIX proj;
+			if (FAILED(_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj)))) {
+				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
+			}
+			D3DXMATRIX wvp;
+			D3DXMatrixMultiply(&wvp, &world, &view);
+			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			Set_Vertex_Shader_Constant(0, &wvp, 4);
+
+			// Smooth (bi/tri-linear) filtering + clamp, matching the fixed-function
+			// terrain path. The base atlas texture's own filter may be point, which
+			// looks jagged; this runs after the texture Apply so it wins.
+			Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+
+			// Cloud/noise overlay layers: scroll offset (VS c4) + enable mask (PS c0).
+			// These are (near-)constant across draws, so the redundant-set cache in
+			// Set_*_Shader_Constant sends them once and then skips. A device reset
+			// zeroes the device constants but Invalidate_Cached_Render_States leaves
+			// the constant caches untouched, so after such a reset the cache still
+			// matches while the device holds 0 -- and the overlays get stuck off
+			// (terrain renders with no cloud/noise). Force these writes through the
+			// device directly and keep the cache coherent so later cached sets work.
+			D3DXVECTOR4 cloudOffset(m_terrainCloudOffX, m_terrainCloudOffY, 0.0f, 0.0f);
+			DX8CALL(SetVertexShaderConstantF(4, reinterpret_cast<const float*>(&cloudOffset), 1));
+			Vertex_Shader_Constants[4] = *reinterpret_cast<const Vector4*>(&cloudOffset);
+			D3DXVECTOR4 overlayEnable(m_terrainCloudEnable ? 1.0f : 0.0f,
+									  m_terrainNoiseEnable ? 1.0f : 0.0f, 0.0f, 0.0f);
+			DX8CALL(SetPixelShaderConstantF(0, reinterpret_cast<const float*>(&overlayEnable), 1));
+			Pixel_Shader_Constants[0] = *reinterpret_cast<const Vector4*>(&overlayEnable);
+			// Cloud/noise tile and wrap.
+			Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+			Set_DX8_Texture_Stage_State(3, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(3, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+		}
+		else if (useUnitShader) {
+			if (!m_bUnitShaderBound) {
+				s_dwOriginalPS = Pixel_Shader;
+				m_bUnitShaderBound = true;
+			}
+			Set_Vertex_Shader(m_dwUnitVS);
+			Set_Pixel_Shader(m_dwUnitPS);
+
+			// Matrices: row_major HLSL float4x4 with mul(v, M) takes the D3D
+			// row-major matrices uploaded as-is (no transpose).
+			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+			D3DXMATRIX proj;
+			if (FAILED(_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj)))) {
+				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
+			}
+			D3DXMATRIX worldView;
+			D3DXMatrixMultiply(&worldView, &world, &view);
+			D3DXMATRIX wvp;
+			D3DXMatrixMultiply(&wvp, &worldView, &proj);
+			// c0 = world*view*proj (position). c4 = world*view, which also serves as the
+			// object -> camera normal matrix: the engine's LightEnvironment hands us light
+			// directions already rotated into camera (view) space, so the normal must be
+			// taken to that same space for N.L to be correct. (The shader applies a small
+			// depth nudge to avoid z-fighting the co-planar fixed-function detail passes.)
+			Set_Vertex_Shader_Constant(0, &wvp, 4);
+			Set_Vertex_Shader_Constant(4, &worldView, 4);
+
+			// Lighting: scene ambient (D3DRS_AMBIENT) + up to four directional lights,
+			// matching the fixed-function LightEnvironment. Disabled lights contribute
+			// nothing (diffuse left at zero).
+			DWORD ambientPacked = RenderStates[D3DRS_AMBIENT];
+			D3DXVECTOR4 sceneAmbient(
+				((ambientPacked >> 16) & 0xFF) / 255.0f,
+				((ambientPacked >>  8) & 0xFF) / 255.0f,
+				((ambientPacked      ) & 0xFF) / 255.0f,
+				1.0f);
+			Set_Vertex_Shader_Constant(16, &sceneAmbient, 1);
+
+			for (int li = 0; li < 4; ++li) {
+				D3DXVECTOR4 dir(0.0f, 0.0f, 1.0f, 0.0f);
+				D3DXVECTOR4 diff(0.0f, 0.0f, 0.0f, 0.0f);
+				if (render_state.LightEnable[li]) {
+					dir.x = -render_state.Lights[li].Direction.x;
+					dir.y = -render_state.Lights[li].Direction.y;
+					dir.z = -render_state.Lights[li].Direction.z;
+					diff.x = render_state.Lights[li].Diffuse.r;
+					diff.y = render_state.Lights[li].Diffuse.g;
+					diff.z = render_state.Lights[li].Diffuse.b;
+				}
+				Set_Vertex_Shader_Constant(8 + li * 2, &dir, 1);
+				Set_Vertex_Shader_Constant(9 + li * 2, &diff, 1);
+			}
+
+			// Lighting mode -- mirror what the fixed-function stage-0 colour combine does
+			// with the vertex diffuse, not just D3DRS_LIGHTING:
+			//   2 = texture only: stage 0 selects the texture alone (SELECTARG1, no
+			//       diffuse), e.g. an unlit detail/overlay pass multiplied or added over
+			//       the already-lit base in the frame buffer. Applying our lighting here
+			//       would darken it a second time (the "dark pattern" on multi-pass
+			//       buildings), so the shader must output the raw texture.
+			//   1 = lit: stage 0 modulates the texture by the (lit) diffuse.
+			//   0 = pre-lit: lighting disabled; pass the baked vertex colour through.
+			const DWORD stage0Op   = TextureStageStates[0][D3DTSS_COLOROP];
+			const DWORD stage0Arg1 = TextureStageStates[0][D3DTSS_COLORARG1] & D3DTA_SELECTMASK;
+			const bool textureOnlyPass =
+				(stage0Op == D3DTOP_SELECTARG1 && stage0Arg1 == D3DTA_TEXTURE);
+			float lightMode = textureOnlyPass ? 2.0f
+							: (RenderStates[D3DRS_LIGHTING] ? 1.0f : 0.0f);
+			D3DXVECTOR4 lightingParams(lightMode, 0.0f, 0.0f, 0.0f);
+			Set_Vertex_Shader_Constant(17, &lightingParams, 1);
+
+			// Material ambient/diffuse/emissive. The vertex material sources ambient,
+			// diffuse and emissive from the material (VertexMaterialClass defaults them
+			// to D3DMCS_MATERIAL), so the shader reads all three from the material to
+			// match the fixed-function lit equation. The house-colour system bakes the
+			// team colour into the vertex material's ambient AND diffuse
+			// (Recolor_Vertex_Material on "HOUSECOLOR*" meshes, whose texture is white);
+			// the diffuse term is what tints the mesh under the sun, so both must be fed
+			// through. Normal meshes have a white ambient/diffuse, so this is a no-op.
+			D3DXVECTOR4 matAmbient(1.0f, 1.0f, 1.0f, 1.0f);
+			D3DXVECTOR4 matDiffuse(1.0f, 1.0f, 1.0f, 1.0f);
+			D3DXVECTOR4 matEmissive(0.0f, 0.0f, 0.0f, 0.0f);
+			float matOpacity = 1.0f;
+			D3DMATERIAL8 mtl;
+			if (SUCCEEDED(_Get_D3D_Device8()->GetMaterial(&mtl))) {
+				matAmbient  = D3DXVECTOR4(mtl.Ambient.r,  mtl.Ambient.g,  mtl.Ambient.b,  1.0f);
+				matDiffuse  = D3DXVECTOR4(mtl.Diffuse.r,  mtl.Diffuse.g,  mtl.Diffuse.b,  1.0f);
+				matEmissive = D3DXVECTOR4(mtl.Emissive.r, mtl.Emissive.g, mtl.Emissive.b, 0.0f);
+				matOpacity  = mtl.Diffuse.a; // stealth/translucency rides in the material alpha
+			}
+			Set_Vertex_Shader_Constant(18, &matAmbient, 1);
+			Set_Vertex_Shader_Constant(19, &matEmissive, 1);
+			Set_Vertex_Shader_Constant(20, &matDiffuse, 1);
+
+			// Stage 0's ALPHA combine, mirrored the same way the colour combine is above.
+			// Assuming alpha is always texture*diffuse breaks any pass whose alpha is the
+			// texture alone: additive effects blend SRCALPHA/ONE, so multiplying in a
+			// material opacity the fixed-function pipeline never applied to them makes
+			// them vanish. At stage 0 CURRENT is defined to be the diffuse, so it counts
+			// as diffuse.
+			const DWORD s0AOp   = TextureStageStates[0][D3DTSS_ALPHAOP];
+			const DWORD s0AArg1 = TextureStageStates[0][D3DTSS_ALPHAARG1] & D3DTA_SELECTMASK;
+			const DWORD s0AArg2 = TextureStageStates[0][D3DTSS_ALPHAARG2] & D3DTA_SELECTMASK;
+			bool alphaUsesTexture = true;   // MODULATE and friends: texture * diffuse
+			bool alphaUsesDiffuse = true;
+			if (s0AOp == D3DTOP_DISABLE) {
+				alphaUsesTexture = false;   // stage contributes nothing; diffuse survives
+			}
+			else if (s0AOp == D3DTOP_SELECTARG1 || s0AOp == D3DTOP_SELECTARG2) {
+				const DWORD sel = (s0AOp == D3DTOP_SELECTARG1) ? s0AArg1 : s0AArg2;
+				alphaUsesTexture = (sel == D3DTA_TEXTURE);
+				alphaUsesDiffuse = (sel == D3DTA_DIFFUSE || sel == D3DTA_CURRENT);
+			}
+
+			// Texture control (pixel shader c1). x tells the shader whether a base texture
+			// is bound at all -- 0 for the untextured diffuse-only pass, so it emits the
+			// lit colour alone, matching the fixed-function stage-0 SELECTARG2(diffuse)
+			// combine. yz resolve the diffuse alpha: lit meshes take it from the material,
+			// which is where stealth translucency lives and which the fixed-function
+			// pipeline sourced, pre-lit meshes keep their vertex alpha, and y=z=1 forces it
+			// to 1 when stage 0 does not source the diffuse at all. w gates the texture
+			// alpha.
+			const bool litMesh = RenderStates[D3DRS_LIGHTING] != FALSE;
+			D3DXVECTOR4 texCtl(
+				render_state.Textures[0] != nullptr ? 1.0f : 0.0f,
+				alphaUsesDiffuse ? matOpacity : 1.0f,
+				(!alphaUsesDiffuse || litMesh) ? 1.0f : 0.0f,
+				alphaUsesTexture ? 1.0f : 0.0f);
+			Set_Pixel_Shader_Constant(1, &texCtl, 1);
+		}
+		else if (m_bUnitShaderBound) {
+			// Non-mesh draw: restore the fixed-function pipeline. For DX8 buffers
+			// the vertex-buffer block already re-applied the FVF; restore the pixel
+			// shader, and reset the vertex shader when this draw carries an FVF.
+			Set_Pixel_Shader(s_dwOriginalPS);
+			if (curFVF != 0) {
+				Set_Vertex_Shader(curFVF);
+			}
+			m_bUnitShaderBound = false;
 		}
 	}
 
