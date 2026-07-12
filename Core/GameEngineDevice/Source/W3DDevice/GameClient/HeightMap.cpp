@@ -2015,11 +2015,32 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_BLUE|D3DCOLORWRITEENABLE_GREEN|D3DCOLORWRITEENABLE_RED);
 	}
 
+	// Programmable terrain path: collapse the fixed-function multi-pass shading
+	// into a single pass bound to the terrain VS/PS (base texture * baked vertex
+	// lighting). Cloud/noise/blend layers come in later increments.
+	Bool useTerrainProg = DX8Wrapper::Has_Terrain_Shader() && !doMultiPassWireFrame && !m_disableTextures;
+	if (useTerrainProg)
+		devicePasses = 1;
+
 	Int pass;
  	for (pass=0; pass<devicePasses; pass++) {
 #ifdef TIMING_TESTS
 #endif
-		if (!doMultiPassWireFrame)	//multi-pass wireframe doesn't use regular shaders.
+		if (useTerrainProg)
+		{
+			Bool cloudOn = (st == W3DShaderManager::ST_TERRAIN_BASE_NOISE1 ||
+							st == W3DShaderManager::ST_TERRAIN_BASE_NOISE12);
+			Bool noiseOn = (st == W3DShaderManager::ST_TERRAIN_BASE_NOISE2 ||
+							st == W3DShaderManager::ST_TERRAIN_BASE_NOISE12);
+			DX8Wrapper::Set_Texture(0, m_stageZeroTexture);
+			DX8Wrapper::Set_Texture(2, cloudOn ? m_stageTwoTexture : nullptr);
+			DX8Wrapper::Set_Texture(3, noiseOn ? m_stageThreeTexture : nullptr);
+			float cx = 0.0f, cy = 0.0f;
+			W3DShaderManager::getCloudOffset(cx, cy);
+			DX8Wrapper::Set_Terrain_Overlay(cx, cy, cloudOn, noiseOn);
+			DX8Wrapper::Set_Terrain_Shader_Pass(true);
+		}
+		else if (!doMultiPassWireFrame)	//multi-pass wireframe doesn't use regular shaders.
 		{
  			if (m_disableTextures ) {
  				DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaque2DShader);
@@ -2061,6 +2082,8 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 	{
 		if (pass)	//shader was applied at least once?
  			W3DShaderManager::resetShader(st);
+
+		if (useTerrainProg) DX8Wrapper::Set_Terrain_Shader_Pass(false);
 
 		//Draw feathered shorelines
 		renderShoreLines(&rinfo.Camera);
@@ -2159,6 +2182,25 @@ void HeightMapRenderObjClass::renderTerrainPass(CameraClass *pCamera)
 
 	DX8Wrapper::Set_Index_Buffer(m_indexBuffer,0);
 
+	// This pass re-draws the terrain tiles co-planar over the (shader-drawn) terrain and
+	// depth-tests LESSEQUAL to blend in the shroud. The programmable terrain pass writes
+	// a depth a few ULPs different from this fixed-function pass, so at grazing camera
+	// angles the shroud gets rejected in a camera-dependent pattern (gaps). Pull this
+	// pass very slightly toward the camera with a slope-scaled depth bias so it reliably
+	// lands on the surface. The terrain's own depth is left unchanged, so the stencil
+	// shadow volumes (which depth-test against it) are unaffected.
+	LPDIRECT3DDEVICE8 shroudDev = DX8Wrapper::_Get_D3D_Device8();
+	DWORD oldSlopeBias = 0, oldConstBias = 0;
+	if (shroudDev)
+	{
+		const float slopeBias = -1.0f;     // scales with polygon slope: grazing angles get more
+		const float constBias = -0.0005f;  // small constant pull toward the camera
+		shroudDev->GetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, &oldSlopeBias);
+		shroudDev->GetRenderState(D3DRS_DEPTHBIAS, &oldConstBias);
+		shroudDev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD*>(&slopeBias));
+		shroudDev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD*>(&constBias));
+	}
+
 	for (Int j=0; j<m_numVBTilesY; j++)
 		for (Int i=0; i<m_numVBTilesX; i++)
 		{
@@ -2184,6 +2226,12 @@ void HeightMapRenderObjClass::renderTerrainPass(CameraClass *pCamera)
 				DX8Wrapper::Draw_Triangles(0, HEIGHTMAP_POLYGON_NUM, 0, HEIGHTMAP_VERTEX_NUM);
 			}
 		}
+
+	if (shroudDev)
+	{	//restore the depth bias so nothing else in the frame is affected
+		shroudDev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, oldSlopeBias);
+		shroudDev->SetRenderState(D3DRS_DEPTHBIAS, oldConstBias);
+	}
 }
 
 //=============================================================================

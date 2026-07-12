@@ -43,6 +43,11 @@ if(RTS_INSTALL_PREFIX_GENERALS)
     install(TARGETS g_generals RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}")
     install(FILES $<TARGET_PDB_FILE:g_generals> DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}" OPTIONAL)
 
+    # Compiled HLSL shaders for the programmable render path.
+    if(EXISTS "${RTS_SHADER_OUT_DIR}")
+        install(DIRECTORY "${RTS_SHADER_OUT_DIR}/" DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}/shaders")
+    endif()
+
     # Loose game data: the INI patches under mod/. Installed with the executable because
     # they are the data half of features the executable carries -- without
     # Data\INI\Patch\HazardFields.ini, for instance, HazardFieldDecalClientUpdate is

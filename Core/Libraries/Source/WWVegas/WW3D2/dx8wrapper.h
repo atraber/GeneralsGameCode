@@ -727,6 +727,32 @@ protected:
 	static float							ZFar;
 	static D3DMATRIX					ProjectionMatrix;
 
+public:
+	// Programmable (D3D9) unit render path. The handles are populated by
+	// W3DShaderManager once the device exists; the render code binds them for
+	// object meshes in place of the fixed-function pipeline. The mesh FVF serves
+	// as the vertex declaration, so no explicit declaration is needed.
+	static DWORD						m_dwUnitVS;
+	static DWORD						m_dwUnitPS;
+	// Programmable terrain path. HeightMap flags a terrain tile pass and the
+	// render code binds these instead of the mesh shader for those draws.
+	static DWORD						m_dwTerrainVS;
+	static DWORD						m_dwTerrainPS;
+	static bool							m_bUnitShaderBound;   // a programmable shader is currently bound
+	static bool							m_bTerrainShaderPass; // current draws are terrain tiles
+	static void Set_Terrain_Shader_Pass(bool active) { m_bTerrainShaderPass = active; }
+	static bool Has_Terrain_Shader() { return m_dwTerrainVS != 0 && m_dwTerrainPS != 0; }
+	// Terrain overlay params: cloud scroll offset and which overlays are active.
+	static float						m_terrainCloudOffX;
+	static float						m_terrainCloudOffY;
+	static bool							m_terrainCloudEnable;
+	static bool							m_terrainNoiseEnable;
+	static void Set_Terrain_Overlay(float offX, float offY, bool cloud, bool noise)
+	{
+		m_terrainCloudOffX = offX; m_terrainCloudOffY = offY;
+		m_terrainCloudEnable = cloud; m_terrainNoiseEnable = noise;
+	}
+
 	friend void DX8_Assert();
 	friend class WW3D;
 	friend class DX8IndexBufferClass;
