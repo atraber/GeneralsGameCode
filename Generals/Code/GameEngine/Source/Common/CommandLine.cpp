@@ -448,6 +448,27 @@ Int parseReplay(char *args[], int num)
 	return 1;
 }
 
+Int parsePlayReplay(char *args[], int num)
+{
+	if (num > 1)
+	{
+		AsciiString filename = args[1];
+		TheWritableGlobalData->m_initialReplayFile = filename;
+
+		TheWritableGlobalData->m_playIntro = FALSE;
+		TheWritableGlobalData->m_afterIntro = TRUE;
+		TheWritableGlobalData->m_playSizzle = FALSE;
+		TheWritableGlobalData->m_shellMapOn = FALSE;
+
+		// Make replay playback possible while other clients are running
+		rts::ClientInstance::setMultiInstance(TRUE);
+		rts::ClientInstance::skipPrimaryInstance();
+
+		return 2;
+	}
+	return 1;
+}
+
 Int parseJobs(char *args[], int num)
 {
 	if (num > 1)
@@ -1135,6 +1156,7 @@ static CommandLineParam paramsForStartup[] =
 	// You can pass this multiple times to play back multiple replays.
 	// You can also include wildcards. The file must be in the replay folder or in a subfolder.
 	{ "-replay", parseReplay },
+	{ "-playReplay", parsePlayReplay },
 
 	// TheSuperHackers @feature helmutbuhler 23/05/2025
 	// Simulate each replay in a separate process and use 1..N processes at the same time.

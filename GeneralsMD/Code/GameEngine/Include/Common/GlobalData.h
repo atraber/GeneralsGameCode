@@ -352,6 +352,7 @@ public:
 	Bool m_enforceMaxCameraHeight;		///< Enforce max camera height while scrolling?
 	Bool m_buildMapCache;
 	AsciiString m_initialFile;				///< If this is specified, load a specific map from the command-line
+	AsciiString m_initialReplayFile;			///< If this is specified, load and play this replay from the command-line
 	AsciiString m_pendingFile;				///< If this is specified, use this map at the next game start
 
 	std::vector<AsciiString> m_simulateReplays; ///< If not empty, simulate this list of replays and exit.

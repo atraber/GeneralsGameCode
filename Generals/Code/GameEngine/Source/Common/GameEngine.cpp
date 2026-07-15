@@ -561,8 +561,15 @@ void GameEngine::init()
 				msg->appendIntegerArgument(GAME_SINGLE_PLAYER);
 				msg->appendIntegerArgument(DIFFICULTY_NORMAL);
 				msg->appendIntegerArgument(0);
-				InitRandom(0);
 			}
+		}
+
+		if (TheGlobalData->m_initialReplayFile.isEmpty() == FALSE)
+		{
+			TheWritableGlobalData->m_shellMapOn = FALSE;
+			TheWritableGlobalData->m_playIntro = FALSE;
+			TheWritableGlobalData->m_playSizzle = FALSE;
+			TheRecorder->playbackFile(TheGlobalData->m_initialReplayFile);
 		}
 
 		//
