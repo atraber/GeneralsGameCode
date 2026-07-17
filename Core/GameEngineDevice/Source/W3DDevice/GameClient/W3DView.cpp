@@ -1846,6 +1846,22 @@ void W3DView::draw()
 	CustomScenePassModes customScenePassMode  = SCENE_PASS_DEFAULT;
 	Bool preRenderResult = false;
 
+	// Select the base view filter when no transient effect filter (BW, motion blur,
+	// crossfade) is running: bloom when it is enabled (options.ini UseBloom) and
+	// initialised (render-to-texture available), else the plain default filter.
+	// Leaving the event filters untouched lets them play out and reset to
+	// FT_VIEW_DEFAULT, which is re-upgraded here next frame.
+	if (m_viewFilter == FT_VIEW_DEFAULT || m_viewFilter == FT_VIEW_BLOOM)
+	{
+		FilterTypes base = (TheGlobalData->m_useBloom && W3DShaderManager::isBloomFilterActive())
+			? FT_VIEW_BLOOM : FT_VIEW_DEFAULT;
+		if (m_viewFilter != base)
+		{
+			m_viewFilter = base;
+			m_viewFilterMode = (base == FT_VIEW_BLOOM) ? FM_VIEW_BLOOM : FM_VIEW_DEFAULT;
+		}
+	}
+
 	if (m_viewFilterMode &&
 			m_viewFilter > FT_NULL_FILTER &&
 			m_viewFilter < FT_MAX)

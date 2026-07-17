@@ -119,6 +119,7 @@ public:
 	static void startRenderToTexture(); ///< Sets render target to texture.
 	static IDirect3DTexture8 * endRenderToTexture(); ///< Ends render to texture, & returns texture.
 	static IDirect3DTexture8 * getRenderTexture();	///< returns last used render target texture
+	static Bool isBloomFilterActive();	///< true when the bloom filter initialised (render-to-texture available)
 	static Bool isRenderingToTexture() {return m_renderingToTexture; }
 	static void drawViewport(Int color);	///<draws 2 triangles covering the current tactical viewport
 
