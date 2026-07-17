@@ -258,6 +258,245 @@ void ScreenDefaultFilter::reset()
 	DX8Wrapper::Invalidate_Cached_Render_States();
 }
 
+/*=========  ScreenBloomFilter  =========================================================*/
+///Screen-space bloom: extract bright pixels, blur them, and add the glow back over the
+///scene. Installed as the view's default filter when render-to-texture is available;
+///drawn entirely with fullscreen XYZRHW quads + ps_2_0 pixel shaders. The bloom look
+///(threshold / knee / intensity) is tuned by editing the bloom_*_ps.hlsl shaders and
+///recompiling them -- no engine rebuild needed. The only per-frame shader constant set
+///from here is the blur step, which depends on the runtime target size.
+
+// Fullscreen-quad vertex: pre-transformed position + diffuse + two texcoord sets
+// (TEXCOORD0 = scene / pass source, TEXCOORD1 = bloom target).
+struct BloomVtx
+{
+	D3DXVECTOR4 p;
+	DWORD       color;
+	float       u0, v0;
+	float       u1, v1;
+};
+
+static void bloomSetSampler(DWORD stage)
+{
+	DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+	DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+	DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+	DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+	DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+}
+
+// Draw a screen-space quad over [dx,dy]..[dx+dw,dy+dh] sampling source UVs
+// (sU0..sU1, sV0..sV1) on TEXCOORD0 and bloom UVs (bU..) on TEXCOORD1.
+static void bloomDrawQuad(LPDIRECT3DDEVICE8 dev,
+	float dx, float dy, float dw, float dh,
+	float sU0, float sV0, float sU1, float sV1,
+	float bU0, float bV0, float bU1, float bV1)
+{
+	const float ox = dx - 0.5f, oy = dy - 0.5f;  // -0.5 texel: align pixels to texels
+	BloomVtx v[4];
+	v[0].p = D3DXVECTOR4(ox + dw, oy + dh, 0.0f, 1.0f); v[0].u0 = sU1; v[0].v0 = sV1; v[0].u1 = bU1; v[0].v1 = bV1;
+	v[1].p = D3DXVECTOR4(ox + dw, oy,      0.0f, 1.0f); v[1].u0 = sU1; v[1].v0 = sV0; v[1].u1 = bU1; v[1].v1 = bV0;
+	v[2].p = D3DXVECTOR4(ox,      oy + dh, 0.0f, 1.0f); v[2].u0 = sU0; v[2].v0 = sV1; v[2].u1 = bU0; v[2].v1 = bV1;
+	v[3].p = D3DXVECTOR4(ox,      oy,      0.0f, 1.0f); v[3].u0 = sU0; v[3].v0 = sV0; v[3].u1 = bU0; v[3].v1 = bV0;
+	v[0].color = v[1].color = v[2].color = v[3].color = 0xffffffff;
+	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX2);
+	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
+}
+
+class ScreenBloomFilter : public W3DFilterInterface
+{
+public:
+	virtual Int init() override;
+	virtual Int shutdown() override;
+	virtual Bool preRender(Bool &skipRender, CustomScenePassModes &scenePassMode) override;
+	virtual Bool postRender(FilterModes mode, Coord2D &scrollDelta, Bool &doExtraRender) override;
+	virtual Bool setup(FilterModes mode) override { return true; }
+protected:
+	virtual Int set(FilterModes mode) override { return true; }
+	virtual void reset() override;
+
+	static DWORD m_brightPS;
+	static DWORD m_blurPS;
+	static DWORD m_compositePS;
+	static IDirect3DTexture8 *m_texA;   // ping
+	static IDirect3DTexture8 *m_texB;   // pong
+	static IDirect3DSurface8 *m_surfA;
+	static IDirect3DSurface8 *m_surfB;
+	static Int m_w;
+	static Int m_h;
+};
+
+DWORD ScreenBloomFilter::m_brightPS = 0;
+DWORD ScreenBloomFilter::m_blurPS = 0;
+DWORD ScreenBloomFilter::m_compositePS = 0;
+IDirect3DTexture8 *ScreenBloomFilter::m_texA = nullptr;
+IDirect3DTexture8 *ScreenBloomFilter::m_texB = nullptr;
+IDirect3DSurface8 *ScreenBloomFilter::m_surfA = nullptr;
+IDirect3DSurface8 *ScreenBloomFilter::m_surfB = nullptr;
+Int ScreenBloomFilter::m_w = 0;
+Int ScreenBloomFilter::m_h = 0;
+
+ScreenBloomFilter screenBloomFilter;
+
+W3DFilterInterface *ScreenBloomFilterList[] =
+{
+	&screenBloomFilter,
+	nullptr
+};
+
+Int ScreenBloomFilter::init()
+{
+	if (!W3DShaderManager::canRenderToTexture())
+		return FALSE;   // bloom needs the scene rendered into a texture
+
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	IDirect3DTexture8 *sceneTex = W3DShaderManager::getRenderTexture();
+	if (!dev || !sceneTex)
+		return FALSE;
+
+	// Need at least SM1.1-class hardware for the fullscreen pixel shaders.
+	if (W3DShaderManager::getChipset() < DC_GENERIC_PIXEL_SHADER_1_1)
+		return FALSE;
+
+	if (FAILED(W3DShaderManager::LoadAndCreateD3DShader("shaders\\bloom_bright_ps.pso",    nullptr, 0, false, &m_brightPS)) ||
+	    FAILED(W3DShaderManager::LoadAndCreateD3DShader("shaders\\bloom_blur_ps.pso",      nullptr, 0, false, &m_blurPS)) ||
+	    FAILED(W3DShaderManager::LoadAndCreateD3DShader("shaders\\bloom_composite_ps.pso", nullptr, 0, false, &m_compositePS)))
+	{
+		shutdown();
+		return FALSE;
+	}
+
+	// Quarter-resolution ping/pong bloom targets, in the scene texture's format.
+	D3DSURFACE_DESC sd;
+	if (FAILED(sceneTex->GetLevelDesc(0, &sd)))
+	{
+		shutdown();
+		return FALSE;
+	}
+	m_w = (Int)sd.Width  / 4;  if (m_w < 1) m_w = 1;
+	m_h = (Int)sd.Height / 4;  if (m_h < 1) m_h = 1;
+
+	if (FAILED(dev->CreateTexture(m_w, m_h, 1, D3DUSAGE_RENDERTARGET, sd.Format, D3DPOOL_DEFAULT, &m_texA)) ||
+	    FAILED(dev->CreateTexture(m_w, m_h, 1, D3DUSAGE_RENDERTARGET, sd.Format, D3DPOOL_DEFAULT, &m_texB)) ||
+	    FAILED(m_texA->GetSurfaceLevel(0, &m_surfA)) ||
+	    FAILED(m_texB->GetSurfaceLevel(0, &m_surfB)))
+	{
+		shutdown();
+		return FALSE;
+	}
+
+	W3DFilters[FT_VIEW_BLOOM] = &screenBloomFilter;
+	return TRUE;
+}
+
+Int ScreenBloomFilter::shutdown()
+{
+	W3DFilters[FT_VIEW_BLOOM] = nullptr;   // don't leave a stale pointer if re-init fails
+	SAFE_RELEASE(m_surfA);
+	SAFE_RELEASE(m_surfB);
+	SAFE_RELEASE(m_texA);
+	SAFE_RELEASE(m_texB);
+	if (m_brightPS)    { reinterpret_cast<IDirect3DPixelShader9*>(m_brightPS)->Release();    m_brightPS = 0; }
+	if (m_blurPS)      { reinterpret_cast<IDirect3DPixelShader9*>(m_blurPS)->Release();      m_blurPS = 0; }
+	if (m_compositePS) { reinterpret_cast<IDirect3DPixelShader9*>(m_compositePS)->Release(); m_compositePS = 0; }
+	return TRUE;
+}
+
+Bool ScreenBloomFilter::preRender(Bool &skipRender, CustomScenePassModes &scenePassMode)
+{
+	skipRender = false;
+	W3DShaderManager::startRenderToTexture();   // redirect the scene into the render texture
+	return true;
+}
+
+Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool &doExtraRender)
+{
+	IDirect3DTexture8 *sceneTex = W3DShaderManager::endRenderToTexture();   // restores back buffer as target
+	if (!sceneTex)
+		return false;
+
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (!dev || !m_surfA || !m_surfB || !m_brightPS || !m_blurPS || !m_compositePS)
+		return true;   // bloom unavailable this frame; scene already in the back buffer target
+
+	// Capture the restored back buffer + depth so the composite can return to them
+	// after bouncing through the reduced-resolution bloom targets.
+	IDirect3DSurface8 *backBuf = nullptr, *backDepth = nullptr;
+	dev->GetRenderTarget(0, &backBuf);
+	dev->GetDepthStencilSurface(&backDepth);
+
+	// Scene occupies the tactical viewport sub-rect of its (back-buffer-sized) texture.
+	Int xpos, ypos, width, height;
+	TheTacticalView->getOrigin(&xpos, &ypos);
+	width  = TheTacticalView->getWidth();
+	height = TheTacticalView->getHeight();
+	const float dispW = (float)TheDisplay->getWidth();
+	const float dispH = (float)TheDisplay->getHeight();
+	const float su0 = (float)xpos / dispW,          sv0 = (float)ypos / dispH;
+	const float su1 = (float)(xpos + width) / dispW, sv1 = (float)(ypos + height) / dispH;
+
+	// Common state for all fullscreen passes: opaque, no depth test/write, no blend.
+	VertexMaterialClass *vmat = VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
+	DX8Wrapper::Set_Material(vmat);
+	REF_PTR_RELEASE(vmat);
+	DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);
+	DX8Wrapper::Set_Texture(0, nullptr);
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZWRITEENABLE, FALSE);
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE, FALSE);
+	DX8Wrapper::Apply_Render_State_Changes();
+
+	// Pass 1: bright-pass. scene(sub-rect) -> texA (quarter-res). Threshold/knee are
+	// baked into bloom_bright_ps.hlsl.
+	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
+	DX8Wrapper::Set_Pixel_Shader(m_brightPS);
+	DX8Wrapper::Set_DX8_Texture(0, sceneTex);
+	bloomSetSampler(0);
+	bloomDrawQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, su0, sv0, su1, sv1, 0, 0, 1, 1);
+
+	// Pass 2: horizontal blur. texA -> texB.
+	DX8Wrapper::Set_DX8_Render_Target(m_surfB, nullptr);
+	DX8Wrapper::Set_Pixel_Shader(m_blurPS);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(1.0f / (float)m_w, 0.0f, 0.0f, 0.0f), 1);
+	DX8Wrapper::Set_DX8_Texture(0, m_texA);
+	bloomSetSampler(0);
+	bloomDrawQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
+
+	// Pass 3: vertical blur. texB -> texA.
+	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(0.0f, 1.0f / (float)m_h, 0.0f, 0.0f), 1);
+	DX8Wrapper::Set_DX8_Texture(0, m_texB);
+	bloomSetSampler(0);
+	bloomDrawQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
+
+	// Pass 4: composite scene + bloom -> back buffer (over the tactical rect).
+	// Bloom intensity is baked into bloom_composite_ps.hlsl.
+	DX8Wrapper::Set_DX8_Render_Target(backBuf, backDepth);
+	DX8Wrapper::Set_Pixel_Shader(m_compositePS);
+	DX8Wrapper::Set_DX8_Texture(0, sceneTex);
+	DX8Wrapper::Set_DX8_Texture(1, m_texA);
+	bloomSetSampler(0);
+	bloomSetSampler(1);
+	bloomDrawQuad(dev, (float)xpos, (float)ypos, (float)width, (float)height, su0, sv0, su1, sv1, 0, 0, 1, 1);
+
+	SAFE_RELEASE(backBuf);
+	SAFE_RELEASE(backDepth);
+	reset();
+	return true;
+}
+
+void ScreenBloomFilter::reset()
+{
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev)
+	{
+		DX8Wrapper::Set_Pixel_Shader(0);   // unbind the bloom pixel shader
+		DX8Wrapper::Set_DX8_Texture(0, nullptr);
+		DX8Wrapper::Set_DX8_Texture(1, nullptr);
+	}
+	DX8Wrapper::Invalidate_Cached_Render_States();
+}
+
 /*=========  ScreenBWFilter	=============================================================*/
 ///converts viewport to black & white.
 
@@ -2488,6 +2727,7 @@ W3DFilterInterface **MasterFilterList[]=
 	ScreenBWFilterList,
 	ScreenMotionBlurFilterList,
 	ScreenCrossFadeFilterList,
+	ScreenBloomFilterList,
 	nullptr
 };
 
@@ -2544,7 +2784,7 @@ void W3DShaderManager::init()
 			return;
 
 		m_oldRenderSurface->GetDesc(&desc);
-		
+
 		// The post-process reads a plain (non-multisampled) texture, so always create
 		// that. Redirecting the scene straight into a non-MSAA texture while the depth
 		// buffer is multisampled is an API violation, so when MSAA is active the scene
@@ -3361,6 +3601,15 @@ was applied.  NOTE: This texture does not survive device reset.. so quit effect 
 IDirect3DTexture8 *W3DShaderManager::getRenderTexture()
 {
 	return m_renderTexture;
+}
+
+/** True once the bloom filter has successfully initialised (shaders loaded and its
+render targets created). The view uses this to select FT_VIEW_BLOOM as its default
+filter; when bloom is unavailable (no render-to-texture, e.g. forced MSAA) it is
+false and the plain default filter is used instead. */
+Bool W3DShaderManager::isBloomFilterActive()
+{
+	return W3DFilters[FT_VIEW_BLOOM] != nullptr;
 }
 
 enum GraphicsVenderID CPP_11(: Int)

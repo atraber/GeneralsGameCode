@@ -117,6 +117,15 @@ TextureFilterClass::AnisotropicFilterMode OptionPreferences::getTextureAnisotrop
 	return level;
 }
 
+Bool OptionPreferences::getBloomEnabled() const
+{
+	// Screen-space bloom post-process. Defaults to on when the key is absent.
+	OptionPreferences::const_iterator it = find("UseBloom");
+	if (it == end())
+		return TRUE;
+	return atoi(it->second.str()) != 0;
+}
+
 Int OptionPreferences::getCampaignDifficulty()
 {
 	OptionPreferences::const_iterator it = find("CampaignDifficulty");
