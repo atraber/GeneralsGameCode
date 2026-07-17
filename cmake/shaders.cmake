@@ -50,6 +50,10 @@ set(_rts_shaders
     terrain_ps
     unit_pbr_vs
     unit_pbr_ps
+    # Bloom post-process (fullscreen pixel shaders; ps_2_0)
+    bloom_bright_ps
+    bloom_blur_ps
+    bloom_composite_ps
     # In-game debug visualizations (RTS_DEBUG only; see WW3D2/debugvis.h)
     debugtint_ps
     debugnormal_vs
