@@ -49,8 +49,10 @@ target_link_libraries(z_guiedit PRIVATE
     comctl32
     core_debug
     core_profile_legacy
-    d3d8lib
+    d3d9lib
     imm32
+    dinput8
+    dxguid
     stlport
     vfw32
     winmm

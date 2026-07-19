@@ -27,7 +27,7 @@
 #include "WW3D2/ww3dformat.h"
 #include "WWMath/wwmath.h"
 #include <cstring>
-#include <d3dx8core.h>
+#include <d3dx9.h>
 
 W3DProfilerFrameCapture::W3DProfilerFrameCapture()
 {

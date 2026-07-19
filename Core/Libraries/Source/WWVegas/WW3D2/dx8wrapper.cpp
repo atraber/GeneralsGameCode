@@ -75,7 +75,8 @@
 #include "textureloader.h"
 #include "missingtexture.h"
 #include "WWLib/thread.h"
-#include <d3dx8core.h>
+#include <d3dx9.h>
+#include <DxErr.h>
 #include "WWMath/pot.h"
 #include "WWDebug/wwprofile.h"
 #include "WWLib/ffactory.h"
@@ -173,14 +174,16 @@ unsigned long DX8Wrapper::FrameCount = 0;
 
 bool								_DX8SingleThreaded										= false;
 
+INT g_D3D9_BaseVertexIndex = 0;
+
 static D3DPRESENT_PARAMETERS								_PresentParameters;
 static DynamicVectorClass<StringClass>					_RenderDeviceNameTable;
 static DynamicVectorClass<StringClass>					_RenderDeviceShortNameTable;
 static DynamicVectorClass<RenderDeviceDescClass>	_RenderDeviceDescriptionTable;
 
 
-typedef IDirect3D8* (WINAPI *Direct3DCreate8Type) (UINT SDKVersion);
-Direct3DCreate8Type	Direct3DCreate8Ptr = nullptr;
+typedef IDirect3D9* (WINAPI *Direct3DCreateType) (UINT SDKVersion);
+Direct3DCreateType	Direct3DCreate8Ptr = nullptr;
 HINSTANCE D3D8Lib = nullptr;
 
 DX8_CleanupHook	 *DX8Wrapper::m_pCleanupHook=nullptr;
@@ -195,32 +198,14 @@ DX8_Stats	 DX8Wrapper::stats;
 
 void Log_DX8_ErrorCode(unsigned res)
 {
-	char tmp[256]="";
-
-	HRESULT new_res=D3DXGetErrorStringA(
-		res,
-		tmp,
-		sizeof(tmp));
-
-	if (new_res==D3D_OK) {
-		WWDEBUG_SAY((tmp));
-	}
+	WWDEBUG_SAY(("DX8 Error: %s: %s", DXGetErrorStringA(res), DXGetErrorDescriptionA(res)));
 
 	WWASSERT(0);
 }
 
 void Non_Fatal_Log_DX8_ErrorCode(unsigned res,const char * file,int line)
 {
-	char tmp[256]="";
-
-	HRESULT new_res=D3DXGetErrorStringA(
-		res,
-		tmp,
-		sizeof(tmp));
-
-	if (new_res==D3D_OK) {
-		WWDEBUG_SAY(("DX8 Error: %s, File: %s, Line: %d",tmp,file,line));
-	}
+	WWDEBUG_SAY(("DX8 Error: %s: %s, File: %s, Line: %d", DXGetErrorStringA(res), DXGetErrorDescriptionA(res), file, line));
 }
 
 // TheSuperHackers @info helmutbuhler 14/04/2025
@@ -292,11 +277,11 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 	Invalidate_Cached_Render_States();
 
 	if (!lite) {
-		D3D8Lib = LoadLibrary("D3D8.DLL");
+		D3D8Lib = LoadLibrary("d3d9.dll");
 
 		if (D3D8Lib == nullptr) return false;	// Return false at this point if init failed
 
-		Direct3DCreate8Ptr = (Direct3DCreate8Type) GetProcAddress(D3D8Lib, "Direct3DCreate8");
+		Direct3DCreate8Ptr = (Direct3DCreateType) GetProcAddress(D3D8Lib, "Direct3DCreate9");
 		if (Direct3DCreate8Ptr == nullptr) return false;
 
 		/*
@@ -731,35 +716,35 @@ void DX8Wrapper::Enumerate_Devices()
 			** Enumerate the resolutions
 			*/
 			desc.reset_resolution_list();
-			int mode_count = D3DInterface->GetAdapterModeCount(adapter_index);
-			for (int mode_index=0; mode_index<mode_count; mode_index++) {
-				D3DDISPLAYMODE d3dmode;
-				::ZeroMemory(&d3dmode, sizeof(D3DDISPLAYMODE));
-				HRESULT res = D3DInterface->EnumAdapterModes(adapter_index,mode_index,&d3dmode);
+			D3DFORMAT formats[] = { D3DFMT_X8R8G8B8, D3DFMT_R5G6B5, D3DFMT_A8R8G8B8, D3DFMT_X1R5G5B5, D3DFMT_R8G8B8 };
+			for (int f = 0; f < sizeof(formats)/sizeof(formats[0]); f++) {
+				D3DFORMAT fmt = formats[f];
+				int mode_count = D3DInterface->GetAdapterModeCount(adapter_index, fmt);
+				for (int mode_index=0; mode_index<mode_count; mode_index++) {
+					D3DDISPLAYMODE d3dmode;
+					::ZeroMemory(&d3dmode, sizeof(D3DDISPLAYMODE));
+					HRESULT res = D3DInterface->EnumAdapterModes(adapter_index,fmt,mode_index,&d3dmode);
 
-				if (res == D3D_OK) {
-					int bits = 0;
-					switch (d3dmode.Format)
-					{
-						case D3DFMT_R8G8B8:
-						case D3DFMT_A8R8G8B8:
-						case D3DFMT_X8R8G8B8:		bits = 32; break;
+					if (res == D3D_OK) {
+						int bits = 0;
+						switch (d3dmode.Format)
+						{
+							case D3DFMT_R8G8B8:
+							case D3DFMT_A8R8G8B8:
+							case D3DFMT_X8R8G8B8:		bits = 32; break;
 
-						case D3DFMT_R5G6B5:
-						case D3DFMT_X1R5G5B5:		bits = 16; break;
-					}
+							case D3DFMT_R5G6B5:
+							case D3DFMT_X1R5G5B5:		bits = 16; break;
+						}
 
-					// Some cards fail in certain modes, DX8Caps keeps list of those.
-					if (!dx8caps.Is_Valid_Display_Format(d3dmode.Width,d3dmode.Height,D3DFormat_To_WW3DFormat(d3dmode.Format))) {
-						bits=0;
-					}
+						// Some cards fail in certain modes, DX8Caps keeps list of those.
+						if (!dx8caps.Is_Valid_Display_Format(d3dmode.Width,d3dmode.Height,D3DFormat_To_WW3DFormat(d3dmode.Format))) {
+							bits=0;
+						}
 
-					/*
-					** If we recognize the format, add it to the list
-					** TODO: should we handle more formats?  will any cards report more than 24 or 16 bit?
-					*/
-					if (bits != 0) {
-						desc.add_resolution(d3dmode.Width,d3dmode.Height,bits);
+						if (bits != 0) {
+							desc.add_resolution(d3dmode.Width,d3dmode.Height,bits);
+						}
 					}
 				}
 			}
@@ -851,7 +836,6 @@ void DX8Wrapper::Get_Format_Name(unsigned int format, StringClass *tex_format)
 		case D3DFMT_X8L8V8U8: *tex_format="D3DFMT_X8L8V8U8"; break;
 		case D3DFMT_Q8W8V8U8: *tex_format="D3DFMT_Q8W8V8U8"; break;
 		case D3DFMT_V16U16: *tex_format="D3DFMT_V16U16"; break;
-		case D3DFMT_W11V11U10: *tex_format="D3DFMT_W11V11U10"; break;
 		case D3DFMT_UYVY: *tex_format="D3DFMT_UYVY"; break;
 		case D3DFMT_YUY2: *tex_format="D3DFMT_YUY2"; break;
 		case D3DFMT_DXT1: *tex_format="D3DFMT_DXT1"; break;
@@ -1508,13 +1492,13 @@ bool DX8Wrapper::Find_Color_Mode(D3DFORMAT colorbuffer, int resx, int resy, UINT
 
 	bool found=false;
 
-	modemax=D3DInterface->GetAdapterModeCount(D3DADAPTER_DEFAULT);
+	modemax=D3DInterface->GetAdapterModeCount(D3DADAPTER_DEFAULT, colorbuffer);
 
 	i=0;
 
 	while (i<modemax && !found)
 	{
-		D3DInterface->EnumAdapterModes(D3DADAPTER_DEFAULT, i, &dmode);
+		D3DInterface->EnumAdapterModes(D3DADAPTER_DEFAULT, colorbuffer, i, &dmode);
 		if (dmode.Width==rx && dmode.Height==ry && dmode.Format==colorbuffer) {
 			WWDEBUG_SAY(("Found valid color mode.  Width = %d Height = %d Format = %d",dmode.Width,dmode.Height,dmode.Format));
 			found=true;
@@ -1536,7 +1520,7 @@ bool DX8Wrapper::Find_Color_Mode(D3DFORMAT colorbuffer, int resx, int resy, UINT
 	j=i;
 	while (j<modemax && stillok)
 	{
-		D3DInterface->EnumAdapterModes(D3DADAPTER_DEFAULT, j, &dmode);
+		D3DInterface->EnumAdapterModes(D3DADAPTER_DEFAULT, colorbuffer, j, &dmode);
 		if (dmode.Width==rx && dmode.Height==ry && dmode.Format==colorbuffer)
 			stillok=true; else stillok=false;
 		j++;
@@ -1955,7 +1939,7 @@ void DX8Wrapper::Draw_Sorting_IB_VB(
 	// If using FVF format VB, set the FVF as vertex shader (may not be needed here KM)
 	unsigned fvf=dyn_vb_access.FVF_Info().Get_FVF();
 	if (fvf!=0) {
-		DX8CALL(SetVertexShader(fvf));
+		Set_Vertex_Shader(fvf);
 	}
 	DX8_RECORD_VERTEX_BUFFER_CHANGE();
 
@@ -2855,10 +2839,29 @@ IDirect3DSurface8 * DX8Wrapper::_Create_DX8_Surface(unsigned int width, unsigned
 	// Paletted surfaces not supported!
 	WWASSERT(format!=D3DFMT_P8);
 
-	DX8CALL(CreateImageSurface(width, height, WW3DFormat_To_D3DFormat(format), &surface));
+	DX8_Assert();
+	HRESULT hr = D3D9_CreateImageSurface_Helper(_Get_D3D_Device8(), width, height, WW3DFormat_To_D3DFormat(format), &surface);
+	DX8_ErrorCode(hr);
+	Increment_DX8_CallCount();
 
 	return surface;
 }
+
+HRESULT DX8Wrapper::D3D9_CreateImageSurface_Helper(
+	IDirect3DDevice9* device,
+	unsigned int width,
+	unsigned int height,
+	D3DFORMAT format,
+	IDirect3DSurface9** ppSurface
+)
+{
+	HRESULT hr = device->CreateOffscreenPlainSurface(width, height, format, D3DPOOL_SYSTEMMEM, ppSurface, nullptr);
+	if (FAILED(hr)) {
+		hr = device->CreateOffscreenPlainSurface(width, height, format, D3DPOOL_SCRATCH, ppSurface, nullptr);
+	}
+	return hr;
+}
+
 
 IDirect3DSurface8 * DX8Wrapper::_Create_DX8_Surface(const char *filename_)
 {
@@ -3115,13 +3118,16 @@ IDirect3DSurface8 * DX8Wrapper::_Get_DX8_Front_Buffer()
 	DX8_THREAD_ASSERT();
 	D3DDISPLAYMODE mode;
 
-	DX8CALL(GetDisplayMode(&mode));
+	DX8CALL(GetDisplayMode(0,&mode));
 
 	IDirect3DSurface8 * fb=nullptr;
 
-	DX8CALL(CreateImageSurface(mode.Width,mode.Height,D3DFMT_A8R8G8B8,&fb));
+	DX8_Assert();
+	HRESULT hr = D3D9_CreateImageSurface_Helper(_Get_D3D_Device8(), mode.Width, mode.Height, D3DFMT_A8R8G8B8, &fb);
+	DX8_ErrorCode(hr);
+	Increment_DX8_CallCount();
 
-	DX8CALL(GetFrontBuffer(fb));
+	DX8CALL(GetFrontBufferData(0,fb));
 	return fb;
 }
 
@@ -3131,7 +3137,7 @@ SurfaceClass * DX8Wrapper::_Get_DX8_Back_Buffer(unsigned int num)
 
 	IDirect3DSurface8 * bb;
 	SurfaceClass *surf=nullptr;
-	DX8CALL(GetBackBuffer(num,D3DBACKBUFFER_TYPE_MONO,&bb));
+	DX8CALL(GetBackBuffer(0,num,D3DBACKBUFFER_TYPE_MONO,&bb));
 	if (bb)
 	{
 		surf=NEW_REF(SurfaceClass,(bb));
@@ -3152,7 +3158,7 @@ DX8Wrapper::Create_Render_Target (int width, int height, WW3DFormat format)
 	// Use the current display format if format isn't specified
 	if (format==WW3D_FORMAT_UNKNOWN) {
 		D3DDISPLAYMODE mode;
-		DX8CALL(GetDisplayMode(&mode));
+		DX8CALL(GetDisplayMode(0,&mode));
 		format=D3DFormat_To_WW3DFormat(mode.Format);
 	}
 
@@ -3364,7 +3370,7 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 		//
 		if (DefaultRenderTarget != nullptr)
 		{
-			DX8CALL(SetRenderTarget (DefaultRenderTarget, DefaultDepthBuffer));
+			Set_DX8_Render_Target(DefaultRenderTarget, DefaultDepthBuffer);
 			DefaultRenderTarget->Release ();
 			DefaultRenderTarget = nullptr;
 			if (DefaultDepthBuffer)
@@ -3408,7 +3414,7 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 		//
 		if (DefaultRenderTarget == nullptr)
 		{
-			DX8CALL(GetRenderTarget (&DefaultRenderTarget));
+			DX8CALL(GetRenderTarget (0, &DefaultRenderTarget));
 		}
 
 		//
@@ -3440,11 +3446,11 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 			//
 			if (use_default_depth_buffer)
 			{
-				DX8CALL(SetRenderTarget (CurrentRenderTarget, DefaultDepthBuffer));
+				Set_DX8_Render_Target(CurrentRenderTarget, DefaultDepthBuffer);
 			}
 			else
 			{
-				DX8CALL(SetRenderTarget (CurrentRenderTarget, nullptr));
+				Set_DX8_Render_Target(CurrentRenderTarget, nullptr);
 			}
 		}
 	}
@@ -3490,7 +3496,7 @@ void DX8Wrapper::Set_Render_Target
 		//
 		if (DefaultRenderTarget != nullptr)
 		{
-			DX8CALL(SetRenderTarget (DefaultRenderTarget, DefaultDepthBuffer));
+			Set_DX8_Render_Target(DefaultRenderTarget, DefaultDepthBuffer);
 			DefaultRenderTarget->Release ();
 			DefaultRenderTarget = nullptr;
 			if (DefaultDepthBuffer)
@@ -3533,7 +3539,7 @@ void DX8Wrapper::Set_Render_Target
 		//
 		if (DefaultRenderTarget == nullptr)
 		{
-			DX8CALL(GetRenderTarget (&DefaultRenderTarget));
+			DX8CALL(GetRenderTarget (0, &DefaultRenderTarget));
 		}
 
 		//
@@ -3565,7 +3571,7 @@ void DX8Wrapper::Set_Render_Target
 			//
 			//	Switch render targets
 			//
-			DX8CALL(SetRenderTarget (CurrentRenderTarget, CurrentDepthBuffer));
+			Set_DX8_Render_Target(CurrentRenderTarget, CurrentDepthBuffer);
 		}
 	}
 
@@ -3605,7 +3611,7 @@ DX8Wrapper::Create_Additional_Swap_Chain (HWND render_window)
 void DX8Wrapper::Flush_DX8_Resource_Manager(unsigned int bytes)
 {
 	DX8_Assert();
-	DX8CALL(ResourceManagerDiscardBytes(bytes));
+	DX8CALL(EvictManagedResources());
 }
 
 unsigned int DX8Wrapper::Get_Free_Texture_RAM()
@@ -3656,7 +3662,7 @@ void DX8Wrapper::Set_Gamma(float gamma,float bright,float contrast,bool calibrat
 	}
 
 	if (Get_Current_Caps()->Support_Gamma())	{
-		DX8Wrapper::_Get_D3D_Device8()->SetGammaRamp(flag,&ramp);
+		DX8Wrapper::_Get_D3D_Device8()->SetGammaRamp(0,flag,&ramp);
 	} else {
 		HWND hwnd = GetDesktopWindow();
 		HDC hdc = GetDC(hwnd);
