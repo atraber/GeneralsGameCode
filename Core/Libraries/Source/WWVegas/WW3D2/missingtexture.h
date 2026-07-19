@@ -20,8 +20,7 @@
 
 #include "WWLib/always.h"
 
-struct IDirect3DTexture8;
-struct IDirect3DSurface8;
+#include "d3d9_compat.h"
 
 class MissingTexture
 {

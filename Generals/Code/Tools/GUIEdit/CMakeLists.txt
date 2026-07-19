@@ -47,12 +47,14 @@ target_include_directories(g_guiedit PRIVATE
 
 target_link_libraries(g_guiedit PRIVATE
     comctl32
-    d3d8lib
+    d3d9lib
     g_gameengine
     g_gameenginedevice
     g_wwvegas
     gi_always
     imm32
+    dinput8
+    dxguid
     stlport
     vfw32
     winmm

@@ -20,7 +20,7 @@
 #include "missingtexture.h"
 #include "texture.h"
 #include "dx8wrapper.h"
-#include <d3dx8core.h>
+#include <d3dx9.h>
 
 static unsigned missing_image_width=128;
 static unsigned missing_image_height=128;
@@ -47,12 +47,16 @@ IDirect3DSurface8* MissingTexture::_Create_Missing_Surface()
 	DX8_ErrorCode(texture_surface->GetDesc(&texture_surface_desc));
 
 	IDirect3DSurface8 *surface = nullptr;
-	DX8CALL(CreateImageSurface(
+	DX8_Assert();
+	HRESULT hr = DX8Wrapper::D3D9_CreateImageSurface_Helper(
+		DX8Wrapper::_Get_D3D_Device8(),
 		texture_surface_desc.Width,
 		texture_surface_desc.Height,
 		texture_surface_desc.Format,
-		&surface));
-	DX8CALL(CopyRects(texture_surface, nullptr, 0, surface, nullptr));
+		&surface);
+	DX8_ErrorCode(hr);
+	DX8Wrapper::Increment_DX8_CallCount();
+	DX8Wrapper::_Copy_DX8_Rects(texture_surface, nullptr, 0, surface, nullptr);
 	texture_surface->Release();
 	return surface;
 }

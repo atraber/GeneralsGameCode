@@ -41,8 +41,8 @@
 
 #include "texture.h"
 
-#include <d3d8.h>
-#include <d3dx8core.h>
+#include "d3d9_compat.h"
+#include <d3dx9.h>
 #include "dx8wrapper.h"
 #include "WWLib/TARGA.h"
 #include <WWLib/nstrdup.h>
@@ -1029,7 +1029,7 @@ unsigned TextureClass::Get_Texture_Memory_Usage() const
 	{
 		D3DSURFACE_DESC desc;
 		DX8_ErrorCode(Peek_D3D_Texture()->GetLevelDesc(i,&desc));
-		size+=desc.Size;
+		size+=DX8Wrapper::Get_Surface_Size(desc);
 	}
 	return size;
 }
@@ -1321,7 +1321,7 @@ unsigned ZTextureClass::Get_Texture_Memory_Usage() const
 	{
 		D3DSURFACE_DESC desc;
 		DX8_ErrorCode(Peek_D3D_Texture()->GetLevelDesc(i,&desc));
-		size+=desc.Size;
+		size+=DX8Wrapper::Get_Surface_Size(desc);
 	}
 	return size;
 }

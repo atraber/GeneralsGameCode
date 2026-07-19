@@ -537,13 +537,19 @@ void WbView3d::ReAcquireResources()
 		logFont.lfPitchAndFamily = DEFAULT_PITCH;
 		strcpy(logFont.lfFaceName, "Arial");
 
-		HFONT hFont = CreateFontIndirect(&logFont);
-		if (hFont) {
-			D3DXCreateFont(pDev, hFont, &m3DFont);
-			DeleteObject(hFont);
-		} else {
-			m3DFont = nullptr;
-		}
+		D3DXFONT_DESC d3dxFontDesc;
+		memset(&d3dxFontDesc, 0, sizeof(D3DXFONT_DESC));
+		d3dxFontDesc.Height = logFont.lfHeight;
+		d3dxFontDesc.Width = logFont.lfWidth;
+		d3dxFontDesc.Weight = logFont.lfWeight;
+		d3dxFontDesc.Italic = logFont.lfItalic;
+		d3dxFontDesc.CharSet = logFont.lfCharSet;
+		d3dxFontDesc.OutputPrecision = logFont.lfOutPrecision;
+		d3dxFontDesc.Quality = logFont.lfQuality;
+		d3dxFontDesc.PitchAndFamily = logFont.lfPitchAndFamily;
+		strcpy(d3dxFontDesc.FaceName, logFont.lfFaceName);
+
+		D3DXCreateFontIndirect(pDev, &d3dxFontDesc, &m3DFont);
 
 	} else {
 		m3DFont = nullptr;
@@ -2197,13 +2203,19 @@ void WbView3d::initWW3D()
 			logFont.lfPitchAndFamily = DEFAULT_PITCH;
 			strcpy(logFont.lfFaceName, "Arial");
 
-			HFONT hFont = CreateFontIndirect(&logFont);
-			if (hFont) {
-				D3DXCreateFont(pDev, hFont, &m3DFont);
-				DeleteObject(hFont);
-			} else {
-				m3DFont = nullptr;
-			}
+			D3DXFONT_DESC d3dxFontDesc;
+			memset(&d3dxFontDesc, 0, sizeof(D3DXFONT_DESC));
+			d3dxFontDesc.Height = logFont.lfHeight;
+			d3dxFontDesc.Width = logFont.lfWidth;
+			d3dxFontDesc.Weight = logFont.lfWeight;
+			d3dxFontDesc.Italic = logFont.lfItalic;
+			d3dxFontDesc.CharSet = logFont.lfCharSet;
+			d3dxFontDesc.OutputPrecision = logFont.lfOutPrecision;
+			d3dxFontDesc.Quality = logFont.lfQuality;
+			d3dxFontDesc.PitchAndFamily = logFont.lfPitchAndFamily;
+			strcpy(d3dxFontDesc.FaceName, logFont.lfFaceName);
+
+			D3DXCreateFontIndirect(pDev, &d3dxFontDesc, &m3DFont);
 
 		} else {
 			m3DFont = nullptr;
@@ -2389,7 +2401,7 @@ void WbView3d::drawLabels(HDC hdc)
 							pt.x += 1;
 							rct.top = rct.bottom = pt.y;
 							rct.left = rct.right = pt.x;
-							m3DFont->DrawText(name.str(), name.getLength(), &rct,
+							m3DFont->DrawText(nullptr, name.str(), name.getLength(), &rct,
 								DT_LEFT | DT_NOCLIP | DT_TOP | DT_SINGLELINE, 0xAF000000 + (red<<16) + (green<<8));
 
 						} else if (!m3DFont) {
