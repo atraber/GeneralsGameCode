@@ -38,8 +38,7 @@
 
 #include "WWLib/Vector.h"
 #include "WWLib/wwstring.h"
-#include <d3d8types.h>
-#include <d3d8caps.h>
+#include "d3d9_compat.h"
 
 class ResolutionDescClass
 {

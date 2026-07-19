@@ -43,7 +43,7 @@
 #include "texture.h"
 
 class StringClass;
-struct IDirect3DTexture8;
+#include "d3d9_compat.h"
 class TextureLoadTaskClass;
 class TextureLoadTaskListClass;
 

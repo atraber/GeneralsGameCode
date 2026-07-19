@@ -43,7 +43,7 @@
 
 #include "WWLib/always.h"
 #include "dllist.h"
-#include "d3d8.h"
+#include "d3d9_compat.h"
 #include "WWMath/matrix4.h"
 #include "statistics.h"
 #include "WWLib/wwstring.h"
@@ -286,6 +286,7 @@ public:
 
 	static bool Has_Stencil ();
 	static void Get_Format_Name(unsigned int format, StringClass *tex_format);
+	static unsigned int Get_Surface_Size(const D3DSURFACE_DESC& desc);
 
 	/*
 	** Rendering
@@ -420,12 +421,26 @@ public:
 	static IDirect3DSurface8 * _Get_DX8_Front_Buffer();
 	static SurfaceClass * _Get_DX8_Back_Buffer(unsigned int num=0);
 
-	static void _Copy_DX8_Rects(
+	static HRESULT _Copy_DX8_Rects(
 			IDirect3DSurface8* pSourceSurface,
 			CONST RECT* pSourceRectsArray,
 			UINT cRects,
 			IDirect3DSurface8* pDestinationSurface,
 			CONST POINT* pDestPointsArray
+	);
+
+	static HRESULT D3D9_CreateImageSurface_Helper(
+		IDirect3DDevice9* device,
+		unsigned int width,
+		unsigned int height,
+		D3DFORMAT format,
+		IDirect3DSurface9** ppSurface
+	);
+
+
+	static HRESULT Set_DX8_Render_Target(
+			IDirect3DSurface8* pRenderTarget,
+			IDirect3DSurface8* pNewZStencil
 	);
 
 	static void _Update_Texture(TextureClass *system, TextureClass *video);
@@ -716,7 +731,12 @@ WWINLINE void DX8Wrapper::Set_Vertex_Shader(DWORD vertex_shader)
 #endif
 
 	Vertex_Shader=vertex_shader;
-	DX8CALL(SetVertexShader(Vertex_Shader));
+	if (Vertex_Shader < 0x10000) {
+		DX8CALL(SetFVF(Vertex_Shader));
+		DX8CALL(SetVertexShader(nullptr));
+	} else {
+		DX8CALL(SetVertexShader(reinterpret_cast<IDirect3DVertexShader9*>(Vertex_Shader)));
+	}
 }
 
 WWINLINE void DX8Wrapper::Set_Pixel_Shader(DWORD pixel_shader)
@@ -725,7 +745,7 @@ WWINLINE void DX8Wrapper::Set_Pixel_Shader(DWORD pixel_shader)
 	if (Pixel_Shader==pixel_shader) return;
 
 	Pixel_Shader=pixel_shader;
-	DX8CALL(SetPixelShader(Pixel_Shader));
+	DX8CALL(SetPixelShader(reinterpret_cast<IDirect3DPixelShader9*>(Pixel_Shader)));
 }
 
 WWINLINE void DX8Wrapper::Set_Vertex_Shader_Constant(int reg, const void* data, int count)
@@ -736,18 +756,18 @@ WWINLINE void DX8Wrapper::Set_Vertex_Shader_Constant(int reg, const void* data, 
 	if (memcmp(data, &Vertex_Shader_Constants[reg],memsize)==0) return;
 
 	memcpy(&Vertex_Shader_Constants[reg],data,memsize);
-	DX8CALL(SetVertexShaderConstant(reg,data,count));
+	DX8CALL(SetVertexShaderConstantF(reg,(const float*)data,count));
 }
 
 WWINLINE void DX8Wrapper::Set_Pixel_Shader_Constant(int reg, const void* data, int count)
 {
 	int memsize=sizeof(Vector4)*count;
 
-	// may be incorrect if shaders are created and destroyed dynamically
+	// may be incorrect if shaders are destroyed and created dynamically
 	if (memcmp(data, &Pixel_Shader_Constants[reg],memsize)==0) return;
 
 	memcpy(&Pixel_Shader_Constants[reg],data,memsize);
-	DX8CALL(SetPixelShaderConstant(reg,data,count));
+	DX8CALL(SetPixelShaderConstantF(reg,(const float*)data,count));
 }
 // shader system updates KJM ^
 
@@ -866,7 +886,16 @@ WWINLINE void DX8Wrapper::Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigne
 #endif
 
 	RenderStates[state]=value;
-	DX8CALL(SetRenderState( state, value ));
+	if (state == D3DRS_SOFTWAREVERTEXPROCESSING) {
+		DX8CALL(SetSoftwareVertexProcessing(value));
+	} else if (state == D3DRS_ZBIAS) {
+		float bias = (float)value * -0.000005f;
+		DX8CALL(SetRenderState(D3DRS_DEPTHBIAS, *(DWORD*)&bias));
+	} else if (state == D3DRS_LINEPATTERN || state == D3DRS_ZVISIBLE || state == D3DRS_PATCHSEGMENTS || state == D3DRS_EDGEANTIALIAS || state == D3DRS_PATCHEDGESTYLE) {
+		// Ignore legacy D3D8-only render states that have no direct D3D9 equivalent or are not used/supported in D3D9
+	} else {
+		DX8CALL(SetRenderState( state, value ));
+	}
 	DX8_RECORD_RENDER_STATE_CHANGE();
 }
 
@@ -877,10 +906,29 @@ WWINLINE void DX8Wrapper::Set_DX8_Clip_Plane(DWORD Index, CONST float* pPlane)
 
 WWINLINE void DX8Wrapper::Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURESTAGESTATETYPE state, unsigned value)
 {
-  	if (stage >= MAX_TEXTURE_STAGES)
-  	{	DX8CALL(SetTextureStageState( stage, state, value ));
-  		return;
-  	}
+	if (stage >= MAX_TEXTURE_STAGES)
+	{
+		bool is_sampler_state = false;
+		D3DSAMPLERSTATETYPE sampler_state;
+		switch ((unsigned)state) {
+			case D3DTSS_ADDRESSU: is_sampler_state = true; sampler_state = D3DSAMP_ADDRESSU; break;
+			case D3DTSS_ADDRESSV: is_sampler_state = true; sampler_state = D3DSAMP_ADDRESSV; break;
+			case D3DTSS_ADDRESSW: is_sampler_state = true; sampler_state = D3DSAMP_ADDRESSW; break;
+			case D3DTSS_BORDERCOLOR: is_sampler_state = true; sampler_state = D3DSAMP_BORDERCOLOR; break;
+			case D3DTSS_MAGFILTER: is_sampler_state = true; sampler_state = D3DSAMP_MAGFILTER; break;
+			case D3DTSS_MINFILTER: is_sampler_state = true; sampler_state = D3DSAMP_MINFILTER; break;
+			case D3DTSS_MIPFILTER: is_sampler_state = true; sampler_state = D3DSAMP_MIPFILTER; break;
+			case D3DTSS_MIPMAPLODBIAS: is_sampler_state = true; sampler_state = D3DSAMP_MIPMAPLODBIAS; break;
+			case D3DTSS_MAXMIPLEVEL: is_sampler_state = true; sampler_state = D3DSAMP_MAXMIPLEVEL; break;
+			case D3DTSS_MAXANISOTROPY: is_sampler_state = true; sampler_state = D3DSAMP_MAXANISOTROPY; break;
+		}
+		if (is_sampler_state) {
+			DX8CALL(SetSamplerState(stage, sampler_state, value));
+		} else {
+			DX8CALL(SetTextureStageState(stage, state, value));
+		}
+		return;
+	}
 
 	// Can't monitor state changes because setShader call to GERD may change the states!
 	if (TextureStageStates[stage][(unsigned int)state]==value) return;
@@ -896,7 +944,25 @@ WWINLINE void DX8Wrapper::Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURE
 #endif
 
 	TextureStageStates[stage][(unsigned int)state]=value;
-	DX8CALL(SetTextureStageState( stage, state, value ));
+	bool is_sampler_state = false;
+	D3DSAMPLERSTATETYPE sampler_state;
+	switch ((unsigned)state) {
+		case D3DTSS_ADDRESSU: is_sampler_state = true; sampler_state = D3DSAMP_ADDRESSU; break;
+		case D3DTSS_ADDRESSV: is_sampler_state = true; sampler_state = D3DSAMP_ADDRESSV; break;
+		case D3DTSS_ADDRESSW: is_sampler_state = true; sampler_state = D3DSAMP_ADDRESSW; break;
+		case D3DTSS_BORDERCOLOR: is_sampler_state = true; sampler_state = D3DSAMP_BORDERCOLOR; break;
+		case D3DTSS_MAGFILTER: is_sampler_state = true; sampler_state = D3DSAMP_MAGFILTER; break;
+		case D3DTSS_MINFILTER: is_sampler_state = true; sampler_state = D3DSAMP_MINFILTER; break;
+		case D3DTSS_MIPFILTER: is_sampler_state = true; sampler_state = D3DSAMP_MIPFILTER; break;
+		case D3DTSS_MIPMAPLODBIAS: is_sampler_state = true; sampler_state = D3DSAMP_MIPMAPLODBIAS; break;
+		case D3DTSS_MAXMIPLEVEL: is_sampler_state = true; sampler_state = D3DSAMP_MAXMIPLEVEL; break;
+		case D3DTSS_MAXANISOTROPY: is_sampler_state = true; sampler_state = D3DSAMP_MAXANISOTROPY; break;
+	}
+	if (is_sampler_state) {
+		DX8CALL(SetSamplerState(stage, sampler_state, value));
+	} else {
+		DX8CALL(SetTextureStageState(stage, state, value));
+	}
 	DX8_RECORD_TEXTURE_STAGE_STATE_CHANGE();
 }
 
@@ -918,7 +984,7 @@ WWINLINE void DX8Wrapper::Set_DX8_Texture(unsigned int stage, IDirect3DBaseTextu
 	DX8_RECORD_TEXTURE_CHANGE();
 }
 
-WWINLINE void DX8Wrapper::_Copy_DX8_Rects(
+WWINLINE HRESULT DX8Wrapper::_Copy_DX8_Rects(
   IDirect3DSurface8* pSourceSurface,
   CONST RECT* pSourceRectsArray,
   UINT cRects,
@@ -926,12 +992,54 @@ WWINLINE void DX8Wrapper::_Copy_DX8_Rects(
   CONST POINT* pDestPointsArray
 )
 {
-	DX8CALL(CopyRects(
-  pSourceSurface,
-  pSourceRectsArray,
-  cRects,
-  pDestinationSurface,
-  pDestPointsArray));
+	IDirect3DDevice9* device = DX8Wrapper::_Get_D3D_Device8();
+	if (!device) return E_FAIL;
+	HRESULT final_hr = S_OK;
+	if (cRects == 0 || !pSourceRectsArray) {
+		HRESULT hr = device->UpdateSurface(pSourceSurface, nullptr, pDestinationSurface, nullptr);
+		if (FAILED(hr)) {
+			hr = device->StretchRect(pSourceSurface, nullptr, pDestinationSurface, nullptr, D3DTEXF_NONE);
+		}
+		if (FAILED(hr)) {
+			hr = D3DXLoadSurfaceFromSurface(pDestinationSurface, nullptr, nullptr, pSourceSurface, nullptr, nullptr, D3DX_FILTER_NONE, 0);
+		}
+		final_hr = hr;
+	} else {
+		for (UINT i = 0; i < cRects; ++i) {
+			const RECT* srcRect = &pSourceRectsArray[i];
+			const POINT* destPt = pDestPointsArray ? &pDestPointsArray[i] : nullptr;
+			HRESULT hr = device->UpdateSurface(pSourceSurface, srcRect, pDestinationSurface, destPt);
+			if (FAILED(hr)) {
+				RECT destRect;
+				if (destPt) {
+					destRect.left = destPt->x;
+					destRect.top = destPt->y;
+					destRect.right = destPt->x + (srcRect->right - srcRect->left);
+					destRect.bottom = destPt->y + (srcRect->bottom - srcRect->top);
+				}
+				hr = device->StretchRect(pSourceSurface, srcRect, pDestinationSurface, destPt ? &destRect : nullptr, D3DTEXF_NONE);
+				if (FAILED(hr)) {
+					hr = D3DXLoadSurfaceFromSurface(pDestinationSurface, nullptr, destPt ? &destRect : nullptr, pSourceSurface, nullptr, srcRect, D3DX_FILTER_NONE, 0);
+				}
+			}
+			if (FAILED(hr)) {
+				final_hr = hr;
+			}
+		}
+	}
+	return final_hr;
+}
+
+WWINLINE HRESULT DX8Wrapper::Set_DX8_Render_Target(
+  IDirect3DSurface8* pRenderTarget,
+  IDirect3DSurface8* pNewZStencil
+)
+{
+	IDirect3DDevice9* device = DX8Wrapper::_Get_D3D_Device8();
+	if (!device) return E_FAIL;
+	HRESULT hr = device->SetRenderTarget(0, pRenderTarget);
+	if (FAILED(hr)) return hr;
+	return device->SetDepthStencilSurface(pNewZStencil);
 }
 
 WWINLINE Vector4 DX8Wrapper::Convert_Color(unsigned color)
@@ -1421,3 +1529,38 @@ WWINLINE RenderStateStruct& RenderStateStruct::operator= (const RenderStateStruc
 
 	return *this;
 }
+
+WWINLINE unsigned int DX8Wrapper::Get_Surface_Size(const D3DSURFACE_DESC& desc)
+{
+	unsigned int width = desc.Width;
+	unsigned int height = desc.Height;
+	unsigned int aligned_width = (width + 3) & ~3;
+	unsigned int aligned_height = (height + 3) & ~3;
+	switch (desc.Format) {
+		case D3DFMT_DXT1:
+			return (aligned_width * aligned_height) / 2;
+		case D3DFMT_DXT2:
+		case D3DFMT_DXT3:
+		case D3DFMT_DXT4:
+		case D3DFMT_DXT5:
+			return aligned_width * aligned_height;
+		case D3DFMT_A8R8G8B8:
+		case D3DFMT_X8R8G8B8:
+			return width * height * 4;
+		case D3DFMT_R8G8B8:
+			return width * height * 3;
+		case D3DFMT_R5G6B5:
+		case D3DFMT_X1R5G5B5:
+		case D3DFMT_A1R5G5B5:
+		case D3DFMT_A4R4G4B4:
+			return width * height * 2;
+		case D3DFMT_A8:
+		case D3DFMT_L8:
+			return width * height;
+		default:
+			return width * height * 4;
+	}
+}
+
+#define SetVertexShader(handle) TestCooperativeLevel(), DX8Wrapper::Set_Vertex_Shader(handle)
+#define SetPixelShader(handle) TestCooperativeLevel(), DX8Wrapper::Set_Pixel_Shader(handle)
