@@ -67,6 +67,21 @@ Bool OptionPreferences::loadFromIniFile()
 	return load("Options.ini");
 }
 
+// Selects which draw categories the programmable (shader) path claims, as a bit mask:
+//   1 = multi-texture detail passes, 2 = camera-space texgen, 4 = sorted buffers,
+//   8 = everything (drop all restrictions), 16 = nothing (fixed function only).
+// Returns -1 when the key is absent, leaving the renderer to apply its own default;
+// setting it explicitly (0 selects neither category) exists so the alternatives can be
+// compared in game without a rebuild.
+Int OptionPreferences::getShaderRouting() const
+{
+	OptionPreferences::const_iterator it = find("ShaderRouting");
+	if (it == end())
+		return -1;
+
+	return atoi(it->second.str());
+}
+
 WW3D::MultiSampleModeEnum OptionPreferences::getAntiAliasing() const
 {
 	OptionPreferences::const_iterator it = find("AntiAliasing");

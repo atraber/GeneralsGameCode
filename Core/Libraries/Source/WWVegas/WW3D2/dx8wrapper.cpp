@@ -175,6 +175,8 @@ unsigned long DX8Wrapper::FrameCount = 0;
 // Programmable (D3D9) unit render path
 DWORD							DX8Wrapper::m_dwUnitVS = 0;
 DWORD							DX8Wrapper::m_dwUnitPS = 0;
+DWORD							DX8Wrapper::m_dwUnitDetailPS = 0;
+DWORD							DX8Wrapper::m_shaderRoutingMask = DX8Wrapper::SHADER_ROUTE_BASELINE;
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
 DWORD							DX8Wrapper::m_dwTerrainPS = 0;
 bool							DX8Wrapper::m_bUnitShaderBound = false;
@@ -2308,6 +2310,55 @@ void DX8Wrapper::Draw_Strip(
 }
 
 // ----------------------------------------------------------------------------
+// Map a fixed-function texture-stage argument (D3DTSS_COLORARGn / ALPHAARGn) to the
+// source selector the unit detail pixel shader uses: (texture, current, diffuse).
+// Returns false for sources the shader does not carry, and for the COMPLEMENT /
+// ALPHAREPLICATE modifiers -- those draws stay on the fixed-function path rather than
+// being reproduced approximately.
+// ----------------------------------------------------------------------------
+static bool Map_Texture_Stage_Arg(DWORD arg, D3DXVECTOR4& selector)
+{
+	if ((arg & ~(DWORD)D3DTA_SELECTMASK) != 0) {
+		return false;   // COMPLEMENT / ALPHAREPLICATE not reproduced
+	}
+	switch (arg & D3DTA_SELECTMASK) {
+		case D3DTA_TEXTURE: selector = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f); return true;
+		case D3DTA_CURRENT: selector = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f); return true;
+		case D3DTA_DIFFUSE: selector = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f); return true;
+		default:            return false;
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Classify a texture stage's coordinate source for the unit vertex shader. Returns
+// false for generation modes the shader does not implement, so those draws stay on the
+// fixed-function path. The mode values match Select_TexGen_Source in unit_vs.hlsl.
+// ----------------------------------------------------------------------------
+static bool Map_Texture_Coord_Source(DWORD coordIndex, DWORD transformFlags,
+									 float& mode, bool& usesMatrix)
+{
+	switch (coordIndex & 0xFFFF0000u) {
+		case D3DTSS_TCI_PASSTHRU:
+			// Only the mesh's first coordinate set is carried by the shader.
+			if ((coordIndex & 0x0000FFFFu) != 0) return false;
+			mode = 0.0f;
+			break;
+		case D3DTSS_TCI_CAMERASPACEPOSITION:         mode = 1.0f; break;
+		case D3DTSS_TCI_CAMERASPACENORMAL:           mode = 2.0f; break;
+		case D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR: mode = 3.0f; break;
+		default: return false;
+	}
+
+	// Only the plain two-component transform is reproduced; projected and three
+	// component transforms would need the divide and a third output.
+	const DWORD count = transformFlags & ~(DWORD)D3DTTFF_PROJECTED;
+	if (transformFlags & D3DTTFF_PROJECTED) return false;
+	if (count == D3DTTFF_DISABLE)      { usesMatrix = false; return true; }
+	if (count == D3DTTFF_COUNT2)       { usesMatrix = true;  return true; }
+	return false;
+}
+
+// ----------------------------------------------------------------------------
 //
 //
 //
@@ -2491,6 +2542,27 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			texCoordGen == D3DTSS_TCI_CAMERASPACEPOSITION ||
 			texCoordGen == D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR;
 
+		// Texture coordinate generation for both stages. The vertex shader can produce
+		// camera-space coordinates and apply the stage's texture matrix, so a draw that
+		// uses them no longer has to stay on the fixed-function pipeline -- which matters
+		// because these are exactly the passes (the shroud projection, the projection on
+		// foliage's second stage) that were splitting a mesh across both pipelines.
+		const bool texgenRoutingOn =
+			(m_shaderRoutingMask & (SHADER_ROUTE_TEXGEN | SHADER_ROUTE_EVERYTHING)) != 0;
+		float texGenMode0 = 0.0f, texGenMode1 = 0.0f;
+		bool texGenMatrix0 = false, texGenMatrix1 = false;
+		// Stage 1's coordinate state is only meaningful when stage 1 has a texture; for a
+		// single-texture draw it holds whatever a previous draw left behind, so requiring
+		// it to map would wrongly reject the draw.
+		const bool texGenSupported =
+			Map_Texture_Coord_Source(TextureStageStates[0][D3DTSS_TEXCOORDINDEX],
+									 TextureStageStates[0][D3DTSS_TEXTURETRANSFORMFLAGS],
+									 texGenMode0, texGenMatrix0) &&
+			(render_state.Textures[1] == nullptr ||
+			 Map_Texture_Coord_Source(TextureStageStates[1][D3DTSS_TEXCOORDINDEX],
+									  TextureStageStates[1][D3DTSS_TEXTURETRANSFORMFLAGS],
+									  texGenMode1, texGenMatrix1));
+
 		const bool useTerrainShader =
 			m_bTerrainShaderPass && m_dwTerrainVS != 0 && m_dwTerrainPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
@@ -2543,26 +2615,160 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			((s0ColorOp == D3DTOP_SELECTARG2 && s0ColorArg2 == D3DTA_DIFFUSE) ||
 			 s0ColorOp == D3DTOP_DISABLE);
 
-		// Additive geometry (destination blend ONE) is transparent effect work -- muzzle
-		// flashes, beam weapons, mine markers -- that sits on or just in front of another
-		// surface, tests depth (LESSEQUAL) and does not write it. That makes it the
-		// category most exposed to the split between this path and the fixed-function one:
-		// the effect gets shader-computed depth while the surface behind it is still drawn
-		// fixed-function, the two do not agree to the last bit, and the effect loses the
-		// depth test and never produces a pixel. Symptom is a whole class of effects simply
-		// missing, with nothing wrong in the shading at all.
-		// Keeping it fixed-function costs nothing: it writes no depth, so it cannot z-fight
-		// anything drawn here, which is the split this routing exists to avoid.
+		// Detail (stage 1) combine. A multi-texture pass can be drawn by the shader when
+		// its stage 1 samples with texture coordinate set 0 (the only set the shader
+		// carries today) and uses a combine the pixel shader reproduces. Claiming these
+		// keeps a mesh whose passes are partly multi-textured on a single pipeline --
+		// splitting it across the shader and the fixed-function path gives the passes
+		// slightly different depth and they z-fight.
+		const DWORD s1ColorOp    = TextureStageStates[1][D3DTSS_COLOROP];
+		const DWORD s1AlphaOp    = TextureStageStates[1][D3DTSS_ALPHAOP];
+		// D3DTSS_TEXCOORDINDEX packs two things: the low 16 bits select which coordinate
+		// set of the vertex to use, the high 16 bits select camera-space generation
+		// (D3DTSS_TCI_*). Both have to be checked. Reading only the low half makes a
+		// generated-coordinate stage look like plain coordinate set 0, and the shader then
+		// samples the detail texture with the mesh UVs instead of the generated camera
+		// space coordinates -- which is what rendered foliage black, whose stage 1 is a
+		// CAMERASPACEPOSITION projection.
+		const DWORD s1CoordSet   = TextureStageStates[1][D3DTSS_TEXCOORDINDEX] & 0x0000FFFFu;
+		const DWORD s1CoordGen   = TextureStageStates[1][D3DTSS_TEXCOORDINDEX] & 0xFFFF0000u;
+		const DWORD s1XformFlags = TextureStageStates[1][D3DTSS_TEXTURETRANSFORMFLAGS];
+
+		// Resolve the stage 1 combine into shader constants: a source selector per
+		// argument plus a one-hot operation weight. The arguments matter -- a MODULATE of
+		// TEXTURE by DIFFUSE is not the same as CURRENT times the detail texture, and
+		// assuming the latter double-darkens the pass (this rendered foliage with black
+		// splotches). Any op or argument the shader cannot express keeps the draw on the
+		// fixed-function path.
+		D3DXVECTOR4 s1CArg1(1.0f, 0.0f, 0.0f, 0.0f), s1CArg2(0.0f, 1.0f, 0.0f, 0.0f);
+		D3DXVECTOR4 s1AArg1(1.0f, 0.0f, 0.0f, 0.0f), s1AArg2(0.0f, 1.0f, 0.0f, 0.0f);
+		D3DXVECTOR4 s1COp(0.0f, 0.0f, 0.0f, 1.0f);   // (modulate, add, select1, select2)
+		D3DXVECTOR4 s1AOp(0.0f, 0.0f, 0.0f, 1.0f);
+		float s1CScale = 1.0f;
+		bool detailCombineSupported = false;
+
+		// The shader carries only the mesh's first coordinate set and applies no texture
+		// matrix, so stage 1 must want exactly that: coordinate set 0, passed through
+		// (no camera-space generation), untransformed. Generated coordinates belong to
+		// the texgen work, not here.
+		const bool s1CoordsCarried =
+			(s1CoordSet == 0 && s1CoordGen == D3DTSS_TCI_PASSTHRU && s1XformFlags == D3DTTFF_DISABLE) ||
+			(texgenRoutingOn && texGenSupported);
+
+		if (!singleTexture &&
+			s1CoordsCarried &&
+			m_dwUnitDetailPS != 0 &&
+			(m_shaderRoutingMask & (SHADER_ROUTE_DETAIL | SHADER_ROUTE_EVERYTHING)) != 0) {
+			const DWORD cArg1 = TextureStageStates[1][D3DTSS_COLORARG1];
+			const DWORD cArg2 = TextureStageStates[1][D3DTSS_COLORARG2];
+			const DWORD aArg1 = TextureStageStates[1][D3DTSS_ALPHAARG1];
+			const DWORD aArg2 = TextureStageStates[1][D3DTSS_ALPHAARG2];
+			bool ok = true;
+
+			switch (s1ColorOp) {
+				case D3DTOP_DISABLE:      // stage off: result is the stage 0 output
+					s1CArg2 = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
+					s1COp   = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+					break;
+				case D3DTOP_SELECTARG1:
+					ok = Map_Texture_Stage_Arg(cArg1, s1CArg1);
+					s1COp = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);
+					break;
+				case D3DTOP_SELECTARG2:
+					ok = Map_Texture_Stage_Arg(cArg2, s1CArg2);
+					s1COp = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+					break;
+				case D3DTOP_MODULATE4X:
+				case D3DTOP_MODULATE2X:
+				case D3DTOP_MODULATE:
+					s1CScale = (s1ColorOp == D3DTOP_MODULATE4X) ? 4.0f
+							 : (s1ColorOp == D3DTOP_MODULATE2X) ? 2.0f : 1.0f;
+					ok = Map_Texture_Stage_Arg(cArg1, s1CArg1) &&
+						 Map_Texture_Stage_Arg(cArg2, s1CArg2);
+					s1COp = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f);
+					break;
+				case D3DTOP_ADD:
+					ok = Map_Texture_Stage_Arg(cArg1, s1CArg1) &&
+						 Map_Texture_Stage_Arg(cArg2, s1CArg2);
+					s1COp = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
+					break;
+				default:
+					ok = false;
+					break;
+			}
+
+			if (ok) {
+				switch (s1AlphaOp) {
+					case D3DTOP_DISABLE:
+						s1AArg2 = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
+						s1AOp   = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+						break;
+					case D3DTOP_SELECTARG1:
+						ok = Map_Texture_Stage_Arg(aArg1, s1AArg1);
+						s1AOp = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);
+						break;
+					case D3DTOP_SELECTARG2:
+						ok = Map_Texture_Stage_Arg(aArg2, s1AArg2);
+						s1AOp = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+						break;
+					case D3DTOP_MODULATE:
+					case D3DTOP_MODULATE2X:
+					case D3DTOP_MODULATE4X:
+						ok = Map_Texture_Stage_Arg(aArg1, s1AArg1) &&
+							 Map_Texture_Stage_Arg(aArg2, s1AArg2);
+						s1AOp = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f);
+						break;
+					case D3DTOP_ADD:
+						ok = Map_Texture_Stage_Arg(aArg1, s1AArg1) &&
+							 Map_Texture_Stage_Arg(aArg2, s1AArg2);
+						s1AOp = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
+						break;
+					default:
+						ok = false;
+						break;
+				}
+			}
+
+			detailCombineSupported = ok;
+		}
+
+		// Some geometry is drawn with a programmable vertex shader the engine supplies
+		// itself -- tree billboards bind Trees.vso and upload its constants straight to
+		// the device. Those draws must keep the shader the engine chose; binding the unit
+		// shader over the top renders them with the wrong transform and inputs (this is
+		// what turned foliage black once multi-texture passes became routable, since the
+		// multi-texture rule had been incidentally keeping tree draws away from us).
+		// A vertex shader handle is distinguishable from an FVF code by magnitude.
+		const bool foreignVertexShader =
+			Vertex_Shader >= 0x10000 &&
+			Vertex_Shader != m_dwUnitVS &&
+			Vertex_Shader != m_dwTerrainVS;
+
+		// Routing categories are selectable at runtime (options.ini ShaderRouting) so the
+		// pipeline split can be compared in game without a rebuild: EVERYTHING drops the
+		// per-category restrictions (the configuration that demonstrably removes the
+		// z-fighting, but renders detail/texgen passes wrong), OFF keeps every mesh on the
+		// fixed-function pipeline, and the individual bits opt one category in at a time.
+		const bool routeEverything = (m_shaderRoutingMask & SHADER_ROUTE_EVERYTHING) != 0;
+		const bool routingDisabled = (m_shaderRoutingMask & SHADER_ROUTE_OFF) != 0;
+
+		// Additive effect geometry is kept on the fixed-function pipeline (see below);
+		// ADDITIVE routes it here anyway so the two can be compared.
+		const bool routeAdditive = (m_shaderRoutingMask & SHADER_ROUTE_ADDITIVE) != 0;
+
 		const bool useUnitShader =
-			!additiveBlend &&
+			!routingDisabled &&
+			(!additiveBlend || routeAdditive) &&
 			!m_bTerrainShaderPass &&
 			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
 			(curFVF & D3DFVF_XYZ) && (curFVF & D3DFVF_NORMAL) &&
-			(render_state.Textures[0] != nullptr || untexturedDiffuseOnly) &&
-			reproducibleBlend &&
-			singleTexture &&
-			!texgenActive;
+			!foreignVertexShader &&
+			(routeEverything ||
+			 ((render_state.Textures[0] != nullptr || untexturedDiffuseOnly) &&
+			  reproducibleBlend &&
+			  (singleTexture || detailCombineSupported) &&
+			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
 
 		if (useTerrainShader) {
 			if (!m_bUnitShaderBound) {
@@ -2622,8 +2828,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				s_dwOriginalPS = Pixel_Shader;
 				m_bUnitShaderBound = true;
 			}
+			// The detail variant is bound only when a second texture is really present:
+			// the single-texture shader must never sample a stage with no texture bound,
+			// which is undefined and can produce values that survive a zero weight (a NaN
+			// times zero is still NaN) and render the pixel black.
+			const bool useDetailShader = !singleTexture && detailCombineSupported;
 			Set_Vertex_Shader(m_dwUnitVS);
-			Set_Pixel_Shader(m_dwUnitPS);
+			Set_Pixel_Shader(useDetailShader ? m_dwUnitDetailPS : m_dwUnitPS);
+
+
 
 			// Matrices: row_major HLSL float4x4 with mul(v, M) takes the D3D
 			// row-major matrices uploaded as-is (no transpose).
@@ -2702,6 +2915,22 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			D3DXVECTOR4 lightingParams(lightMode, 0.0f, 0.0f, 0.0f);
 			Set_Vertex_Shader_Constant(17, &lightingParams, 1);
 
+			// Stage 1 (detail) combine, resolved above into per-argument source selectors
+			// (texture / current / diffuse) plus a one-hot operation weight, so the shader
+			// evaluates the same expression the fixed-function stage would. The defaults
+			// make stage 1 a no-op for single-texture passes.
+			// Only registers 0..7 exist in the wrapper's pixel constant cache
+			// (MAX_PIXEL_SHADER_CONSTANTS), so the modulate scale rides in the unused w
+			// component of the first selector rather than taking a register of its own --
+			// the selectors themselves only use xyz.
+			s1CArg1.w = s1CScale;
+			Set_Pixel_Shader_Constant(2, &s1CArg1, 1);
+			Set_Pixel_Shader_Constant(3, &s1CArg2, 1);
+			Set_Pixel_Shader_Constant(4, &s1COp, 1);
+			Set_Pixel_Shader_Constant(5, &s1AArg1, 1);
+			Set_Pixel_Shader_Constant(6, &s1AArg2, 1);
+			Set_Pixel_Shader_Constant(7, &s1AOp, 1);
+
 			// Material ambient/diffuse/emissive. The vertex material sources ambient,
 			// diffuse and emissive from the material (VertexMaterialClass defaults them
 			// to D3DMCS_MATERIAL), so the shader reads all three from the material to
@@ -2773,13 +3002,40 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				(!alphaUsesDiffuse || diffuseAlphaFromMaterial) ? 1.0f : 0.0f,
 				alphaUsesTexture ? 1.0f : 0.0f);
 			Set_Pixel_Shader_Constant(1, &texCtl, 1);
+
+			// Texture coordinate generation. Modes and matrices are only meaningful when
+			// this draw was claimed with texgen enabled; otherwise both stages pass the
+			// mesh coordinates through, which is what the shader defaults to.
+			const bool applyTexGen = texgenRoutingOn && texGenSupported;
+			D3DXVECTOR4 texGenCtl(
+				applyTexGen ? texGenMode0 : 0.0f,
+				applyTexGen ? texGenMode1 : 0.0f,
+				(applyTexGen && texGenMatrix0) ? 1.0f : 0.0f,
+				(applyTexGen && texGenMatrix1) ? 1.0f : 0.0f);
+			Set_Vertex_Shader_Constant(21, &texGenCtl, 1);
+
+			if (applyTexGen && texGenMatrix0) {
+				D3DXMATRIX texMat0;
+				_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 0),
+								   *reinterpret_cast<D3DMATRIX*>(&texMat0));
+				Set_Vertex_Shader_Constant(24, &texMat0, 4);
+			}
+			if (applyTexGen && texGenMatrix1) {
+				D3DXMATRIX texMat1;
+				_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 1),
+								   *reinterpret_cast<D3DMATRIX*>(&texMat1));
+				Set_Vertex_Shader_Constant(28, &texMat1, 4);
+			}
 		}
 		else if (m_bUnitShaderBound) {
 			// Non-mesh draw: restore the fixed-function pipeline. For DX8 buffers
 			// the vertex-buffer block already re-applied the FVF; restore the pixel
 			// shader, and reset the vertex shader when this draw carries an FVF.
+			// A draw that brought its own vertex shader keeps it -- only the pixel
+			// shader goes back, since that geometry expects the fixed-function pixel
+			// pipeline it would have had before we bound ours.
 			Set_Pixel_Shader(s_dwOriginalPS);
-			if (curFVF != 0) {
+			if (curFVF != 0 && !foreignVertexShader) {
 				Set_Vertex_Shader(curFVF);
 			}
 			m_bUnitShaderBound = false;
