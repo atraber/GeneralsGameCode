@@ -723,6 +723,25 @@ public:
 	// as the vertex declaration, so no explicit declaration is needed.
 	static DWORD						m_dwUnitVS;
 	static DWORD						m_dwUnitPS;
+	static DWORD						m_dwUnitDetailPS;   // base + detail (stage 1) variant
+
+	// Which draw categories the programmable path is allowed to claim, selectable from
+	// options.ini ("ShaderRouting") so the alternatives can be compared in game without a
+	// rebuild. DETAIL|TEXGEN is the default: between them they keep every pass of a mesh
+	// on one pipeline, which is what stops coincident passes of a mesh from being drawn
+	// with differing depth and z-fighting. Zero selects neither, i.e. the routing before
+	// those categories existed.
+	enum ShaderRoutingFlags
+	{
+		SHADER_ROUTE_BASELINE      = 0,
+		SHADER_ROUTE_DETAIL        = 1 << 0,   // multi-texture (stage 1) detail passes
+		SHADER_ROUTE_TEXGEN        = 1 << 1,   // camera-space texture coordinate generation
+		SHADER_ROUTE_SORTING       = 1 << 2,   // sorted (no-FVF) buffers -- not implemented
+		SHADER_ROUTE_EVERYTHING    = 1 << 3,   // drop every restriction (diagnostic)
+		SHADER_ROUTE_OFF           = 1 << 4,   // no mesh routing at all (fixed function)
+		SHADER_ROUTE_ADDITIVE      = 1 << 6,   // additive effect passes too (diagnostic; see below)
+	};
+	static DWORD						m_shaderRoutingMask;
 	// Programmable terrain path. HeightMap flags a terrain tile pass and the
 	// render code binds these instead of the mesh shader for those draws.
 	static DWORD						m_dwTerrainVS;

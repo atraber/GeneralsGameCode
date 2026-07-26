@@ -69,6 +69,7 @@
 #include "GameClient/Water.h"
 #include "GameLogic/GameLogic.h"
 #include "Common/GlobalData.h"
+#include "Common/OptionPreferences.h"
 #include "Common/GameLOD.h"
 #include "d3dx8tex.h"
 #include "WW3D2/dx8caps.h"
@@ -2684,6 +2685,19 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::_Get_D3D_Device8() == nullptr)
 		return;
 
+	// options.ini "ShaderRouting" selects which draw categories the programmable path
+	// claims (see DX8Wrapper::ShaderRoutingFlags). Read here rather than compiled in so
+	// the routing can be changed and compared in game without a rebuild. Unset, it is
+	// the detail and texgen categories: those are what keep every pass of a mesh on one
+	// pipeline, so that coincident passes cannot end up with differing depth and z-fight.
+	{
+		OptionPreferences shaderRoutingPrefs;
+		const Int configured = shaderRoutingPrefs.getShaderRouting();
+		DX8Wrapper::m_shaderRoutingMask = (configured < 0)
+			? (DWORD)(DX8Wrapper::SHADER_ROUTE_DETAIL | DX8Wrapper::SHADER_ROUTE_TEXGEN)
+			: (DWORD)configured;
+	}
+
 	// No explicit vertex declaration: the mesh FVF (set on the device before the
 	// draw) is used as the declaration, so a single shader serves every format.
 	if (DX8Wrapper::m_dwUnitVS == 0) {
@@ -2691,6 +2705,9 @@ void W3DShaderManager::initUnitShaders()
 	}
 	if (DX8Wrapper::m_dwUnitPS == 0) {
 		LoadAndCreateD3DShader("shaders\\unit_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUnitPS);
+	}
+	if (DX8Wrapper::m_dwUnitDetailPS == 0) {
+		LoadAndCreateD3DShader("shaders\\unit_detail_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUnitDetailPS);
 	}
 	if (DX8Wrapper::m_dwTerrainVS == 0) {
 		LoadAndCreateD3DShader("shaders\\terrain_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwTerrainVS);
@@ -2712,6 +2729,10 @@ void W3DShaderManager::shutdownUnitShaders()
 	if (DX8Wrapper::m_dwUnitPS != 0) {
 		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwUnitPS)->Release();
 		DX8Wrapper::m_dwUnitPS = 0;
+	}
+	if (DX8Wrapper::m_dwUnitDetailPS != 0) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwUnitDetailPS)->Release();
+		DX8Wrapper::m_dwUnitDetailPS = 0;
 	}
 	if (DX8Wrapper::m_dwTerrainVS != 0) {
 		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwTerrainVS)->Release();
