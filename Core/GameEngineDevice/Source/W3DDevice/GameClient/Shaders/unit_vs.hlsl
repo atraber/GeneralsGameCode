@@ -24,6 +24,17 @@ float4 MatAmbient    : register(c18);  // material ambient colour (house-colour 
 float4 MatEmissive   : register(c19);  // material emissive colour
 float4 MatDiffuse    : register(c20);  // material diffuse colour (house-colour tint)
 
+// Texture coordinate generation, mirroring D3DTSS_TEXCOORDINDEX / the texture matrix.
+//   TexGenCtl.x = stage 0 source, .y = stage 1 source
+//     0 = pass the mesh coordinates through
+//     1 = camera space position   (D3DTSS_TCI_CAMERASPACEPOSITION)
+//     2 = camera space normal     (D3DTSS_TCI_CAMERASPACENORMAL)
+//     3 = reflection vector       (D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR)
+//   TexGenCtl.z / .w = 1 when that stage applies its texture matrix.
+float4 TexGenCtl : register(c21);
+row_major float4x4 TexMatrix0 : register(c24);
+row_major float4x4 TexMatrix1 : register(c28);
+
 struct VS_INPUT
 {
     float3 position : POSITION;
@@ -34,14 +45,16 @@ struct VS_INPUT
 
 struct VS_OUTPUT
 {
-    float4 position : POSITION;
-    float4 color    : COLOR0;
-    float2 texcoord : TEXCOORD0;
+    float4 position  : POSITION;
+    float4 color     : COLOR0;
+    float2 texcoord  : TEXCOORD0;  // stage 0 coordinates
+    float2 texcoord1 : TEXCOORD1;  // stage 1 coordinates
 };
 
 // Normalizing a zero-length vector yields NaN, and NaN survives everything downstream --
-// including multiplication by a zero weight -- so a single one poisons the lit colour and
-// the pixel ends up black (or, on an additive pass, invisible).
+// including multiplication by a zero weight, which is how the weighted selection below
+// would carry one -- so a single NaN poisons the lit colour and the generated texture
+// coordinates alike, and the pixel ends up black (or, on an additive pass, invisible).
 //
 // Effect meshes carry zero normals: the fixed-function pipeline never needed them, since
 // it takes N.L with the raw normal, gets no diffuse contribution, and falls back to the
@@ -50,6 +63,21 @@ struct VS_OUTPUT
 float3 Safe_Normalize(float3 v)
 {
     return v * rsqrt(max(dot(v, v), 1e-12));
+}
+
+// Selects one of the coordinate sources without branching: the weights are 1 only for
+// the matching mode, so this compiles to a handful of arithmetic instructions.
+float4 Select_TexGen_Source(float mode, float2 meshUV, float3 viewPos,
+                            float3 viewNormal, float3 reflection)
+{
+    float w0 = saturate(1.0 - abs(mode - 0.0));
+    float w1 = saturate(1.0 - abs(mode - 1.0));
+    float w2 = saturate(1.0 - abs(mode - 2.0));
+    float w3 = saturate(1.0 - abs(mode - 3.0));
+    return w0 * float4(meshUV, 0.0, 1.0)
+         + w1 * float4(viewPos, 1.0)
+         + w2 * float4(viewNormal, 1.0)
+         + w3 * float4(reflection, 1.0);
 }
 
 VS_OUTPUT main(VS_INPUT input)
@@ -105,6 +133,18 @@ VS_OUTPUT main(VS_INPUT input)
         output.color = input.color;
     }
 
-    output.texcoord = input.texcoord;
+    // Texture coordinates. Camera-space generation needs the vertex in view space and,
+    // for the reflection vector, the view-space normal -- the same WorldView matrix the
+    // lighting uses. Each stage then optionally runs through its texture matrix, matching
+    // the fixed-function D3DTTFF_COUNT2 transform.
+    float3 viewPos    = mul(float4(input.position, 1.0), WorldView).xyz;
+    float3 viewNormal = Safe_Normalize(mul(input.normal, (float3x3)WorldView));
+    float3 reflection = reflect(Safe_Normalize(viewPos), viewNormal);
+
+    float4 gen0 = Select_TexGen_Source(TexGenCtl.x, input.texcoord, viewPos, viewNormal, reflection);
+    float4 gen1 = Select_TexGen_Source(TexGenCtl.y, input.texcoord, viewPos, viewNormal, reflection);
+
+    output.texcoord  = lerp(gen0.xy, mul(gen0, TexMatrix0).xy, TexGenCtl.z);
+    output.texcoord1 = lerp(gen1.xy, mul(gen1, TexMatrix1).xy, TexGenCtl.w);
     return output;
 }

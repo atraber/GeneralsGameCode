@@ -1,8 +1,9 @@
-// Unit pixel shader.
+// Unit pixel shader (single texture).
 //
 // Samples the base texture and modulates it by the per-vertex lit colour from
 // the vertex shader. This reproduces the fixed-function "texture * diffuse"
-// output; richer (PBR) shading is layered on in later milestones.
+// output. Multi-texture passes use unit_detail_ps instead, so this shader never
+// samples a stage it has no texture for.
 
 sampler BaseSampler : register(s0);
 
@@ -18,9 +19,10 @@ float4 TexCtl : register(c1);
 
 struct PS_INPUT
 {
-    float4 position : POSITION;
-    float4 color    : COLOR0;
-    float2 texcoord : TEXCOORD0;
+    float4 position  : POSITION;
+    float4 color     : COLOR0;
+    float2 texcoord  : TEXCOORD0;
+    float2 texcoord1 : TEXCOORD1;   // unused here; keeps the signature matching the VS
 };
 
 float4 main(PS_INPUT input) : COLOR

@@ -45,6 +45,7 @@ set(RTS_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders" CACHE INTERNAL "Compiled sh
 set(_rts_shaders
     unit_vs
     unit_ps
+    unit_detail_ps
     terrain_vs
     terrain_ps
 )
