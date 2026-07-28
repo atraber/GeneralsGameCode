@@ -591,6 +591,22 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 	WWDEBUG_SAY(("Resetting device."));
 	DX8_THREAD_ASSERT();
 	if ((IsInitted) && (D3DDevice != nullptr)) {
+		// A fullscreen-exclusive Reset needs the window to be the active foreground
+		// window; calling it while the app is backgrounded or mid focus-transition
+		// (common on startup -- "it starts if I don't touch the window") can block the
+		// driver indefinitely. Pump pending messages so a focus change settles, and if
+		// the window still isn't foreground, defer so the caller retries next frame.
+		if (!_PresentParameters.Windowed && _Hwnd != nullptr) {
+			MSG msg;
+			while (::PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+				::TranslateMessage(&msg);
+				::DispatchMessage(&msg);
+			}
+			if (::IsIconic(_Hwnd) || ::GetForegroundWindow() != _Hwnd) {
+				WWDEBUG_SAY(("Reset_Device: window not foreground/minimised; deferring reset."));
+				return false;
+			}
+		}
 		// Release all non-MANAGED stuff
 		WW3D::_Invalidate_Textures();
 
@@ -614,13 +630,35 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 		memset(Pixel_Shader_Constants,0,sizeof(Vector4)*MAX_PIXEL_SHADER_CONSTANTS);
 
 		HRESULT hr=_Get_D3D_Device8()->TestCooperativeLevel();
-		if (hr != D3DERR_DEVICELOST )
-		{	DX8CALL_HRES(Reset(&_PresentParameters),hr)
-			if (hr != D3D_OK)
-				return false;	//reset failed.
+		WWDEBUG_SAY(("Reset_Device: TestCooperativeLevel -> 0x%08x (reload_assets=%d)", hr, reload_assets));
+		// A device create / mode switch (especially fullscreen) commonly leaves the
+		// device transiently D3DERR_DEVICELOST for a few frames. The old code gave up
+		// immediately, which intermittently left a dead device (black screen / hang)
+		// on startup. Wait for the OS to hand the device back, then reset.
+		int _waitAttempts = 0;
+		while (hr == D3DERR_DEVICELOST && _waitAttempts < 100) {
+			::Sleep(50);
+			hr = _Get_D3D_Device8()->TestCooperativeLevel();
+			++_waitAttempts;
 		}
-		else
+		if (_waitAttempts > 0)
+			WWDEBUG_SAY(("Reset_Device: waited %d x50ms for device; TestCooperativeLevel -> 0x%08x", _waitAttempts, hr));
+		if (hr == D3DERR_DEVICELOST) {
+			WWDEBUG_SAY(("Reset_Device: device still lost after wait; giving up this attempt."));
 			return false;	//device is lost and can't be reset.
+		}
+		// hr is D3D_OK or D3DERR_DEVICENOTRESET here; both are resettable. Call Reset
+		// directly rather than through DX8CALL_HRES: that routes failures into
+		// Log_DX8_ErrorCode -> WWASSERT(0), which in fullscreen pops an invisible
+		// dialog and hangs the app. Log non-fatally and return false so the caller
+		// retries on the next frame (the device usually resets once the transient
+		// mode/focus wobble on startup clears).
+		hr = _Get_D3D_Device8()->Reset(&_PresentParameters);
+		WWDEBUG_SAY(("Reset_Device: Reset() -> 0x%08x", hr));
+		if (hr != D3D_OK) {
+			Non_Fatal_Log_DX8_ErrorCode(hr, __FILE__, __LINE__);
+			return false;	//reset failed; caller will retry.
+		}
 
 		if (reload_assets)
 		{
