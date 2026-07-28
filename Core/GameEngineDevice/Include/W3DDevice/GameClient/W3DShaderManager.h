@@ -135,8 +135,9 @@ protected:
 	// Info for a render to texture surface for special effects.
 	static Bool m_renderingToTexture;
 	static IDirect3DSurface8 *m_oldRenderSurface;	///<previous render target
-	static IDirect3DTexture8 *m_renderTexture;		///<texture into which rendering will be redirected.
-	static IDirect3DSurface8 *m_newRenderSurface;	///<new render target inside m_renderTexture
+	static IDirect3DTexture8 *m_renderTexture;		///<plain (non-MSAA) texture the redirected scene ends up in (post-process reads this)
+	static IDirect3DSurface8 *m_newRenderSurface;	///<render target the scene is drawn into: m_renderTexture's surface, or an MSAA surface when MSAA is on
+	static IDirect3DSurface8 *m_resolveSurface;		///<when MSAA: m_renderTexture's surface, the StretchRect resolve destination; null otherwise
 	static IDirect3DSurface8 *m_oldDepthSurface;	///<previous depth buffer surface
 
 
