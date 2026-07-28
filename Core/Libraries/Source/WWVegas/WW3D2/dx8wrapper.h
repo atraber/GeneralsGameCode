@@ -763,7 +763,10 @@ WWINLINE void DX8Wrapper::Set_Vertex_Shader_Constant(int reg, const void* data, 
 {
 	int memsize=sizeof(Vector4)*count;
 
-	// may be incorrect if shaders are created and destroyed dynamically
+	// Skipping a redundant upload is only sound while every write goes through here --
+	// a subsystem that calls SetVertexShaderConstantF on the device directly leaves this
+	// cache claiming registers it no longer owns, and the next matching value is then
+	// silently not uploaded. Keep all writes on this path.
 	if (memcmp(data, &Vertex_Shader_Constants[reg],memsize)==0) return;
 
 	memcpy(&Vertex_Shader_Constants[reg],data,memsize);

@@ -187,9 +187,9 @@ void W3DProfilerFrameCapture::Capture(UnsignedInt displayWidth, UnsignedInt disp
 	static const Real kMaskR[4] = {1.0f, 0.0f, 0.0f, 0.0f};
 	static const Real kMaskG[4] = {0.0f, 1.0f, 0.0f, 0.0f};
 	static const Real kMaskB[4] = {0.0f, 0.0f, 1.0f, 0.0f};
-	device->SetPixelShaderConstant(0, kMaskR, 1);
-	device->SetPixelShaderConstant(1, kMaskG, 1);
-	device->SetPixelShaderConstant(2, kMaskB, 1);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, kMaskR, 1);
+	DX8Wrapper::Set_Pixel_Shader_Constant(1, kMaskG, 1);
+	DX8Wrapper::Set_Pixel_Shader_Constant(2, kMaskB, 1);
 
 	// draw texture scaled-down onto a small surface
 	struct QuadVertex
