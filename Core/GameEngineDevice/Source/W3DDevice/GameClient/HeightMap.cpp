@@ -1886,6 +1886,10 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 		W3DShaderManager::updateCloud();
 	}
 
+	// Re-bake the shared PBR reflection cubemap if scene lighting drifted. Cheap
+	// no-op on most frames; unconditional so reflections track time-of-day.
+	W3DShaderManager::updateEnvMap();
+
 	Matrix3D tm(Transform);
 #if 0 // There is some weirdness sometimes with the dx8 static buffers.
 			// This usually fixes terrain flashing.  jba.

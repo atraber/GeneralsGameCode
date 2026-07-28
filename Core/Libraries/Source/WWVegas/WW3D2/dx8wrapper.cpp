@@ -177,6 +177,25 @@ DWORD							DX8Wrapper::m_dwUnitVS = 0;
 DWORD							DX8Wrapper::m_dwUnitPS = 0;
 DWORD							DX8Wrapper::m_dwUnitDetailPS = 0;
 DWORD							DX8Wrapper::m_shaderRoutingMask = DX8Wrapper::SHADER_ROUTE_BASELINE;
+DWORD							DX8Wrapper::m_dwUnitPbrVS = 0;
+DWORD							DX8Wrapper::m_dwUnitPbrPS = 0;
+IDirect3DBaseTexture8*			DX8Wrapper::m_envCubeMap = nullptr;
+float							DX8Wrapper::m_envSunDir[3]   = { 0.40f, 0.30f, 0.85f };
+float							DX8Wrapper::m_envSunColor[3] = { 1.00f, 0.92f, 0.72f };
+float							DX8Wrapper::m_envAmbient[3]  = { 0.20f, 0.20f, 0.22f };
+bool							DX8Wrapper::m_envSunValid = false;
+DX8Wrapper::OrmResolverFunc		DX8Wrapper::s_ormResolver = nullptr;
+
+// Record the dominant scene light so the env cubemap can be re-baked to match the
+// current time-of-day. Called from the PBR draw path with data it already gathered;
+// the actual (expensive) re-bake is deferred to a once-per-frame point.
+void DX8Wrapper::Capture_Env_Light(const float dir[3], const float color[3], const float ambient[3])
+{
+	m_envSunDir[0]   = dir[0];   m_envSunDir[1]   = dir[1];   m_envSunDir[2]   = dir[2];
+	m_envSunColor[0] = color[0]; m_envSunColor[1] = color[1]; m_envSunColor[2] = color[2];
+	m_envAmbient[0]  = ambient[0]; m_envAmbient[1] = ambient[1]; m_envAmbient[2] = ambient[2];
+	m_envSunValid = true;
+}
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
 DWORD							DX8Wrapper::m_dwTerrainPS = 0;
 bool							DX8Wrapper::m_bUnitShaderBound = false;
@@ -186,6 +205,26 @@ float							DX8Wrapper::m_terrainCloudOffY = 0.0f;
 bool							DX8Wrapper::m_terrainCloudEnable = false;
 bool							DX8Wrapper::m_terrainNoiseEnable = false;
 static DWORD s_dwOriginalPS = 0;  // fixed-function pixel shader to restore after unit draws
+// True while a PBR draw's ORM map is still bound on texture stage 1. That bind goes
+// straight to the device, so nothing else knows to undo it -- but only a PBR draw can
+// set this, and undoing it unconditionally would strip stage 1 from draws that put
+// their own texture there.
+static bool s_pbrOrmBound = false;
+
+// Put texture stage 1 back the way the engine expects it after a PBR draw bound its
+// ORM map there. That bind went straight to the device, behind the applied-texture
+// cache, so re-applying whatever render_state holds (usually nothing) is what returns
+// the stage to a known state. Clearing it to NULL unconditionally instead would strip
+// stage 1 from draws that legitimately use it -- the fixed-function detail passes do.
+void DX8Wrapper::Restore_Stage1_After_Pbr()
+{
+	if (!s_pbrOrmBound)
+		return;
+	s_pbrOrmBound = false;
+	Set_DX8_Texture(1, render_state.Textures[1] != nullptr
+					   ? render_state.Textures[1]->Peek_D3D_Base_Texture()
+					   : NULL);
+}
 
 bool								_DX8SingleThreaded										= false;
 
@@ -1864,6 +1903,17 @@ void DX8Wrapper::Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal,
 			// reads the matrices unit_vs was handed, which mean something else entirely
 			// in the terrain pass. Everything else is flat grey, and the legend says so.
 			if (m_dwDebugNormalVS != 0 && m_dwDebugNormalPS != 0 && hasNormal && onMeshPath) {
+				// Upload the object -> camera matrix rather than inheriting whatever the draw
+				// left in c4. debugnormal_vs substitutes for unit_vs and reads unit_vs's
+				// registers, but c4 is the one register whose meaning depends on the route: a
+				// PBR draw puts plain world there, because unit_pbr_ps shades in world space.
+				// Inheriting it would draw PBR meshes' normals in a different space from
+				// everything else's, which is exactly the comparison this view exists to make.
+				D3DXMATRIX nWorld = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+				D3DXMATRIX nView  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+				D3DXMATRIX nWorldView;
+				D3DXMatrixMultiply(&nWorldView, &nWorld, &nView);
+				Set_Vertex_Shader_Constant(4, &nWorldView, 4);
 				Set_Vertex_Shader(m_dwDebugNormalVS);
 				Set_Pixel_Shader(m_dwDebugNormalPS);
 			} else {
@@ -2680,10 +2730,20 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// camera-space values explicitly so the 0x12345678 "invalidated" sentinel that
 		// Invalidate_Cached_Render_States writes is not mistaken for a texgen.
 		const DWORD texCoordGen = TextureStageStates[0][D3DTSS_TEXCOORDINDEX] & 0xFFFF0000u;
+		// A projected texture transform (projected shadows project their shadow map
+		// onto the receiver this way) is another coordinate generation this shader
+		// can't reproduce. The TTF value encodes a count in the low bits plus a
+		// PROJECTED flag; the 0x12345678 invalidation sentinel matches neither, so
+		// normal meshes (DISABLE / sentinel) are not affected.
+		const DWORD ttf = TextureStageStates[0][D3DTSS_TEXTURETRANSFORMFLAGS];
+		const bool texTransformActive =
+			((ttf & 0xFFu) >= (DWORD)D3DTTFF_COUNT1 && (ttf & 0xFFu) <= (DWORD)D3DTTFF_COUNT4) ||
+			(ttf & (DWORD)D3DTTFF_PROJECTED) != 0;
 		const bool texgenActive =
 			texCoordGen == D3DTSS_TCI_CAMERASPACENORMAL ||
 			texCoordGen == D3DTSS_TCI_CAMERASPACEPOSITION ||
-			texCoordGen == D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR;
+			texCoordGen == D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR ||
+			texTransformActive;
 
 		// Texture coordinate generation for both stages. The vertex shader can produce
 		// camera-space coordinates and apply the stage's texture matrix, so a draw that
@@ -2882,9 +2942,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// what turned foliage black once multi-texture passes became routable, since the
 		// multi-texture rule had been incidentally keeping tree draws away from us).
 		// A vertex shader handle is distinguishable from an FVF code by magnitude.
+		// Every shader this wrapper binds itself must be listed here. Omitting one makes
+		// the draw after it look engine-supplied, which both bars that draw from being
+		// routed and stops the restore branch below from unbinding the shader -- so the
+		// next mesh is transformed by whatever constants the previous one left behind.
 		const bool foreignVertexShader =
 			Vertex_Shader >= 0x10000 &&
 			Vertex_Shader != m_dwUnitVS &&
+			Vertex_Shader != m_dwUnitPbrVS &&
 			Vertex_Shader != m_dwTerrainVS;
 
 		// Routing categories are selectable at runtime (options.ini ShaderRouting) so the
@@ -2971,117 +3036,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				s_dwOriginalPS = Pixel_Shader;
 				m_bUnitShaderBound = true;
 			}
-			// The detail variant is bound only when a second texture is really present:
-			// the single-texture shader must never sample a stage with no texture bound,
-			// which is undefined and can produce values that survive a zero weight (a NaN
-			// times zero is still NaN) and render the pixel black.
-			const bool useDetailShader = !singleTexture && detailCombineSupported;
-			Set_Vertex_Shader(m_dwUnitVS);
-			Set_Pixel_Shader(useDetailShader ? m_dwUnitDetailPS : m_dwUnitPS);
 
-
-
-			// Matrices: row_major HLSL float4x4 with mul(v, M) takes the D3D
-			// row-major matrices uploaded as-is (no transpose).
-			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
-			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			D3DXMATRIX proj;
-			if (FAILED(_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj)))) {
-				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
-			}
-			D3DXMATRIX worldView;
-			D3DXMatrixMultiply(&worldView, &world, &view);
-			D3DXMATRIX wvp;
-			D3DXMatrixMultiply(&wvp, &worldView, &proj);
-			// c0 = world*view*proj (position). c4 = world*view, which also serves as the
-			// object -> camera normal matrix: unit_vs shades in camera space, so the normal
-			// must be taken there for N.L to be correct -- and the light directions must be
-			// taken there too, which is done below rather than assumed. (The shader applies
-			// a small depth nudge to avoid z-fighting the co-planar fixed-function detail
-			// passes.)
-			Set_Vertex_Shader_Constant(0, &wvp, 4);
-			Set_Vertex_Shader_Constant(4, &worldView, 4);
-
-			// Lighting: scene ambient (D3DRS_AMBIENT) + up to four directional lights,
-			// matching the fixed-function LightEnvironment. Disabled lights contribute
-			// nothing (diffuse left at zero).
-			DWORD ambientPacked = RenderStates[D3DRS_AMBIENT];
-			D3DXVECTOR4 sceneAmbient(
-				((ambientPacked >> 16) & 0xFF) / 255.0f,
-				((ambientPacked >>  8) & 0xFF) / 255.0f,
-				((ambientPacked      ) & 0xFF) / 255.0f,
-				1.0f);
-			Set_Vertex_Shader_Constant(16, &sceneAmbient, 1);
-
-			// These directions are in WORLD space, and the name of the accessor they came
-			// through does not say so. Set_Light_Environment fills render_state.Lights from
-			// LightEnvironmentClass::Get_Light_Direction, which returns InputLights[i] --
-			// the untransformed input. The camera-space copies Pre_Render_Update makes live
-			// in OutputLights[i] and are read by nothing outside that class. The fixed
-			// function path is the confirmation: D3DLIGHT8 directionals are specified in
-			// world space, and that is the same array. So rotate them here, for this
-			// shader, rather than trusting the array to already be where we want it.
-			for (int li = 0; li < 4; ++li) {
-				D3DXVECTOR4 dir(0.0f, 0.0f, 1.0f, 0.0f);
-				D3DXVECTOR4 diff(0.0f, 0.0f, 0.0f, 0.0f);
-				if (render_state.LightEnable[li]) {
-					D3DXVECTOR3 wrlDir(-render_state.Lights[li].Direction.x,
-									   -render_state.Lights[li].Direction.y,
-									   -render_state.Lights[li].Direction.z);
-					D3DXVECTOR3 camDir;
-					D3DXVec3TransformNormal(&camDir, &wrlDir, &view);
-					D3DXVec3Normalize(&camDir, &camDir);
-					dir = D3DXVECTOR4(camDir.x, camDir.y, camDir.z, 0.0f);
-					diff.x = render_state.Lights[li].Diffuse.r;
-					diff.y = render_state.Lights[li].Diffuse.g;
-					diff.z = render_state.Lights[li].Diffuse.b;
-				}
-				Set_Vertex_Shader_Constant(8 + li * 2, &dir, 1);
-				Set_Vertex_Shader_Constant(9 + li * 2, &diff, 1);
-			}
-
-			// Lighting mode -- mirror what the fixed-function stage-0 colour combine does
-			// with the vertex diffuse, not just D3DRS_LIGHTING:
-			//   2 = texture only: stage 0 selects the texture alone (SELECTARG1, no
-			//       diffuse), e.g. an unlit detail/overlay pass multiplied or added over
-			//       the already-lit base in the frame buffer. Applying our lighting here
-			//       would darken it a second time (the "dark pattern" on multi-pass
-			//       buildings), so the shader must output the raw texture.
-			//   1 = lit: stage 0 modulates the texture by the (lit) diffuse.
-			//   0 = pre-lit: lighting disabled; pass the baked vertex colour through.
-			const DWORD stage0Op   = TextureStageStates[0][D3DTSS_COLOROP];
-			const DWORD stage0Arg1 = TextureStageStates[0][D3DTSS_COLORARG1] & D3DTA_SELECTMASK;
-			const bool textureOnlyPass =
-				(stage0Op == D3DTOP_SELECTARG1 && stage0Arg1 == D3DTA_TEXTURE);
-			float lightMode = textureOnlyPass ? 2.0f
-							: (RenderStates[D3DRS_LIGHTING] ? 1.0f : 0.0f);
-			D3DXVECTOR4 lightingParams(lightMode, 0.0f, 0.0f, 0.0f);
-			Set_Vertex_Shader_Constant(17, &lightingParams, 1);
-
-			// Stage 1 (detail) combine, resolved above into per-argument source selectors
-			// (texture / current / diffuse) plus a one-hot operation weight, so the shader
-			// evaluates the same expression the fixed-function stage would. The defaults
-			// make stage 1 a no-op for single-texture passes.
-			// Only registers 0..7 exist in the wrapper's pixel constant cache
-			// (MAX_PIXEL_SHADER_CONSTANTS), so the modulate scale rides in the unused w
-			// component of the first selector rather than taking a register of its own --
-			// the selectors themselves only use xyz.
-			s1CArg1.w = s1CScale;
-			Set_Pixel_Shader_Constant(2, &s1CArg1, 1);
-			Set_Pixel_Shader_Constant(3, &s1CArg2, 1);
-			Set_Pixel_Shader_Constant(4, &s1COp, 1);
-			Set_Pixel_Shader_Constant(5, &s1AArg1, 1);
-			Set_Pixel_Shader_Constant(6, &s1AArg2, 1);
-			Set_Pixel_Shader_Constant(7, &s1AOp, 1);
-
-			// Material ambient/diffuse/emissive. The vertex material sources ambient,
-			// diffuse and emissive from the material (VertexMaterialClass defaults them
-			// to D3DMCS_MATERIAL), so the shader reads all three from the material to
-			// match the fixed-function lit equation. The house-colour system bakes the
-			// team colour into the vertex material's ambient AND diffuse
-			// (Recolor_Vertex_Material on "HOUSECOLOR*" meshes, whose texture is white);
-			// the diffuse term is what tints the mesh under the sun, so both must be fed
-			// through. Normal meshes have a white ambient/diffuse, so this is a no-op.
+			// Material ambient/emissive (house-colour tint lives in the material
+			// ambient; white for normal meshes). Computed first because it also gates
+			// PBR below.
 			D3DXVECTOR4 matAmbient(1.0f, 1.0f, 1.0f, 1.0f);
 			D3DXVECTOR4 matDiffuse(1.0f, 1.0f, 1.0f, 1.0f);
 			D3DXVECTOR4 matEmissive(0.0f, 0.0f, 0.0f, 0.0f);
@@ -3093,38 +3051,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				matEmissive = D3DXVECTOR4(mtl.Emissive.r, mtl.Emissive.g, mtl.Emissive.b, 0.0f);
 				matOpacity  = mtl.Diffuse.a; // stealth/translucency rides in the material alpha
 			}
-			Set_Vertex_Shader_Constant(18, &matAmbient, 1);
-			Set_Vertex_Shader_Constant(19, &matEmissive, 1);
-			Set_Vertex_Shader_Constant(20, &matDiffuse, 1);
 
-			// Stage 0's ALPHA combine, mirrored the same way the colour combine is above.
-			// Assuming alpha is always texture*diffuse breaks any pass whose alpha is the
-			// texture alone: additive effects blend SRCALPHA/ONE, so multiplying in a
-			// material opacity the fixed-function pipeline never applied to them makes
-			// them vanish. At stage 0 CURRENT is defined to be the diffuse, so it counts
-			// as diffuse.
-			const DWORD s0AOp   = TextureStageStates[0][D3DTSS_ALPHAOP];
-			const DWORD s0AArg1 = TextureStageStates[0][D3DTSS_ALPHAARG1] & D3DTA_SELECTMASK;
-			const DWORD s0AArg2 = TextureStageStates[0][D3DTSS_ALPHAARG2] & D3DTA_SELECTMASK;
-			bool alphaUsesTexture = true;   // MODULATE and friends: texture * diffuse
-			bool alphaUsesDiffuse = true;
-			if (s0AOp == D3DTOP_DISABLE) {
-				alphaUsesTexture = false;   // stage contributes nothing; diffuse survives
-			}
-			else if (s0AOp == D3DTOP_SELECTARG1 || s0AOp == D3DTOP_SELECTARG2) {
-				const DWORD sel = (s0AOp == D3DTOP_SELECTARG1) ? s0AArg1 : s0AArg2;
-				alphaUsesTexture = (sel == D3DTA_TEXTURE);
-				alphaUsesDiffuse = (sel == D3DTA_DIFFUSE || sel == D3DTA_CURRENT);
-			}
-
-			// Texture control (pixel shader c1). x tells the shader whether a base texture
-			// is bound at all -- 0 for the untextured diffuse-only pass, so it emits the
-			// lit colour alone, matching the fixed-function stage-0 SELECTARG2(diffuse)
-			// combine. yz resolve the diffuse alpha: lit meshes take it from the material,
-			// which is where stealth translucency lives and which the fixed-function
-			// pipeline sourced, pre-lit meshes keep their vertex alpha, and y=z=1 forces it
-			// to 1 when stage 0 does not source the diffuse at all. w gates the texture
-			// alpha.
+			// Diffuse (stealth) opacity handling. The fixed-function pipeline sourced the
+			// vertex diffuse -- including the alpha that stealth translucency sets via the
+			// material (DiffuseColorSource == MATERIAL) -- from the material for lit meshes.
+			// Our shaders instead force lit alpha to 1 (M3) or pass a meaningless vertex
+			// COLOR0 alpha through (PBR), so material-driven opacity was lost and stealthed
+			// units rendered either fully opaque or (on the PBR path, where COLOR0.a is
+			// undefined) vanished. Feed the material opacity in: lit meshes use it, pre-lit
+			// meshes keep their genuine per-vertex alpha.
 			const bool litMesh = RenderStates[D3DRS_LIGHTING] != FALSE;
 
 			// Whether the diffuse alpha comes from the material or from the vertex. The
@@ -3139,41 +3074,258 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// the wrong fragments and mottles the deck.
 			const bool diffuseAlphaFromMaterial =
 				litMesh && RenderStates[D3DRS_DIFFUSEMATERIALSOURCE] == D3DMCS_MATERIAL;
-			D3DXVECTOR4 texCtl(
-				render_state.Textures[0] != nullptr ? 1.0f : 0.0f,
-				alphaUsesDiffuse ? matOpacity : 1.0f,
-				(!alphaUsesDiffuse || diffuseAlphaFromMaterial) ? 1.0f : 0.0f,
-				alphaUsesTexture ? 1.0f : 0.0f);
-			Set_Pixel_Shader_Constant(1, &texCtl, 1);
+			D3DXVECTOR4 alphaCtl(matOpacity, diffuseAlphaFromMaterial ? 1.0f : 0.0f, 0.0f, 0.0f);
+			// House-colour meshes carry the team tint in a non-white material ambient
+			// over a white texture; their procedurally-generated ORM reads that bright
+			// texture as near-metallic, which PBR would render as dark metal instead of
+			// a tint. Route them to the M3 shader, which tints correctly.
+			const bool houseColoured =
+				(matAmbient.x < 0.95f || matAmbient.y < 0.95f || matAmbient.z < 0.95f);
 
-			// Texture coordinate generation. Modes and matrices are only meaningful when
-			// this draw was claimed with texgen enabled; otherwise both stages pass the
-			// mesh coordinates through, which is what the shader defaults to.
-			const bool applyTexGen = texgenRoutingOn && texGenSupported;
-			D3DXVECTOR4 texGenCtl(
-				applyTexGen ? texGenMode0 : 0.0f,
-				applyTexGen ? texGenMode1 : 0.0f,
-				(applyTexGen && texGenMatrix0) ? 1.0f : 0.0f,
-				(applyTexGen && texGenMatrix1) ? 1.0f : 0.0f);
-			Set_Vertex_Shader_Constant(21, &texGenCtl, 1);
-
-			if (applyTexGen && texGenMatrix0) {
-				D3DXMATRIX texMat0;
-				_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 0),
-								   *reinterpret_cast<D3DMATRIX*>(&texMat0));
-				Set_Vertex_Shader_Constant(24, &texMat0, 4);
+			// PBR path: if this mesh's base texture ships an ORM sibling (<name>_orm)
+			// and the PBR shaders loaded, run the metallic-roughness shader; otherwise
+			// the M3 lit shader. The resolver caches a nullptr for units without a map,
+			// so non-HD units are unaffected. Skip PBR until the ORM is resident, and
+			// for house-coloured meshes.
+			// PBR also needs texture stage 1 for the ORM map and reads the mesh's own
+			// coordinates, so a pass that already carries a detail texture there or wants
+			// generated coordinates keeps the plain unit shader.
+			// Off unless SHADER_ROUTE_PBR is selected, so the default build renders
+			// exactly what the milestone before it did and PBR can be A/B'd in game.
+			const bool pbrRoutingOn = (m_shaderRoutingMask & SHADER_ROUTE_PBR) != 0;
+			TextureBaseClass* ormTex = nullptr;
+			if (pbrRoutingOn && !houseColoured && singleTexture && !texgenActive &&
+				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0 && s_ormResolver != nullptr) {
+				ormTex = s_ormResolver(render_state.Textures[0]);
 			}
-			if (applyTexGen && texGenMatrix1) {
-				D3DXMATRIX texMat1;
-				_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 1),
-								   *reinterpret_cast<D3DMATRIX*>(&texMat1));
-				Set_Vertex_Shader_Constant(28, &texMat1, 4);
+			const bool usePbr = (ormTex != nullptr);
+
+			// Three variants: PBR, the detail (stage 1) combine, or the plain shader. The
+			// detail variant is bound only when a second texture is really present -- the
+			// single-texture shader must never sample a stage with no texture bound, which
+			// is undefined and can produce values that survive a zero weight (a NaN times
+			// zero is still NaN) and render the pixel black.
+			const bool useDetailShader = !usePbr && !singleTexture && detailCombineSupported;
+			Set_Vertex_Shader(usePbr ? m_dwUnitPbrVS : m_dwUnitVS);
+			Set_Pixel_Shader(usePbr ? m_dwUnitPbrPS
+								    : (useDetailShader ? m_dwUnitDetailPS : m_dwUnitPS));
+
+			// World/view/projection. row_major HLSL float4x4 with mul(v,M) takes the
+			// D3D row-major matrices as-is; both unit shaders read the clip-space
+			// transform at c0-3 and their object -> shading space matrix at c4-7.
+			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+			D3DXMATRIX proj;
+			if (FAILED(_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj)))) {
+				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
+			}
+			D3DXMATRIX worldView;
+			D3DXMatrixMultiply(&worldView, &world, &view);
+			D3DXMATRIX wvp;
+			D3DXMatrixMultiply(&wvp, &worldView, &proj);
+			// c0 = world*view*proj (position), the same for either shader.
+			Set_Vertex_Shader_Constant(0, &wvp, 4);
+			// c4 is the object -> shading space matrix, and the two shaders shade in
+			// different spaces:
+			//   M3  : camera space. unit_vs declares c8/c10/c12/c14 as camera-space
+			//         directions toward the light, so the normal must reach that space
+			//         too for N.L to be correct -- hence world*view. The directions
+			//         themselves are rotated into it below; they do not arrive that way.
+			//   PBR : world space. It reconstructs a view vector from a world-space
+			//         camera position and indexes a cubemap baked in world space, so it
+			//         needs the plain world matrix; the light directions are already
+			//         world space and are handed over untouched. Feeding it world*view
+			//         (as the M3 shader wants) leaves position and camera in different
+			//         spaces, which makes every view-dependent term swing with the camera.
+			Set_Vertex_Shader_Constant(4, usePbr ? &world : &worldView, 4);
+
+			// Shared LightEnvironment gather: scene ambient (D3DRS_AMBIENT) + up to
+			// four directional lights (disabled lights contribute nothing).
+			//
+			// These directions are in WORLD space, and the name of the accessor they came
+			// through does not say so. Set_Light_Environment fills render_state.Lights from
+			// LightEnvironmentClass::Get_Light_Direction, which returns InputLights[i] --
+			// the untransformed input. The camera-space copies Pre_Render_Update makes live
+			// in OutputLights[i] and are read by nothing outside that class. The fixed
+			// function path is the confirmation: D3DLIGHT8 directionals are specified in
+			// world space, and that is the same array. Rotate per consumer, below.
+			DWORD ambientPacked = RenderStates[D3DRS_AMBIENT];
+			D3DXVECTOR4 sceneAmbient(
+				((ambientPacked >> 16) & 0xFF) / 255.0f,
+				((ambientPacked >>  8) & 0xFF) / 255.0f,
+				((ambientPacked      ) & 0xFF) / 255.0f,
+				1.0f);
+			D3DXVECTOR4 lightDir[4];
+			D3DXVECTOR4 lightDiff[4];
+			for (int li = 0; li < 4; ++li) {
+				lightDir[li]  = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);
+				lightDiff[li] = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+				if (render_state.LightEnable[li]) {
+					lightDir[li].x = -render_state.Lights[li].Direction.x;
+					lightDir[li].y = -render_state.Lights[li].Direction.y;
+					lightDir[li].z = -render_state.Lights[li].Direction.z;
+					lightDiff[li].x = render_state.Lights[li].Diffuse.r;
+					lightDiff[li].y = render_state.Lights[li].Diffuse.g;
+					lightDiff[li].z = render_state.Lights[li].Diffuse.b;
+				}
+			}
+
+			if (usePbr) {
+				// Bind ORM to stage 1. Apply() (rather than Peek_D3D_Texture) triggers
+				// the lazy texture load and updates the applied-texture cache, so the
+				// map actually becomes resident instead of staying a null peek forever.
+				ormTex->Apply(1);
+				s_pbrOrmBound = true;
+				Set_DX8_Texture_Stage_State(1, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(1, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(1, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
+				// Shared environment cubemap on stage 4 (nothing else uses it, so a
+				// direct bind cannot desync a shared stage). Linear + clamp.
+				if (m_envCubeMap != nullptr) {
+					Set_DX8_Texture(4, m_envCubeMap);
+					Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+					Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				}
+				// SM3 pixel-shader lighting constants, all in world space (see c4 above).
+				// The light directions gathered above are in world space (from LightEnvironment),
+				// which matches what unit_pbr_ps expects.
+				D3DXMATRIX viewInv;
+				D3DXMatrixInverse(&viewInv, nullptr, &view);
+				D3DXVECTOR4 cameraPos(viewInv._41, viewInv._42, viewInv._43, 1.0f);
+				Set_Pixel_Shader_Constant(0, lightDir, 4);       // c0-3 directions (world space)
+				Set_Pixel_Shader_Constant(4, lightDiff, 4);      // c4-7 diffuse
+				Set_Pixel_Shader_Constant(8, &sceneAmbient, 1);
+				Set_Pixel_Shader_Constant(9, &cameraPos, 1);
+				Set_Pixel_Shader_Constant(10, &matAmbient, 1);
+				Set_Pixel_Shader_Constant(11, &alphaCtl, 1);   // stealth opacity control
+
+				// Snapshot the dominant light + ambient for the shared env-map bake so
+				// its sky/sun/ground track time-of-day. The cubemap is baked in world
+				// space (up = +Z), so this has to be the world-space direction too --
+				// capturing the camera-space one swings the sun disc as the camera turns.
+				// The re-bake itself is gated on drift and done once per frame elsewhere.
+				if (render_state.LightEnable[0]) {
+					const float sunDir[3]   = { lightDir[0].x, lightDir[0].y, lightDir[0].z };
+					const float sunColor[3] = { lightDiff[0].x, lightDiff[0].y, lightDiff[0].z };
+					const float amb[3]      = { sceneAmbient.x, sceneAmbient.y, sceneAmbient.z };
+					Capture_Env_Light(sunDir, sunColor, amb);
+				}
+			} else {
+				// Non-PBR path: lighting and the texture combine come from the constants
+				// the unit shaders read. Stage 1 only needs putting back when a previous
+				// PBR draw actually left its ORM there.
+				Restore_Stage1_After_Pbr();
+				Set_Vertex_Shader_Constant(16, &sceneAmbient, 1);
+				for (int li = 0; li < 4; ++li) {
+					// Transform world-space light direction to camera space for unit_vs
+					D3DXVECTOR3 wrlDir(lightDir[li].x, lightDir[li].y, lightDir[li].z);
+					D3DXVECTOR3 camDir;
+					D3DXVec3TransformNormal(&camDir, &wrlDir, &view);
+					D3DXVec3Normalize(&camDir, &camDir);
+					D3DXVECTOR4 lightDirCam(camDir.x, camDir.y, camDir.z, 0.0f);
+					Set_Vertex_Shader_Constant(8 + li * 2, &lightDirCam, 1);
+					Set_Vertex_Shader_Constant(9 + li * 2, &lightDiff[li], 1);
+				}
+
+				// Lighting mode -- mirror what the fixed-function stage-0 colour combine
+				// does with the vertex diffuse, not just D3DRS_LIGHTING:
+				//   2 = texture only: stage 0 selects the texture alone (SELECTARG1, no
+				//       diffuse), e.g. an unlit detail/overlay pass multiplied or added
+				//       over the already-lit base in the frame buffer. Lighting it here
+				//       would darken it a second time.
+				//   1 = lit: stage 0 modulates the texture by the (lit) diffuse.
+				//   0 = pre-lit: lighting disabled; pass the baked vertex colour through.
+				const DWORD stage0Op   = TextureStageStates[0][D3DTSS_COLOROP];
+				const DWORD stage0Arg1 = TextureStageStates[0][D3DTSS_COLORARG1] & D3DTA_SELECTMASK;
+				const bool textureOnlyPass =
+					(stage0Op == D3DTOP_SELECTARG1 && stage0Arg1 == D3DTA_TEXTURE);
+				const float lightMode = textureOnlyPass ? 2.0f : (litMesh ? 1.0f : 0.0f);
+				D3DXVECTOR4 lightingParams(lightMode, 0.0f, 0.0f, 0.0f);
+				Set_Vertex_Shader_Constant(17, &lightingParams, 1);
+				Set_Vertex_Shader_Constant(18, &matAmbient, 1);
+				Set_Vertex_Shader_Constant(19, &matEmissive, 1);
+				Set_Vertex_Shader_Constant(20, &matDiffuse, 1);
+
+				// Stage 0's ALPHA combine, mirrored the same way the colour combine is
+				// above. Assuming alpha is always texture*diffuse breaks any pass whose
+				// alpha is the texture alone: additive effects (muzzle flashes and the
+				// like) blend SRCALPHA/ONE, so multiplying in a material opacity the
+				// fixed-function pipeline never applied to them makes them vanish.
+				// At stage 0 CURRENT is defined to be the diffuse, so it counts as diffuse.
+				const DWORD s0AOp   = TextureStageStates[0][D3DTSS_ALPHAOP];
+				const DWORD s0AArg1 = TextureStageStates[0][D3DTSS_ALPHAARG1] & D3DTA_SELECTMASK;
+				const DWORD s0AArg2 = TextureStageStates[0][D3DTSS_ALPHAARG2] & D3DTA_SELECTMASK;
+				bool alphaUsesTexture = true;   // MODULATE and friends: texture * diffuse
+				bool alphaUsesDiffuse = true;
+				if (s0AOp == D3DTOP_DISABLE) {
+					alphaUsesTexture = false;   // stage contributes nothing; diffuse survives
+				}
+				else if (s0AOp == D3DTOP_SELECTARG1 || s0AOp == D3DTOP_SELECTARG2) {
+					const DWORD sel = (s0AOp == D3DTOP_SELECTARG1) ? s0AArg1 : s0AArg2;
+					alphaUsesTexture = (sel == D3DTA_TEXTURE);
+					alphaUsesDiffuse = (sel == D3DTA_DIFFUSE || sel == D3DTA_CURRENT);
+				}
+
+				// Texture control (pixel shader c1). x tells the shader whether a base
+				// texture is bound at all; yz resolve the diffuse alpha (lit meshes take
+				// it from the material, where stealth translucency lives, as the fixed-
+				// function pipeline did, pre-lit meshes keep their vertex alpha, and
+				// y=z=1 forces it to 1 when stage 0 does not source the diffuse at all);
+				// w gates the texture alpha. They share a register because only registers
+				// 0..7 are addressable by the SM2 unit shaders.
+				D3DXVECTOR4 texCtl(
+					render_state.Textures[0] != nullptr ? 1.0f : 0.0f,
+					alphaUsesDiffuse ? matOpacity : 1.0f,
+					(!alphaUsesDiffuse || diffuseAlphaFromMaterial) ? 1.0f : 0.0f,
+					alphaUsesTexture ? 1.0f : 0.0f);
+				Set_Pixel_Shader_Constant(1, &texCtl, 1);
+
+				// Stage 1 (detail) combine, resolved above into per-argument source
+				// selectors (texture / current / diffuse) plus a one-hot operation weight,
+				// so the shader evaluates the same expression the fixed-function stage
+				// would. The defaults make stage 1 a no-op for single-texture passes. The
+				// modulate scale rides in the unused w of the first selector, which only
+				// uses xyz, rather than taking a register of its own.
+				s1CArg1.w = s1CScale;
+				Set_Pixel_Shader_Constant(2, &s1CArg1, 1);
+				Set_Pixel_Shader_Constant(3, &s1CArg2, 1);
+				Set_Pixel_Shader_Constant(4, &s1COp, 1);
+				Set_Pixel_Shader_Constant(5, &s1AArg1, 1);
+				Set_Pixel_Shader_Constant(6, &s1AArg2, 1);
+				Set_Pixel_Shader_Constant(7, &s1AOp, 1);
+
+				// Texture coordinate generation. Modes and matrices are only meaningful
+				// when this draw was claimed with texgen enabled; otherwise both stages
+				// pass the mesh coordinates through, which is the shader default.
+				const bool applyTexGen = texgenRoutingOn && texGenSupported;
+				D3DXVECTOR4 texGenCtl(
+					applyTexGen ? texGenMode0 : 0.0f,
+					applyTexGen ? texGenMode1 : 0.0f,
+					(applyTexGen && texGenMatrix0) ? 1.0f : 0.0f,
+					(applyTexGen && texGenMatrix1) ? 1.0f : 0.0f);
+				Set_Vertex_Shader_Constant(21, &texGenCtl, 1);
+
+				if (applyTexGen && texGenMatrix0) {
+					D3DXMATRIX texMat0;
+					_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 0),
+									   *reinterpret_cast<D3DMATRIX*>(&texMat0));
+					Set_Vertex_Shader_Constant(24, &texMat0, 4);
+				}
+				if (applyTexGen && texGenMatrix1) {
+					D3DXMATRIX texMat1;
+					_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 1),
+									   *reinterpret_cast<D3DMATRIX*>(&texMat1));
+					Set_Vertex_Shader_Constant(28, &texMat1, 4);
+				}
 			}
 		}
 		else if (m_bUnitShaderBound) {
 			// Non-mesh draw: restore the fixed-function pipeline. For DX8 buffers
 			// the vertex-buffer block already re-applied the FVF; restore the pixel
 			// shader, and reset the vertex shader when this draw carries an FVF.
+			Restore_Stage1_After_Pbr();
 			// A draw that brought its own vertex shader keeps it -- only the pixel
 			// shader goes back, since that geometry expects the fixed-function pixel
 			// pipeline it would have had before we bound ours.
