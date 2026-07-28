@@ -72,7 +72,10 @@
 const unsigned MAX_TEXTURE_STAGES=8;
 const unsigned MAX_VERTEX_STREAMS=2;
 const unsigned MAX_VERTEX_SHADER_CONSTANTS=96;
-const unsigned MAX_PIXEL_SHADER_CONSTANTS=8;
+// The PBR pixel shader uses c0-c11 (lights, ambient, camera, material, opacity). This
+// is the shadow-cache size; keep it above the highest register any pixel shader writes,
+// or Set_Pixel_Shader_Constant memcpys past the array and corrupts adjacent statics.
+const unsigned MAX_PIXEL_SHADER_CONSTANTS=32;
 const unsigned MAX_SHADOW_MAPS=1;
 
 enum {
@@ -810,7 +813,9 @@ public:
 	// rebuild. DETAIL|TEXGEN is the default: between them they keep every pass of a mesh
 	// on one pipeline, which is what stops coincident passes of a mesh from being drawn
 	// with differing depth and z-fighting. Zero selects neither, i.e. the routing before
-	// those categories existed.
+	// those categories existed. PBR is not in the default: it changes how meshes are
+	// shaded rather than which pipeline they are drawn on, so it is opt-in
+	// ("ShaderRouting = 35" for the default categories plus PBR).
 	enum ShaderRoutingFlags
 	{
 		SHADER_ROUTE_BASELINE      = 0,
@@ -820,8 +825,32 @@ public:
 		SHADER_ROUTE_EVERYTHING    = 1 << 3,   // drop every restriction (diagnostic)
 		SHADER_ROUTE_OFF           = 1 << 4,   // no mesh routing at all (fixed function)
 		SHADER_ROUTE_ADDITIVE      = 1 << 6,   // additive effect passes too (diagnostic; see below)
+		SHADER_ROUTE_PBR           = 1 << 5,   // metallic-roughness shading where an ORM map exists
 	};
 	static DWORD						m_shaderRoutingMask;
+	// PBR (metallic-roughness, SM3) variant of the unit shader. Bound in place of
+	// the plain unit shader for meshes whose base texture ships a <name>_orm map.
+	static DWORD						m_dwUnitPbrVS;
+	static DWORD						m_dwUnitPbrPS;
+	// Shared environment cubemap sampled by the PBR shader for reflections. Bound on
+	// texture stage 4 (0=albedo, 1=ORM, 2/3=terrain overlays are already spoken for).
+	static IDirect3DBaseTexture8*		m_envCubeMap;
+	// Latest scene lighting captured from the PBR draw path (dominant directional
+	// light + scene ambient), used to re-bake the env cubemap so its sky/sun/ground
+	// track time-of-day. Plain floats to keep D3DX out of this header. m_envSunValid
+	// stays false until a PBR mesh has actually been lit at least once.
+	static float						m_envSunDir[3];   // world-space direction toward the light
+	static float						m_envSunColor[3]; // sun diffuse (colour * intensity)
+	static float						m_envAmbient[3];  // scene ambient
+	static bool							m_envSunValid;
+	static void Capture_Env_Light(const float dir[3], const float color[3], const float ambient[3]);
+	// Put texture stage 1 back after a PBR draw bound its ORM map straight to it.
+	static void Restore_Stage1_After_Pbr();
+	// Resolver (installed by the game layer) that maps a base texture to its ORM
+	// sibling texture (<name>_orm), or nullptr when the unit ships no PBR maps.
+	typedef TextureBaseClass* (*OrmResolverFunc)(TextureBaseClass* baseTexture);
+	static OrmResolverFunc				s_ormResolver;
+	static void Set_Orm_Resolver(OrmResolverFunc fn) { s_ormResolver = fn; }
 	// Programmable terrain path. HeightMap flags a terrain tile pass and the
 	// render code binds these instead of the mesh shader for those draws.
 	static DWORD						m_dwTerrainVS;
