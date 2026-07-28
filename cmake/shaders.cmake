@@ -36,17 +36,26 @@ set(_rts_shaders
     unit_detail_ps
     terrain_vs
     terrain_ps
+    unit_pbr_vs
+    unit_pbr_ps
 )
 
 if(FXC_EXECUTABLE)
     file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")
     set(_rts_shader_outputs "")
     foreach(_name ${_rts_shaders})
+        # PBR shaders need Shader Model 3 (more instructions/registers, ddx/ddy);
+        # the rest target Shader Model 2.
+        if(_name MATCHES "pbr")
+            set(_model "3_0")
+        else()
+            set(_model "2_0")
+        endif()
         if(_name MATCHES "_vs$")
-            set(_profile "vs_2_0")
+            set(_profile "vs_${_model}")
             set(_ext "vso")
         else()
-            set(_profile "ps_2_0")
+            set(_profile "ps_${_model}")
             set(_ext "pso")
         endif()
         set(_src "${RTS_SHADER_SRC_DIR}/${_name}.hlsl")

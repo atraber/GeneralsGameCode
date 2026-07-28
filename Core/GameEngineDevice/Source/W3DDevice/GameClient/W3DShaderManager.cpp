@@ -55,6 +55,10 @@
 
 #include "WW3D2/dx8wrapper.h"
 #include "WW3D2/assetmgr.h"
+#include "WW3D2/ddsfile.h"
+#include <unordered_map>
+#include <math.h>
+#include <string.h>
 #include "Lib/BaseType.h"
 #include "Common/file.h"
 #include "Common/FileSystem.h"
@@ -2715,6 +2719,18 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::m_dwTerrainPS == 0) {
 		LoadAndCreateD3DShader("shaders\\terrain_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwTerrainPS);
 	}
+	// PBR (Shader Model 3) variant of the unit shader, used for meshes that ship a
+	// <name>_orm map. Optional: if these fail to load, the plain unit shader is used.
+	if (DX8Wrapper::m_dwUnitPbrVS == 0) {
+		LoadAndCreateD3DShader("shaders\\unit_pbr_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwUnitPbrVS);
+	}
+	if (DX8Wrapper::m_dwUnitPbrPS == 0) {
+		LoadAndCreateD3DShader("shaders\\unit_pbr_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUnitPbrPS);
+	}
+	// Install the base-texture -> ORM resolver the render path calls per draw.
+	DX8Wrapper::Set_Orm_Resolver(W3DShaderManager::resolveOrmTexture);
+	// Build the shared environment cubemap the PBR shader reflects.
+	initEnvMap();
 }
 
 //=============================================================================
@@ -2742,7 +2758,253 @@ void W3DShaderManager::shutdownUnitShaders()
 		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwTerrainPS)->Release();
 		DX8Wrapper::m_dwTerrainPS = 0;
 	}
+	if (DX8Wrapper::m_dwUnitPbrVS != 0) {
+		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwUnitPbrVS)->Release();
+		DX8Wrapper::m_dwUnitPbrVS = 0;
+	}
+	if (DX8Wrapper::m_dwUnitPbrPS != 0) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwUnitPbrPS)->Release();
+		DX8Wrapper::m_dwUnitPbrPS = 0;
+	}
+	DX8Wrapper::Set_Orm_Resolver(nullptr);
+	clearOrmCache();
+	if (DX8Wrapper::m_envCubeMap != nullptr) {
+		DX8Wrapper::m_envCubeMap->Release();
+		DX8Wrapper::m_envCubeMap = nullptr;
+	}
+	// initEnvMap re-bakes and resets the bake baseline when it recreates the cube,
+	// so no need to touch s_envBaked here; just drop the captured-light validity.
+	DX8Wrapper::m_envSunValid = false;
 	DX8Wrapper::m_bUnitShaderBound = false;
+}
+
+//=============================================================================
+// PBR ORM (Occlusion/Roughness/Metallic + Height) texture resolution.
+//
+// For a mesh's base texture <name>.<ext>, the PBR maps live in a sibling
+// <name>_orm.dds (installed via !TexturesHD.big). This looks it up once per base
+// texture and caches the result (including "no map", stored as nullptr) so the
+// per-draw cost after the first hit is a single hash lookup. Units without a map
+// resolve to nullptr and keep using the M3 lit shader.
+//=============================================================================
+static std::unordered_map<TextureBaseClass*, TextureBaseClass*> s_ormCache;
+
+TextureBaseClass* W3DShaderManager::resolveOrmTexture(TextureBaseClass* base)
+{
+	if (base == nullptr)
+		return nullptr;
+
+	std::unordered_map<TextureBaseClass*, TextureBaseClass*>::iterator it = s_ormCache.find(base);
+	if (it != s_ormCache.end())
+		return it->second;
+
+	TextureBaseClass* orm = nullptr;
+	const char* name = base->Get_Texture_Name();
+	// Units are recoloured at runtime, which prefixes the texture name with a
+	// "#<color>#" munge (e.g. "#-26881#avtank.tga"). The ORM map is keyed on the
+	// original texture name, so strip the munge before deriving it.
+	if (name != nullptr && name[0] == '#') {
+		const char* second = strchr(name + 1, '#');
+		if (second != nullptr)
+			name = second + 1;
+	}
+	if (name != nullptr && name[0] != '\0' && strstr(name, "_orm") == nullptr) {
+		char ormName[256];
+		strncpy(ormName, name, sizeof(ormName) - 1);
+		ormName[sizeof(ormName) - 1] = '\0';
+		char* dot = strrchr(ormName, '.');
+		if (dot != nullptr)
+			*dot = '\0';
+		strncat(ormName, "_orm.dds", sizeof(ormName) - strlen(ormName) - 1);
+
+		// Only load when the map is actually present in a mounted archive; otherwise
+		// Get_Texture would substitute a missing-texture placeholder.
+		DDSFileClass dds(ormName, 0);
+		if (dds.Is_Available()) {
+			orm = WW3DAssetManager::Get_Instance()->Get_Texture(ormName);
+		}
+	}
+
+	s_ormCache[base] = orm; // holds the Get_Texture ref; released in clearOrmCache
+	return orm;
+}
+
+void W3DShaderManager::clearOrmCache()
+{
+	for (std::unordered_map<TextureBaseClass*, TextureBaseClass*>::iterator it = s_ormCache.begin();
+	     it != s_ormCache.end(); ++it) {
+		if (it->second != nullptr)
+			it->second->Release_Ref();
+	}
+	s_ormCache.clear();
+}
+
+//=============================================================================
+// Shared environment cubemap for PBR reflections.
+//
+// A single cubemap sampled by every PBR unit's reflection vector, filled
+// procedurally with a sky/ground gradient plus a sun disc (world up = +Z).
+// It is re-baked (updateEnvMap) whenever the scene's dominant light / ambient
+// drifts, so the reflections track time-of-day. Colours are stored linear --
+// the PBR shader adds them before its own gamma pass.
+//=============================================================================
+
+// Env cubemap edge length. Small: reflections are broad, and a re-bake locks and
+// fills all six faces on the CPU, so this stays cheap even when it does run.
+static const int ENV_MAP_SIZE = 64;
+
+// Base sky / ground tint at full daylight; modulated per-bake by scene brightness.
+static const float ENV_SKY_BASE[3]    = { 0.35f, 0.52f, 0.85f };
+static const float ENV_GROUND_BASE[3] = { 0.20f, 0.18f, 0.15f };
+
+// Parameters the last bake used, so updateEnvMap can skip re-baking when nothing
+// meaningful changed (time-of-day drifts slowly; most frames are a no-op).
+static bool  s_envBaked = false;
+static float s_envBakedSunDir[3];
+static float s_envBakedSunColor[3];
+static float s_envBakedSky[3];
+static float s_envBakedGround[3];
+
+// Fill all six faces of a locked cubemap with the sky/ground gradient + sun disc.
+static void bakeEnvMapFaces(IDirect3DCubeTexture8* cube,
+                            const float sunDir[3], const float sunColor[3],
+                            const float sky[3], const float ground[3])
+{
+	for (int face = 0; face < 6; ++face) {
+		D3DLOCKED_RECT lr;
+		if (FAILED(cube->LockRect((D3DCUBEMAP_FACES)face, 0, &lr, nullptr, 0)))
+			continue;
+		for (int y = 0; y < ENV_MAP_SIZE; ++y) {
+			unsigned* row = (unsigned*)((unsigned char*)lr.pBits + y * lr.Pitch);
+			float t = ((float)y + 0.5f) / ENV_MAP_SIZE * 2.0f - 1.0f;
+			for (int x = 0; x < ENV_MAP_SIZE; ++x) {
+				float s = ((float)x + 0.5f) / ENV_MAP_SIZE * 2.0f - 1.0f;
+				float dx, dy, dz;
+				switch (face) {
+					case 0: dx = 1;  dy = -t; dz = -s; break; // +X
+					case 1: dx = -1; dy = -t; dz = s;  break; // -X
+					case 2: dx = s;  dy = 1;  dz = t;  break; // +Y
+					case 3: dx = s;  dy = -1; dz = -t; break; // -Y
+					case 4: dx = s;  dy = -t; dz = 1;  break; // +Z
+					default: dx = -s; dy = -t; dz = -1; break; // -Z
+				}
+				float il = 1.0f / sqrtf(dx*dx + dy*dy + dz*dz);
+				dx *= il; dy *= il; dz *= il;
+				float up = dz * 0.5f + 0.5f; // world up = +Z
+				if (up < 0.0f) up = 0.0f; else if (up > 1.0f) up = 1.0f;
+				float r = ground[0] + (sky[0] - ground[0]) * up;
+				float g = ground[1] + (sky[1] - ground[1]) * up;
+				float b = ground[2] + (sky[2] - ground[2]) * up;
+				float sd = dx*sunDir[0] + dy*sunDir[1] + dz*sunDir[2];
+				if (sd > 0.0f) {
+					float sun = powf(sd, 250.0f) + powf(sd, 8.0f) * 0.2f;
+					r += sunColor[0] * sun; g += sunColor[1] * sun; b += sunColor[2] * sun;
+				}
+				int ri = (int)((r > 1.0f ? 1.0f : r) * 255.0f);
+				int gi = (int)((g > 1.0f ? 1.0f : g) * 255.0f);
+				int bi = (int)((b > 1.0f ? 1.0f : b) * 255.0f);
+				row[x] = 0xFF000000u | (ri << 16) | (gi << 8) | bi;
+			}
+		}
+		cube->UnlockRect((D3DCUBEMAP_FACES)face, 0);
+	}
+}
+
+// Derive sky/ground reflection colours from the captured scene light. The sun
+// disc uses the light's own colour (so it warms/dims with time-of-day); the sky
+// and ground are the daylight tints scaled by overall brightness and lifted by
+// the scene ambient, so night scenes reflect dark and dusk reflects warm.
+static void deriveEnvColors(const float sunColor[3], const float ambient[3],
+                            float sky[3], float ground[3])
+{
+	float sunLuma = 0.30f*sunColor[0] + 0.59f*sunColor[1] + 0.11f*sunColor[2];
+	if (sunLuma < 0.0f) sunLuma = 0.0f; else if (sunLuma > 1.0f) sunLuma = 1.0f;
+	float lvl = 0.25f + 0.75f * sunLuma;
+	// The ambient is only meant to tint the reflection. Adding it at full strength to the
+	// ground (and half to the sky) swamps the gradient: this game's D3DRS_AMBIENT runs
+	// around 0.7, which lifted ground to ~(0.91,0.86,0.70) against a sky of
+	// ~(0.69,0.84,1.00) -- brighter than the sky, and near enough to it that the cubemap
+	// became a flat colour. A reflection then returns the same value in every direction
+	// and stops responding to surface orientation or camera movement at all, which reads
+	// as "PBR is doing nothing". Keep the lift small and the ground clearly darker than
+	// the sky: that contrast is what makes a reflection legible as things move.
+	const float AMBIENT_TINT_SKY    = 0.15f;
+	const float AMBIENT_TINT_GROUND = 0.10f;
+	for (int i = 0; i < 3; ++i) {
+		sky[i]    = ENV_SKY_BASE[i]    * lvl + ambient[i] * AMBIENT_TINT_SKY;
+		ground[i] = ENV_GROUND_BASE[i] * lvl + ambient[i] * AMBIENT_TINT_GROUND;
+	}
+}
+
+void W3DShaderManager::initEnvMap()
+{
+	if (DX8Wrapper::m_envCubeMap != nullptr)
+		return;
+	IDirect3DDevice8* dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	IDirect3DCubeTexture8* cube = nullptr;
+	if (FAILED(dev->CreateCubeTexture(ENV_MAP_SIZE, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &cube)) || cube == nullptr)
+		return;
+
+	// Initial bake from the default daylight sun (replaced once a PBR mesh is lit).
+	float sunDir[3] = { DX8Wrapper::m_envSunDir[0], DX8Wrapper::m_envSunDir[1], DX8Wrapper::m_envSunDir[2] };
+	{ float l = sqrtf(sunDir[0]*sunDir[0] + sunDir[1]*sunDir[1] + sunDir[2]*sunDir[2]);
+	  if (l > 0.0f) { sunDir[0]/=l; sunDir[1]/=l; sunDir[2]/=l; } }
+	float sky[3], ground[3];
+	deriveEnvColors(DX8Wrapper::m_envSunColor, DX8Wrapper::m_envAmbient, sky, ground);
+	bakeEnvMapFaces(cube, sunDir, DX8Wrapper::m_envSunColor, sky, ground);
+
+	DX8Wrapper::m_envCubeMap = cube;
+	memcpy(s_envBakedSunDir, sunDir, sizeof(sunDir));
+	memcpy(s_envBakedSunColor, DX8Wrapper::m_envSunColor, sizeof(s_envBakedSunColor));
+	memcpy(s_envBakedSky, sky, sizeof(sky));
+	memcpy(s_envBakedGround, ground, sizeof(ground));
+	s_envBaked = true;
+}
+
+//=============================================================================
+// Re-bake the shared env cubemap when the scene's dominant light drifts.
+// Called once per render frame (from the terrain render). Cheap in the common
+// case: it recomputes target colours and returns unless they moved enough to
+// matter, so an actual face re-bake only happens on time-of-day changes.
+//=============================================================================
+void W3DShaderManager::updateEnvMap()
+{
+	IDirect3DCubeTexture8* cube = (IDirect3DCubeTexture8*)DX8Wrapper::m_envCubeMap;
+	if (cube == nullptr)
+		return;
+	// Until a PBR mesh has actually been lit, the captured light is just the
+	// default and the initial bake already matches it -- nothing to do.
+	if (!DX8Wrapper::m_envSunValid)
+		return;
+
+	float sunDir[3] = { DX8Wrapper::m_envSunDir[0], DX8Wrapper::m_envSunDir[1], DX8Wrapper::m_envSunDir[2] };
+	{ float l = sqrtf(sunDir[0]*sunDir[0] + sunDir[1]*sunDir[1] + sunDir[2]*sunDir[2]);
+	  if (l > 0.0f) { sunDir[0]/=l; sunDir[1]/=l; sunDir[2]/=l; } }
+	float sky[3], ground[3];
+	deriveEnvColors(DX8Wrapper::m_envSunColor, DX8Wrapper::m_envAmbient, sky, ground);
+
+	// Sum of absolute deltas across everything that shapes the bake. A small
+	// threshold keeps gradual time-of-day drift from re-baking every frame while
+	// still catching real changes within a frame or two.
+	float drift = 0.0f;
+	for (int i = 0; i < 3; ++i) {
+		drift += fabsf(sunDir[i]  - s_envBakedSunDir[i]);
+		drift += fabsf(DX8Wrapper::m_envSunColor[i] - s_envBakedSunColor[i]);
+		drift += fabsf(sky[i]     - s_envBakedSky[i]);
+		drift += fabsf(ground[i]  - s_envBakedGround[i]);
+	}
+	if (s_envBaked && drift < 0.03f)
+		return;
+
+	bakeEnvMapFaces(cube, sunDir, DX8Wrapper::m_envSunColor, sky, ground);
+	memcpy(s_envBakedSunDir, sunDir, sizeof(sunDir));
+	memcpy(s_envBakedSunColor, DX8Wrapper::m_envSunColor, sizeof(s_envBakedSunColor));
+	memcpy(s_envBakedSky, sky, sizeof(sky));
+	memcpy(s_envBakedGround, ground, sizeof(ground));
+	s_envBaked = true;
 }
 
 //=============================================================================

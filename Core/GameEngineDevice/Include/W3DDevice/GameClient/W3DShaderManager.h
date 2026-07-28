@@ -84,6 +84,10 @@ public:
 	static void initUnitShaders();	///<create the vertex declaration and load the unit vertex/pixel shaders.
 	static void shutdownUnitShaders();	///<release the unit shaders and vertex declaration.
 	static void getCloudOffset(float& x, float& y); ///<current scrolling cloud-overlay offset.
+	static TextureBaseClass* resolveOrmTexture(TextureBaseClass* baseTexture); ///<PBR ORM map for a base texture, or null (cached).
+	static void clearOrmCache();	///<release cached ORM lookups.
+	static void initEnvMap();	///<build the shared environment cubemap for PBR reflections.
+	static void updateEnvMap();	///<re-bake the env cubemap when scene lighting drifts (once/frame).
 
 	static ChipsetType getChipset();	///<return current device chipset.
 	static GraphicsVenderID getCurrentVendor() {return m_currentVendor;}	///<return current card vendor.

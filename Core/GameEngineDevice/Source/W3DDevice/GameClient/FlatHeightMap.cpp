@@ -469,6 +469,10 @@ void FlatHeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 		W3DShaderManager::updateCloud();
 	}
 
+	// Re-bake the shared PBR reflection cubemap if scene lighting drifted. Cheap
+	// no-op on most frames; unconditional so reflections track time-of-day.
+	W3DShaderManager::updateEnvMap();
+
 	Matrix3D tm(Transform);
 	// If there are trees, tell them to draw at the transparent time to draw.
 	if (m_treeBuffer) {
