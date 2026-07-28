@@ -117,6 +117,7 @@ Bool W3DShaderManager::m_renderingToTexture = false;
 IDirect3DSurface8 *W3DShaderManager::m_oldRenderSurface=nullptr;	///<previous render target
 IDirect3DTexture8 *W3DShaderManager::m_renderTexture=nullptr;		///<texture into which rendering will be redirected.
 IDirect3DSurface8 *W3DShaderManager::m_newRenderSurface=nullptr;	///<new render target inside m_renderTexture
+IDirect3DSurface8 *W3DShaderManager::m_resolveSurface=nullptr;	///<MSAA resolve destination (m_renderTexture surface) when MSAA is on
 IDirect3DSurface8 *W3DShaderManager::m_oldDepthSurface=nullptr;	///<previous depth buffer surface
 /*===========================================================================================*/
 /*=========      Screen Shaders	=============================================================*/
@@ -2620,36 +2621,50 @@ void W3DShaderManager::init()
 
 		m_oldRenderSurface->GetDesc(&desc);
 		
-		// TheSuperHackers @bugfix Redirecting rendering to a non-multisampled texture
-		// while using a multisampled depth buffer is an API violation in DX8.
-		if (desc.MultiSampleType == D3DMULTISAMPLE_NONE)
+		// The post-process reads a plain (non-multisampled) texture, so always create
+		// that. Redirecting the scene straight into a non-MSAA texture while the depth
+		// buffer is multisampled is an API violation, so when MSAA is active the scene
+		// is drawn into a matching multisampled colour surface (m_newRenderSurface) and
+		// resolved into the plain texture (m_resolveSurface) by endRenderToTexture.
+		LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+		hr = dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT, &m_renderTexture);
+
+		if (hr == S_OK)
 		{
-			hr=DX8Wrapper::_Get_D3D_Device8()->CreateTexture(desc.Width,desc.Height,1,D3DUSAGE_RENDERTARGET,desc.Format,D3DPOOL_DEFAULT,&m_renderTexture);
-		}
-		else
-		{
-			// Force failure path to avoid MSAA mismatch
-			hr = E_FAIL;
+			if (desc.MultiSampleType == D3DMULTISAMPLE_NONE)
+			{
+				// No MSAA: render straight into the plain texture, no resolve needed.
+				hr = m_renderTexture->GetSurfaceLevel(0, &m_newRenderSurface);
+				m_resolveSurface = nullptr;
+			}
+			else
+			{
+				// MSAA: multisampled colour surface to render into + the plain texture
+				// surface as the resolve destination. The 6-arg form goes through the
+				// d3d9_compat shim (multisample quality 0, matching the standard MSAA the
+				// back buffer / depth use), so the surface pairs with the MSAA depth.
+				hr = dev->CreateRenderTarget(desc.Width, desc.Height, desc.Format,
+					desc.MultiSampleType, FALSE, &m_newRenderSurface);
+				if (hr == S_OK)
+					hr = m_renderTexture->GetSurfaceLevel(0, &m_resolveSurface);
+			}
 		}
 
 		if (hr != S_OK)
 		{
+			SAFE_RELEASE(m_resolveSurface);
+			SAFE_RELEASE(m_newRenderSurface);
+			SAFE_RELEASE(m_renderTexture);
 			SAFE_RELEASE(m_oldRenderSurface);
-			m_renderTexture = nullptr;
 		} else {
-			hr = m_renderTexture->GetSurfaceLevel(0, &m_newRenderSurface);
+			hr = dev->GetDepthStencilSurface(&m_oldDepthSurface);
 			if (hr != S_OK)
 			{
+				SAFE_RELEASE(m_resolveSurface);
+				SAFE_RELEASE(m_newRenderSurface);
 				SAFE_RELEASE(m_renderTexture);
-				m_newRenderSurface = nullptr;
-			}	else {
-				hr = DX8Wrapper::_Get_D3D_Device8()->GetDepthStencilSurface(&m_oldDepthSurface);
-				if (hr != S_OK)
-				{
-					SAFE_RELEASE(m_newRenderSurface);
-					SAFE_RELEASE(m_renderTexture);
-					m_oldDepthSurface = nullptr;
-				}
+				SAFE_RELEASE(m_oldRenderSurface);
+				m_oldDepthSurface = nullptr;
 			}
 		}
 	}
@@ -3022,6 +3037,7 @@ void W3DShaderManager::getCloudOffset(float& x, float& y)
 void W3DShaderManager::shutdown()
 {
 	shutdownUnitShaders();
+	SAFE_RELEASE(m_resolveSurface);
 	SAFE_RELEASE(m_newRenderSurface);
 	SAFE_RELEASE(m_renderTexture);
 	SAFE_RELEASE(m_oldRenderSurface);
@@ -3191,6 +3207,7 @@ void W3DShaderManager::startRenderToTexture()
 	if (hr != S_OK)
 	{
 		// Permanently disable RTT
+		SAFE_RELEASE(m_resolveSurface);
 		SAFE_RELEASE(m_newRenderSurface);
 		SAFE_RELEASE(m_renderTexture);
 		SAFE_RELEASE(m_oldRenderSurface);
@@ -3234,6 +3251,14 @@ IDirect3DTexture8 *W3DShaderManager::endRenderToTexture()
 	DEBUG_ASSERTCRASH(hr==S_OK, ("Set target failed unexpectedly."));
 	if (hr == S_OK)
 	{
+		// When MSAA is active the scene was drawn into a multisampled colour surface;
+		// resolve it down into the plain texture (StretchRect from a multisampled to a
+		// non-multisampled surface of the same size performs the resolve) so the
+		// post-process can sample it. Done after the back buffer is restored so the
+		// multisampled surface is no longer the active render target.
+		if (m_resolveSurface != nullptr)
+			DX8Wrapper::_Get_D3D_Device8()->StretchRect(m_newRenderSurface, nullptr, m_resolveSurface, nullptr, D3DTEXF_NONE);
+
 		//assume render target texture will be in stage 0.  Most hardware has "conditional" support for
 		//non-power-of-2 textures so we must force some required states:
 		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
