@@ -276,8 +276,8 @@ void WaterRenderObjClass::setupJbaWaterShader()
 	m_pDev->SetTextureStageState( 3, D3DTSS_MINFILTER, D3DTEXF_LINEAR );
 	m_pDev->SetTextureStageState( 3, D3DTSS_MAGFILTER, D3DTEXF_LINEAR );
 	if (m_riverWaterPixelShader){
-		DX8Wrapper::_Get_D3D_Device8()->SetPixelShaderConstant(0,   D3DXVECTOR4(REFLECTION_FACTOR, REFLECTION_FACTOR, REFLECTION_FACTOR, 1.0f), 1);
-		DX8Wrapper::_Get_D3D_Device8()->SetPixelShader(m_riverWaterPixelShader);
+		DX8Wrapper::Set_Pixel_Shader_Constant(0,   D3DXVECTOR4(REFLECTION_FACTOR, REFLECTION_FACTOR, REFLECTION_FACTOR, 1.0f), 1);
+		DX8Wrapper::Set_Pixel_Shader(m_riverWaterPixelShader);
 	}
 }
 
@@ -1886,11 +1886,11 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
 	mat._31 = 0.0f; mat._32 = 0.0f; mat._33 = 0.0f;   mat._34=1.0f;
 	mat._41 = 0.0f; mat._42 = 0.0f; mat._43 = 0.0f;   mat._44=1.0f;
 
-	m_pDev->SetVertexShaderConstant(CV_TEXPROJ_0, &mat, 4);
+	DX8Wrapper::Set_Vertex_Shader_Constant(CV_TEXPROJ_0, &mat, 4);
 
 	// Setup constants
-	m_pDev->SetVertexShaderConstant(CV_ZERO,   D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f), 1);
-	m_pDev->SetVertexShaderConstant(CV_ONE,    D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f), 1);
+	DX8Wrapper::Set_Vertex_Shader_Constant(CV_ZERO,   D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f), 1);
+	DX8Wrapper::Set_Vertex_Shader_Constant(CV_ONE,    D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f), 1);
 
 	DX8Wrapper::Set_Vertex_Shader(m_dwWaveVertexShader);
 	DX8Wrapper::Set_Pixel_Shader(m_dwWavePixelShader);
@@ -1933,7 +1933,7 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
 			D3DXMatrixMultiply(&matWorldViewProj, &matTemp, &matProj);
 			//matrices must be transposed before loading into vertex shader registers
 			D3DXMatrixTranspose(&matWorldViewProj, &matWorldViewProj);
-			m_pDev->SetVertexShaderConstant(CV_WORLDVIEWPROJ_0, &matWorldViewProj, 4);	//pass transform matrix into shader
+			DX8Wrapper::Set_Vertex_Shader_Constant(CV_WORLDVIEWPROJ_0, &matWorldViewProj, 4);	//pass transform matrix into shader
 
 			m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLESTRIP,0,m_numVertices,0,m_numIndices);
 		}
@@ -2445,7 +2445,7 @@ void WaterRenderObjClass::renderWaterMesh()
 
 //	m_pDev->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID);
 
-	if (m_trapezoidWaterPixelShader) DX8Wrapper::_Get_D3D_Device8()->SetPixelShader(0);
+	if (m_trapezoidWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(0);
 
 	m_vertexBufferD3DOffset += mx*my;	//advance past vertices already in buffer
 
@@ -2912,7 +2912,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
 	if (TheWaterTransparency->m_additiveBlend)
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA );
 
-	if (m_riverWaterPixelShader) DX8Wrapper::_Get_D3D_Device8()->SetPixelShader(m_riverWaterPixelShader);
+	if (m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(m_riverWaterPixelShader);
  	DWORD cull;
 	DX8Wrapper::_Get_D3D_Device8()->GetRenderState(D3DRS_CULLMODE, &cull);
 	DX8Wrapper::_Get_D3D_Device8()->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
@@ -2927,7 +2927,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
 		DX8Wrapper::_Get_D3D_Device8()->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID);
 	}
 
-	if (m_riverWaterPixelShader) DX8Wrapper::_Get_D3D_Device8()->SetPixelShader(0);
+	if (m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(0);
 
 	//restore blend mode to what W3D expects.
 	if (TheWaterTransparency->m_additiveBlend)
@@ -3031,8 +3031,8 @@ void WaterRenderObjClass::setupFlatWaterShader()
 	m_pDev->SetTextureStageState( 2, D3DTSS_MINFILTER, D3DTEXF_LINEAR );
 	m_pDev->SetTextureStageState( 2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR );
 	if (m_trapezoidWaterPixelShader){
-		DX8Wrapper::_Get_D3D_Device8()->SetPixelShaderConstant(0,   D3DXVECTOR4(REFLECTION_FACTOR, REFLECTION_FACTOR, REFLECTION_FACTOR, 1.0f), 1);
-		DX8Wrapper::_Get_D3D_Device8()->SetPixelShader(m_trapezoidWaterPixelShader);
+		DX8Wrapper::Set_Pixel_Shader_Constant(0,   D3DXVECTOR4(REFLECTION_FACTOR, REFLECTION_FACTOR, REFLECTION_FACTOR, 1.0f), 1);
+		DX8Wrapper::Set_Pixel_Shader(m_trapezoidWaterPixelShader);
 	}
 }
 
@@ -3314,7 +3314,7 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
 		DX8Wrapper::_Get_D3D_Device8()->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID);
 	}
 
-	if (m_riverWaterPixelShader) DX8Wrapper::_Get_D3D_Device8()->SetPixelShader(0);
+	if (m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(0);
 	//Restore alpha blend to default values since we may have changed them to feather edges.
 	if (!TheWaterTransparency->m_additiveBlend)
 	{	DX8Wrapper::Set_DX8_Render_State(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA );

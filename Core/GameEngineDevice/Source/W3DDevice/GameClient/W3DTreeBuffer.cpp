@@ -1657,14 +1657,14 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 		D3DXMatrixTranspose( &mat, &mat );
 
 		// c4  - Composite World-View-Projection Matrix
-		DX8Wrapper::_Get_D3D_Device8()->SetVertexShaderConstant(  4, &mat,  4 );
+		DX8Wrapper::Set_Vertex_Shader_Constant(  4, &mat,  4 );
 		Vector4 noSway(0,0,0,0);
-		DX8Wrapper::_Get_D3D_Device8()->SetVertexShaderConstant(  8, &noSway,  1 );
+		DX8Wrapper::Set_Vertex_Shader_Constant(  8, &noSway,  1 );
 
 		// c8 - c8+MAX_SWAY_TYPES - the sway amount.
 		for	(i=0; i<MAX_SWAY_TYPES; i++) {
 			Vector4 sway4(swayFactor[i].X, swayFactor[i].Y, swayFactor[i].Z, 0);
-			DX8Wrapper::_Get_D3D_Device8()->SetVertexShaderConstant(  9+i, &sway4,  1 );
+			DX8Wrapper::Set_Vertex_Shader_Constant(  9+i, &sway4,  1 );
 		}
 
 		W3DShroud *shroud;
@@ -1678,16 +1678,16 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 			xoffset = -(float)shroud->getDrawOriginX() + width;
 			yoffset = -(float)shroud->getDrawOriginY() + height;
 			Vector4 offset(xoffset, yoffset, 0, 0);
-			DX8Wrapper::_Get_D3D_Device8()->SetVertexShaderConstant(  32, &offset,  1 );
+			DX8Wrapper::Set_Vertex_Shader_Constant(  32, &offset,  1 );
 			width = 1.0f/(width*shroud->getTextureWidth());
 			height = 1.0f/(height*shroud->getTextureHeight());
 			offset.Set(width, height, 1, 1);
-			DX8Wrapper::_Get_D3D_Device8()->SetVertexShaderConstant(  33, &offset,  1 );
+			DX8Wrapper::Set_Vertex_Shader_Constant(  33, &offset,  1 );
 
 		} else {
 			Vector4 offset(0,0,0,0);
-			DX8Wrapper::_Get_D3D_Device8()->SetVertexShaderConstant(  32, &offset,  1 );
-			DX8Wrapper::_Get_D3D_Device8()->SetVertexShaderConstant(  33, &offset,  1 );
+			DX8Wrapper::Set_Vertex_Shader_Constant(  32, &offset,  1 );
+			DX8Wrapper::Set_Vertex_Shader_Constant(  33, &offset,  1 );
 		}
 
 		DX8Wrapper::Set_Vertex_Shader(m_dwTreeVertexShader);
@@ -1697,7 +1697,7 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 		Real mulTwoX = 0.5f;
 		if(TheGlobalData && TheGlobalData->m_useOverbright)
 			mulTwoX = 1.0f;
-		DX8Wrapper::_Get_D3D_Device8()->SetPixelShaderConstant(1, D3DXVECTOR4(mulTwoX, mulTwoX, mulTwoX, mulTwoX), 1);
+		DX8Wrapper::Set_Pixel_Shader_Constant(1, D3DXVECTOR4(mulTwoX, mulTwoX, mulTwoX, mulTwoX), 1);
 #endif
 
 	} else {
