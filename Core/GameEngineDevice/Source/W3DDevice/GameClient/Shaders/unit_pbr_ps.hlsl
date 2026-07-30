@@ -21,6 +21,7 @@
 sampler2D   AlbedoSampler : register(s0);
 sampler2D   OrmSampler    : register(s1);
 samplerCUBE EnvSampler    : register(s4);   // shared environment cubemap (reflections)
+sampler2D   ShadowMap     : register(s5);   // directional shadow map (packed depth)
 
 float4 LightDir0     : register(c0);   // xyz = direction toward the light
 float4 LightDir1     : register(c1);
@@ -34,6 +35,8 @@ float4 SceneAmbient  : register(c8);   // D3DRS_AMBIENT equivalent
 float4 CameraPos     : register(c9);   // world-space camera position
 float4 MatAmbient    : register(c10);  // house-colour tint (white when none)
 float4 AlphaCtl      : register(c11);  // x = material opacity, y = 1 when lit (use it)
+row_major float4x4 SunVP : register(c12);  // sun view*projection (world -> shadow clip)
+float4 ShadowParams  : register(c16);  // x = depth bias, y = shadow strength (0 = off)
 
 struct PS_INPUT
 {
@@ -71,6 +74,36 @@ float G_Smith(float NdotV, float NdotL, float rough)
 float3 F_Schlick(float VdotH, float3 F0)
 {
     return F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+}
+
+// Directional shadow map. Unpack the RGB-packed depth and 3x3-PCF compare this
+// pixel's sun-clip-space depth against it. Returns 1 = lit, 0 = fully shadowed.
+float unpackDepth(float4 rgba)
+{
+    // Weights are 255, matching shadowdepth_ps's pack -- see the note there.
+    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+}
+
+float computeShadow(float3 worldPos)
+{
+    float4 clip = mul(float4(worldPos, 1.0), SunVP);
+    float3 ndc  = clip.xyz / clip.w;
+    float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;   // clip -> UV, flip Y for the texture
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+        return 1.0;   // outside the sun frustum -> lit
+
+    // The bias comes in per frame rather than being baked: it has to counter the
+    // world-space size of a shadow texel, and the sun frustum is fitted to the camera,
+    // so that size changes with the zoom. A fixed value large enough for the widest
+    // frustum erases small casters' shadows entirely once zoomed in.
+    const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
+    float lit = 0.0;
+    [unroll] for (int x = -1; x <= 1; ++x)
+        [unroll] for (int y = -1; y <= 1; ++y) {
+            float stored = unpackDepth(tex2D(ShadowMap, uv + float2(x, y) * texel));
+            lit += (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+        }
+    return lerp(1.0, lit / 9.0, ShadowParams.y);
 }
 
 // Perturb a geometric normal by the gradient of a height field, using a tangent
@@ -187,6 +220,9 @@ float4 main(PS_INPUT input) : COLOR
     Lo += DirectLight(N, V, LightDir1.xyz, LightDiffuse1.rgb, diffuseColor, F0, roughness);
     Lo += DirectLight(N, V, LightDir2.xyz, LightDiffuse2.rgb, diffuseColor, F0, roughness);
     Lo += DirectLight(N, V, LightDir3.xyz, LightDiffuse3.rgb, diffuseColor, F0, roughness);
+
+    // Cast shadows darken the direct sunlight only (ambient + reflections remain).
+    Lo *= computeShadow(input.worldPos);
 
     // Ambient diffuse under the scene ambient, attenuated by AO.
     float3 ambient   = diffuseColor * SceneAmbient.rgb * ao;

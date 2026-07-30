@@ -1294,7 +1294,7 @@ void W3DProjectedShadowManager::prepareShadows()
 	m_drawStartY=hmap->getDrawOrgY();
 }
 
-Int W3DProjectedShadowManager::renderShadows(RenderInfoClass & rinfo)
+Int W3DProjectedShadowManager::renderShadows(RenderInfoClass & rinfo, Bool decalsOnly)
 {
 	Int projectionCount=0;
 
@@ -1313,7 +1313,7 @@ Int W3DProjectedShadowManager::renderShadows(RenderInfoClass & rinfo)
 	nShadowDecalVertsInBuf = 0xffff;
 	nShadowDecalIndicesInBuf = 0xffff;
 
-	if (TheGlobalData->m_useShadowDecals)
+	if (TheGlobalData->m_useShadowDecals && !decalsOnly)
 	{
 		// Render the object
 		TheDX8MeshRenderer.Set_Camera(&rinfo.Camera);

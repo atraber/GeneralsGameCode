@@ -117,13 +117,37 @@ TextureFilterClass::AnisotropicFilterMode OptionPreferences::getTextureAnisotrop
 	return level;
 }
 
+// Options.ini booleans are written either as yes/no or as 1/0 depending on which part
+// of the game wrote them, so accept both. atoi alone silently reads "yes" as 0, which
+// turns an option off exactly when the user asked for it on.
+static Bool parseIniBool(const char *value, Bool dflt)
+{
+	if (value == nullptr || *value == 0)
+		return dflt;
+	if (stricmp(value, "yes") == 0 || stricmp(value, "true") == 0 || stricmp(value, "on") == 0)
+		return TRUE;
+	if (stricmp(value, "no") == 0 || stricmp(value, "false") == 0 || stricmp(value, "off") == 0)
+		return FALSE;
+	return atoi(value) != 0;
+}
+
 Bool OptionPreferences::getBloomEnabled() const
 {
 	// Screen-space bloom post-process. Defaults to on when the key is absent.
 	OptionPreferences::const_iterator it = find("UseBloom");
 	if (it == end())
 		return TRUE;
-	return atoi(it->second.str()) != 0;
+	return parseIniBool(it->second.str(), TRUE);
+}
+
+Bool OptionPreferences::getShadowMappingEnabled() const
+{
+	// Directional shadow map. Defaults to on when the key is absent; when it runs it
+	// replaces the volume and decal shadows.
+	OptionPreferences::const_iterator it = find("UseShadowMapping");
+	if (it == end())
+		return TRUE;
+	return parseIniBool(it->second.str(), TRUE);
 }
 
 Int OptionPreferences::getCampaignDifficulty()

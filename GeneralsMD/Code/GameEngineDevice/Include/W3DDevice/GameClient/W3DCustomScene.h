@@ -27,5 +27,6 @@
 enum CustomScenePassModes CPP_11(: Int)
 {
 	SCENE_PASS_DEFAULT,
-	SCENE_PASS_ALPHA_MASK
+	SCENE_PASS_ALPHA_MASK,
+	SCENE_PASS_SHADOW_MAP		///< render scene depth from the sun's view into the shadow map
 };

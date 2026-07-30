@@ -56,7 +56,11 @@ class W3DProjectedShadowManager	: public ProjectedShadowManager
 		void reset();					///<free all existing shadows - ready for next map.
 		void shutdown();			///<free all assets prior to shutdown of entire game.
 		void prepareShadows();
-		Int	 renderShadows(RenderInfoClass & rinfo);	///<iterate over each object and render its shadow onto affected objects.
+		///<iterate over each object and render its shadow onto affected objects.
+		/// decalsOnly skips the shadows and draws just m_decalList -- radius cursors,
+		/// targeting reticles and the like, which are not shadows and are still wanted
+		/// when the directional shadow map has taken over the casting.
+		Int	 renderShadows(RenderInfoClass & rinfo, Bool decalsOnly = FALSE);
 		void ReleaseResources();	///<release device dependent D3D resources.
 		Bool ReAcquireResources();	///<allocate device dependent D3D resources.
 		void invalidateCachedLightPositions();	///<forces shadows to update regardless of last lightposition

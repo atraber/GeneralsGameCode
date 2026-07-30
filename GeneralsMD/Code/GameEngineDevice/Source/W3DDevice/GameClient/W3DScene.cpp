@@ -1006,6 +1006,25 @@ void RTS3DScene::Render(RenderInfoClass & rinfo)
 
 			ShaderClass::Invalidate();
 		}
+		else if (m_customPassMode == SCENE_PASS_SHADOW_MAP)
+		{
+			// Shadow-map depth pass: render geometry only. The DX8Wrapper shadow-depth
+			// flag swaps in the depth-packing shaders for every mesh/terrain draw, so
+			// no material passes, effects or shadows are needed -- just fill the sun's
+			// depth into the shadow map.
+			// The camera's Apply set a screen-sized (16:9) viewport; override it to cover
+			// the whole square shadow map, otherwise geometry only fills the top
+			// ~1080 rows and the rest stays cleared (which mis-aligns the sampling).
+			IDirect3DDevice8 *smDev = DX8Wrapper::_Get_D3D_Device8();
+			if (smDev)
+			{
+				D3DVIEWPORT9 smVp = { 0, 0, DX8Wrapper::SHADOW_MAP_SIZE,
+									  DX8Wrapper::SHADOW_MAP_SIZE, 0.0f, 1.0f };
+				smDev->SetViewport(&smVp);
+			}
+			Customized_Render(rinfo);
+			Flush(rinfo);
+		}
 	}
 	else
 	{

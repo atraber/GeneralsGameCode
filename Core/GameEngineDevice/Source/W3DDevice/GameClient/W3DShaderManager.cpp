@@ -123,6 +123,12 @@ IDirect3DTexture8 *W3DShaderManager::m_renderTexture=nullptr;		///<texture into 
 IDirect3DSurface8 *W3DShaderManager::m_newRenderSurface=nullptr;	///<new render target inside m_renderTexture
 IDirect3DSurface8 *W3DShaderManager::m_resolveSurface=nullptr;	///<MSAA resolve destination (m_renderTexture surface) when MSAA is on
 IDirect3DSurface8 *W3DShaderManager::m_oldDepthSurface=nullptr;	///<previous depth buffer surface
+IDirect3DTexture8 *W3DShaderManager::m_pShadowMapTexture=nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_pShadowMapSurface=nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_pShadowMapDepthSurface=nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_shadowSavedRT=nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_shadowSavedDepth=nullptr;
+DWORD W3DShaderManager::m_shadowSavedStates[W3DShaderManager::NUM_SHADOW_SAVED_STATES]={0};
 /*===========================================================================================*/
 /*=========      Screen Shaders	=============================================================*/
 /*===========================================================================================*/
@@ -2907,6 +2913,12 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::m_dwUnitVS == 0) {
 		LoadAndCreateD3DShader("shaders\\unit_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwUnitVS);
 	}
+	// Variant for geometry that carries no normal (roads, tank tracks). Separate rather
+	// than a branch in unit_vs because the FVF doubles as the vertex declaration, so the
+	// declared inputs have to match what the buffer actually supplies.
+	if (DX8Wrapper::m_dwUnitPrelitVS == 0) {
+		LoadAndCreateD3DShader("shaders\\unit_prelit_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwUnitPrelitVS);
+	}
 	if (DX8Wrapper::m_dwUnitPS == 0) {
 		LoadAndCreateD3DShader("shaders\\unit_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUnitPS);
 	}
@@ -2947,6 +2959,8 @@ void W3DShaderManager::initUnitShaders()
 		(DX8Wrapper::m_defaultOrmMap != nullptr) ? "created" : "MISSING"));
 	// Build the shared environment cubemap the PBR shader reflects.
 	initEnvMap();
+	// Directional shadow map (sun-view depth) for cast shadows.
+	initShadowMap();
 
 	// The in-game debug visualizations.
 	initDebugVis();
@@ -2998,6 +3012,7 @@ void W3DShaderManager::shutdownUnitShaders()
 	// initEnvMap re-bakes and resets the bake baseline when it recreates the cube,
 	// so no need to touch s_envBaked here; just drop the captured-light validity.
 	DX8Wrapper::m_envSunValid = false;
+	shutdownShadowMap();
 	shutdownDebugVis();
 	DX8Wrapper::m_bUnitShaderBound = false;
 }
@@ -3540,6 +3555,150 @@ static void deriveEnvColors(const float sunColor[3], const float ambient[3],
 		sky[i]    = ENV_SKY_BASE[i]    * lvl + ambient[i] * AMBIENT_TINT_SKY;
 		ground[i] = ENV_GROUND_BASE[i] * lvl + ambient[i] * AMBIENT_TINT_GROUND;
 	}
+}
+
+//=============================================================================
+// Directional shadow map.
+//
+// A square colour render target (packed depth) plus its own depth buffer. Each
+// frame the scene is rendered once from the sun's point of view into it (via the
+// shadowdepth shaders, routed by DX8Wrapper's shadow-depth-pass flag); the unit
+// and terrain shaders then reproject and sample it for cast shadows.
+//=============================================================================
+static const int SHADOW_MAP_SIZE = DX8Wrapper::SHADOW_MAP_SIZE;
+
+// Render states the depth pass overrides, saved across it so none of them escape.
+static const DWORD s_shadowSavedStateIds[W3DShaderManager::NUM_SHADOW_SAVED_STATES] =
+{
+	D3DRS_COLORWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_ZENABLE,
+	D3DRS_ZWRITEENABLE,     D3DRS_ZFUNC,            D3DRS_SRCBLEND,
+	D3DRS_CULLMODE,         D3DRS_FILLMODE,         D3DRS_STENCILENABLE,
+	D3DRS_ZBIAS,
+};
+
+void W3DShaderManager::initShadowMap()
+{
+	if (m_pShadowMapTexture != nullptr)
+		return;
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	if (DX8Wrapper::m_dwShadowDepthVS == 0)
+		LoadAndCreateD3DShader("shaders\\shadowdepth_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwShadowDepthVS);
+	if (DX8Wrapper::m_dwShadowDepthPS == 0)
+		LoadAndCreateD3DShader("shaders\\shadowdepth_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwShadowDepthPS);
+	if (DX8Wrapper::m_dwShadowDepthVS == 0 || DX8Wrapper::m_dwShadowDepthPS == 0)
+	{
+		return;   // shaders missing -> shadow mapping stays off (Has_Shadow_Map() false)
+	}
+
+	HRESULT texHr = dev->CreateTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 1, D3DUSAGE_RENDERTARGET,
+			D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_pShadowMapTexture);
+	if (FAILED(texHr) || m_pShadowMapTexture == nullptr)
+	{
+		m_pShadowMapTexture = nullptr;
+		return;
+	}
+	if (FAILED(m_pShadowMapTexture->GetSurfaceLevel(0, &m_pShadowMapSurface)))
+	{
+		SAFE_RELEASE(m_pShadowMapTexture);
+		return;
+	}
+	HRESULT dsHr = dev->CreateDepthStencilSurface(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, D3DFMT_D16,
+			D3DMULTISAMPLE_NONE, &m_pShadowMapDepthSurface);
+	if (FAILED(dsHr))
+	{
+		SAFE_RELEASE(m_pShadowMapSurface);
+		SAFE_RELEASE(m_pShadowMapTexture);
+		m_pShadowMapDepthSurface = nullptr;
+		return;
+	}
+
+	DX8Wrapper::m_pShadowMap = m_pShadowMapTexture;   // now Has_Shadow_Map() is true
+}
+
+void W3DShaderManager::shutdownShadowMap()
+{
+	DX8Wrapper::m_pShadowMap = nullptr;
+	SAFE_RELEASE(m_pShadowMapDepthSurface);
+	SAFE_RELEASE(m_pShadowMapSurface);
+	SAFE_RELEASE(m_pShadowMapTexture);
+	if (DX8Wrapper::m_dwShadowDepthVS) {
+		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwShadowDepthVS)->Release();
+		DX8Wrapper::m_dwShadowDepthVS = 0;
+	}
+	if (DX8Wrapper::m_dwShadowDepthPS) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwShadowDepthPS)->Release();
+		DX8Wrapper::m_dwShadowDepthPS = 0;
+	}
+}
+
+// Single answer to "are cast shadows coming from the shadow map this frame?", so the
+// depth pass and the legacy volume/decal shadows can never both decide they are on.
+Bool W3DShaderManager::isShadowMappingActive()
+{
+	return TheGlobalData->m_useShadowMapping && DX8Wrapper::Has_Shadow_Map();
+}
+
+void W3DShaderManager::startShadowMapRendering()
+{
+	if (m_pShadowMapSurface == nullptr || m_pShadowMapDepthSurface == nullptr)
+		return;
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	m_shadowSavedRT = nullptr;
+	m_shadowSavedDepth = nullptr;
+	dev->GetRenderTarget(0, &m_shadowSavedRT);
+	dev->GetDepthStencilSurface(&m_shadowSavedDepth);
+
+	if (FAILED(DX8Wrapper::Set_DX8_Render_Target(m_pShadowMapSurface, m_pShadowMapDepthSurface)))
+	{
+		SAFE_RELEASE(m_shadowSavedRT);
+		SAFE_RELEASE(m_shadowSavedDepth);
+		return;
+	}
+	// The depth pass overrides the render states it needs (see the shadow-depth branch in
+	// DX8Wrapper::Apply_Render_State_Changes) and leaves them on the device. Invalidating
+	// the state cache afterwards is not enough on its own: it makes the next Set_ write
+	// through, but only for states something actually sets again, and the normal scene
+	// never touches COLORWRITEENABLE. An unroutable draw masks colour and z to keep
+	// itself out of the map, and that mask would then follow the pass out and quietly
+	// blank whatever drew next. Put back exactly what was here.
+	LPDIRECT3DDEVICE8 stateDev = dev;
+	for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
+		stateDev->GetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], &m_shadowSavedStates[i]);
+
+	DX8Wrapper::Set_Shadow_Depth_Pass(true);
+	// Clear colour so untouched texels read as far (unpack -> depth 1.0 -> lit). R is the
+	// most significant channel, so red, not blue: the pack weights the channels 1, 1/255,
+	// 1/255^2 coarse-to-fine. Clearing to blue here would unpack to ~0 -- the near plane --
+	// and every receiver outside the rasterised area would come out fully shadowed.
+	DX8Wrapper::Clear(true, true, Vector3(1.0f, 0.0f, 0.0f), 1.0f, 1.0f);
+}
+
+void W3DShaderManager::endShadowMapRendering()
+{
+	DX8Wrapper::Set_Shadow_Depth_Pass(false);
+	if (m_shadowSavedRT != nullptr)
+	{
+		DX8Wrapper::Set_DX8_Render_Target(m_shadowSavedRT, m_shadowSavedDepth);
+		SAFE_RELEASE(m_shadowSavedRT);
+		SAFE_RELEASE(m_shadowSavedDepth);
+	}
+	// Put the render states back before the cache is invalidated, so both the device and
+	// the cache end up holding what the scene had. Nothing the depth pass forced --
+	// least of all the colour/z mask that keeps unroutable draws out of the map -- may
+	// outlive it.
+	if (LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8())
+	{
+		for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
+			dev->SetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], m_shadowSavedStates[i]);
+	}
+
+	DX8Wrapper::Invalidate_Cached_Render_States();
 }
 
 void W3DShaderManager::initEnvMap()
