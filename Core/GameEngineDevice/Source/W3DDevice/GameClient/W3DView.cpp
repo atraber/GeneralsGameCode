@@ -87,6 +87,7 @@
 #include "W3DDevice/GameClient/W3DView.h"
 #include "d3dx8math.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
+#include "W3DDevice/GameClient/W3DCustomScene.h"
 #include "W3DDevice/GameClient/Module/W3DModelDraw.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
 
@@ -1845,6 +1846,143 @@ void W3DView::draw()
 	Bool doExtraRender = false;
 	CustomScenePassModes customScenePassMode  = SCENE_PASS_DEFAULT;
 	Bool preRenderResult = false;
+
+	// ---- Directional shadow map: render scene depth from the sun's view first ----
+	// The shadow-depth shaders transform by SunVP (ignoring the camera), and the
+	// camera's normalised viewport maps to the bound square target, so a plain
+	// doRender covers the whole map. Only camera-visible geometry casts (acceptable
+	// for the top-down RTS view). SunVP: look from along the sun direction toward the
+	// view centre, orthographic. Sun direction reuses the env-map capture.
+	if (W3DShaderManager::isShadowMappingActive())
+	{
+		// Sun frustum fitted to the ground area the camera can actually see, so that
+		// zooming in spends the whole map on a small area instead of always covering a
+		// fixed block. The eye is pushed well back along the sun direction and the far
+		// plane extended so all casters (and the ground slab) sit inside [near,far];
+		// only the lateral extent follows the camera.
+		const float SHADOW_ORTHO_MAX  = 2600.0f;  // widest the map covers (and the fallback)
+		const float SHADOW_ORTHO_MIN  = 600.0f;   // tightest, so a top-down zoom stays sane
+		const float SHADOW_ORTHO_STEP = 64.0f;    // extent quantum (see below)
+		const float SHADOW_MARGIN     = 96.0f;    // slack for casters just off the view edge
+		const float SHADOW_EYE        = 2600.0f;  // eye distance from the look-at
+		const float SHADOW_FAR        = 5200.0f;  // far plane (eye to beyond the scene)
+
+		// Bound the four view corners projected onto the look-at ground plane. A circle
+		// rather than a box: the extent is then invariant under camera rotation, so
+		// orbiting doesn't resize the frustum and make the shadows crawl. The radius is
+		// quantised for the same reason, so small zoom/scroll changes leave it alone.
+		float shadowOrtho = SHADOW_ORTHO_MAX;
+		Coord3D shadowCentre = m_pos;
+		Coord3D viewCorner[4];
+		if (getScreenCornerWorldPointsAtZ(&viewCorner[0], &viewCorner[1], &viewCorner[2],
+										  &viewCorner[3], m_pos.z) == PlaneClass::INSIDE_SEGMENT)
+		{
+			// (Anything but INSIDE_SEGMENT means a corner ray runs near-parallel to the
+			// ground and lands arbitrarily far away -- keep the fixed frustum for that.)
+			Coord3D mid;
+			mid.x = mid.y = 0.0f;
+			for (Int i = 0; i < 4; ++i)
+			{
+				mid.x += viewCorner[i].x * 0.25f;
+				mid.y += viewCorner[i].y * 0.25f;
+			}
+			mid.z = m_pos.z;
+
+			Real radiusSqr = 0.0f;
+			for (Int i = 0; i < 4; ++i)
+			{
+				const Real dx = viewCorner[i].x - mid.x;
+				const Real dy = viewCorner[i].y - mid.y;
+				radiusSqr = max(radiusSqr, dx * dx + dy * dy);
+			}
+
+			shadowOrtho = 2.0f * (sqrtf(radiusSqr) + SHADOW_MARGIN);
+			shadowOrtho = ceilf(shadowOrtho / SHADOW_ORTHO_STEP) * SHADOW_ORTHO_STEP;
+			shadowOrtho = clamp(SHADOW_ORTHO_MIN, shadowOrtho, SHADOW_ORTHO_MAX);
+			shadowCentre = mid;
+		}
+
+		// Direction from the ground toward the sun, taken from the scene's own terrain
+		// lighting -- the same source the legacy shadows used, so cast shadows fall the
+		// way the map's baked lighting says they should. (m_terrainLightPos points along
+		// the light's travel, hence the negation.)
+		//
+		// Not DX8Wrapper::m_envSunDir: that is a snapshot taken during whichever PBR draw
+		// happened to run last, rotated out of camera space using that draw's own view
+		// matrix. Any draw with an identity view leaves it holding a camera-space
+		// direction, and the whole sun frustum then turns with the camera.
+		Vector3 sunDir(-TheGlobalData->m_terrainLightPos[0].x,
+					   -TheGlobalData->m_terrainLightPos[0].y,
+					   -TheGlobalData->m_terrainLightPos[0].z);
+		if (sunDir.Length2() < 1e-6f)
+			sunDir.Set(0.40f, 0.30f, 0.85f);   // degenerate map lighting: keep it overhead-ish
+		sunDir.Normalize();
+		D3DXVECTOR3 targetPos((float)shadowCentre.x, (float)shadowCentre.y, (float)shadowCentre.z);
+		D3DXVECTOR3 lightEye(targetPos.x + sunDir.X * SHADOW_EYE,
+							 targetPos.y + sunDir.Y * SHADOW_EYE,
+							 targetPos.z + sunDir.Z * SHADOW_EYE);
+		D3DXVECTOR3 up = (fabsf(sunDir.Z) > 0.9f) ? D3DXVECTOR3(0.0f, 1.0f, 0.0f)
+												  : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+		D3DXMATRIX sunView, sunProj, sunVP;
+		D3DXMatrixLookAtLH(&sunView, &lightEye, &targetPos, &up);
+		D3DXMatrixOrthoLH(&sunProj, shadowOrtho, shadowOrtho, 1.0f, SHADOW_FAR);
+		D3DXMatrixMultiply(&sunVP, &sunView, &sunProj);
+
+		// Snap the fitted frustum to whole shadow-map texels. Without this the centre
+		// slides by sub-texel amounts as the camera scrolls, the depth pass rasterises a
+		// slightly different set of texels each frame and every shadow edge shimmers.
+		// Done as a post-projection translation, which is exact for an orthographic
+		// frustum and applies to the depth pass and the lookups alike (both use SunVP).
+		{
+			const float halfMap = 0.5f * (float)DX8Wrapper::SHADOW_MAP_SIZE;
+			D3DXVECTOR3 originNDC(0.0f, 0.0f, 0.0f);
+			D3DXVec3TransformCoord(&originNDC, &originNDC, &sunVP);
+			D3DXMATRIX snap;
+			D3DXMatrixTranslation(&snap,
+				(floorf(originNDC.x * halfMap + 0.5f) - originNDC.x * halfMap) / halfMap,
+				(floorf(originNDC.y * halfMap + 0.5f) - originNDC.y * halfMap) / halfMap,
+				0.0f);
+			D3DXMatrixMultiply(&sunVP, &sunVP, &snap);
+		}
+
+		DX8Wrapper::Set_Sun_VP(reinterpret_cast<const float*>(&sunVP));
+
+		// Depth-compare bias, in the sun-clip depth units the shaders compare in. What it
+		// has to cover is the depth a surface gains across one shadow texel, so it is
+		// quoted in texels and converted: texel world size (the fitted extent over the map
+		// resolution), then scaled into the [near,far] range the packed depth spans. A
+		// fixed value cannot work -- the old 0.0025 was ~13 world units, ten texels at
+		// full zoom-out and forty once zoomed in, which lifts small casters clean out of
+		// their own shadow.
+		//
+		// The sun's elevation matters as much as the zoom. A texel is square in the sun's
+		// view, but the ground it lands on is stretched along the light by 1/sin(elevation)
+		// -- at this map's ~23 degree sun that is a two-and-a-half times longer run of
+		// ground per texel, and so that much more depth gained across one. Leaving it out
+		// left barely any margin over flat ground, and the terrain shadowed itself across
+		// whole hillsides. Clamped so a sun near the horizon cannot run away.
+		const float SHADOW_BIAS_TEXELS = 3.0f;
+		const float texelWorld = shadowOrtho / (float)DX8Wrapper::SHADOW_MAP_SIZE;
+		const float sunElevation = max(fabsf(sunDir.Z), 0.15f);
+		DX8Wrapper::Set_Shadow_Params(
+			(SHADOW_BIAS_TEXELS * texelWorld) / (sunElevation * (SHADOW_FAR - 1.0f)), 1.0f);
+
+		// (The depth pass forces the full square viewport itself, inside the
+		// scene's SCENE_PASS_SHADOW_MAP branch, since the camera's Apply sets a
+		// screen-sized viewport that would only fill part of the square map.)
+		W3DShaderManager::startShadowMapRendering();
+		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_SHADOW_MAP);
+		W3DDisplay::m_3DScene->doRender(m_3DCamera);
+		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_DEFAULT);
+		W3DShaderManager::endShadowMapRendering();
+	}
+	else
+	{
+		// Shadow mapping off: zero strength makes the unit and terrain shaders ignore
+		// whatever is still bound on stage 5, rather than reading a stale or unbound map
+		// (which unpacks to depth 0 and would shadow the entire scene).
+		DX8Wrapper::Set_Shadow_Params(0.0f, 0.0f);
+	}
 
 	// Select the base view filter when no transient effect filter (BW, motion blur,
 	// crossfade) is running: bloom when it is enabled (options.ini UseBloom) and

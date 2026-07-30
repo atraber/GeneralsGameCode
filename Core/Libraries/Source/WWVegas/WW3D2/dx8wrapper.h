@@ -71,9 +71,10 @@
 const unsigned MAX_TEXTURE_STAGES=8;
 const unsigned MAX_VERTEX_STREAMS=2;
 const unsigned MAX_VERTEX_SHADER_CONSTANTS=96;
-// The PBR pixel shader uses c0-c11 (lights, ambient, camera, material, opacity). This
-// is the shadow-cache size; keep it above the highest register any pixel shader writes,
-// or Set_Pixel_Shader_Constant memcpys past the array and corrupts adjacent statics.
+// The PBR pixel shader uses c0-c11 (lights, ambient, camera, material, opacity), c12-c15
+// (sun view-projection) and c16 (shadow bias/strength). This is the shadow-cache size;
+// keep it above the highest register any pixel shader writes, or
+// Set_Pixel_Shader_Constant memcpys past the array and corrupts adjacent statics.
 const unsigned MAX_PIXEL_SHADER_CONSTANTS=32;
 const unsigned MAX_SHADOW_MAPS=1;
 
@@ -583,6 +584,11 @@ public:
 	static const char* Get_DX8_Blend_Op_Name(unsigned value);
 
 	static void Invalidate_Cached_Render_States();
+	// Read the texture stage states the draw-routing predicate consults back from the
+	// device into the cache. Invalidation fills that cache with a sentinel so no needed
+	// write is skipped, which is right for writing but wrong for reading -- and the
+	// predicate reads it. Call after invalidating mid-frame.
+	static void Resync_Texture_Stage_State_Cache();
 
 	static void Set_Draw_Polygon_Low_Bound_Limit(unsigned n) { DrawPolygonLowBoundLimit=n; }
 
@@ -725,6 +731,7 @@ public:
 	// object meshes in place of the fixed-function pipeline. The mesh FVF serves
 	// as the vertex declaration, so no explicit declaration is needed.
 	static DWORD						m_dwUnitVS;
+	static DWORD						m_dwUnitPrelitVS;   // meshes with no NORMAL (roads, tracks)
 	static DWORD						m_dwUnitPS;
 	static DWORD						m_dwUnitDetailPS;   // base + detail (stage 1) variant
 
@@ -766,6 +773,7 @@ public:
 	static void Capture_Env_Light(const float dir[3], const float color[3], const float ambient[3]);
 	// Put texture stage 1 back after a PBR draw bound its ORM map straight to it.
 	static void Restore_Stage1_After_Pbr();
+	static void Restore_Stage5_After_Shadow();
 	// Resolver (installed by the game layer) that maps a base texture to its ORM
 	// sibling texture (<name>_orm), or nullptr when the unit ships no PBR maps.
 	typedef TextureBaseClass* (*OrmResolverFunc)(TextureBaseClass* baseTexture);
@@ -779,6 +787,39 @@ public:
 	static bool							m_bTerrainShaderPass; // current draws are terrain tiles
 	static void Set_Terrain_Shader_Pass(bool active) { m_bTerrainShaderPass = active; }
 	static bool Has_Terrain_Shader() { return m_dwTerrainVS != 0 && m_dwTerrainPS != 0; }
+	// Directional shadow mapping. During the depth pass every mesh/terrain draw is
+	// re-routed to the shadow-depth shaders (which just pack sun-space depth); during
+	// the normal lit passes the shadow map is bound + SunVP is fed so the unit/terrain
+	// shaders can reproject and sample it. m_sunVP is the sun view*projection, stored
+	// as 16 floats (row-major) to keep D3DX out of this header.
+	// Edge length of the square shadow map. The render target, the depth-pass
+	// viewport, the frustum-fitting texel snap and the shaders' PCF tap offset all
+	// have to agree on this, so it lives here rather than in each of them.
+	enum { SHADOW_MAP_SIZE = 4096 };
+	static DWORD						m_dwShadowDepthVS;
+	static DWORD						m_dwShadowDepthPS;
+	static IDirect3DBaseTexture8*		m_pShadowMap;       // depth-packed shadow map (bound for sampling)
+	static float						m_sunVP[16];
+	// x = depth-compare bias in sun-clip units, y = shadow strength (0 disables the
+	// lookup without unbinding anything), z = one texel in UV. The bias has to track the
+	// frustum: it fights the world-space size of a shadow texel, and that now changes
+	// with the zoom. The texel size rides along so the PCF taps cannot fall out of step
+	// with SHADOW_MAP_SIZE.
+	static float						m_shadowParams[4];
+	static bool							m_bShadowDepthPass; // current draws render into the shadow map
+	static void Set_Shadow_Depth_Pass(bool active) { m_bShadowDepthPass = active; }
+	static void Set_Sun_VP(const float* m16);
+	static void Set_Shadow_Params(float bias, float strength)
+	{
+		m_shadowParams[0] = bias; m_shadowParams[1] = strength;
+		m_shadowParams[2] = 1.0f / (float)SHADOW_MAP_SIZE; m_shadowParams[3] = 0.0f;
+	}
+	// The map is bound whenever it exists, even with shadow mapping switched off: the
+	// pixel shaders sample stage 5 unconditionally (ps_2_0 has no dynamic branching to
+	// skip it) and D3D9 leaves a sample from an unbound stage undefined -- drivers
+	// variously give black, white, or whatever was last bound there. The shadow strength
+	// is what decides whether the result counts, and it is zero when the feature is off.
+	static bool Has_Shadow_Map() { return m_dwShadowDepthVS != 0 && m_dwShadowDepthPS != 0 && m_pShadowMap != nullptr; }
 	// Terrain overlay params: cloud scroll offset and which overlays are active.
 	static float						m_terrainCloudOffX;
 	static float						m_terrainCloudOffY;

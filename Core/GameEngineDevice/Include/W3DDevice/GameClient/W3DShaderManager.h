@@ -88,6 +88,12 @@ public:
 	static void clearOrmCache();	///<release cached ORM lookups.
 	static void initEnvMap();	///<build the shared environment cubemap for PBR reflections.
 	static void updateEnvMap();	///<re-bake the env cubemap when scene lighting drifts (once/frame).
+	static void initShadowMap();	///<create the directional shadow-map render target + depth-pass shaders.
+	static void shutdownShadowMap();	///<release the shadow-map resources.
+	static void startShadowMapRendering();	///<redirect rendering into the shadow map (sun-view depth pass).
+	static void endShadowMapRendering();	///<restore the back buffer after the shadow depth pass.
+	static Bool isShadowMappingActive();	///<true when the shadow map is enabled and usable; the legacy volume/decal shadows stand down.
+	enum { NUM_SHADOW_SAVED_STATES = 10 };	///<render states saved across the shadow depth pass
 
 	static ChipsetType getChipset();	///<return current device chipset.
 	static GraphicsVenderID getCurrentVendor() {return m_currentVendor;}	///<return current card vendor.
@@ -140,6 +146,13 @@ protected:
 	static IDirect3DSurface8 *m_newRenderSurface;	///<render target the scene is drawn into: m_renderTexture's surface, or an MSAA surface when MSAA is on
 	static IDirect3DSurface8 *m_resolveSurface;		///<when MSAA: m_renderTexture's surface, the StretchRect resolve destination; null otherwise
 	static IDirect3DSurface8 *m_oldDepthSurface;	///<previous depth buffer surface
+	// Directional shadow map (sun-view depth) render target + its own depth buffer.
+	static IDirect3DTexture8 *m_pShadowMapTexture;	///<depth-packed shadow map (A8R8G8B8)
+	static IDirect3DSurface8 *m_pShadowMapSurface;	///<colour surface of the shadow map
+	static IDirect3DSurface8 *m_pShadowMapDepthSurface;	///<the shadow map's own depth buffer
+	static IDirect3DSurface8 *m_shadowSavedRT;		///<render target saved across the shadow depth pass
+	static IDirect3DSurface8 *m_shadowSavedDepth;	///<depth surface saved across the shadow depth pass
+	static DWORD m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
 
 
 };

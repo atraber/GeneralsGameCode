@@ -47,6 +47,7 @@
 #include "W3DDevice/GameClient/W3DVolumetricShadow.h"
 #include "W3DDevice/GameClient/W3DProjectedShadow.h"
 #include "W3DDevice/GameClient/W3DShadow.h"
+#include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "WW3D2/statistics.h"
 #include "Common/Debug.h"
 #include "Common/PerfTimer.h"
@@ -76,15 +77,25 @@ void DoShadows(RenderInfoClass & rinfo, Bool stencilPass)
 	shadowCameraFrustum=&rinfo.Camera.Get_Frustum();
 	Int projectionCount=0;
 
+	// The directional shadow map already casts every shadow in the scene, so the volume
+	// and decal shadows stand down while it is active (options.ini UseShadowMapping) --
+	// running both would double-darken every caster.
+	//
+	// Not by skipping this function, though: the projected-shadow manager also draws
+	// m_decalList, which is not shadows at all. Radius cursors, special-power targeting
+	// reticles and delivery markers live there, and they are still wanted. It runs in
+	// decals-only mode instead.
+	const Bool shadowMapping = W3DShaderManager::isShadowMappingActive();
+
 	//Projected shadows render first because they may fill the stencil buffer
 	//which will be used by the shadow volumes
 	if (stencilPass == FALSE  && TheW3DProjectedShadowManager)
 	{
 			if (TheW3DShadowManager->isShadowScene())
-				projectionCount=TheW3DProjectedShadowManager->renderShadows(rinfo);
+				projectionCount=TheW3DProjectedShadowManager->renderShadows(rinfo, shadowMapping);
 	}
 
-	if (stencilPass == TRUE && TheW3DVolumetricShadowManager)
+	if (stencilPass == TRUE && TheW3DVolumetricShadowManager && !shadowMapping)
 	{
 
 //		TheW3DShadowManager->loadTerrainShadows();

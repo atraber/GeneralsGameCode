@@ -32,6 +32,7 @@ set(RTS_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders" CACHE INTERNAL "Compiled sh
 # output extension) is derived from the "_vs"/"_ps" suffix of each name.
 set(_rts_shaders
     unit_vs
+    unit_prelit_vs
     unit_ps
     unit_detail_ps
     terrain_vs
@@ -42,6 +43,9 @@ set(_rts_shaders
     bloom_bright_ps
     bloom_blur_ps
     bloom_composite_ps
+    # Shadow-map depth pass
+    shadowdepth_vs
+    shadowdepth_ps
 )
 
 if(FXC_EXECUTABLE)

@@ -35,6 +35,11 @@ float4 TexGenCtl : register(c21);
 row_major float4x4 TexMatrix0 : register(c24);
 row_major float4x4 TexMatrix1 : register(c28);
 
+// object -> sun clip space, for sampling the shadow map in the pixel shader. Combined
+// on the CPU because this path only has the object->camera matrix otherwise, and the
+// shadow lookup needs world space.
+row_major float4x4 WorldSunVP : register(c32);
+
 struct VS_INPUT
 {
     float3 position : POSITION;
@@ -49,6 +54,7 @@ struct VS_OUTPUT
     float4 color     : COLOR0;
     float2 texcoord  : TEXCOORD0;  // stage 0 coordinates
     float2 texcoord1 : TEXCOORD1;  // stage 1 coordinates
+    float4 lightPos  : TEXCOORD2;  // position in the sun's clip space (cast shadows)
 };
 
 // Normalizing a zero-length vector yields NaN, and NaN survives everything downstream --
@@ -85,6 +91,12 @@ VS_OUTPUT main(VS_INPUT input)
     VS_OUTPUT output;
 
     output.position = mul(float4(input.position, 1.0), WorldViewProj);
+
+    // Only meshes actually lit by the sun receive its shadow. Texture-only overlays and
+    // pre-lit meshes (effects, which carry their own baked colour) keep it out of their
+    // way -- shadowReceive 0 sends lightPos outside the map, which the pixel shader's
+    // out-of-frustum path already treats as lit.
+    float shadowReceive = 0.0;
 
     if (LightingParams.x > 1.5)
     {
@@ -126,6 +138,7 @@ VS_OUTPUT main(VS_INPUT input)
         // Lit meshes are opaque (as with the previous fixed-function path);
         // transparency for these is driven by the texture alpha in the pixel shader.
         output.color = float4(saturate(lit), 1.0);
+        shadowReceive = 1.0;
     }
     else
     {
@@ -146,5 +159,16 @@ VS_OUTPUT main(VS_INPUT input)
 
     output.texcoord  = lerp(gen0.xy, mul(gen0, TexMatrix0).xy, TexGenCtl.z);
     output.texcoord1 = lerp(gen1.xy, mul(gen1, TexMatrix1).xy, TexGenCtl.w);
+
+    // (2,2,2,1) lands well outside the shadow map's [0,1] UV range, so a mesh that does
+    // not receive shadows takes the pixel shader's "outside the sun frustum -> lit" path.
+    //
+    // Selected, not lerped. lerp evaluates a + t*(b-a), so at t=0 it still multiplies
+    // b by zero -- and 0 * inf is NaN, which then survives everything downstream and
+    // takes the pixel with it. That is the same trap Safe_Normalize above exists to
+    // avoid; a degenerate sun matrix must not be able to reach a mesh that is not even
+    // receiving shadows.
+    float4 sunClip = mul(float4(input.position, 1.0), WorldSunVP);
+    output.lightPos = (shadowReceive > 0.5) ? sunClip : float4(2.0, 2.0, 2.0, 1.0);
     return output;
 }
