@@ -8,6 +8,7 @@
 
 row_major float4x4 WorldViewProj : register(c0);
 float4 CloudOffset : register(c4);   // xy = cloud scroll offset
+row_major float4x4 SunVP : register(c5);   // sun view*projection (terrain verts are world-space)
 
 // 1 / (63 * MAP_XY_FACTOR / 2), MAP_XY_FACTOR = 10  ->  1/315
 static const float STRETCH_FACTOR = 1.0 / 315.0;
@@ -28,11 +29,14 @@ struct VS_OUTPUT
     float2 uv1      : TEXCOORD1;
     float2 cloudUV  : TEXCOORD2;
     float2 noiseUV  : TEXCOORD3;
+    float4 lightPos : TEXCOORD4;   // position in the sun's clip space (for shadowing)
 };
 
 VS_OUTPUT main(VS_INPUT input)
 {
     VS_OUTPUT output;
+    // Terrain vertices are already in world space, so reproject straight by SunVP.
+    output.lightPos = mul(float4(input.position, 1.0), SunVP);
     // Straight WVP transform (no depth nudge). The fixed-function shroud pass depth-
     // tests co-planar against this with LESSEQUAL; rather than trying (and failing) to
     // bit-match its depth from a shader, the shroud pass itself carries a slope-scaled

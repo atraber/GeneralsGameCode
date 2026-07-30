@@ -174,6 +174,7 @@ unsigned long DX8Wrapper::FrameCount = 0;
 
 // Programmable (D3D9) unit render path
 DWORD							DX8Wrapper::m_dwUnitVS = 0;
+DWORD							DX8Wrapper::m_dwUnitPrelitVS = 0;
 DWORD							DX8Wrapper::m_dwUnitPS = 0;
 DWORD							DX8Wrapper::m_dwUnitDetailPS = 0;
 DWORD							DX8Wrapper::m_shaderRoutingMask = DX8Wrapper::SHADER_ROUTE_BASELINE;
@@ -198,6 +199,16 @@ void DX8Wrapper::Capture_Env_Light(const float dir[3], const float color[3], con
 }
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
 DWORD							DX8Wrapper::m_dwTerrainPS = 0;
+DWORD							DX8Wrapper::m_dwShadowDepthVS = 0;
+DWORD							DX8Wrapper::m_dwShadowDepthPS = 0;
+IDirect3DBaseTexture8*			DX8Wrapper::m_pShadowMap = nullptr;
+float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+bool							DX8Wrapper::m_bShadowDepthPass = false;
+void DX8Wrapper::Set_Sun_VP(const float* m16)
+{
+	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
+}
 bool							DX8Wrapper::m_bUnitShaderBound = false;
 bool							DX8Wrapper::m_bTerrainShaderPass = false;
 float							DX8Wrapper::m_terrainCloudOffX = 0.0f;
@@ -247,6 +258,24 @@ void DX8Wrapper::Restore_Pbr_Extra_Stages()
 					   : NULL);
 	Set_DX8_Texture_Stage_State(4, D3DTSS_COLOROP, D3DTOP_DISABLE);
 	Set_DX8_Texture_Stage_State(4, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+}
+
+// Same story one stage along: the shadow map is bound to stage 5 for the lit passes that
+// sample it, straight to the device. Nothing else knows to undo it, so a later
+// fixed-function draw inherits a texture on a stage it never asked for, and renders
+// through it. Helicopter rotor discs are drawn that way and disappeared entirely.
+static bool s_shadowStage5Bound = false;
+
+void DX8Wrapper::Restore_Stage5_After_Shadow()
+{
+	if (!s_shadowStage5Bound)
+		return;
+	s_shadowStage5Bound = false;
+	Set_DX8_Texture(5, render_state.Textures[5] != nullptr
+					   ? render_state.Textures[5]->Peek_D3D_Base_Texture()
+					   : NULL);
+	Set_DX8_Texture_Stage_State(5, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	Set_DX8_Texture_Stage_State(5, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 }
 
 bool								_DX8SingleThreaded										= false;
@@ -527,6 +556,50 @@ void DX8Wrapper::Invalidate_Cached_Render_States()
 	// that reads the cached view -- the shroud builds its projection from
 	// inverse(D3DTS_VIEW) -- would read a zero matrix and swim with the camera.
 	render_state_changed |= (unsigned)WORLD_CHANGED | (unsigned)VIEW_CHANGED;
+
+	// The shader's states have to be re-applied for the same reason. RenderStates was just
+	// filled with the sentinel, but ShaderClass::Apply only runs when the shader actually
+	// changes -- so a run of draws sharing one shader would read blend, z and alpha-test
+	// values that are now sentinels rather than what the device holds. That is not merely
+	// a redundant-write question: the routing predicate reads those same entries to decide
+	// whether a draw can be reproduced, so it would decline draws over a blend mode they
+	// do not have. This only started to matter once something invalidated mid-frame -- the
+	// shadow depth pass does, at the end of every frame's pass.
+	render_state_changed |= (unsigned)SHADER_CHANGED;
+
+	// Put the texture stage states the routing predicate reads back to what the
+	// device actually holds. Poisoning is right for the states this cache exists to
+	// guard -- it stops a needed write being skipped -- but these particular entries
+	// are also READ, to decide whether a draw's coordinate sources can be reproduced,
+	// and a sentinel reads as nonsense: 0x12345678 is not a valid transform-flags
+	// value, so an ordinary untransformed stage looks unsupported and the draw is
+	// declined over state it does not have. Resyncing makes the cache truthful, which
+	// also keeps the redundancy check correct rather than merely conservative.
+	Resync_Texture_Stage_State_Cache();
+}
+
+void DX8Wrapper::Resync_Texture_Stage_State_Cache()
+{
+	// Only the states Apply_Render_State_Changes reads when deciding whether a draw can be
+	// reproduced. Left at the invalidation sentinel they read as nonsense -- 0x12345678's
+	// high half is not a valid D3DTSS_TCI_* value, so a perfectly ordinary pass-through
+	// coordinate set looks like an unsupported generated one and the draw is declined over
+	// state it does not have. The device still holds the truth, so ask it.
+	IDirect3DDevice9 *dev = _Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+	static const D3DTEXTURESTAGESTATETYPE routingStates[] = {
+		D3DTSS_TEXCOORDINDEX, D3DTSS_TEXTURETRANSFORMFLAGS,
+		D3DTSS_COLOROP, D3DTSS_COLORARG1, D3DTSS_COLORARG2,
+		D3DTSS_ALPHAOP, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2,
+	};
+	for (unsigned stage = 0; stage < 2; ++stage) {
+		for (unsigned i = 0; i < sizeof(routingStates) / sizeof(routingStates[0]); ++i) {
+			DWORD value = 0;
+			if (SUCCEEDED(dev->GetTextureStageState(stage, routingStates[i], &value)))
+				TextureStageStates[stage][(unsigned)routingStates[i]] = value;
+		}
+	}
 }
 
 void DX8Wrapper::Do_Onetime_Device_Dependent_Shutdowns()
@@ -2488,6 +2561,16 @@ void DX8Wrapper::Draw_Triangles(
 	unsigned short vertex_count)
 {
 	if (buffer_type==BUFFER_TYPE_SORTING || buffer_type==BUFFER_TYPE_DYNAMIC_SORTING) {
+		// Sorted geometry must not enter the shadow depth pass. This call does not draw
+		// anything -- it hands the triangles to the sorting renderer, which defers them
+		// and replays them at its next flush. From the depth pass that means geometry
+		// transformed into the sun's clip space gets re-emitted into the visible frame,
+		// and it eats the shared sorting buffer the real draw needs. Translucent
+		// geometry has no business casting a shadow anyway. Helicopter rotor discs are
+		// sorted meshes, and were vanishing or not depending on how much else happened
+		// to be queued behind them.
+		if (m_bShadowDepthPass)
+			return;
 		SortingRendererClass::Insert_Triangles(start_index,polygon_count,min_vertex_index,vertex_count);
 	}
 	else {
@@ -2789,7 +2872,29 @@ void DX8Wrapper::Apply_Render_State_Changes()
 									  TextureStageStates[1][D3DTSS_TEXTURETRANSFORMFLAGS],
 									  texGenMode1, texGenMatrix1));
 
+		// Only solid geometry belongs in a shadow map. A soft blended overlay has no
+		// silhouette to cast and, being drawn a hair above the surface it decorates,
+		// would write depth just in front of it and shadow the very ground it sits on --
+		// which is what turned road and tank-track decals into dark smears. Cutout
+		// foliage is the exception and has to keep casting: it is alpha blended too, but
+		// the alpha *test* is what gives it a real silhouette, so that is the dividing
+		// line rather than blending alone.
+		const bool softBlendedOverlay =
+			RenderStates[D3DRS_ALPHABLENDENABLE] != FALSE &&
+			RenderStates[D3DRS_ALPHATESTENABLE] == FALSE;
+
+		// Shadow depth pass: every solid 3D draw (terrain, units, props) is re-routed to
+		// the depth-packing shaders so it casts into the shadow map. 2D/UI (identity
+		// view) and non-mesh draws are excluded. When active it pre-empts the normal
+		// shaders.
+		const bool useShadowDepth =
+			m_bShadowDepthPass && m_dwShadowDepthVS != 0 && m_dwShadowDepthPS != 0 &&
+			(curFVF & D3DFVF_XYZ) &&
+			!softBlendedOverlay &&
+			!(render_state_changed & (unsigned)VIEW_IDENTITY);
+
 		const bool useTerrainShader =
+			!m_bShadowDepthPass &&
 			m_bTerrainShaderPass && m_dwTerrainVS != 0 && m_dwTerrainPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
 			!texgenActive;
@@ -2972,8 +3077,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		const bool foreignVertexShader =
 			Vertex_Shader >= 0x10000 &&
 			Vertex_Shader != m_dwUnitVS &&
+			Vertex_Shader != m_dwUnitPrelitVS &&
 			Vertex_Shader != m_dwUnitPbrVS &&
-			Vertex_Shader != m_dwTerrainVS;
+			Vertex_Shader != m_dwTerrainVS &&
+			Vertex_Shader != m_dwShadowDepthVS;
 
 		// Routing categories are selectable at runtime (options.ini ShaderRouting) so the
 		// pipeline split can be compared in game without a rebuild: EVERYTHING drops the
@@ -2987,13 +3094,29 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// ADDITIVE routes it here anyway so the two can be compared.
 		const bool routeAdditive = (m_shaderRoutingMask & SHADER_ROUTE_ADDITIVE) != 0;
 
+		// A normal is only wanted for two things: the lit equation, and the texgen sources
+		// derived from it. Geometry that has neither -- roads and tank tracks are pre-lit
+		// DX8_FVF_XYZDUV1 with no NORMAL -- can be routed all the same, through a vertex
+		// shader that declares no normal input. Declining it instead left those draws on
+		// fixed function, where they never sampled the shadow map: a road crossed shadowed
+		// ground at full brightness.
+		const bool hasNormal = (curFVF & D3DFVF_NORMAL) != 0;
+		const bool texGenNeedsNormal = texGenMode0 > 1.5f || texGenMode1 > 1.5f;
+		// Lighting may well be left enabled on this geometry even though it carries no
+		// normal -- roads are drawn that way. Fixed function then gets N.L == 0 for
+		// every light and falls back to emissive plus ambient, which unit_prelit_vs
+		// reproduces, so the state does not have to be off for this to be safe.
+		const bool prelitNoNormal =
+			!hasNormal && m_dwUnitPrelitVS != 0 && !texGenNeedsNormal;
+
 		const bool useUnitShader =
 			!routingDisabled &&
+			!m_bShadowDepthPass &&
 			(!additiveBlend || routeAdditive) &&
 			!m_bTerrainShaderPass &&
 			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
-			(curFVF & D3DFVF_XYZ) && (curFVF & D3DFVF_NORMAL) &&
+			(curFVF & D3DFVF_XYZ) && (hasNormal || prelitNoNormal) &&
 			!foreignVertexShader &&
 			(routeEverything ||
 			 ((render_state.Textures[0] != nullptr || untexturedDiffuseOnly) &&
@@ -3001,7 +3124,65 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			  (singleTexture || detailCombineSupported) &&
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
 
-		if (useTerrainShader) {
+		if (useShadowDepth) {
+			// Force the full square shadow-map viewport right before the draw. The
+			// camera's Apply set a screen-sized (16:9) viewport that gets re-applied
+			// per object, leaving the bottom of the square map cleared and mis-sampled.
+			{ D3DVIEWPORT9 svp = { 0, 0, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0.0f, 1.0f };
+			  _Get_D3D_Device8()->SetViewport(&svp); }
+			// Force the states the depth pass depends on, for the same reason as the
+			// viewport above: the scene re-applies per-object state, so whatever the
+			// normal path wanted (a blend mode, z-writes off for a translucent pass, a
+			// colour-write mask left over from the alpha-mask pass) otherwise leaks in
+			// here. Depth packing needs the plain nearest-wins opaque rules -- with
+			// blending on, or z-writes off, the map ends up holding the last draw
+			// rasterised rather than the one closest to the sun.
+			Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,
+				D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+				D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+			// Blending off: packed depth must land in the target unmodified. The alpha
+			// test, though, is deliberately left as the scene set it -- shadowdepth_ps
+			// writes the caster's texture alpha, so the hardware cuts the transparent
+			// texels out of a foliage billboard here exactly as it does on screen.
+			Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE, FALSE);
+			Set_DX8_Render_State(D3DRS_ZENABLE, D3DZB_TRUE);
+			Set_DX8_Render_State(D3DRS_ZWRITEENABLE, TRUE);
+			Set_DX8_Render_State(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+			// Every caster must reach the map whole. Culling would drop whichever facing
+			// the sun disagrees with the camera about; wireframe would leave only edges;
+			// a stencil test left enabled from the player-colour/occlusion work would
+			// reject fragments outright -- and the shadow map's depth surface is D16,
+			// with no stencil for it to test against.
+			Set_DX8_Render_State(D3DRS_CULLMODE, D3DCULL_NONE);
+			Set_DX8_Render_State(D3DRS_FILLMODE, D3DFILL_SOLID);
+			Set_DX8_Render_State(D3DRS_STENCILENABLE, FALSE);
+			Set_DX8_Render_State(D3DRS_ZBIAS, 0);
+			// Bind the depth-packing shaders and feed SunVP (c0) + this draw's World
+			// (c4). All geometry casts, so no texture/material state is needed.
+			if (!m_bUnitShaderBound) {
+				s_dwOriginalPS = Pixel_Shader;
+				m_bUnitShaderBound = true;
+			}
+			Set_Vertex_Shader(m_dwShadowDepthVS);
+			Set_Pixel_Shader(m_dwShadowDepthPS);
+			Set_Vertex_Shader_Constant(0, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			D3DXMATRIX shadowWorld = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+			Set_Vertex_Shader_Constant(4, &shadowWorld, 4);
+		}
+		else if (m_bShadowDepthPass) {
+			// In the depth pass the render target is not a colour buffer, it is packed
+			// depth -- so only the depth shaders may write to it. A draw that could not
+			// be routed there would otherwise blast its own colour in as if it were a
+			// depth value. Screen-space overlays are the ones that get here: they use
+			// D3DFVF_XYZRHW, which does not set the D3DFVF_XYZ bit the routing requires.
+			// One full-screen quad was covering the top 1440 rows of the map (the screen
+			// height) with a constant, burying the real terrain depth underneath it.
+			// Masking colour and z leaves the draw harmless without disturbing the
+			// scene's own state, which the normal passes still depend on.
+			Set_DX8_Render_State(D3DRS_COLORWRITEENABLE, 0);
+			Set_DX8_Render_State(D3DRS_ZWRITEENABLE, FALSE);
+		}
+		else if (useTerrainShader) {
 			if (!m_bUnitShaderBound) {
 				s_dwOriginalPS = Pixel_Shader;
 				m_bUnitShaderBound = true;
@@ -3019,6 +3200,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			D3DXMatrixMultiply(&wvp, &world, &view);
 			D3DXMatrixMultiply(&wvp, &wvp, &proj);
 			Set_Vertex_Shader_Constant(0, &wvp, 4);
+			// Sun view-projection (VS c5) so the terrain can reproject + sample the
+			// shadow map, and the shadow map itself on stage 5 (point + clamp).
+			Set_Vertex_Shader_Constant(5, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			Set_Pixel_Shader_Constant(1, m_shadowParams, 1);   // bias + strength
+			if (m_pShadowMap != nullptr) {
+				Set_DX8_Texture(5, m_pShadowMap);
+				s_shadowStage5Bound = true;
+				Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			}
 
 			// Smooth (bi/tri-linear) filtering + clamp, matching the fixed-function
 			// terrain path. The base atlas texture's own filter may be point, which
@@ -3186,7 +3379,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// is undefined and can produce values that survive a zero weight (a NaN times
 			// zero is still NaN) and render the pixel black.
 			const bool useDetailShader = !usePbr && !singleTexture && detailCombineSupported;
-			Set_Vertex_Shader(usePbr ? m_dwUnitPbrVS : m_dwUnitVS);
+			// Geometry with no normal takes the pre-lit variant, whose declared inputs
+			// match what its FVF actually supplies.
+			Set_Vertex_Shader(usePbr ? m_dwUnitPbrVS
+									 : (hasNormal ? m_dwUnitVS : m_dwUnitPrelitVS));
 			Set_Pixel_Shader(usePbr ? m_dwUnitPbrPS
 								    : (useDetailShader ? m_dwUnitDetailPS : m_dwUnitPS));
 
@@ -3218,6 +3414,27 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			//         (as the M3 shader wants) leaves position and camera in different
 			//         spaces, which makes every view-dependent term swing with the camera.
 			Set_Vertex_Shader_Constant(4, usePbr ? &world : &worldView, 4);
+
+			// Cast shadows for the M3 path. PBR reprojects per pixel from the world
+			// position it already carries; this shader has only object->camera, so the
+			// object->sun-clip matrix is combined here and the sun-space position comes
+			// out of the vertex shader instead. Without this only PBR meshes -- the
+			// minority, since PBR needs an ORM map -- received any shadow at all.
+			if (!usePbr) {
+				D3DXMATRIX worldSunVP;
+				D3DXMatrixMultiply(&worldSunVP, &world,
+					reinterpret_cast<const D3DXMATRIX*>(m_sunVP));
+				Set_Vertex_Shader_Constant(32, &worldSunVP, 4);
+				Set_Pixel_Shader_Constant(8, m_shadowParams, 1);   // bias + strength
+				if (m_pShadowMap != nullptr) {
+					Set_DX8_Texture(5, m_pShadowMap);
+					s_shadowStage5Bound = true;
+					Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				}
+			}
 
 			// Shared LightEnvironment gather: scene ambient (D3DRS_AMBIENT) + up to
 			// four directional lights (disabled lights contribute nothing).
@@ -3277,6 +3494,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
 				}
+				// Directional shadow map on stage 5 (point + clamp: packed depth must not
+				// be interpolated; the shader PCFs). SunVP goes in c12-15 so the shader can
+				// reproject world position into the sun's clip space and compare.
+				if (m_pShadowMap != nullptr) {
+					Set_DX8_Texture(5, m_pShadowMap);
+					s_shadowStage5Bound = true;
+					Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				}
+				Set_Pixel_Shader_Constant(16, m_shadowParams, 1);   // bias + strength
 				// SM3 pixel-shader lighting constants, all in world space (see c4 above).
 				// The light directions gathered above are in world space (from LightEnvironment),
 				// which matches what unit_pbr_ps expects.
@@ -3289,6 +3518,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_Pixel_Shader_Constant(9, &cameraPos, 1);
 				Set_Pixel_Shader_Constant(10, &matAmbient, 1);
 				Set_Pixel_Shader_Constant(11, &alphaCtl, 1);   // stealth opacity control
+				Set_Pixel_Shader_Constant(12, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4); // c12-15 SunVP
 
 				// Snapshot the dominant light + ambient for the shared env-map bake so
 				// its sky/sun/ground track time-of-day. The cubemap is baked in world
@@ -3332,7 +3562,12 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				const bool textureOnlyPass =
 					(stage0Op == D3DTOP_SELECTARG1 && stage0Arg1 == D3DTA_TEXTURE);
 				const float lightMode = textureOnlyPass ? 2.0f : (litMesh ? 1.0f : 0.0f);
-				D3DXVECTOR4 lightingParams(lightMode, 0.0f, 0.0f, 0.0f);
+				// y tells the no-normal shader where the ambient term comes from. Same
+				// distinction as the diffuse alpha: the fixed-function pipeline takes it
+				// from the material unless the material says to use the vertex colour.
+				const float ambientFromVertex =
+					RenderStates[D3DRS_AMBIENTMATERIALSOURCE] == D3DMCS_COLOR1 ? 1.0f : 0.0f;
+				D3DXVECTOR4 lightingParams(lightMode, ambientFromVertex, 0.0f, 0.0f);
 				Set_Vertex_Shader_Constant(17, &lightingParams, 1);
 				Set_Vertex_Shader_Constant(18, &matAmbient, 1);
 				Set_Vertex_Shader_Constant(19, &matEmissive, 1);
@@ -3416,6 +3651,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// the vertex-buffer block already re-applied the FVF; restore the pixel
 			// shader, and reset the vertex shader when this draw carries an FVF.
 			Restore_Stage1_After_Pbr();
+			Restore_Stage5_After_Shadow();
 			Restore_Pbr_Extra_Stages();
 			// A draw that brought its own vertex shader keeps it -- only the pixel
 			// shader goes back, since that geometry expects the fixed-function pixel

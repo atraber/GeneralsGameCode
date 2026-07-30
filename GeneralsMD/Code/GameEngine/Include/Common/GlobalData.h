@@ -149,6 +149,7 @@ public:
 	Bool m_useCloudPlane;
 	Bool m_useShadowVolumes;
 	Bool m_useShadowDecals;
+	Bool m_useShadowMapping;					///< directional shadow map; when it runs it replaces the volume/decal shadows
 	Int  m_textureReductionFactor;	//how much to cut texture resolution: 2 is half, 3 is quarter, etc.
 	Bool m_enableBehindBuildingMarkers;
 	Real m_waterPositionX;

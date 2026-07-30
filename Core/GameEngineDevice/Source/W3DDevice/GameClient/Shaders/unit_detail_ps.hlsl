@@ -37,12 +37,36 @@ float4 Stage1AArg1 : register(c5);
 float4 Stage1AArg2 : register(c6);
 float4 Stage1AOp   : register(c7);
 
+sampler ShadowMap : register(s5);      // directional shadow map (packed depth)
+float4 ShadowParams : register(c8);    // x = depth bias, y = shadow strength (0 = off)
+
+// Cast-shadow term, matching unit_ps / terrain_ps. Single tap here rather than 2x2:
+// the combine emulation above already fills most of the ps_2_0 budget.
+float unpackDepth(float4 rgba)
+{
+    // Weights are 255, matching shadowdepth_ps's pack -- see the note there.
+    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+}
+
+float shadowTerm(float4 lightPos)
+{
+    // Guard the divide: a degenerate w yields inf, then NaN, and NaN survives every
+    // operation after it -- the pixel is simply gone. Cheaper to be certain here.
+    float3 ndc = lightPos.xyz / max(abs(lightPos.w), 1e-6);
+    float2 uv  = ndc.xy * float2(0.5, -0.5) + 0.5;
+    float inBounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+    float stored = unpackDepth(tex2D(ShadowMap, uv));
+    float lit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+    return saturate(lerp(1.0, lit, inBounds * ShadowParams.y));
+}
+
 struct PS_INPUT
 {
     float4 position  : POSITION;
     float4 color     : COLOR0;
     float2 texcoord  : TEXCOORD0;   // stage 0 coordinates
     float2 texcoord1 : TEXCOORD1;   // stage 1 coordinates (may be generated)
+    float4 lightPos  : TEXCOORD2;   // position in the sun's clip space
 };
 
 float3 PickRGB(float4 sel, float3 tex, float3 cur, float3 dif)
@@ -83,6 +107,9 @@ float4 main(PS_INPUT input) : COLOR
             + Stage1AOp.y * (a1 + a2)
             + Stage1AOp.z * a1
             + Stage1AOp.w * a2;
+
+    const float SHADOW_MIN = 0.35;
+    rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(input.lightPos));
 
     return float4(saturate(rgb), saturate(a));
 }
