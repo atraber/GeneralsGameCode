@@ -2848,7 +2848,19 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// undefined) vanished. Feed the material opacity in: lit meshes use it, pre-lit
 			// meshes keep their genuine per-vertex alpha.
 			const bool litMesh = RenderStates[D3DRS_LIGHTING] != FALSE;
-			D3DXVECTOR4 alphaCtl(matOpacity, litMesh ? 1.0f : 0.0f, 0.0f, 0.0f);
+			// Whether the diffuse alpha comes from the material or from the vertex. The
+			// fixed-function pipeline takes it from the material only when told to, and
+			// the engine says so per vertex material (VertexMaterialClass sets
+			// D3DRS_DIFFUSEMATERIALSOURCE from its DiffuseColorSource); the default is
+			// the vertex colour. Stealth translucency is the case that wants the
+			// material, which is what the opacity is read for -- but substituting it for
+			// every lit mesh throws away per-vertex alpha, and geometry that feathers
+			// with it loses out. Bridges blend into the terrain that way and their pass
+			// is alpha tested, so the wrong alpha does not just mis-blend, it discards
+			// the wrong fragments and mottles the deck.
+			const bool diffuseAlphaFromMaterial =
+				litMesh && RenderStates[D3DRS_DIFFUSEMATERIALSOURCE] == D3DMCS_MATERIAL;
+			D3DXVECTOR4 alphaCtl(matOpacity, diffuseAlphaFromMaterial ? 1.0f : 0.0f, 0.0f, 0.0f);
 			// House-colour meshes carry the team tint in a non-white material ambient
 			// over a white texture; their procedurally-generated ORM reads that bright
 			// texture as near-metallic, which PBR would render as dark metal instead of
@@ -3045,7 +3057,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				D3DXVECTOR4 texCtl(
 					render_state.Textures[0] != nullptr ? 1.0f : 0.0f,
 					alphaUsesDiffuse ? matOpacity : 1.0f,
-					(!alphaUsesDiffuse || litMesh) ? 1.0f : 0.0f,
+					(!alphaUsesDiffuse || diffuseAlphaFromMaterial) ? 1.0f : 0.0f,
 					alphaUsesTexture ? 1.0f : 0.0f);
 				Set_Pixel_Shader_Constant(1, &texCtl, 1);
 
