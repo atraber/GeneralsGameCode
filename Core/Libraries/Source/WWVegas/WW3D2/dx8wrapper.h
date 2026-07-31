@@ -73,8 +73,9 @@ const unsigned MAX_TEXTURE_STAGES=8;
 const unsigned MAX_VERTEX_STREAMS=2;
 const unsigned MAX_VERTEX_SHADER_CONSTANTS=96;
 // The PBR pixel shader uses c0-c11 (lights, ambient, camera, material, opacity), c12-c15
-// (sun view-projection), c16 (shadow bias/strength) and c23 (shadow normal offset +
-// mesh bias). This is the shadow-cache size;
+// (sun view-projection), c16 (shadow bias/strength), c17 (SSR params), c18-c21 (camera
+// view-projection, for the SSR reprojection) and c23 (shadow normal offset + mesh
+// bias). This is the shadow-cache size;
 // keep it above the highest register any pixel shader writes, or
 // Set_Pixel_Shader_Constant memcpys past the array and corrupts adjacent statics.
 const unsigned MAX_PIXEL_SHADER_CONSTANTS=32;
@@ -865,15 +866,10 @@ public:
 	// Shared environment cubemap sampled by the PBR shader for reflections. Bound on
 	// texture stage 4 (0=albedo, 1=ORM, 2/3=terrain overlays are already spoken for).
 	static IDirect3DBaseTexture8*		m_envCubeMap;
-	// Latest scene lighting captured from the PBR draw path (dominant directional
-	// light + scene ambient), used to re-bake the env cubemap so its sky/sun/ground
-	// track time-of-day. Plain floats to keep D3DX out of this header. m_envSunValid
-	// stays false until a PBR mesh has actually been lit at least once.
-	static float						m_envSunDir[3];   // world-space direction toward the light
-	static float						m_envSunColor[3]; // sun diffuse (colour * intensity)
-	static float						m_envAmbient[3];  // scene ambient
-	static bool							m_envSunValid;
-	static void Capture_Env_Light(const float dir[3], const float color[3], const float ambient[3]);
+	// Mean colour of the baked cubemap. The PBR shader divides its irradiance tap by
+	// this so the directional ambient it derives averages to 1.0, letting it redistribute
+	// the engine's ambient by direction without changing the overall exposure.
+	static float						m_envAverage[4];
 	// Put texture stage 1 back after a PBR draw bound its ORM map straight to it.
 	static void Restore_Stage1_After_Pbr();
 	static void Restore_Stage5_After_Shadow();
