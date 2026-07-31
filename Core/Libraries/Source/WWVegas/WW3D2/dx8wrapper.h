@@ -72,7 +72,8 @@ const unsigned MAX_TEXTURE_STAGES=8;
 const unsigned MAX_VERTEX_STREAMS=2;
 const unsigned MAX_VERTEX_SHADER_CONSTANTS=96;
 // The PBR pixel shader uses c0-c11 (lights, ambient, camera, material, opacity), c12-c15
-// (sun view-projection) and c16 (shadow bias/strength). This is the shadow-cache size;
+// (sun view-projection), c16 (shadow bias/strength), c17 (SSR params) and c18-c21 (camera
+// view-projection, for the SSR reprojection). This is the shadow-cache size;
 // keep it above the highest register any pixel shader writes, or
 // Set_Pixel_Shader_Constant memcpys past the array and corrupts adjacent statics.
 const unsigned MAX_PIXEL_SHADER_CONSTANTS=32;
@@ -753,6 +754,13 @@ public:
 		SHADER_ROUTE_OFF           = 1 << 4,   // no mesh routing at all (fixed function)
 		SHADER_ROUTE_ADDITIVE      = 1 << 6,   // additive effect passes too (diagnostic; see below)
 		SHADER_ROUTE_PBR           = 1 << 5,   // metallic-roughness shading where an ORM map exists
+		// PBR on house-coloured meshes as well. Normally they are held back, because a
+		// procedurally generated ORM reads their bright white base texture as
+		// near-metallic and PBR then renders dark metal where a team tint belongs. That
+		// reasoning is about *generated* maps: an authored ORM whose metallic is
+		// deliberate wants to be obeyed, and since every player-owned unit carries a team
+		// tint, the exclusion otherwise keeps PBR off all of them.
+		SHADER_ROUTE_PBR_TEAMCOLOR = 1 << 7,
 	};
 	static DWORD						m_shaderRoutingMask;
 	// PBR (metallic-roughness, SM3) variant of the unit shader. Bound in place of
@@ -809,6 +817,55 @@ public:
 	static bool							m_bShadowDepthPass; // current draws render into the shadow map
 	static void Set_Shadow_Depth_Pass(bool active) { m_bShadowDepthPass = active; }
 	static void Set_Sun_VP(const float* m16);
+
+	// Screen-space reflections. The camera-view depth SSR marches against is produced
+	// by re-running the shadow depth pass from the camera instead of the sun: same
+	// shaders, same routing, same packed RGBA8 target. Only two things differ, and
+	// both are conditioned on this flag -- the matrix handed to the depth shader, and
+	// the viewport, which that pass forces square for the shadow map but which is
+	// already correct here because this target is the size of the screen.
+	// Routing census for a depth pass: how many draws it saw, how many reached the depth
+	// shaders, and which term rejected the rest. The shadow pass and the SSR camera pass
+	// share one predicate and only one of them produces anything, which reading the code
+	// has not explained -- so count it instead of arguing about it.
+	static unsigned						m_dbgUseShadowDepthHits;
+	static unsigned						m_dbgDepthCallsTotal;
+	static unsigned						m_dbgDepthCallsFlagged;
+	static unsigned						m_dbgDepthCalls;
+	static unsigned						m_dbgNoStateChange;
+	static unsigned						m_dbgNoShaderChange;
+	static unsigned						m_dbgDepthSeen;
+	static unsigned						m_dbgDepthRouted;
+	static unsigned						m_dbgRejShaders;
+	static unsigned						m_dbgRejFvf;
+	static unsigned						m_dbgRejBlend;
+	static unsigned						m_dbgRejView;
+	static void Reset_Depth_Pass_Stats()
+	{
+		m_dbgDepthCalls = m_dbgNoStateChange = m_dbgNoShaderChange = 0;
+		m_dbgDepthSeen = m_dbgDepthRouted = 0;
+		m_dbgRejShaders = m_dbgRejFvf = m_dbgRejBlend = m_dbgRejView = 0;
+	}
+	static bool							m_bDepthPrepass;
+	static float						m_depthVP[16];    // camera view*projection, row-major
+	static void Set_Depth_Prepass(bool active) { m_bDepthPrepass = active; }
+	static void Set_Depth_VP(const float* m16);
+	// Bound for sampling by the PBR shader: the depth just described, and the scene
+	// colour the rays actually read. That colour is the *previous* frame's -- the
+	// current one is the live render target while units are drawing, and D3D9 leaves
+	// a read from the bound render target undefined.
+	static IDirect3DBaseTexture8*		m_pSceneDepth;
+	static IDirect3DBaseTexture8*		m_pSceneColor;
+	static bool Has_Ssr() { return m_pSceneDepth != nullptr && m_pSceneColor != nullptr; }
+	// x = strength (0 disables the march without unbinding anything, as the shadow
+	// strength does), y = max ray length in world units, zw = the projection's _33/_43,
+	// with which the shader turns a stored z/w back into a view-space distance.
+	static float						m_ssrParams[4];
+	static void Set_Ssr_Params(float strength, float maxDist, float proj33, float proj43)
+	{
+		m_ssrParams[0] = strength; m_ssrParams[1] = maxDist;
+		m_ssrParams[2] = proj33;   m_ssrParams[3] = proj43;
+	}
 	static void Set_Shadow_Params(float bias, float strength)
 	{
 		m_shadowParams[0] = bias; m_shadowParams[1] = strength;

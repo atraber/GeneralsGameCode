@@ -20,6 +20,8 @@ sampler2D   AlbedoSampler : register(s0);
 sampler2D   OrmSampler    : register(s1);
 samplerCUBE EnvSampler    : register(s4);   // shared environment cubemap (reflections)
 sampler2D   ShadowMap     : register(s5);   // directional shadow map (packed depth)
+sampler2D   SceneColor    : register(s6);   // previous frame's resolved scene
+sampler2D   SceneDepth    : register(s7);   // this frame's camera-view packed depth
 
 float4 LightDir0     : register(c0);   // xyz = direction toward the light
 float4 LightDir1     : register(c1);
@@ -35,6 +37,8 @@ float4 MatAmbient    : register(c10);  // house-colour tint (white when none)
 float4 AlphaCtl      : register(c11);  // x = material opacity, y = 1 when lit (use it)
 row_major float4x4 SunVP : register(c12);  // sun view*projection (world -> shadow clip)
 float4 ShadowParams  : register(c16);  // x = depth bias, y = shadow strength (0 = off)
+float4 SsrParams     : register(c17);  // x = strength (0 = off), y = max ray length, zw = proj _33/_43
+row_major float4x4 CameraVP : register(c18); // camera view*projection (world -> screen clip)
 
 struct PS_INPUT
 {
@@ -102,6 +106,112 @@ float computeShadow(float3 worldPos)
             lit += (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
         }
     return lerp(1.0, lit / 9.0, ShadowParams.y);
+}
+
+// Clip-space depth back to a view-space distance. The prepass stores z/w under the
+// camera's perspective projection, which is heavily non-linear -- almost the whole
+// scene lands in the last fraction of the range -- so a difference in it is not a
+// distance and the thickness test cannot be written in one.
+//
+// Straight from the two projection elements that produced the value: the projection
+// gives ndcZ = _33 + _43/viewZ, so viewZ = _43 / (ndcZ - _33). The previous version
+// recovered the near and far planes from those same two numbers and then rebuilt the
+// transform out of them -- algebraically identical, but with two extra divisions that
+// go through zero for projections this one does not expect, and it is sitting right
+// where the stored depth is closest to 1.0 and least forgiving.
+float viewDepth(float ndcZ)
+{
+    return SsrParams.w / (ndcZ - SsrParams.z);
+}
+
+// Screen-space reflection. Walks the reflection ray forward looking for the first step
+// that ends up behind the surface the depth prepass recorded, and returns the scene
+// colour there.
+//
+// The march is in world space, reprojected per step, rather than interpolated along a
+// screen-space line. The depth being read was rendered with this very matrix, so
+// reprojection is exact; and it keeps the step in world units, which is the only frame
+// in which the thickness test below means anything.
+//
+// Returns rgb = reflected colour (still sRGB, as the frame buffer had it), a = how much
+// to trust it. Zero means the ray found nothing and the caller should keep the cubemap.
+// hitMask comes back 1 when a surface was actually found, separately from the alpha,
+// which is the edge fade. They are not the same thing: a genuine hit right at the frame
+// border fades to zero alpha, and conflating the two makes a real reflection read as a
+// miss -- which is exactly what the triage mode was mis-reporting.
+float4 traceSsr(float3 worldPos, float3 R, out float hitMask)
+{
+    const int STEPS  = 32;
+    const int REFINE = 5;
+    hitMask = 0.0;
+
+    float stepLen = SsrParams.y / STEPS;
+    // How deep the recorded surface is assumed to be. A hit test can only ever ask "is
+    // this step behind the nearest surface", which is equally true of the entire void
+    // behind that surface -- so without a thickness, every ray passing behind anything
+    // reports a hit against it.
+    //
+    // It must also be at least a step wide. The test only ever looks at the sample
+    // points, so a window narrower than the spacing between them is one the ray steps
+    // clean over: the surface is in front at sample i and already too far behind at
+    // i+1. That is what made hits flicker on and off under small camera movements --
+    // identical geometry, sampled a fraction of a step differently each frame.
+    float thickness = max(8.0, stepLen * 2.0);
+
+    float3 prev = worldPos;
+    float3 p    = worldPos;
+
+    [loop] for (int i = 0; i < STEPS; ++i)
+    {
+        prev = p;
+        p   += R * stepLen;
+
+        float4 clip = mul(float4(p, 1.0), CameraVP);
+        if (clip.w <= 1e-4)
+            break;                                  // stepped behind the camera
+        float3 ndc = clip.xyz / clip.w;
+        float2 uv  = ndc.xy * float2(0.5, -0.5) + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+            break;                                  // left the screen; nothing to read
+
+        // tex2Dlod, not tex2D: these reads sit inside varying flow control, where the
+        // implicit derivatives an ordinary sample needs are undefined (and fxc refuses
+        // to compile them). The depth is point-sampled anyway and the colour wants no
+        // mip selection here, so an explicit LOD 0 costs nothing.
+        float sceneZ = viewDepth(unpackDepth(tex2Dlod(SceneDepth, float4(uv, 0, 0))));
+        // The ray's own distance needs no conversion at all: under this projection the
+        // clip w *is* the view-space z. Only the stored side was ever non-linear.
+        float rayZ   = clip.w;
+
+        if (rayZ - sceneZ > 0.0 && rayZ - sceneZ < thickness)
+        {
+            // The coarse step only established that the crossing lies somewhere in this
+            // interval. Bisect it down so the hit lands on the surface rather than
+            // wherever the march happened to stop -- without this the reported position
+            // moves by up to a whole step as the camera shifts, which is visible as the
+            // reflection swimming across the surface.
+            float3 lo = prev, hi = p;
+            [unroll] for (int r = 0; r < REFINE; ++r)
+            {
+                float3 mid = 0.5 * (lo + hi);
+                float4 mc  = mul(float4(mid, 1.0), CameraVP);
+                float2 muv = (mc.xy / mc.w) * float2(0.5, -0.5) + 0.5;
+                float  msz = viewDepth(unpackDepth(tex2Dlod(SceneDepth, float4(muv, 0, 0))));
+                if (mc.w > msz) hi = mid; else lo = mid;
+            }
+            float4 hc  = mul(float4(hi, 1.0), CameraVP);
+            float2 huv = (hc.xy / hc.w) * float2(0.5, -0.5) + 0.5;
+
+            hitMask = 1.0;
+            // Fade towards the frame edge. A ray landing near the border is reading
+            // something about to leave the screen, and the reflection popping as it goes
+            // is more noticeable than the cubemap it would have replaced.
+            float2 edge = min(huv, 1.0 - huv);
+            float  fade = saturate(min(edge.x, edge.y) * 10.0);
+            return float4(tex2Dlod(SceneColor, float4(huv, 0, 0)).rgb, fade);
+        }
+    }
+    return 0.0;
 }
 
 // Perturb a geometric normal by the gradient of a height field, using a tangent
@@ -199,6 +309,29 @@ float4 main(PS_INPUT input) : COLOR
     float3 envCol = texCUBE(EnvSampler, R).rgb;
     float  NdotV  = saturate(dot(N, V));
     float3 Fenv   = F_Schlick(NdotV, F0);
+
+    // Where a screen-space ray finds a real surface, its colour replaces the cubemap's
+    // guess. The cubemap is a coarse stand-in baked from the sun and ambient; an actual
+    // pixel of the scene beats it whenever one can be found. It stays the fallback --
+    // and in a camera this far above the battlefield most rays leave the screen without
+    // hitting anything, so it earns its keep.
+    //
+    // Weighted down as the surface roughens, because a single sharp tap is a mirror and
+    // a mirror-sharp reflection on a visibly rough surface reads as a bug rather than as
+    // detail. It must be a falloff and not a cutoff: this was a hard gate at roughness
+    // 0.5, and every ORM map in the HD set has its roughness floor just above that
+    // (measured: 0.51 to 0.53 minimum, 0.78 to 0.83 mean), so the branch below was false
+    // for every texel of every unit and the march had never once run.
+    float ssrWeight = SsrParams.x * saturate(1.0 - roughness);
+    if (ssrWeight > 0.0)
+    {
+        float ssrHit;
+        float4 ssr = traceSsr(input.worldPos, R, ssrHit);
+        // The scene texture is the frame buffer as displayed, so sRGB; everything here
+        // is linear until the final encode.
+        envCol = lerp(envCol, SrgbToLinear(ssr.rgb), ssr.a * ssrWeight);
+    }
+
     float3 envSpec = envCol * Fenv * (1.0 - roughness * 0.6);
 
     float3 color = Lo + ambient + envSpec;
@@ -211,7 +344,15 @@ float4 main(PS_INPUT input) : COLOR
     //   3 = reflection vector R   -- must change as the unit turns AND as the camera moves
     //   4 = ORM as authored       -- red=AO, green=roughness, blue=metallic
     //   5 = Fresnel weight Fenv   -- how much of the reflection actually survives
-#define PBR_DEBUG_MODE 0
+    //   6 = SSR triage           -- see below; one run says which part is missing
+    //   7 = mirror               -- every PBR unit becomes a perfect mirror, no albedo,
+    //                               no Fresnel, no roughness fade. If SSR does anything
+    //                               at all, it is unmissable here.
+    //   8 = camera depth          -- the prepass read back at this pixel, near white to
+    //                               far black. Should be a smooth relief of the scene.
+    //   9 = scene history         -- last frame's colour read back at this pixel. Should
+    //                               look like the frame itself, painted onto the units.
+#define PBR_DEBUG_MODE 10
 #if   PBR_DEBUG_MODE == 1
     return float4(envCol, 1.0);
 #elif PBR_DEBUG_MODE == 2
@@ -222,6 +363,86 @@ float4 main(PS_INPUT input) : COLOR
     return float4(ao, roughness, metallic, 1.0);
 #elif PBR_DEBUG_MODE == 5
     return float4(Fenv, 1.0);
+#elif PBR_DEBUG_MODE == 6
+    {
+        // SSR triage. "Nothing changed" has four possible causes and they are
+        // indistinguishable on screen, so this separates them in a single run by
+        // checking each input where the answer is known: at this pixel's own position,
+        // the depth buffer must hold roughly this pixel's depth and the scene history
+        // must hold roughly this pixel's colour.
+        //
+        //   reflected scene = working. Rays are hitting and reading real pixels.
+        //   red   = the depth prepass is empty here. It never ran, never cleared, or is
+        //           not the target the shader is sampling.
+        //   blue  = the scene history is black. endRenderToTexture is not capturing --
+        //           likely no filter is active, so the scene never goes through it.
+        //   green = every input is live and the ray simply found nothing. Expected for
+        //           most pixels at this camera height; if it is *every* pixel, the ray
+        //           length or the thickness is wrong, not the plumbing.
+        float4 selfClip = mul(float4(input.worldPos, 1.0), CameraVP);
+        float2 selfUv   = (selfClip.xy / selfClip.w) * float2(0.5, -0.5) + 0.5;
+        float  selfDep  = unpackDepth(tex2Dlod(SceneDepth, float4(selfUv, 0, 0)));
+        float3 selfCol  = tex2Dlod(SceneColor, float4(selfUv, 0, 0)).rgb;
+
+        float ssrHit;
+        float4 ssr = traceSsr(input.worldPos, R, ssrHit);
+        if (ssrHit > 0.0)             return float4(ssr.rgb, 1.0);
+        if (selfDep > 0.999)          return float4(1.0, 0.0, 0.0, 1.0);
+        if (dot(selfCol, 1.0) < 0.01) return float4(0.0, 0.0, 1.0, 1.0);
+        return float4(0.0, 1.0, 0.0, 1.0);
+    }
+#elif PBR_DEBUG_MODE == 7
+    {
+        // Pure mirror: the reflection and nothing else. SSR at full strength wherever
+        // it hits, the cubemap everywhere else -- so a unit that picks up any of the
+        // ground or a neighbouring building is SSR working, and a unit that stays a
+        // flat sky-and-ground gradient is the cubemap alone.
+        float ssrHit;
+        float4 ssr = traceSsr(input.worldPos, R, ssrHit);
+        float3 mirror = lerp(texCUBE(EnvSampler, R).rgb, SrgbToLinear(ssr.rgb), ssr.a);
+        return float4(LinearToSrgb(mirror), 1.0);
+    }
+#elif PBR_DEBUG_MODE == 10
+    {
+        // SSR alone, with the cubemap taken out of the picture entirely. Mode 7 blends
+        // the two, so a blown-out environment bake washes the march out no matter what
+        // it found. Here a miss is black and nothing hides a hit.
+        //   recognisable scene content -- the march works; the cubemap was drowning it
+        //   pure black                 -- the march finds nothing, and the cubemap has
+        //                                 been carrying the whole reflection all along
+        float ssrHit;
+        float4 ssr = traceSsr(input.worldPos, R, ssrHit);
+        return float4(ssr.rgb * ssrHit, 1.0);
+    }
+#elif PBR_DEBUG_MODE == 8
+    {
+        // The depth prepass, read back at this pixel's own position and shown as a
+        // greyscale distance -- near white, far black. It should look like a smooth
+        // shaded relief of the scene from the camera. Flat black means the prepass is
+        // writing nothing; banding or a hard edge partway across means its viewport or
+        // its matrix disagrees with the main pass, which is the failure that would make
+        // every hit test wrong without ever looking obviously broken.
+        float4 selfClip = mul(float4(input.worldPos, 1.0), CameraVP);
+        float2 selfUv   = (selfClip.xy / selfClip.w) * float2(0.5, -0.5) + 0.5;
+        // The raw texel, not a derived depth. Anything computed from it collapses three
+        // very different failures into the same grey mush; the bytes themselves tell
+        // them apart, because the target is cleared to pure red (depth = far) and the
+        // pack puts coarse depth in R, finer in G, finest in B:
+        //   flat pure red        -- bound, but the prepass drew nothing into it
+        //   red darkening with distance, G/B banding finely across surfaces -- working
+        //   flickering noise     -- not bound at all, and every reading so far has been
+        //                           whatever happened to be in that sampler
+        return float4(tex2Dlod(SceneDepth, float4(selfUv, 0, 0)).rgb, 1.0);
+    }
+#elif PBR_DEBUG_MODE == 9
+    {
+        // The scene history, read back at this pixel's own position. Should look like
+        // the frame itself (one frame stale), painted onto the units. A frozen image
+        // means the capture ran once and stopped; black means it never ran.
+        float4 selfClip = mul(float4(input.worldPos, 1.0), CameraVP);
+        float2 selfUv   = (selfClip.xy / selfClip.w) * float2(0.5, -0.5) + 0.5;
+        return float4(tex2Dlod(SceneColor, float4(selfUv, 0, 0)).rgb, 1.0);
+    }
 #endif
 
     float diffAlpha = lerp(input.color.a, AlphaCtl.x, AlphaCtl.y);

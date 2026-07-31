@@ -209,6 +209,27 @@ void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
 }
+bool							DX8Wrapper::m_bDepthPrepass = false;
+unsigned						DX8Wrapper::m_dbgUseShadowDepthHits = 0;
+unsigned						DX8Wrapper::m_dbgDepthCallsTotal = 0;
+unsigned						DX8Wrapper::m_dbgDepthCallsFlagged = 0;
+unsigned						DX8Wrapper::m_dbgDepthCalls = 0;
+unsigned						DX8Wrapper::m_dbgNoStateChange = 0;
+unsigned						DX8Wrapper::m_dbgNoShaderChange = 0;
+unsigned						DX8Wrapper::m_dbgDepthSeen = 0;
+unsigned						DX8Wrapper::m_dbgDepthRouted = 0;
+unsigned						DX8Wrapper::m_dbgRejShaders = 0;
+unsigned						DX8Wrapper::m_dbgRejFvf = 0;
+unsigned						DX8Wrapper::m_dbgRejBlend = 0;
+unsigned						DX8Wrapper::m_dbgRejView = 0;
+float							DX8Wrapper::m_depthVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneDepth = nullptr;
+IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneColor = nullptr;
+float							DX8Wrapper::m_ssrParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+void DX8Wrapper::Set_Depth_VP(const float* m16)
+{
+	for (int i = 0; i < 16; ++i) m_depthVP[i] = m16[i];
+}
 bool							DX8Wrapper::m_bUnitShaderBound = false;
 bool							DX8Wrapper::m_bTerrainShaderPass = false;
 float							DX8Wrapper::m_terrainCloudOffX = 0.0f;
@@ -2431,6 +2452,23 @@ void DX8Wrapper::Apply_Render_State_Changes()
 {
 	SNAPSHOT_SAY(("DX8Wrapper::Apply_Render_State_Changes()"));
 
+	// Counted before the guards, unlike the census further down, which lives inside the
+	// SHADER_CHANGED branch and therefore only ever sees shader *rebinds*. Zero rebinds
+	// is not zero geometry -- a bound shader persists across draws -- so the two numbers
+	// together say whether the pass is drawing nothing at all or drawing plenty while
+	// never re-entering the routing decision.
+	// Never reset, unlike the per-pass counters. If this climbs while those stay at zero,
+	// the flag is being set correctly and my reset is landing between the draws and the
+	// report -- which is a bug in the instrument, not in the renderer. If it stays at
+	// zero, the flag really is false whenever geometry is drawn.
+	++m_dbgDepthCallsTotal;
+	if (m_bShadowDepthPass) {
+		++m_dbgDepthCallsFlagged;
+		++m_dbgDepthCalls;
+		if (!render_state_changed)                    ++m_dbgNoStateChange;
+		else if (!(render_state_changed & SHADER_CHANGED)) ++m_dbgNoShaderChange;
+	}
+
 	if (!render_state_changed) return;
 	if (render_state_changed&SHADER_CHANGED) {
 		SNAPSHOT_SAY(("DX8 - apply shader"));
@@ -2656,6 +2694,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			(curFVF & D3DFVF_XYZ) &&
 			!softBlendedOverlay &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY);
+
+		// Census, evaluated in the same order as the predicate above so the first failing
+		// term is the one credited. Only the terms that can differ between the two depth
+		// passes are counted; anything reaching "routed" took the depth shaders.
+		if (m_bShadowDepthPass) {
+			++m_dbgDepthSeen;
+			if (m_dwShadowDepthVS == 0 || m_dwShadowDepthPS == 0)          ++m_dbgRejShaders;
+			else if (!(curFVF & D3DFVF_XYZ))                               ++m_dbgRejFvf;
+			else if (softBlendedOverlay)                                   ++m_dbgRejBlend;
+			else if (render_state_changed & (unsigned)VIEW_IDENTITY)       ++m_dbgRejView;
+			else                                                           ++m_dbgDepthRouted;
+		}
 
 		const bool useTerrainShader =
 			!m_bShadowDepthPass &&
@@ -2889,9 +2939,19 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
 
 		if (useShadowDepth) {
+			// Incremented where we know execution reaches, because the shadow map is
+			// demonstrably filled. If this climbs while m_dbgDepthCallsFlagged stays at
+			// zero, then m_bShadowDepthPass reads true here and false at the top of this
+			// same function -- which cannot happen, and would mean the counter up there
+			// is not in the function I think it is.
+			++m_dbgUseShadowDepthHits;
 			// Force the full square shadow-map viewport right before the draw. The
 			// camera's Apply set a screen-sized (16:9) viewport that gets re-applied
 			// per object, leaving the bottom of the square map cleared and mis-sampled.
+			// The SSR depth prepass is the exception: its target is the size of the
+			// screen, so the camera's own viewport is already the right one and forcing
+			// the square would squash the scene into a corner of it.
+			if (!m_bDepthPrepass)
 			{ D3DVIEWPORT9 svp = { 0, 0, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0.0f, 1.0f };
 			  _Get_D3D_Device8()->SetViewport(&svp); }
 			// Force the states the depth pass depends on, for the same reason as the
@@ -2921,15 +2981,48 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Set_DX8_Render_State(D3DRS_FILLMODE, D3DFILL_SOLID);
 			Set_DX8_Render_State(D3DRS_STENCILENABLE, FALSE);
 			Set_DX8_Render_State(D3DRS_ZBIAS, 0);
-			// Bind the depth-packing shaders and feed SunVP (c0) + this draw's World
-			// (c4). All geometry casts, so no texture/material state is needed.
+			// Bind the depth-packing shaders and feed the pass's view-projection (c0)
+			// + this draw's World (c4). All geometry casts, so no texture/material
+			// state is needed. Which projection depends on who is asking: the sun, for
+			// the shadow map, or the camera, for the depth SSR marches against.
 			if (!m_bUnitShaderBound) {
 				s_dwOriginalPS = Pixel_Shader;
 				m_bUnitShaderBound = true;
 			}
 			Set_Vertex_Shader(m_dwShadowDepthVS);
 			Set_Pixel_Shader(m_dwShadowDepthPS);
-			Set_Vertex_Shader_Constant(0, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			if (m_bDepthPrepass) {
+				// Build the camera view-projection from the state the pipeline is
+				// actually drawing with, rather than having the view push its own copy.
+				// Two copies would be free to disagree, and the PBR shader reprojects
+				// against this depth expecting an exact match -- a matrix that is merely
+				// close puts every hit test a fraction of a pixel out. Stashed so that
+				// shader is handed the very same one.
+				D3DXMATRIX camView = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+				D3DXMATRIX camProj;
+				_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, (D3DMATRIX*)&camProj);
+				D3DXMATRIX camVP;
+				D3DXMatrixMultiply(&camVP, &camView, &camProj);
+				memcpy(m_depthVP, &camVP, sizeof(m_depthVP));
+				Set_Vertex_Shader_Constant(0, &camVP, 4);
+
+				// The two projection elements the shader needs to turn the stored z/w
+				// back into a view-space distance, handed over as they are. It used to
+				// recover the near and far planes from them here and rebuild the
+				// transform from those in the shader -- the same algebra with two extra
+				// divisions in the middle, each of which goes through zero for
+				// projections this code does not anticipate, and all of it landing where
+				// the stored depth sits closest to 1.0 and tolerates error least.
+				// Passing the coefficients removes the round trip entirely.
+				//   ndcZ = _33 + _43/viewZ  ->  viewZ = _43 / (ndcZ - _33)
+				// How far a reflection may travel before giving up and leaving the
+				// cubemap in place. Long enough to cross a vehicle and reach the ground
+				// beside it, short enough that the march stays fine-grained.
+				const float SSR_MAX_RAY = 150.0f;
+				Set_Ssr_Params(1.0f, SSR_MAX_RAY, camProj._33, camProj._43);
+			}
+			else
+				Set_Vertex_Shader_Constant(0, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
 			D3DXMATRIX shadowWorld = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			Set_Vertex_Shader_Constant(4, &shadowWorld, 4);
 		}
@@ -3072,8 +3165,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// Off unless SHADER_ROUTE_PBR is selected, so the default build renders
 			// exactly what the milestone before it did and PBR can be A/B'd in game.
 			const bool pbrRoutingOn = (m_shaderRoutingMask & SHADER_ROUTE_PBR) != 0;
+			// The house-colour exclusion above is about procedurally generated ORM maps
+			// misreading a white team-colour texture as metal. Where the map was authored
+			// on purpose it should be obeyed instead -- and since every player-owned unit
+			// carries a team tint, the exclusion otherwise keeps PBR off all of them,
+			// which leaves it applying to almost nothing anyone looks at.
+			const bool pbrTeamColour = (m_shaderRoutingMask & SHADER_ROUTE_PBR_TEAMCOLOR) != 0;
 			TextureBaseClass* ormTex = nullptr;
-			if (pbrRoutingOn && !houseColoured && singleTexture && !texgenActive && hasNormal &&
+			if (pbrRoutingOn && (!houseColoured || pbrTeamColour) &&
+				singleTexture && !texgenActive && hasNormal &&
 				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0 && s_ormResolver != nullptr) {
 				ormTex = s_ormResolver(render_state.Textures[0]);
 			}
@@ -3194,6 +3294,34 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
 				}
 				Set_Pixel_Shader_Constant(16, m_shadowParams, 1);   // bias + strength
+				// Screen-space reflections. Stage 6 carries the previous frame's scene
+				// colour (what a ray that hits actually reads) and stage 7 this frame's
+				// camera-view packed depth (what it tests against). Both are bound
+				// whenever they exist rather than when the feature is on, for the same
+				// reason as the shadow map: the shader samples them in code the compiler
+				// cannot skip, and D3D9 leaves a read from an unbound stage undefined.
+				// The strength in c17 is what actually switches the march off.
+				if (m_pSceneColor != nullptr) {
+					Set_DX8_Texture(6, m_pSceneColor);
+					Set_DX8_Texture_Stage_State(6, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+					Set_DX8_Texture_Stage_State(6, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+					Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+					Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				}
+				if (m_pSceneDepth != nullptr) {
+					// Point filtering, as for the shadow map: packed depth is three bytes
+					// of one number, and interpolating them blends nonsense.
+					Set_DX8_Texture(7, m_pSceneDepth);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_MINFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				}
+				Set_Pixel_Shader_Constant(17, m_ssrParams, 1);
+				// The very matrix the depth prepass rendered with, so the shader's
+				// reprojection cannot drift out of step with the depth it is reading.
+				Set_Pixel_Shader_Constant(18,
+					reinterpret_cast<const D3DXMATRIX*>(m_depthVP), 4);  // c18-21
 				// SM3 pixel-shader lighting constants, all in world space (see c4 above).
 				// The light directions gathered above are in camera space, so rotate them
 				// out with the inverse view rotation before handing them over. (The M6

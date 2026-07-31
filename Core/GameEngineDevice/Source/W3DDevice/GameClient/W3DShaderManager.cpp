@@ -3000,6 +3000,9 @@ void W3DShaderManager::initUnitShaders()
 	initEnvMap();
 	// Directional shadow map (sun-view depth) for cast shadows.
 	initShadowMap();
+	// Screen-space reflections. After the shadow map, which owns the depth shaders
+	// this reuses -- initSsr checks they loaded and stands down if they did not.
+	initSsr();
 }
 
 //=============================================================================
@@ -3045,6 +3048,7 @@ void W3DShaderManager::shutdownUnitShaders()
 	// so no need to touch s_envBaked here; just drop the captured-light validity.
 	DX8Wrapper::m_envSunValid = false;
 	shutdownShadowMap();
+	shutdownSsr();
 	DX8Wrapper::m_bUnitShaderBound = false;
 }
 
@@ -3094,6 +3098,23 @@ TextureBaseClass* W3DShaderManager::resolveOrmTexture(TextureBaseClass* base)
 			orm = WW3DAssetManager::Get_Instance()->Get_Texture(ormName);
 		}
 	}
+
+	// One line per distinct base texture, written where the answer is unambiguous.
+	// The PBR gate only calls this once every other condition has already passed, so
+	// the log distinguishes the two failures that look identical on screen: a texture
+	// that never appears here was rejected by the gate upstream (routing bit, multi-
+	// texture pass, texgen, missing normals), and one that appears with "no map" got
+	// through the gate but failed the archive lookup. The mask rides along on the first
+	// call, which is during rendering and therefore after the options have been applied.
+	static Bool s_loggedRoutingMask = FALSE;
+	if (!s_loggedRoutingMask) {
+		s_loggedRoutingMask = TRUE;
+		DEBUG_LOG(("PBR: shader routing mask = %u (PBR bit %s, team-colour bit %s)\n",
+			DX8Wrapper::m_shaderRoutingMask,
+			(DX8Wrapper::m_shaderRoutingMask & DX8Wrapper::SHADER_ROUTE_PBR) ? "on" : "OFF",
+			(DX8Wrapper::m_shaderRoutingMask & DX8Wrapper::SHADER_ROUTE_PBR_TEAMCOLOR) ? "on" : "OFF"));
+	}
+	DEBUG_LOG(("PBR ORM: %s -> %s\n", name, orm != nullptr ? "found" : "NO MAP"));
 
 	s_ormCache[base] = orm; // holds the Get_Texture ref; released in clearOrmCache
 	return orm;
@@ -3290,6 +3311,189 @@ Bool W3DShaderManager::isShadowMappingActive()
 	return TheGlobalData->m_useShadowMapping && DX8Wrapper::Has_Shadow_Map();
 }
 
+// ---------------------------------------------------------------------------
+// Screen-space reflections.
+//
+// Two resources: a camera-view depth target, rendered by the shadow map's own depth
+// shaders from the camera rather than the sun, and a copy of the previous frame's
+// scene. The rays march the first and read the second. It has to be the previous
+// frame's copy -- while units are drawing, this frame's scene is the live render
+// target, and D3D9 leaves a read from the bound render target undefined.
+// ---------------------------------------------------------------------------
+
+// Which depth pass is currently open, so the shared restore path can label its census.
+static Bool s_inCameraDepthPass = FALSE;
+
+IDirect3DTexture8 *W3DShaderManager::m_ssrDepthTexture = nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_ssrDepthSurface = nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_ssrDepthStencil = nullptr;
+IDirect3DTexture8 *W3DShaderManager::m_sceneHistoryTexture = nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_sceneHistorySurface = nullptr;
+
+void W3DShaderManager::initSsr()
+{
+	if (m_ssrDepthTexture != nullptr)
+		return;
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+	// The depth pass is the shadow map's, pointed elsewhere. Without those shaders
+	// there is nothing to render depth with, and SSR simply stays off.
+	if (DX8Wrapper::m_dwShadowDepthVS == 0 || DX8Wrapper::m_dwShadowDepthPS == 0)
+	{
+		DEBUG_LOG(("SSR: disabled -- the shadow depth shaders did not load\n"));
+		return;
+	}
+
+	IDirect3DSurface8 *rt = nullptr;
+	if (FAILED(dev->GetRenderTarget(0, &rt)) || rt == nullptr)
+	{
+		DEBUG_LOG(("SSR: disabled -- no render target to take the screen size from\n"));
+		return;
+	}
+	D3DSURFACE_DESC desc;
+	rt->GetDesc(&desc);
+	rt->Release();
+
+	// Both targets are screen-sized: the depth one because the shader reprojects
+	// straight into screen UV and any other size would need a scale factor nothing
+	// else knows about, the history one because it is a copy of the frame. The depth
+	// buffer is deliberately non-multisampled -- this target is never resolved and
+	// nothing samples its edges, so MSAA would only cost fill rate.
+	if (FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
+				D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_ssrDepthTexture)) ||
+		FAILED(m_ssrDepthTexture->GetSurfaceLevel(0, &m_ssrDepthSurface)) ||
+		FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
+				D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_sceneHistoryTexture)) ||
+		FAILED(m_sceneHistoryTexture->GetSurfaceLevel(0, &m_sceneHistorySurface)) ||
+		FAILED(dev->CreateDepthStencilSurface(desc.Width, desc.Height, D3DFMT_D16,
+				D3DMULTISAMPLE_NONE, &m_ssrDepthStencil)))
+	{
+		DEBUG_LOG(("SSR: disabled -- could not create the %dx%d targets\n",
+			desc.Width, desc.Height));
+		shutdownSsr();
+		return;
+	}
+	DEBUG_LOG(("SSR: active, %dx%d depth + scene history\n", desc.Width, desc.Height));
+
+	// Clear both before anything can sample them. A render target's contents are
+	// undefined until something writes them, and undefined does not mean black -- it
+	// means whatever was last in that memory. The shader reflects it perfectly happily,
+	// which shows up as reflections in colours that appear nowhere in the scene, and
+	// the "is the history still black" check never fires to say so.
+	IDirect3DSurface8 *savedRT = nullptr;
+	IDirect3DSurface8 *savedDS = nullptr;
+	dev->GetRenderTarget(0, &savedRT);
+	dev->GetDepthStencilSurface(&savedDS);
+	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_ssrDepthSurface, m_ssrDepthStencil)))
+		DX8Wrapper::Clear(true, true, Vector3(1.0f, 0.0f, 0.0f), 1.0f, 1.0f);   // red = far
+	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_sceneHistorySurface, nullptr)))
+		DX8Wrapper::Clear(true, false, Vector3(0.0f, 0.0f, 0.0f), 1.0f, 1.0f);
+	DX8Wrapper::Set_DX8_Render_Target(savedRT, savedDS);
+	SAFE_RELEASE(savedRT);
+	SAFE_RELEASE(savedDS);
+
+	DX8Wrapper::m_pSceneDepth = m_ssrDepthTexture;   // now Has_Ssr() is true
+	DX8Wrapper::m_pSceneColor = m_sceneHistoryTexture;
+}
+
+void W3DShaderManager::shutdownSsr()
+{
+	DX8Wrapper::m_pSceneDepth = nullptr;
+	DX8Wrapper::m_pSceneColor = nullptr;
+	SAFE_RELEASE(m_ssrDepthStencil);
+	SAFE_RELEASE(m_ssrDepthSurface);
+	SAFE_RELEASE(m_ssrDepthTexture);
+	SAFE_RELEASE(m_sceneHistorySurface);
+	SAFE_RELEASE(m_sceneHistoryTexture);
+}
+
+Bool W3DShaderManager::isSsrActive()
+{
+	return DX8Wrapper::Has_Ssr();
+}
+
+void W3DShaderManager::startCameraDepthRendering()
+{
+	if (m_ssrDepthSurface == nullptr || m_ssrDepthStencil == nullptr)
+		return;
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	// The saved render target and state slots are the shadow pass's. Sharing them is
+	// safe only because the two passes are strictly sequential -- one finishes and
+	// restores before the other starts -- and it keeps one restore path rather than
+	// two that could drift apart.
+	m_shadowSavedRT = nullptr;
+	m_shadowSavedDepth = nullptr;
+	dev->GetRenderTarget(0, &m_shadowSavedRT);
+	dev->GetDepthStencilSurface(&m_shadowSavedDepth);
+
+	if (FAILED(DX8Wrapper::Set_DX8_Render_Target(m_ssrDepthSurface, m_ssrDepthStencil)))
+	{
+		static Bool s_loggedRtFail = FALSE;
+		if (!s_loggedRtFail) {
+			s_loggedRtFail = TRUE;
+			DEBUG_LOG(("SSR: depth prepass SKIPPED -- Set_DX8_Render_Target failed. The "
+				"pass never runs, so nothing is written and SsrParams stays zero.\n"));
+		}
+		SAFE_RELEASE(m_shadowSavedRT);
+		SAFE_RELEASE(m_shadowSavedDepth);
+		return;
+	}
+	for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
+		dev->GetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], &m_shadowSavedStates[i]);
+
+	DX8Wrapper::Set_Shadow_Depth_Pass(true);
+	DX8Wrapper::Set_Depth_Prepass(true);
+	DX8Wrapper::Reset_Depth_Pass_Stats();
+	s_inCameraDepthPass = TRUE;
+	// Red is depth 1.0 exactly -- the pack weights the channels 1, 1/255, 1/255^2, so R
+	// alone is the far plane. Anywhere the pass rasterises nothing then reads as empty
+	// sky, and a ray crossing it finds no hit rather than one at the near plane.
+	DX8Wrapper::Clear(true, true, Vector3(1.0f, 0.0f, 0.0f), 1.0f, 1.0f);
+}
+
+void W3DShaderManager::endCameraDepthRendering()
+{
+	// Logged here rather than anywhere later in the frame, because this runs only if the
+	// prepass actually started -- and it runs after it. maxRay is the useful field: it is
+	// a hardcoded constant set alongside the projection, so a zero there means no draw in
+	// the pass was ever routed to the depth shaders, whereas real numbers with a bad
+	// projection would mean the routing works and the conversion does not.
+	static Bool s_loggedSsrProj = FALSE;
+	if (!s_loggedSsrProj && DX8Wrapper::m_dbgDepthCallsTotal > 2000)
+	{
+		s_loggedSsrProj = TRUE;
+		DEBUG_LOG(("SSR: after prepass -- maxRay=%f proj _33=%f _43=%f  "
+			"(maxRay 0 = no draw routed; _33/_43 of 1/0 = identity projection)\n",
+			DX8Wrapper::m_ssrParams[1], DX8Wrapper::m_ssrParams[2],
+			DX8Wrapper::m_ssrParams[3]));
+	}
+
+	DX8Wrapper::Set_Depth_Prepass(false);
+	endShadowMapRendering();   // same restore: flag off, target back, states put back
+}
+
+void W3DShaderManager::captureSceneHistory()
+{
+	if (m_sceneHistorySurface == nullptr || m_renderTexture == nullptr)
+		return;
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+	// m_renderTexture is the scene already resolved out of MSAA by endRenderToTexture,
+	// so this is a straight copy. It exists because that texture is the render target
+	// again next frame, and a texture cannot be read while it is being written.
+	IDirect3DSurface8 *src = nullptr;
+	if (SUCCEEDED(m_renderTexture->GetSurfaceLevel(0, &src)) && src != nullptr)
+	{
+		dev->StretchRect(src, nullptr, m_sceneHistorySurface, nullptr, D3DTEXF_NONE);
+		src->Release();
+	}
+}
+
 void W3DShaderManager::startShadowMapRendering()
 {
 	if (m_pShadowMapSurface == nullptr || m_pShadowMapDepthSurface == nullptr)
@@ -3321,6 +3525,7 @@ void W3DShaderManager::startShadowMapRendering()
 		stateDev->GetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], &m_shadowSavedStates[i]);
 
 	DX8Wrapper::Set_Shadow_Depth_Pass(true);
+	DX8Wrapper::Reset_Depth_Pass_Stats();
 	// Clear colour so untouched texels read as far (unpack -> depth 1.0 -> lit). R is the
 	// most significant channel, so red, not blue: the pack weights the channels 1, 1/255,
 	// 1/255^2 coarse-to-fine. Clearing to blue here would unpack to ~0 -- the near plane --
@@ -3330,6 +3535,35 @@ void W3DShaderManager::startShadowMapRendering()
 
 void W3DShaderManager::endShadowMapRendering()
 {
+	// Both depth passes end here, so this is the one place that can report them in the
+	// same terms. The first few of each are enough: if the two lines disagree, the term
+	// they disagree on is the bug, and if they agree the fault is past this predicate.
+	{
+		// Only once the scene is real. "First N passes" sampled the opening frames of the
+		// process, where the map is not up and a frame issues a handful of draws -- so
+		// every zero these counters reported was a startup frame, not a finding. A live
+		// frame runs into the hundreds of draws, so the running total is the gate.
+		static Int s_shadowReports = 0;
+		static Int s_cameraReports = 0;
+		Int &count = s_inCameraDepthPass ? s_cameraReports : s_shadowReports;
+		if (count < 3 && DX8Wrapper::m_dbgDepthCallsTotal > 2000) {
+			++count;
+			DEBUG_LOG(("SSR census totals (never reset): allDraws=%u flagged=%u "
+				"depthBranchHits=%u\n",
+				DX8Wrapper::m_dbgDepthCallsTotal, DX8Wrapper::m_dbgDepthCallsFlagged,
+				DX8Wrapper::m_dbgUseShadowDepthHits));
+			DEBUG_LOG(("SSR census [%s]: calls=%u (noStateChange=%u noShaderChange=%u) "
+				"seen=%u routed=%u | rejected: shaders=%u fvf=%u blend=%u viewIdentity=%u\n",
+				s_inCameraDepthPass ? "camera" : "shadow",
+				DX8Wrapper::m_dbgDepthCalls, DX8Wrapper::m_dbgNoStateChange,
+				DX8Wrapper::m_dbgNoShaderChange,
+				DX8Wrapper::m_dbgDepthSeen, DX8Wrapper::m_dbgDepthRouted,
+				DX8Wrapper::m_dbgRejShaders, DX8Wrapper::m_dbgRejFvf,
+				DX8Wrapper::m_dbgRejBlend, DX8Wrapper::m_dbgRejView));
+		}
+		s_inCameraDepthPass = FALSE;
+	}
+
 	DX8Wrapper::Set_Shadow_Depth_Pass(false);
 	if (m_shadowSavedRT != nullptr)
 	{
@@ -3668,6 +3902,12 @@ IDirect3DTexture8 *W3DShaderManager::endRenderToTexture()
 		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
 
 		m_renderingToTexture = false;
+
+		// Keep a copy for next frame's screen-space reflections. Every filter path ends
+		// up here, so this is the one place that sees the finished, resolved scene --
+		// and the copy has to exist because m_renderTexture becomes the render target
+		// again next frame, and nothing may sample a texture it is drawing into.
+		captureSceneHistory();
 	}
 	return m_renderTexture;
 }

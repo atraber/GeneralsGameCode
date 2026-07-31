@@ -93,6 +93,12 @@ public:
 	static void startShadowMapRendering();	///<redirect rendering into the shadow map (sun-view depth pass).
 	static void endShadowMapRendering();	///<restore the back buffer after the shadow depth pass.
 	static Bool isShadowMappingActive();	///<true when the shadow map is enabled and usable; the legacy volume/decal shadows stand down.
+	static void initSsr();	///<create the camera-depth target and the scene-colour history texture.
+	static void shutdownSsr();	///<release the screen-space reflection resources.
+	static Bool isSsrActive();	///<true when SSR is enabled and its resources exist.
+	static void startCameraDepthRendering();	///<redirect rendering into the camera-view depth target.
+	static void endCameraDepthRendering();	///<restore the back buffer after the camera depth pass.
+	static void captureSceneHistory();	///<copy the resolved scene into the history texture for next frame.
 	enum { NUM_SHADOW_SAVED_STATES = 10 };	///<render states saved across the shadow depth pass
 
 	static ChipsetType getChipset();	///<return current device chipset.
@@ -153,6 +159,14 @@ protected:
 	static IDirect3DSurface8 *m_shadowSavedRT;		///<render target saved across the shadow depth pass
 	static IDirect3DSurface8 *m_shadowSavedDepth;	///<depth surface saved across the shadow depth pass
 	static DWORD m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
+	// Screen-space reflections. The depth target is the shadow map's arrangement at
+	// screen size and from the camera; the history texture is last frame's scene, which
+	// is what the rays actually read (this frame's is the live render target).
+	static IDirect3DTexture8 *m_ssrDepthTexture;	///<camera-view depth-packed target (A8R8G8B8)
+	static IDirect3DSurface8 *m_ssrDepthSurface;	///<colour surface of the depth target
+	static IDirect3DSurface8 *m_ssrDepthStencil;	///<the depth pass's own depth buffer
+	static IDirect3DTexture8 *m_sceneHistoryTexture;	///<previous frame's resolved scene colour
+	static IDirect3DSurface8 *m_sceneHistorySurface;	///<its surface, the StretchRect destination
 
 
 };
