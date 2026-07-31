@@ -181,22 +181,8 @@ DWORD							DX8Wrapper::m_shaderRoutingMask = DX8Wrapper::SHADER_ROUTE_BASELINE;
 DWORD							DX8Wrapper::m_dwUnitPbrVS = 0;
 DWORD							DX8Wrapper::m_dwUnitPbrPS = 0;
 IDirect3DBaseTexture8*			DX8Wrapper::m_envCubeMap = nullptr;
-float							DX8Wrapper::m_envSunDir[3]   = { 0.40f, 0.30f, 0.85f };
-float							DX8Wrapper::m_envSunColor[3] = { 1.00f, 0.92f, 0.72f };
-float							DX8Wrapper::m_envAmbient[3]  = { 0.20f, 0.20f, 0.22f };
-bool							DX8Wrapper::m_envSunValid = false;
+float							DX8Wrapper::m_envAverage[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
 DX8Wrapper::OrmResolverFunc		DX8Wrapper::s_ormResolver = nullptr;
-
-// Record the dominant scene light so the env cubemap can be re-baked to match the
-// current time-of-day. Called from the PBR draw path with data it already gathered;
-// the actual (expensive) re-bake is deferred to a once-per-frame point.
-void DX8Wrapper::Capture_Env_Light(const float dir[3], const float color[3], const float ambient[3])
-{
-	m_envSunDir[0]   = dir[0];   m_envSunDir[1]   = dir[1];   m_envSunDir[2]   = dir[2];
-	m_envSunColor[0] = color[0]; m_envSunColor[1] = color[1]; m_envSunColor[2] = color[2];
-	m_envAmbient[0]  = ambient[0]; m_envAmbient[1] = ambient[1]; m_envAmbient[2] = ambient[2];
-	m_envSunValid = true;
-}
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
 DWORD							DX8Wrapper::m_dwTerrainPS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthVS = 0;
@@ -3199,6 +3185,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// Force the full square shadow-map viewport right before the draw. The
 			// camera's Apply set a screen-sized (16:9) viewport that gets re-applied
 			// per object, leaving the bottom of the square map cleared and mis-sampled.
+			// The SSR depth prepass is the exception: its target is the size of the
+			// screen, so the camera's own viewport is already the right one and forcing
+			// the square would squash the scene into a corner of it.
+			if (!m_bDepthPrepass)
 			{ D3DVIEWPORT9 svp = { 0, 0, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0.0f, 1.0f };
 			  _Get_D3D_Device8()->SetViewport(&svp); }
 			// Force the states the depth pass depends on, for the same reason as the
@@ -3228,15 +3218,48 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Set_DX8_Render_State(D3DRS_FILLMODE, D3DFILL_SOLID);
 			Set_DX8_Render_State(D3DRS_STENCILENABLE, FALSE);
 			Set_DX8_Render_State(D3DRS_ZBIAS, 0);
-			// Bind the depth-packing shaders and feed SunVP (c0) + this draw's World
-			// (c4). All geometry casts, so no texture/material state is needed.
+			// Bind the depth-packing shaders and feed the pass's view-projection (c0)
+			// + this draw's World (c4). All geometry casts, so no texture/material
+			// state is needed. Which projection depends on who is asking: the sun, for
+			// the shadow map, or the camera, for the depth SSR marches against.
 			if (!m_bUnitShaderBound) {
 				s_dwOriginalPS = Pixel_Shader;
 				m_bUnitShaderBound = true;
 			}
 			Set_Vertex_Shader(m_dwShadowDepthVS);
 			Set_Pixel_Shader(m_dwShadowDepthPS);
-			Set_Vertex_Shader_Constant(0, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			if (m_bDepthPrepass) {
+				// Build the camera view-projection from the state the pipeline is
+				// actually drawing with, rather than having the view push its own copy.
+				// Two copies would be free to disagree, and the PBR shader reprojects
+				// against this depth expecting an exact match -- a matrix that is merely
+				// close puts every hit test a fraction of a pixel out. Stashed so that
+				// shader is handed the very same one.
+				D3DXMATRIX camView = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+				D3DXMATRIX camProj;
+				_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, (D3DMATRIX*)&camProj);
+				D3DXMATRIX camVP;
+				D3DXMatrixMultiply(&camVP, &camView, &camProj);
+				memcpy(m_depthVP, &camVP, sizeof(m_depthVP));
+				Set_Vertex_Shader_Constant(0, &camVP, 4);
+
+				// The two projection elements the shader needs to turn the stored z/w
+				// back into a view-space distance, handed over as they are. It used to
+				// recover the near and far planes from them here and rebuild the
+				// transform from those in the shader -- the same algebra with two extra
+				// divisions in the middle, each of which goes through zero for
+				// projections this code does not anticipate, and all of it landing where
+				// the stored depth sits closest to 1.0 and tolerates error least.
+				// Passing the coefficients removes the round trip entirely.
+				//   ndcZ = _33 + _43/viewZ  ->  viewZ = _43 / (ndcZ - _33)
+				// How far a reflection may travel before giving up and leaving the
+				// cubemap in place. Long enough to cross a vehicle and reach the ground
+				// beside it, short enough that the march stays fine-grained.
+				const float SSR_MAX_RAY = 150.0f;
+				Set_Ssr_Params(1.0f, SSR_MAX_RAY, camProj._33, camProj._43);
+			}
+			else
+				Set_Vertex_Shader_Constant(0, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
 			D3DXMATRIX shadowWorld = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			Set_Vertex_Shader_Constant(4, &shadowWorld, 4);
 		}
@@ -3572,8 +3595,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					s_pbrExtraStagesBound = true;
 					Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+					// The cubemap carries cloud detail and ships a mip chain; without a
+					// mip filter the minified case undersamples it and sparkles.
+					Set_DX8_Texture_Stage_State(4, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+					// c22: mean cubemap colour, so the shader's irradiance tap can be
+					// normalised to average 1.0 (see m_envAverage).
+					Set_Pixel_Shader_Constant(22, m_envAverage, 1);
 				}
 				// Directional shadow map on stage 5 (point + clamp: packed depth must not
 				// be interpolated; the shader PCFs). SunVP goes in c12-15 so the shader can
@@ -3591,6 +3620,36 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// PBR shader carries the world normal to the pixel, so it offsets there
 				// rather than in its vertex shader as the M3 path does.
 				Set_Pixel_Shader_Constant(23, m_shadowMeshParams, 1);
+				// Screen-space reflections. Stage 6 carries the previous frame's scene
+				// colour (what a ray that hits actually reads) and stage 7 this frame's
+				// camera-view packed depth (what it tests against). Both are bound
+				// whenever they exist rather than when the feature is on, for the same
+				// reason as the shadow map: the shader samples them in code the compiler
+				// cannot skip, and D3D9 leaves a read from an unbound stage undefined.
+				// The strength in c17 is what actually switches the march off.
+				if (m_pSceneColor != nullptr) {
+					Set_DX8_Texture(6, m_pSceneColor);
+					s_pbrExtraStagesBound = true;
+					Set_DX8_Texture_Stage_State(6, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+					Set_DX8_Texture_Stage_State(6, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+					Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+					Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				}
+				if (m_pSceneDepth != nullptr) {
+					// Point filtering, as for the shadow map: packed depth is three bytes
+					// of one number, and interpolating them blends nonsense.
+					Set_DX8_Texture(7, m_pSceneDepth);
+					s_pbrExtraStagesBound = true;
+					Set_DX8_Texture_Stage_State(7, D3DTSS_MINFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				}
+				Set_Pixel_Shader_Constant(17, m_ssrParams, 1);
+				// The very matrix the depth prepass rendered with, so the shader's
+				// reprojection cannot drift out of step with the depth it is reading.
+				Set_Pixel_Shader_Constant(18,
+					reinterpret_cast<const D3DXMATRIX*>(m_depthVP), 4);  // c18-21
 				// SM3 pixel-shader lighting constants, all in world space (see c4 above).
 				// The light directions gathered above are in world space (from LightEnvironment),
 				// which matches what unit_pbr_ps expects.
@@ -3605,17 +3664,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_Pixel_Shader_Constant(11, &alphaCtl, 1);   // stealth opacity control
 				Set_Pixel_Shader_Constant(12, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4); // c12-15 SunVP
 
-				// Snapshot the dominant light + ambient for the shared env-map bake so
-				// its sky/sun/ground track time-of-day. The cubemap is baked in world
-				// space (up = +Z), so this has to be the world-space direction too --
-				// capturing the camera-space one swings the sun disc as the camera turns.
-				// The re-bake itself is gated on drift and done once per frame elsewhere.
-				if (render_state.LightEnable[0]) {
-					const float sunDir[3]   = { lightDir[0].x, lightDir[0].y, lightDir[0].z };
-					const float sunColor[3] = { lightDiff[0].x, lightDiff[0].y, lightDiff[0].z };
-					const float amb[3]      = { sceneAmbient.x, sceneAmbient.y, sceneAmbient.z };
-					Capture_Env_Light(sunDir, sunColor, amb);
-				}
+				// (The env cubemap used to snapshot light 0 here. It doesn't any more: W3D
+				// gives every object its own LightEnvironment, so light 0 is only sometimes
+				// the sun, and the bake lurched with draw order. W3DShaderManager reads the
+				// map's global lighting instead -- the same source as the shadow frustum.)
 			} else {
 				// Non-PBR path: lighting and the texture combine come from the constants
 				// the unit shaders read. Stage 1 only needs putting back when a previous

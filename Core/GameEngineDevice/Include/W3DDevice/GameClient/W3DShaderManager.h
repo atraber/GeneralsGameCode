@@ -140,6 +140,15 @@ public:
 	{
 		return cullSphereFromShadowFrustum(sphere.Center, sphere.Radius);
 	}
+	static void initSsr();	///<create the camera-depth target and the scene-colour history texture.
+	static void shutdownSsr();	///<release the screen-space reflection resources.
+	static Bool isSsrActive();	///<true when SSR is enabled and its resources exist.
+	static void startCameraDepthRendering();	///<redirect rendering into the camera-view depth target.
+	static void endCameraDepthRendering();	///<restore the back buffer after the camera depth pass.
+	static void captureSceneHistory();	///<copy the resolved scene into the history texture for next frame.
+	static void captureSceneHistoryFromBackBuffer();	///<same, straight off the back buffer, for when the filter chain did not capture.
+	static Bool sceneHistoryCaptured() { return m_sceneHistoryCaptured; }	///<true once this frame's scene colour has been copied to the history.
+	static void resetSceneHistoryCaptured() { m_sceneHistoryCaptured = false; }	///<call once per frame before the scene is drawn.
 	enum { NUM_SHADOW_SAVED_STATES = 10 };	///<render states saved across the shadow depth pass
 
 	static ChipsetType getChipset();	///<return current device chipset.
@@ -188,6 +197,7 @@ protected:
 	static FilterTypes m_currentFilter; ///< Last filter that was set.
 	// Info for a render to texture surface for special effects.
 	static Bool m_renderingToTexture;
+	static Bool m_sceneHistoryCaptured;	///<set once this frame's scene colour reached the SSR history texture.
 	static IDirect3DSurface8 *m_oldRenderSurface;	///<previous render target
 	static IDirect3DTexture8 *m_renderTexture;		///<plain (non-MSAA) texture the redirected scene ends up in (post-process reads this)
 	static IDirect3DSurface8 *m_newRenderSurface;	///<render target the scene is drawn into: m_renderTexture's surface, or an MSAA surface when MSAA is on
@@ -200,6 +210,14 @@ protected:
 	static IDirect3DSurface8 *m_shadowSavedRT;		///<render target saved across the shadow depth pass
 	static IDirect3DSurface8 *m_shadowSavedDepth;	///<depth surface saved across the shadow depth pass
 	static DWORD m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
+	// Screen-space reflections. The depth target is the shadow map's arrangement at
+	// screen size and from the camera; the history texture is last frame's scene, which
+	// is what the rays actually read (this frame's is the live render target).
+	static IDirect3DTexture8 *m_ssrDepthTexture;	///<camera-view depth-packed target (A8R8G8B8)
+	static IDirect3DSurface8 *m_ssrDepthSurface;	///<colour surface of the depth target
+	static IDirect3DSurface8 *m_ssrDepthStencil;	///<the depth pass's own depth buffer
+	static IDirect3DTexture8 *m_sceneHistoryTexture;	///<previous frame's resolved scene colour
+	static IDirect3DSurface8 *m_sceneHistorySurface;	///<its surface, the StretchRect destination
 
 
 };

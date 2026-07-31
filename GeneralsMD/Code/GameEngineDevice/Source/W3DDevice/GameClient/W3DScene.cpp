@@ -1036,6 +1036,18 @@ void RTS3DScene::Render(RenderInfoClass & rinfo)
 			Customized_Render(rinfo);
 			Flush(rinfo);
 		}
+		else if (m_customPassMode == SCENE_PASS_CAMERA_DEPTH)
+		{
+			// Screen-space reflections need to know where every surface is, and D3D9
+			// cannot hand back the depth buffer as a texture portably. So the scene is
+			// drawn once more into a colour target through the same depth-packing
+			// shaders the shadow map uses -- only from the camera instead of the sun.
+			// No viewport override here, unlike the shadow branch: that target is a
+			// square map the camera's own viewport would half fill, whereas this one is
+			// screen-sized and the camera's viewport is already exactly right.
+			Customized_Render(rinfo);
+			Flush(rinfo);
+		}
 	}
 	else
 	{

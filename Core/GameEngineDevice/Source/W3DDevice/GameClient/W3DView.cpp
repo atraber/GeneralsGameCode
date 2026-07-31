@@ -2166,6 +2166,19 @@ void W3DView::draw()
 										   0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 	}
 
+	// Camera-view depth for screen-space reflections. Independent of the shadow map --
+	// the two share the depth shaders but not the feature, so this runs either way.
+	// It is a second full pass over the scene's geometry, which is the price of D3D9
+	// not handing back its depth buffer as something samplable.
+	if (W3DShaderManager::isSsrActive())
+	{
+		W3DShaderManager::startCameraDepthRendering();
+		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_CAMERA_DEPTH);
+		W3DDisplay::m_3DScene->doRender(m_3DCamera);
+		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_DEFAULT);
+		W3DShaderManager::endCameraDepthRendering();
+	}
+
 	// Select the base view filter when no transient effect filter (BW, motion blur,
 	// crossfade) is running: bloom when it is enabled (options.ini UseBloom) and
 	// initialised (render-to-texture available), else the plain default filter.
@@ -2247,6 +2260,20 @@ void W3DView::draw()
 			m_viewFilter = FT_VIEW_DEFAULT;
 			m_viewFilterMode = FM_VIEW_DEFAULT;
 		}
+	}
+
+	// Screen-space reflections sample last frame's scene colour, which the filter chain
+	// copies into the history inside endRenderToTexture. That only happens when a filter
+	// actually runs its postRender, which is not the same thing as a filter being
+	// selected: the default filter is always selected, yet with bloom off its preRender
+	// declines and postRender never runs, so nothing ever wrote the history and SSR
+	// resolved every hit against a black texture. Keying off "did the capture happen"
+	// rather than "is a filter configured" covers both cases.
+	if (!skipRender &&
+		W3DShaderManager::isSsrActive() &&
+		!W3DShaderManager::sceneHistoryCaptured())
+	{
+		W3DShaderManager::captureSceneHistoryFromBackBuffer();
 	}
 
 	//Some effects require that we render a modified version of the scene into a texture but also require
