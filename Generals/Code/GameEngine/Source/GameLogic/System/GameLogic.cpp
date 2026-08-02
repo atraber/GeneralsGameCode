@@ -2022,6 +2022,26 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 			rts::changeLocalPlayer(observerPlayer);
 
 			DEBUG_LOG(("Start of a replay game %ls, %d", localPlayer->getPlayerDisplayName().str(), localPlayer->getPlayerIndex()));
+
+			// A replay launched from the command line is watched unattended, so nobody is going to
+			// pick a player in the observer bar. Observe the first playable one, which also makes
+			// the camera follow that player instead of sitting wherever the map left it.
+			if (TheGlobalData->m_initialReplayFile.isNotEmpty())
+			{
+				for (Int playerIdx = 0; playerIdx < ThePlayerList->getPlayerCount(); ++playerIdx)
+				{
+					Player *observeMe = ThePlayerList->getNthPlayer(playerIdx);
+					if (observeMe == nullptr || observeMe == ThePlayerList->getNeutralPlayer())
+						continue;
+					if (!observeMe->isPlayableSide())
+						continue;
+
+					rts::changeObservedPlayer(observeMe);
+					DEBUG_LOG(("-playReplay: observing player %ls (index %d)",
+						observeMe->getPlayerDisplayName().str(), observeMe->getPlayerIndex()));
+					break;
+				}
+			}
 		}
 		else
 		{

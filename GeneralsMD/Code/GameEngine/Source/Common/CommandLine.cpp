@@ -456,7 +456,6 @@ Int parsePlayReplay(char *args[], int num)
 		TheWritableGlobalData->m_initialReplayFile = filename;
 
 		TheWritableGlobalData->m_playIntro = FALSE;
-		TheWritableGlobalData->m_afterIntro = TRUE;
 		TheWritableGlobalData->m_playSizzle = FALSE;
 		TheWritableGlobalData->m_shellMapOn = FALSE;
 
