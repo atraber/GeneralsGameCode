@@ -47,14 +47,29 @@ float shadowTerm(float4 lightPos)
     float inBounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
 
     const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
+
+    // Bilinear-weighted PCF over a 3x3 texel footprint, matching terrain_ps and
+    // unit_pbr_ps -- the same shadow must not soften differently depending on which
+    // shader the mesh happened to route to. The taps are point-sampled because the depth
+    // is packed across RGB; the smoothing comes from weighting the comparisons by where
+    // the pixel sits inside its texel, which is what stops the edge stepping.
+    float2 texelPos = uv / texel;
+    float2 frc      = frac(texelPos - 0.5);
+    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
+
+    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
+    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
+
     float lit = 0.0;
-    [unroll] for (int x = 0; x <= 1; ++x)
-        [unroll] for (int y = 0; y <= 1; ++y) {
-            float2 o = (float2(x, y) - 0.5) * texel;
-            float stored = unpackDepth(tex2D(ShadowMap, uv + o));
-            lit += (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+    [unroll] for (int y = 0; y < 4; ++y)
+        [unroll] for (int x = 0; x < 4; ++x) {
+            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
+            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
+            float tapLit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+            lit += tapLit * wx[x] * wy[y];
         }
-    return saturate(lerp(1.0, lit * 0.25, inBounds * ShadowParams.y));
+    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
+    return saturate(lerp(1.0, lit / 9.0, inBounds * ShadowParams.y));
 }
 
 float4 main(PS_INPUT input) : COLOR

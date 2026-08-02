@@ -52,13 +52,13 @@ if(FXC_EXECUTABLE)
     file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")
     set(_rts_shader_outputs "")
     foreach(_name ${_rts_shaders})
-        # PBR shaders need Shader Model 3 (more instructions/registers, ddx/ddy);
-        # the rest target Shader Model 2.
-        if(_name MATCHES "pbr")
-            set(_model "3_0")
-        else()
-            set(_model "2_0")
-        endif()
+        # Everything targets Shader Model 3. The PBR path always needed it (instruction
+        # count, registers, ddx/ddy), and holding the rest at 2_0 bought nothing but
+        # limits: the terrain shadow filter had to be cut to a 2x2 box to fit the ps_2_0
+        # arithmetic slots, which is precisely what made cast shadows stair-step on the
+        # ground. D3D9 also forbids mixing model 3 and model 2 across a vs/ps pair, so
+        # moving any pixel shader up drags its vertex shader with it regardless.
+        set(_model "3_0")
         if(_name MATCHES "_vs$")
             set(_profile "vs_${_model}")
             set(_ext "vso")

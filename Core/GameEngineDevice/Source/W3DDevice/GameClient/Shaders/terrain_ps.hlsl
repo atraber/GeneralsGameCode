@@ -29,9 +29,14 @@ float unpackDepth(float4 rgba)
     return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
 }
 
-// Cast-shadow term for the terrain. Branchless (ps_2_0 has no dynamic flow): the
-// out-of-frustum case is folded in with a mask instead of an early-out. 2x2 PCF
-// (3x3 overflows the ps_2_0 arithmetic-slot limit alongside the terrain blend).
+// Cast-shadow term for the terrain. The out-of-frustum case is folded in with a mask
+// rather than an early-out, which keeps the texture fetches in uniform flow.
+//
+// This is where cast shadows are seen most: almost every shadow in a normal frame falls
+// on the ground rather than on a unit. It used to be a 2x2 box of point comparisons,
+// which is what made those shadows stair-step. That filter was chosen because a wider
+// one overflowed the ps_2_0 arithmetic slots alongside the terrain blend; the shader now
+// targets ps_3_0 so it can run the same filter unit_pbr_ps does.
 float terrainShadow(float4 lightPos)
 {
     // Guard the divide: a degenerate w yields inf, then NaN, and NaN survives every
@@ -43,15 +48,30 @@ float terrainShadow(float4 lightPos)
     // Bias arrives per frame (see unit_pbr_ps): the sun frustum is fitted to the camera,
     // so a texel's world size -- and with it the bias needed -- changes with the zoom.
     const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
+
+    // Bilinear-weighted PCF over a 3x3 texel footprint. The taps have to be point-sampled
+    // -- depth is packed across RGB and hardware filtering would interpolate the packed
+    // bytes -- so the smoothing comes from weighting the comparisons by where the pixel
+    // sits inside its texel. That weighting, not the tap count, is what removes the
+    // stepping: a box of point comparisons still snaps every tap to the texel grid.
+    float2 texelPos = uv / texel;
+    float2 frc      = frac(texelPos - 0.5);
+    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
+
+    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
+    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
+
     float lit = 0.0;
-    [unroll] for (int x = 0; x <= 1; ++x)
-        [unroll] for (int y = 0; y <= 1; ++y) {
-            float2 o = (float2(x, y) - 0.5) * texel;
-            float stored = unpackDepth(tex2D(ShadowMap, uv + o));
-            lit += (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+    [unroll] for (int y = 0; y < 4; ++y)
+        [unroll] for (int x = 0; x < 4; ++x) {
+            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
+            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
+            float tapLit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+            lit += tapLit * wx[x] * wy[y];
         }
+    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
     // Outside the sun frustum, or with shadowing off, everything is lit.
-    return saturate(lerp(1.0, lit * 0.25, inBounds * ShadowParams.y));
+    return saturate(lerp(1.0, lit / 9.0, inBounds * ShadowParams.y));
 }
 
 float4 main(PS_INPUT input) : COLOR

@@ -114,6 +114,7 @@ GraphicsVenderID W3DShaderManager::m_currentVendor;
 __int64 W3DShaderManager::m_driverVersion;
 
 Bool W3DShaderManager::m_renderingToTexture = false;
+Bool W3DShaderManager::m_sceneHistoryCaptured = false;
 IDirect3DSurface8 *W3DShaderManager::m_oldRenderSurface=nullptr;	///<previous render target
 IDirect3DTexture8 *W3DShaderManager::m_renderTexture=nullptr;		///<texture into which rendering will be redirected.
 IDirect3DSurface8 *W3DShaderManager::m_newRenderSurface=nullptr;	///<new render target inside m_renderTexture
@@ -3045,8 +3046,7 @@ void W3DShaderManager::shutdownUnitShaders()
 		DX8Wrapper::m_envCubeMap = nullptr;
 	}
 	// initEnvMap re-bakes and resets the bake baseline when it recreates the cube,
-	// so no need to touch s_envBaked here; just drop the captured-light validity.
-	DX8Wrapper::m_envSunValid = false;
+	// so there is nothing to reset here.
 	shutdownShadowMap();
 	shutdownSsr();
 	DX8Wrapper::m_bUnitShaderBound = false;
@@ -3099,23 +3099,6 @@ TextureBaseClass* W3DShaderManager::resolveOrmTexture(TextureBaseClass* base)
 		}
 	}
 
-	// One line per distinct base texture, written where the answer is unambiguous.
-	// The PBR gate only calls this once every other condition has already passed, so
-	// the log distinguishes the two failures that look identical on screen: a texture
-	// that never appears here was rejected by the gate upstream (routing bit, multi-
-	// texture pass, texgen, missing normals), and one that appears with "no map" got
-	// through the gate but failed the archive lookup. The mask rides along on the first
-	// call, which is during rendering and therefore after the options have been applied.
-	static Bool s_loggedRoutingMask = FALSE;
-	if (!s_loggedRoutingMask) {
-		s_loggedRoutingMask = TRUE;
-		DEBUG_LOG(("PBR: shader routing mask = %u (PBR bit %s, team-colour bit %s)\n",
-			DX8Wrapper::m_shaderRoutingMask,
-			(DX8Wrapper::m_shaderRoutingMask & DX8Wrapper::SHADER_ROUTE_PBR) ? "on" : "OFF",
-			(DX8Wrapper::m_shaderRoutingMask & DX8Wrapper::SHADER_ROUTE_PBR_TEAMCOLOR) ? "on" : "OFF"));
-	}
-	DEBUG_LOG(("PBR ORM: %s -> %s\n", name, orm != nullptr ? "found" : "NO MAP"));
-
 	s_ormCache[base] = orm; // holds the Get_Texture ref; released in clearOrmCache
 	return orm;
 }
@@ -3140,9 +3123,16 @@ void W3DShaderManager::clearOrmCache()
 // the PBR shader adds them before its own gamma pass.
 //=============================================================================
 
-// Env cubemap edge length. Small: reflections are broad, and a re-bake locks and
-// fills all six faces on the CPU, so this stays cheap even when it does run.
-static const int ENV_MAP_SIZE = 64;
+// Env cubemap edge length. 64 was chosen when the bake ran constantly (it was fed by a
+// per-draw light snapshot that never settled). Now that it reads the map's global
+// lighting it bakes about twice per session, so the budget goes into resolution
+// instead: 256 is what makes cloud shapes survive into the reflection rather than
+// smearing into the blue gradient underneath.
+//
+// The GPU does not care -- a texCUBE is one tap at any size, and six 256x256 faces plus
+// mips is ~2MB. The cost is the CPU bake, which is O(size^2) and now does noise per
+// texel, so keep an eye on this if it goes higher.
+static const int ENV_MAP_SIZE = 256;
 
 // Base sky / ground tint at full daylight; modulated per-bake by scene brightness.
 static const float ENV_SKY_BASE[3]    = { 0.35f, 0.52f, 0.85f };
@@ -3156,11 +3146,98 @@ static float s_envBakedSunColor[3];
 static float s_envBakedSky[3];
 static float s_envBakedGround[3];
 
+// Cloud structure for the sky.
+//
+// Without this the sky is a pure vertical gradient, so its reflection carries no
+// information except "which way is up": a surface turning under it changes brightness
+// but never shape, which reads as a washed-out blue smear rather than as a sky.
+//
+// The noise is sampled on the 3D direction vector rather than per-face in 2D, which
+// makes it seamless across cube edges for free. A 2D field would need matching edges on
+// all twelve joins.
+// Tuning note: three octaves of value noise land in a narrow band -- mean 0.5, sigma
+// about 0.19 -- so the threshold has to sit near or below the mean and rise steeply, or
+// the mask never saturates and the result is faint wisps instead of cloud. The first
+// attempt used cover 0.52 / sharpness 2.2, which peaked around 0.4 at +1 sigma and was
+// invisible once reflected onto a unit.
+// Frequency note: a flat surface only sweeps 5-8 degrees of reflection vector across its
+// whole width (that is just its angular size from the camera -- N is constant on a flat
+// face, so R varies only as V does). Cloud features therefore have to be a few degrees
+// across to show up on a roof at all. At 2.6 the base masses were ~22 degrees wide and
+// every flat face sampled one uniform patch of them.
+static const float ENV_CLOUD_FREQ      = 6.0f;  // lower = larger cloud masses
+static const float ENV_CLOUD_COVER     = 0.46f; // noise level above which cloud appears
+static const float ENV_CLOUD_SHARPNESS = 5.0f;  // how hard the cloud edge is
+static const float ENV_CLOUD_STRENGTH  = 0.90f; // how far towards cloud colour to go
+
+static float envHash3(int x, int y, int z)
+{
+	unsigned n = (unsigned)(x * 374761393) + (unsigned)(y * 668265263) + (unsigned)(z * 1442695041);
+	n = (n ^ (n >> 13)) * 1274126177u;
+	n =  n ^ (n >> 16);
+	return (float)(n & 0xFFFFu) * (1.0f / 65535.0f);
+}
+
+static float envValueNoise(float x, float y, float z)
+{
+	const float fx = floorf(x), fy = floorf(y), fz = floorf(z);
+	const int   ix = (int)fx,   iy = (int)fy,   iz = (int)fz;
+	float tx = x - fx, ty = y - fy, tz = z - fz;
+	// Smoothstep the interpolants; linear ones leave visible lattice creases.
+	tx = tx*tx*(3.0f - 2.0f*tx);
+	ty = ty*ty*(3.0f - 2.0f*ty);
+	tz = tz*tz*(3.0f - 2.0f*tz);
+
+	const float c000 = envHash3(ix,   iy,   iz  ), c100 = envHash3(ix+1, iy,   iz  );
+	const float c010 = envHash3(ix,   iy+1, iz  ), c110 = envHash3(ix+1, iy+1, iz  );
+	const float c001 = envHash3(ix,   iy,   iz+1), c101 = envHash3(ix+1, iy,   iz+1);
+	const float c011 = envHash3(ix,   iy+1, iz+1), c111 = envHash3(ix+1, iy+1, iz+1);
+
+	const float x00 = c000 + (c100 - c000) * tx;
+	const float x10 = c010 + (c110 - c010) * tx;
+	const float x01 = c001 + (c101 - c001) * tx;
+	const float x11 = c011 + (c111 - c011) * tx;
+	const float y0  = x00 + (x10 - x00) * ty;
+	const float y1  = x01 + (x11 - x01) * ty;
+	return y0 + (y1 - y0) * tz;
+}
+
+// Four octaves: the fourth is what puts wispy edge detail at roughly a degree, which is
+// the scale a flat face can actually resolve. The mip chain handles the aliasing this
+// would otherwise cause.
+static float envCloudFbm(float x, float y, float z)
+{
+	float sum = 0.0f, amp = 0.5f, freq = 1.0f;
+	for (int o = 0; o < 4; ++o) {
+		sum  += envValueNoise(x*freq, y*freq, z*freq) * amp;
+		freq *= 2.17f;   // non-integral, so the octaves do not line up on the lattice
+		amp  *= 0.5f;
+	}
+	return sum * (1.0f / 0.9375f);   // 0.5 + 0.25 + 0.125 + 0.0625
+}
+
 // Fill all six faces of a locked cubemap with the sky/ground gradient + sun disc.
 static void bakeEnvMapFaces(IDirect3DCubeTexture8* cube,
                             const float sunDir[3], const float sunColor[3],
                             const float sky[3], const float ground[3])
 {
+	// Clouds are lit by the sun and sit against the sky, so their colour is the sky
+	// lifted towards white in proportion to how bright the sun is. Tying them to the
+	// sun rather than fixing them white keeps them from staying a bright band at night.
+	float cloudCol[3];
+	{
+		float sunLuma = 0.30f*sunColor[0] + 0.59f*sunColor[1] + 0.11f*sunColor[2];
+		if (sunLuma < 0.0f) sunLuma = 0.0f; else if (sunLuma > 1.0f) sunLuma = 1.0f;
+		const float lift = (0.35f + 0.65f * sunLuma) * 0.72f;
+		for (int i = 0; i < 3; ++i)
+			cloudCol[i] = sky[i] + (1.0f - sky[i]) * lift;
+	}
+
+	// Mean colour over all six faces. The shader divides its irradiance tap by this, so
+	// the directional ambient it derives averages to exactly 1.0 and can scale the
+	// engine's own ambient without changing the overall exposure -- only its direction.
+	double envSumR = 0.0, envSumG = 0.0, envSumB = 0.0;
+
 	for (int face = 0; face < 6; ++face) {
 		D3DLOCKED_RECT lr;
 		if (FAILED(cube->LockRect((D3DCUBEMAP_FACES)face, 0, &lr, nullptr, 0)))
@@ -3186,19 +3263,91 @@ static void bakeEnvMapFaces(IDirect3DCubeTexture8* cube,
 				float r = ground[0] + (sky[0] - ground[0]) * up;
 				float g = ground[1] + (sky[1] - ground[1]) * up;
 				float b = ground[2] + (sky[2] - ground[2]) * up;
+				// Cloud masses, upper hemisphere only and faded out towards the horizon
+				// so none of them appear below it.
+				if (dz > 0.0f) {
+					const float n = envCloudFbm(dx*ENV_CLOUD_FREQ, dy*ENV_CLOUD_FREQ, dz*ENV_CLOUD_FREQ);
+					float mask = (n - ENV_CLOUD_COVER) * ENV_CLOUD_SHARPNESS;
+					if (mask < 0.0f) mask = 0.0f; else if (mask > 1.0f) mask = 1.0f;
+					const float horizonFade = dz * (2.0f - dz);   // 0 at the horizon, 1 overhead
+					const float cf = mask * horizonFade * ENV_CLOUD_STRENGTH;
+					r += (cloudCol[0] - r) * cf;
+					g += (cloudCol[1] - g) * cf;
+					b += (cloudCol[2] - b) * cf;
+				}
+
 				float sd = dx*sunDir[0] + dy*sunDir[1] + dz*sunDir[2];
 				if (sd > 0.0f) {
-					float sun = powf(sd, 250.0f) + powf(sd, 8.0f) * 0.2f;
+					// sd^256 and sd^8 by repeated squaring. This used to be two powf
+					// calls, which dominated the bake once it grew to 16x the texels
+					// (256 rather than 250 for the disc is visually identical).
+					const float sd2  = sd*sd,     sd4   = sd2*sd2,   sd8   = sd4*sd4;
+					const float sd16 = sd8*sd8,   sd32  = sd16*sd16, sd64  = sd32*sd32;
+					const float sd128= sd64*sd64, sd256 = sd128*sd128;
+					const float sun = sd256 + sd8 * 0.2f;
 					r += sunColor[0] * sun; g += sunColor[1] * sun; b += sunColor[2] * sun;
 				}
 				int ri = (int)((r > 1.0f ? 1.0f : r) * 255.0f);
 				int gi = (int)((g > 1.0f ? 1.0f : g) * 255.0f);
 				int bi = (int)((b > 1.0f ? 1.0f : b) * 255.0f);
 				row[x] = 0xFF000000u | (ri << 16) | (gi << 8) | bi;
+
+				envSumR += ri; envSumG += gi; envSumB += bi;
 			}
 		}
 		cube->UnlockRect((D3DCUBEMAP_FACES)face, 0);
 	}
+
+	{
+		const double texels = 6.0 * ENV_MAP_SIZE * ENV_MAP_SIZE * 255.0;
+		DX8Wrapper::m_envAverage[0] = (float)(envSumR / texels);
+		DX8Wrapper::m_envAverage[1] = (float)(envSumG / texels);
+		DX8Wrapper::m_envAverage[2] = (float)(envSumB / texels);
+		DX8Wrapper::m_envAverage[3] = 1.0f;
+	}
+
+	// Rebuild the mip chain from the level 0 we just wrote. Required now that the faces
+	// carry cloud detail: the reflection vector can sweep most of a face across a single
+	// pixel on a curved surface, and without mips that undersampling sparkles.
+	D3DXFilterTexture(cube, nullptr, 0, D3DX_DEFAULT);
+}
+
+// The scene's dominant light, for the env bake.
+//
+// This is deliberately the map's own global lighting rather than anything sampled out
+// of the draw path. A per-draw snapshot is whichever mesh happened to be rendered last,
+// and W3D gives every object its own LightEnvironment (the global directionals plus any
+// nearby point lights), so light 0 is only sometimes the sun. Baking from it made the
+// cubemap's sun colour lurch between draws and re-baked all six faces on the CPU each
+// time. W3DView's shadow frustum reads the same globals, so the reflected sun disc and
+// the cast shadows now agree on where the sun is.
+static void getSceneEnvLight(float sunDir[3], float sunColor[3], float ambient[3])
+{
+	// Fallbacks for a bake that runs before the map's lighting is loaded. updateEnvMap
+	// re-bakes once the real values arrive, so an early bake is self-correcting.
+	sunDir[0] = 0.40f; sunDir[1] = 0.30f; sunDir[2] = 0.85f;
+	sunColor[0] = 1.00f; sunColor[1] = 0.92f; sunColor[2] = 0.72f;
+	ambient[0] = 0.20f; ambient[1] = 0.20f; ambient[2] = 0.22f;
+
+	if (TheGlobalData == nullptr)
+		return;
+
+	// m_terrainLightPos points along the light's travel, so negate for "toward the sun".
+	const Coord3D &lightPos = TheGlobalData->m_terrainLightPos[0];
+	const float len = sqrtf(lightPos.x*lightPos.x + lightPos.y*lightPos.y + lightPos.z*lightPos.z);
+	if (len > 1e-3f) {
+		sunDir[0] = -lightPos.x / len;
+		sunDir[1] = -lightPos.y / len;
+		sunDir[2] = -lightPos.z / len;
+	}
+
+	sunColor[0] = TheGlobalData->m_terrainDiffuse[0].red;
+	sunColor[1] = TheGlobalData->m_terrainDiffuse[0].green;
+	sunColor[2] = TheGlobalData->m_terrainDiffuse[0].blue;
+
+	ambient[0] = TheGlobalData->m_terrainAmbient[0].red;
+	ambient[1] = TheGlobalData->m_terrainAmbient[0].green;
+	ambient[2] = TheGlobalData->m_terrainAmbient[0].blue;
 }
 
 // Derive sky/ground reflection colours from the captured scene light. The sun
@@ -3322,7 +3471,6 @@ Bool W3DShaderManager::isShadowMappingActive()
 // ---------------------------------------------------------------------------
 
 // Which depth pass is currently open, so the shared restore path can label its census.
-static Bool s_inCameraDepthPass = FALSE;
 
 IDirect3DTexture8 *W3DShaderManager::m_ssrDepthTexture = nullptr;
 IDirect3DSurface8 *W3DShaderManager::m_ssrDepthSurface = nullptr;
@@ -3447,8 +3595,6 @@ void W3DShaderManager::startCameraDepthRendering()
 
 	DX8Wrapper::Set_Shadow_Depth_Pass(true);
 	DX8Wrapper::Set_Depth_Prepass(true);
-	DX8Wrapper::Reset_Depth_Pass_Stats();
-	s_inCameraDepthPass = TRUE;
 	// Red is depth 1.0 exactly -- the pack weights the channels 1, 1/255, 1/255^2, so R
 	// alone is the far plane. Anywhere the pass rasterises nothing then reads as empty
 	// sky, and a ray crossing it finds no hit rather than one at the near plane.
@@ -3457,23 +3603,12 @@ void W3DShaderManager::startCameraDepthRendering()
 
 void W3DShaderManager::endCameraDepthRendering()
 {
-	// Logged here rather than anywhere later in the frame, because this runs only if the
-	// prepass actually started -- and it runs after it. maxRay is the useful field: it is
-	// a hardcoded constant set alongside the projection, so a zero there means no draw in
-	// the pass was ever routed to the depth shaders, whereas real numbers with a bad
-	// projection would mean the routing works and the conversion does not.
-	static Bool s_loggedSsrProj = FALSE;
-	if (!s_loggedSsrProj && DX8Wrapper::m_dbgDepthCallsTotal > 2000)
-	{
-		s_loggedSsrProj = TRUE;
-		DEBUG_LOG(("SSR: after prepass -- maxRay=%f proj _33=%f _43=%f  "
-			"(maxRay 0 = no draw routed; _33/_43 of 1/0 = identity projection)\n",
-			DX8Wrapper::m_ssrParams[1], DX8Wrapper::m_ssrParams[2],
-			DX8Wrapper::m_ssrParams[3]));
-	}
-
 	DX8Wrapper::Set_Depth_Prepass(false);
 	endShadowMapRendering();   // same restore: flag off, target back, states put back
+
+	// New frame's scene colour has not been captured yet. This runs once per frame,
+	// before the scene is drawn, which is exactly where the flag needs clearing.
+	resetSceneHistoryCaptured();
 }
 
 void W3DShaderManager::captureSceneHistory()
@@ -3491,6 +3626,34 @@ void W3DShaderManager::captureSceneHistory()
 	{
 		dev->StretchRect(src, nullptr, m_sceneHistorySurface, nullptr, D3DTEXF_NONE);
 		src->Release();
+		m_sceneHistoryCaptured = true;
+	}
+}
+
+// Capture the history straight off the back buffer.
+//
+// captureSceneHistory above hangs off endRenderToTexture, which is only ever reached from
+// a screen filter's postRender. With no filter active -- the normal case when bloom is
+// off -- the scene never goes through a render target at all, nothing wrote the history,
+// and every SSR ray resolved against a black texture. That is why SSR appeared to do
+// nothing while its depth prepass was demonstrably correct: it has two inputs and only
+// the depth one was ever populated.
+//
+// StretchRect resolves multisampling on the way, so this is also correct with MSAA on.
+void W3DShaderManager::captureSceneHistoryFromBackBuffer()
+{
+	if (m_sceneHistorySurface == nullptr)
+		return;
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	IDirect3DSurface8 *back = nullptr;
+	if (SUCCEEDED(dev->GetRenderTarget(0, &back)) && back != nullptr)
+	{
+		dev->StretchRect(back, nullptr, m_sceneHistorySurface, nullptr, D3DTEXF_NONE);
+		back->Release();
+		m_sceneHistoryCaptured = true;
 	}
 }
 
@@ -3525,7 +3688,6 @@ void W3DShaderManager::startShadowMapRendering()
 		stateDev->GetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], &m_shadowSavedStates[i]);
 
 	DX8Wrapper::Set_Shadow_Depth_Pass(true);
-	DX8Wrapper::Reset_Depth_Pass_Stats();
 	// Clear colour so untouched texels read as far (unpack -> depth 1.0 -> lit). R is the
 	// most significant channel, so red, not blue: the pack weights the channels 1, 1/255,
 	// 1/255^2 coarse-to-fine. Clearing to blue here would unpack to ~0 -- the near plane --
@@ -3535,35 +3697,6 @@ void W3DShaderManager::startShadowMapRendering()
 
 void W3DShaderManager::endShadowMapRendering()
 {
-	// Both depth passes end here, so this is the one place that can report them in the
-	// same terms. The first few of each are enough: if the two lines disagree, the term
-	// they disagree on is the bug, and if they agree the fault is past this predicate.
-	{
-		// Only once the scene is real. "First N passes" sampled the opening frames of the
-		// process, where the map is not up and a frame issues a handful of draws -- so
-		// every zero these counters reported was a startup frame, not a finding. A live
-		// frame runs into the hundreds of draws, so the running total is the gate.
-		static Int s_shadowReports = 0;
-		static Int s_cameraReports = 0;
-		Int &count = s_inCameraDepthPass ? s_cameraReports : s_shadowReports;
-		if (count < 3 && DX8Wrapper::m_dbgDepthCallsTotal > 2000) {
-			++count;
-			DEBUG_LOG(("SSR census totals (never reset): allDraws=%u flagged=%u "
-				"depthBranchHits=%u\n",
-				DX8Wrapper::m_dbgDepthCallsTotal, DX8Wrapper::m_dbgDepthCallsFlagged,
-				DX8Wrapper::m_dbgUseShadowDepthHits));
-			DEBUG_LOG(("SSR census [%s]: calls=%u (noStateChange=%u noShaderChange=%u) "
-				"seen=%u routed=%u | rejected: shaders=%u fvf=%u blend=%u viewIdentity=%u\n",
-				s_inCameraDepthPass ? "camera" : "shadow",
-				DX8Wrapper::m_dbgDepthCalls, DX8Wrapper::m_dbgNoStateChange,
-				DX8Wrapper::m_dbgNoShaderChange,
-				DX8Wrapper::m_dbgDepthSeen, DX8Wrapper::m_dbgDepthRouted,
-				DX8Wrapper::m_dbgRejShaders, DX8Wrapper::m_dbgRejFvf,
-				DX8Wrapper::m_dbgRejBlend, DX8Wrapper::m_dbgRejView));
-		}
-		s_inCameraDepthPass = FALSE;
-	}
-
 	DX8Wrapper::Set_Shadow_Depth_Pass(false);
 	if (m_shadowSavedRT != nullptr)
 	{
@@ -3593,20 +3726,21 @@ void W3DShaderManager::initEnvMap()
 		return;
 
 	IDirect3DCubeTexture8* cube = nullptr;
-	if (FAILED(dev->CreateCubeTexture(ENV_MAP_SIZE, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &cube)) || cube == nullptr)
+	// Levels = 0 asks for a full mip chain; bakeEnvMapFaces fills level 0 and filters
+	// the rest down. See the note there on why the chain is needed at this size.
+	if (FAILED(dev->CreateCubeTexture(ENV_MAP_SIZE, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &cube)) || cube == nullptr)
 		return;
 
-	// Initial bake from the default daylight sun (replaced once a PBR mesh is lit).
-	float sunDir[3] = { DX8Wrapper::m_envSunDir[0], DX8Wrapper::m_envSunDir[1], DX8Wrapper::m_envSunDir[2] };
-	{ float l = sqrtf(sunDir[0]*sunDir[0] + sunDir[1]*sunDir[1] + sunDir[2]*sunDir[2]);
-	  if (l > 0.0f) { sunDir[0]/=l; sunDir[1]/=l; sunDir[2]/=l; } }
+	// Initial bake from whatever the map's lighting says now; re-baked when it changes.
+	float sunDir[3], sunColor[3], ambient[3];
+	getSceneEnvLight(sunDir, sunColor, ambient);
 	float sky[3], ground[3];
-	deriveEnvColors(DX8Wrapper::m_envSunColor, DX8Wrapper::m_envAmbient, sky, ground);
-	bakeEnvMapFaces(cube, sunDir, DX8Wrapper::m_envSunColor, sky, ground);
+	deriveEnvColors(sunColor, ambient, sky, ground);
+	bakeEnvMapFaces(cube, sunDir, sunColor, sky, ground);
 
 	DX8Wrapper::m_envCubeMap = cube;
 	memcpy(s_envBakedSunDir, sunDir, sizeof(sunDir));
-	memcpy(s_envBakedSunColor, DX8Wrapper::m_envSunColor, sizeof(s_envBakedSunColor));
+	memcpy(s_envBakedSunColor, sunColor, sizeof(s_envBakedSunColor));
 	memcpy(s_envBakedSky, sky, sizeof(sky));
 	memcpy(s_envBakedGround, ground, sizeof(ground));
 	s_envBaked = true;
@@ -3623,33 +3757,28 @@ void W3DShaderManager::updateEnvMap()
 	IDirect3DCubeTexture8* cube = (IDirect3DCubeTexture8*)DX8Wrapper::m_envCubeMap;
 	if (cube == nullptr)
 		return;
-	// Until a PBR mesh has actually been lit, the captured light is just the
-	// default and the initial bake already matches it -- nothing to do.
-	if (!DX8Wrapper::m_envSunValid)
-		return;
 
-	float sunDir[3] = { DX8Wrapper::m_envSunDir[0], DX8Wrapper::m_envSunDir[1], DX8Wrapper::m_envSunDir[2] };
-	{ float l = sqrtf(sunDir[0]*sunDir[0] + sunDir[1]*sunDir[1] + sunDir[2]*sunDir[2]);
-	  if (l > 0.0f) { sunDir[0]/=l; sunDir[1]/=l; sunDir[2]/=l; } }
+	float sunDir[3], sunColor[3], ambient[3];
+	getSceneEnvLight(sunDir, sunColor, ambient);
 	float sky[3], ground[3];
-	deriveEnvColors(DX8Wrapper::m_envSunColor, DX8Wrapper::m_envAmbient, sky, ground);
+	deriveEnvColors(sunColor, ambient, sky, ground);
 
 	// Sum of absolute deltas across everything that shapes the bake. A small
 	// threshold keeps gradual time-of-day drift from re-baking every frame while
 	// still catching real changes within a frame or two.
 	float drift = 0.0f;
 	for (int i = 0; i < 3; ++i) {
-		drift += fabsf(sunDir[i]  - s_envBakedSunDir[i]);
-		drift += fabsf(DX8Wrapper::m_envSunColor[i] - s_envBakedSunColor[i]);
-		drift += fabsf(sky[i]     - s_envBakedSky[i]);
-		drift += fabsf(ground[i]  - s_envBakedGround[i]);
+		drift += fabsf(sunDir[i]   - s_envBakedSunDir[i]);
+		drift += fabsf(sunColor[i] - s_envBakedSunColor[i]);
+		drift += fabsf(sky[i]      - s_envBakedSky[i]);
+		drift += fabsf(ground[i]   - s_envBakedGround[i]);
 	}
 	if (s_envBaked && drift < 0.03f)
 		return;
 
-	bakeEnvMapFaces(cube, sunDir, DX8Wrapper::m_envSunColor, sky, ground);
+	bakeEnvMapFaces(cube, sunDir, sunColor, sky, ground);
 	memcpy(s_envBakedSunDir, sunDir, sizeof(sunDir));
-	memcpy(s_envBakedSunColor, DX8Wrapper::m_envSunColor, sizeof(s_envBakedSunColor));
+	memcpy(s_envBakedSunColor, sunColor, sizeof(s_envBakedSunColor));
 	memcpy(s_envBakedSky, sky, sizeof(sky));
 	memcpy(s_envBakedGround, ground, sizeof(ground));
 	s_envBaked = true;

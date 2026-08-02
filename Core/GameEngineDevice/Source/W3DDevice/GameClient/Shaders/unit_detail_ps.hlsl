@@ -55,9 +55,30 @@ float shadowTerm(float4 lightPos)
     float3 ndc = lightPos.xyz / max(abs(lightPos.w), 1e-6);
     float2 uv  = ndc.xy * float2(0.5, -0.5) + 0.5;
     float inBounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
-    float stored = unpackDepth(tex2D(ShadowMap, uv));
-    float lit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
-    return saturate(lerp(1.0, lit, inBounds * ShadowParams.y));
+
+    // Bilinear-weighted PCF over a 3x3 texel footprint, matching terrain_ps, unit_ps and
+    // unit_pbr_ps. This was a single unfiltered tap -- the hardest shadow edge of the
+    // four paths -- because the filter had to fit ps_2_0 alongside the detail blend.
+    // The taps are point-sampled because the depth is packed across RGB; the smoothing
+    // comes from weighting the comparisons by where the pixel sits inside its texel.
+    const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
+    float2 texelPos = uv / texel;
+    float2 frc      = frac(texelPos - 0.5);
+    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
+
+    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
+    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
+
+    float lit = 0.0;
+    [unroll] for (int y = 0; y < 4; ++y)
+        [unroll] for (int x = 0; x < 4; ++x) {
+            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
+            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
+            float tapLit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+            lit += tapLit * wx[x] * wy[y];
+        }
+    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
+    return saturate(lerp(1.0, lit / 9.0, inBounds * ShadowParams.y));
 }
 
 struct PS_INPUT

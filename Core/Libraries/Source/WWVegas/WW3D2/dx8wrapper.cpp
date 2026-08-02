@@ -181,22 +181,8 @@ DWORD							DX8Wrapper::m_shaderRoutingMask = DX8Wrapper::SHADER_ROUTE_BASELINE;
 DWORD							DX8Wrapper::m_dwUnitPbrVS = 0;
 DWORD							DX8Wrapper::m_dwUnitPbrPS = 0;
 IDirect3DBaseTexture8*			DX8Wrapper::m_envCubeMap = nullptr;
-float							DX8Wrapper::m_envSunDir[3]   = { 0.40f, 0.30f, 0.85f };
-float							DX8Wrapper::m_envSunColor[3] = { 1.00f, 0.92f, 0.72f };
-float							DX8Wrapper::m_envAmbient[3]  = { 0.20f, 0.20f, 0.22f };
-bool							DX8Wrapper::m_envSunValid = false;
+float							DX8Wrapper::m_envAverage[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
 DX8Wrapper::OrmResolverFunc		DX8Wrapper::s_ormResolver = nullptr;
-
-// Record the dominant scene light so the env cubemap can be re-baked to match the
-// current time-of-day. Called from the PBR draw path with data it already gathered;
-// the actual (expensive) re-bake is deferred to a once-per-frame point.
-void DX8Wrapper::Capture_Env_Light(const float dir[3], const float color[3], const float ambient[3])
-{
-	m_envSunDir[0]   = dir[0];   m_envSunDir[1]   = dir[1];   m_envSunDir[2]   = dir[2];
-	m_envSunColor[0] = color[0]; m_envSunColor[1] = color[1]; m_envSunColor[2] = color[2];
-	m_envAmbient[0]  = ambient[0]; m_envAmbient[1] = ambient[1]; m_envAmbient[2] = ambient[2];
-	m_envSunValid = true;
-}
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
 DWORD							DX8Wrapper::m_dwTerrainPS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthVS = 0;
@@ -210,18 +196,6 @@ void DX8Wrapper::Set_Sun_VP(const float* m16)
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
 }
 bool							DX8Wrapper::m_bDepthPrepass = false;
-unsigned						DX8Wrapper::m_dbgUseShadowDepthHits = 0;
-unsigned						DX8Wrapper::m_dbgDepthCallsTotal = 0;
-unsigned						DX8Wrapper::m_dbgDepthCallsFlagged = 0;
-unsigned						DX8Wrapper::m_dbgDepthCalls = 0;
-unsigned						DX8Wrapper::m_dbgNoStateChange = 0;
-unsigned						DX8Wrapper::m_dbgNoShaderChange = 0;
-unsigned						DX8Wrapper::m_dbgDepthSeen = 0;
-unsigned						DX8Wrapper::m_dbgDepthRouted = 0;
-unsigned						DX8Wrapper::m_dbgRejShaders = 0;
-unsigned						DX8Wrapper::m_dbgRejFvf = 0;
-unsigned						DX8Wrapper::m_dbgRejBlend = 0;
-unsigned						DX8Wrapper::m_dbgRejView = 0;
 float							DX8Wrapper::m_depthVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneDepth = nullptr;
 IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneColor = nullptr;
@@ -2452,23 +2426,6 @@ void DX8Wrapper::Apply_Render_State_Changes()
 {
 	SNAPSHOT_SAY(("DX8Wrapper::Apply_Render_State_Changes()"));
 
-	// Counted before the guards, unlike the census further down, which lives inside the
-	// SHADER_CHANGED branch and therefore only ever sees shader *rebinds*. Zero rebinds
-	// is not zero geometry -- a bound shader persists across draws -- so the two numbers
-	// together say whether the pass is drawing nothing at all or drawing plenty while
-	// never re-entering the routing decision.
-	// Never reset, unlike the per-pass counters. If this climbs while those stay at zero,
-	// the flag is being set correctly and my reset is landing between the draws and the
-	// report -- which is a bug in the instrument, not in the renderer. If it stays at
-	// zero, the flag really is false whenever geometry is drawn.
-	++m_dbgDepthCallsTotal;
-	if (m_bShadowDepthPass) {
-		++m_dbgDepthCallsFlagged;
-		++m_dbgDepthCalls;
-		if (!render_state_changed)                    ++m_dbgNoStateChange;
-		else if (!(render_state_changed & SHADER_CHANGED)) ++m_dbgNoShaderChange;
-	}
-
 	if (!render_state_changed) return;
 	if (render_state_changed&SHADER_CHANGED) {
 		SNAPSHOT_SAY(("DX8 - apply shader"));
@@ -2694,18 +2651,6 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			(curFVF & D3DFVF_XYZ) &&
 			!softBlendedOverlay &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY);
-
-		// Census, evaluated in the same order as the predicate above so the first failing
-		// term is the one credited. Only the terms that can differ between the two depth
-		// passes are counted; anything reaching "routed" took the depth shaders.
-		if (m_bShadowDepthPass) {
-			++m_dbgDepthSeen;
-			if (m_dwShadowDepthVS == 0 || m_dwShadowDepthPS == 0)          ++m_dbgRejShaders;
-			else if (!(curFVF & D3DFVF_XYZ))                               ++m_dbgRejFvf;
-			else if (softBlendedOverlay)                                   ++m_dbgRejBlend;
-			else if (render_state_changed & (unsigned)VIEW_IDENTITY)       ++m_dbgRejView;
-			else                                                           ++m_dbgDepthRouted;
-		}
 
 		const bool useTerrainShader =
 			!m_bShadowDepthPass &&
@@ -2939,12 +2884,6 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
 
 		if (useShadowDepth) {
-			// Incremented where we know execution reaches, because the shadow map is
-			// demonstrably filled. If this climbs while m_dbgDepthCallsFlagged stays at
-			// zero, then m_bShadowDepthPass reads true here and false at the top of this
-			// same function -- which cannot happen, and would mean the counter up there
-			// is not in the function I think it is.
-			++m_dbgUseShadowDepthHits;
 			// Force the full square shadow-map viewport right before the draw. The
 			// camera's Apply set a screen-sized (16:9) viewport that gets re-applied
 			// per object, leaving the bottom of the square map cleared and mis-sampled.
@@ -3279,8 +3218,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					Set_DX8_Texture(4, m_envCubeMap);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+					// The cubemap carries cloud detail and ships a mip chain; without a
+					// mip filter the minified case undersamples it and sparkles.
+					Set_DX8_Texture_Stage_State(4, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+					// c22: mean cubemap colour, so the shader's irradiance tap can be
+					// normalised to average 1.0 (see m_envAverage).
+					Set_Pixel_Shader_Constant(22, m_envAverage, 1);
 				}
 				// Directional shadow map on stage 5 (point + clamp: packed depth must not
 				// be interpolated; the shader PCFs). SunVP goes in c12-15 so the shader can
@@ -3346,17 +3291,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_Pixel_Shader_Constant(11, &alphaCtl, 1);   // stealth opacity control
 				Set_Pixel_Shader_Constant(12, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4); // c12-15 SunVP
 
-				// Snapshot the dominant light + ambient for the shared env-map bake so
-				// its sky/sun/ground track time-of-day. The cubemap is baked in world
-				// space (up = +Z), so this has to be the world-space direction too --
-				// capturing the camera-space one swings the sun disc as the camera turns.
-				// The re-bake itself is gated on drift and done once per frame elsewhere.
-				if (render_state.LightEnable[0]) {
-					const float sunDir[3]   = { lightDirWorld[0].x, lightDirWorld[0].y, lightDirWorld[0].z };
-					const float sunColor[3] = { lightDiff[0].x, lightDiff[0].y, lightDiff[0].z };
-					const float amb[3]      = { sceneAmbient.x, sceneAmbient.y, sceneAmbient.z };
-					Capture_Env_Light(sunDir, sunColor, amb);
-				}
+				// (The env cubemap used to snapshot light 0 here. It doesn't any more: W3D
+				// gives every object its own LightEnvironment, so light 0 is only sometimes
+				// the sun, and the bake lurched with draw order. W3DShaderManager reads the
+				// map's global lighting instead -- the same source as the shadow frustum.)
 			} else {
 				// Non-PBR path: lighting and the texture combine come from the constants
 				// the unit shaders read. Stage 1 only needs putting back when a previous

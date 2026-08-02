@@ -2073,6 +2073,20 @@ void W3DView::draw()
 		}
 	}
 
+	// Screen-space reflections sample last frame's scene colour, which the filter chain
+	// copies into the history inside endRenderToTexture. That only happens when a filter
+	// actually runs its postRender, which is not the same thing as a filter being
+	// selected: the default filter is always selected, yet with bloom off its preRender
+	// declines and postRender never runs, so nothing ever wrote the history and SSR
+	// resolved every hit against a black texture. Keying off "did the capture happen"
+	// rather than "is a filter configured" covers both cases.
+	if (!skipRender &&
+		W3DShaderManager::isSsrActive() &&
+		!W3DShaderManager::sceneHistoryCaptured())
+	{
+		W3DShaderManager::captureSceneHistoryFromBackBuffer();
+	}
+
 	//Some effects require that we render a modified version of the scene into a texture but also require
 	//an unaltered version in the framebuffer.  So we re-render again into framebuffer after texture rendering
 	//was turned off by filterPostRender().

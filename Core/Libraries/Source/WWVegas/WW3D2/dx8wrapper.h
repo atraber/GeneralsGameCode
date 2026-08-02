@@ -770,15 +770,10 @@ public:
 	// Shared environment cubemap sampled by the PBR shader for reflections. Bound on
 	// texture stage 4 (0=albedo, 1=ORM, 2/3=terrain overlays are already spoken for).
 	static IDirect3DBaseTexture8*		m_envCubeMap;
-	// Latest scene lighting captured from the PBR draw path (dominant directional
-	// light + scene ambient), used to re-bake the env cubemap so its sky/sun/ground
-	// track time-of-day. Plain floats to keep D3DX out of this header. m_envSunValid
-	// stays false until a PBR mesh has actually been lit at least once.
-	static float						m_envSunDir[3];   // world-space direction toward the light
-	static float						m_envSunColor[3]; // sun diffuse (colour * intensity)
-	static float						m_envAmbient[3];  // scene ambient
-	static bool							m_envSunValid;
-	static void Capture_Env_Light(const float dir[3], const float color[3], const float ambient[3]);
+	// Mean colour of the baked cubemap. The PBR shader divides its irradiance tap by
+	// this so the directional ambient it derives averages to 1.0, letting it redistribute
+	// the engine's ambient by direction without changing the overall exposure.
+	static float						m_envAverage[4];
 	// Put texture stage 1 back after a PBR draw bound its ORM map straight to it.
 	static void Restore_Stage1_After_Pbr();
 	static void Restore_Stage5_After_Shadow();
@@ -824,28 +819,6 @@ public:
 	// both are conditioned on this flag -- the matrix handed to the depth shader, and
 	// the viewport, which that pass forces square for the shadow map but which is
 	// already correct here because this target is the size of the screen.
-	// Routing census for a depth pass: how many draws it saw, how many reached the depth
-	// shaders, and which term rejected the rest. The shadow pass and the SSR camera pass
-	// share one predicate and only one of them produces anything, which reading the code
-	// has not explained -- so count it instead of arguing about it.
-	static unsigned						m_dbgUseShadowDepthHits;
-	static unsigned						m_dbgDepthCallsTotal;
-	static unsigned						m_dbgDepthCallsFlagged;
-	static unsigned						m_dbgDepthCalls;
-	static unsigned						m_dbgNoStateChange;
-	static unsigned						m_dbgNoShaderChange;
-	static unsigned						m_dbgDepthSeen;
-	static unsigned						m_dbgDepthRouted;
-	static unsigned						m_dbgRejShaders;
-	static unsigned						m_dbgRejFvf;
-	static unsigned						m_dbgRejBlend;
-	static unsigned						m_dbgRejView;
-	static void Reset_Depth_Pass_Stats()
-	{
-		m_dbgDepthCalls = m_dbgNoStateChange = m_dbgNoShaderChange = 0;
-		m_dbgDepthSeen = m_dbgDepthRouted = 0;
-		m_dbgRejShaders = m_dbgRejFvf = m_dbgRejBlend = m_dbgRejView = 0;
-	}
 	static bool							m_bDepthPrepass;
 	static float						m_depthVP[16];    // camera view*projection, row-major
 	static void Set_Depth_Prepass(bool active) { m_bDepthPrepass = active; }

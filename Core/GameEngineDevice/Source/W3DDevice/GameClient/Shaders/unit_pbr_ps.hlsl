@@ -39,6 +39,7 @@ row_major float4x4 SunVP : register(c12);  // sun view*projection (world -> shad
 float4 ShadowParams  : register(c16);  // x = depth bias, y = shadow strength (0 = off)
 float4 SsrParams     : register(c17);  // x = strength (0 = off), y = max ray length, zw = proj _33/_43
 row_major float4x4 CameraVP : register(c18); // camera view*projection (world -> screen clip)
+float4 EnvAverage    : register(c22);  // mean colour of the baked env cubemap
 
 struct PS_INPUT
 {
@@ -99,12 +100,38 @@ float computeShadow(float3 worldPos)
     // so that size changes with the zoom. A fixed value large enough for the widest
     // frustum erases small casters' shadows entirely once zoomed in.
     const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
+
+    // Bilinear-weighted PCF over a 3x3 texel footprint.
+    //
+    // The taps have to be point-sampled -- the map holds depth packed across RGB, and
+    // hardware filtering would interpolate the packed bytes, which is meaningless. So the
+    // smoothing has to come from weighting the *comparisons* instead of the depths.
+    //
+    // Weighting them by where the pixel falls inside its texel is the part that removes
+    // stair-stepping. A plain box of point comparisons (what this was) still snaps every
+    // tap to the texel grid: it only turns a hard edge into ten grey levels that are all
+    // still aligned to that grid, which reads as chunky steps rather than a soft edge.
+    // Blending across the texel makes the transition continuous as the edge crosses it.
+    // Note the map is already 4096 -- this was never a resolution problem.
+    //
+    // Sixteen taps: a 3-texel-wide box needs a 4-tap span once it is offset by the
+    // fractional position, with the two end taps carrying the partial weights.
+    float2 texelPos = uv / texel;
+    float2 frc      = frac(texelPos - 0.5);
+    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
+
+    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
+    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
+
     float lit = 0.0;
-    [unroll] for (int x = -1; x <= 1; ++x)
-        [unroll] for (int y = -1; y <= 1; ++y) {
-            float stored = unpackDepth(tex2D(ShadowMap, uv + float2(x, y) * texel));
-            lit += (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+    [unroll] for (int y = 0; y < 4; ++y)
+        [unroll] for (int x = 0; x < 4; ++x) {
+            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
+            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
+            float tapLit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+            lit += tapLit * wx[x] * wy[y];
         }
+    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
     return lerp(1.0, lit / 9.0, ShadowParams.y);
 }
 
@@ -113,15 +140,23 @@ float computeShadow(float3 worldPos)
 // scene lands in the last fraction of the range -- so a difference in it is not a
 // distance and the thickness test cannot be written in one.
 //
-// Straight from the two projection elements that produced the value: the projection
-// gives ndcZ = _33 + _43/viewZ, so viewZ = _43 / (ndcZ - _33). The previous version
-// recovered the near and far planes from those same two numbers and then rebuilt the
-// transform out of them -- algebraically identical, but with two extra divisions that
-// go through zero for projections this one does not expect, and it is sitting right
-// where the stored depth is closest to 1.0 and least forgiving.
+// Straight from the two projection elements that produced the value, rather than
+// recovering the near and far planes from those same two numbers and rebuilding the
+// transform out of them -- algebraically the same thing, with two extra divisions in
+// the middle that go through zero for projections this code does not anticipate.
 float viewDepth(float ndcZ)
 {
-    return SsrParams.w / (ndcZ - SsrParams.z);
+    // This engine's projection is right-handed -- measured _33 = -1.005808,
+    // _43 = -10.058081, which is near 10, far 1734. Right-handed means clip.w = -viewZ,
+    // so ndcZ = -_33 - _43/viewZ and therefore viewZ = -_43 / (_33 + ndcZ). The sign of
+    // _33 in the denominator is the whole difference from the left-handed form.
+    //
+    // Getting it wrong was not a subtle error: the left-handed version returns 10 at the
+    // near plane, correctly, and 5 at the far plane -- squeezing all 1734 units of scene
+    // into a 5-unit band, where every surface reads as the same distance and no ray can
+    // ever fall inside the thickness window. abs() keeps it valid for a left-handed
+    // projection too, where the same expression comes out negative.
+    return abs(SsrParams.w / (SsrParams.z + ndcZ));
 }
 
 // Screen-space reflection. Walks the reflection ray forward looking for the first step
@@ -297,18 +332,51 @@ float4 main(PS_INPUT input) : COLOR
     Lo += DirectLight(N, V, LightDir2.xyz, LightDiffuse2.rgb, diffuseColor, F0, roughness);
     Lo += DirectLight(N, V, LightDir3.xyz, LightDiffuse3.rgb, diffuseColor, F0, roughness);
 
-    // Cast shadows darken the direct sunlight only (ambient + reflections remain).
-    Lo *= computeShadow(input.worldPos);
+    // Cast shadows darken the direct sunlight.
+    float shadow = computeShadow(input.worldPos);
+    Lo *= shadow;
 
-    // Ambient diffuse under the scene ambient, attenuated by AO.
-    float3 ambient   = diffuseColor * SceneAmbient.rgb * ao;
+    // Ambient diffuse, attenuated by AO.
+    //
+    // The engine's SceneAmbient is a single flat colour applied to every surface no
+    // matter which way it faces, which is what makes unlit sides read as dead grey. The
+    // environment cubemap can supply a directional ambient instead: sky colour from
+    // above, ground colour from below, warmed on the side the sun is on.
+    //
+    // This is the *diffuse* half of image-based lighting and it is what the reflection
+    // term cannot do on its own -- envSpec below is specular, Fresnel-weighted, and on a
+    // dielectric (F0 = 0.04) keeps about 4% head-on. Dropping SceneAmbient and hoping
+    // the reflection covers it just makes everything not facing a light go black.
+    //
+    // Irradiance is approximated with one extra tap: the cubemap sampled along N at a
+    // high mip, which the mip chain already makes an aggressive blur. A cosine-convolved
+    // probe would be more correct; at 8x8 the difference is not worth a second bake.
+    // Exposure is preserved by construction rather than by a hand-tuned gain. The tap is
+    // divided by the cubemap's own mean colour (EnvAverage, computed during the bake), so
+    // the result averages to 1.0 over all normals: it can only redistribute the engine's
+    // ambient by direction, never raise or lower it overall.
+    //
+    // A fixed gain was tried first and was wrong. This map's cubemap averages ~0.16
+    // against a SceneAmbient of ~0.48, so the 1.5 gain landed at roughly half the old
+    // ambient and darkened every surface -- worst on downward-facing ones, which sample
+    // the darkest part of the cube.
+    //   ENV_DIFFUSE_IBL  0 = engine ambient only (previous behaviour), 1 = fully directional
+    #define ENV_DIFFUSE_IBL     0.60
+    #define ENV_IRRADIANCE_LOD  5.0
+    float3 envIrradiance = texCUBElod(EnvSampler, float4(N, ENV_IRRADIANCE_LOD)).rgb;
+    float3 envRelative   = envIrradiance / max(EnvAverage.rgb, 0.0001);
+    float3 ambientLight  = SceneAmbient.rgb * lerp(1.0, envRelative, ENV_DIFFUSE_IBL);
+    float3 ambient   = diffuseColor * ambientLight * ao;
 
     // Reflection of the shared environment cubemap, Fresnel-weighted and faded on
     // rough surfaces. World-space reflection vector indexes the cubemap directly.
-    float3 R      = reflect(-V, N);
-    float3 envCol = texCUBE(EnvSampler, R).rgb;
-    float  NdotV  = saturate(dot(N, V));
-    float3 Fenv   = F_Schlick(NdotV, F0);
+    float3 R       = reflect(-V, N);
+    // Kept separate from envCol below: SSR overwrites envCol where it finds a hit, so
+    // this is the only place the cubemap's own answer survives for the debug modes.
+    float3 cubeCol = texCUBE(EnvSampler, R).rgb;
+    float3 envCol  = cubeCol;
+    float  NdotV   = saturate(dot(N, V));
+    float3 Fenv    = F_Schlick(NdotV, F0);
 
     // Where a screen-space ray finds a real surface, its colour replaces the cubemap's
     // guess. The cubemap is a coarse stand-in baked from the sun and ambient; an actual
@@ -322,6 +390,12 @@ float4 main(PS_INPUT input) : COLOR
     // 0.5, and every ORM map in the HD set has its roughness floor just above that
     // (measured: 0.51 to 0.53 minimum, 0.78 to 0.83 mean), so the branch below was false
     // for every texel of every unit and the march had never once run.
+    // SSR_INTENSITY is a comparison dial, not physics: 1.0 is the honest reflection, above
+    // that exaggerates it to make the contribution legible against everything else in the
+    // frame. The captured history also reads darker than the displayed frame, so some lift
+    // here may be compensating for that rather than for the reflection being wrong -- worth
+    // settling separately before treating any value but 1.0 as correct.
+    #define SSR_INTENSITY 2.0
     float ssrWeight = SsrParams.x * saturate(1.0 - roughness);
     if (ssrWeight > 0.0)
     {
@@ -329,16 +403,31 @@ float4 main(PS_INPUT input) : COLOR
         float4 ssr = traceSsr(input.worldPos, R, ssrHit);
         // The scene texture is the frame buffer as displayed, so sRGB; everything here
         // is linear until the final encode.
-        envCol = lerp(envCol, SrgbToLinear(ssr.rgb), ssr.a * ssrWeight);
+        envCol = lerp(envCol, SrgbToLinear(ssr.rgb) * SSR_INTENSITY, ssr.a * ssrWeight);
     }
 
-    float3 envSpec = envCol * Fenv * (1.0 - roughness * 0.6);
+    // Reflections are occluded by the same geometry that casts the shadow, so they are
+    // attenuated by it too. Without this a shadowed surface picks up the full reflection
+    // of sunlit ground and its shadow washes out -- which stayed hidden for as long as
+    // SSR was returning black, and appeared the moment it started returning real pixels.
+    //
+    // Not driven all the way to zero: a surface in shadow is occluded from the sun but
+    // still sees most of the sky, so killing the reflection outright would be as wrong in
+    // the other direction. 1.0 = reflection fully follows the shadow, 0.0 = ignores it.
+    #define ENV_SPEC_SHADOW 0.75
+    float3 envSpec = envCol * Fenv * (1.0 - roughness * 0.6) * lerp(1.0, shadow, ENV_SPEC_SHADOW);
 
     float3 color = Lo + ambient + envSpec;
 
     // Diagnostics. Set to a non-zero mode and rebuild the rts_shaders target only (no
     // engine rebuild); every PBR mesh then renders that quantity instead of the shading.
-    //   1 = environment sample    -- black means the cubemap never reaches sampler s4
+    //   1 = cubemap sample        -- the cubemap's own answer at this pixel, with SSR and
+    //                                Fresnel both excluded. Black means it never reaches
+    //                                sampler s4. It should read as a sky/ground gradient
+    //                                that sweeps as the surface turns and as the camera
+    //                                orbits, with the sun disc appearing on faces angled
+    //                                towards it -- and the sun should show up on the same
+    //                                side the cast shadows say it is on.
     //   2 = shading normal N      -- should vary smoothly over the mesh and turn with it;
     //                                per-pixel noise means BUMP_STRENGTH is too high
     //   3 = reflection vector R   -- must change as the unit turns AND as the camera moves
@@ -352,9 +441,19 @@ float4 main(PS_INPUT input) : COLOR
     //                               far black. Should be a smooth relief of the scene.
     //   9 = scene history         -- last frame's colour read back at this pixel. Should
     //                               look like the frame itself, painted onto the units.
-#define PBR_DEBUG_MODE 10
+    //  11 = cubemap contribution  -- what the cubemap actually adds to the frame: the
+    //                               sample above, Fresnel-weighted and roughness-faded,
+    //                               with SSR excluded. Legitimately dark on dielectrics
+    //                               (F0 is 0.04, so a head-on face keeps ~4% of it) and
+    //                               brightest at grazing angles. Use 12 if it is too dark
+    //                               to judge; use 1 to see the cubemap itself.
+    //  12 = cubemap contribution, exposed up 8x so the shape of it is legible. Absolute
+    //                               brightness is meaningless here -- only the pattern is.
+#define PBR_DEBUG_MODE 0
 #if   PBR_DEBUG_MODE == 1
-    return float4(envCol, 1.0);
+    // sRGB-encoded like the real output, so what you see is what the bake looks like
+    // rather than a linear buffer shown raw (which reads much darker than it is).
+    return float4(LinearToSrgb(cubeCol), 1.0);
 #elif PBR_DEBUG_MODE == 2
     return float4(N * 0.5 + 0.5, 1.0);
 #elif PBR_DEBUG_MODE == 3
@@ -442,6 +541,18 @@ float4 main(PS_INPUT input) : COLOR
         float4 selfClip = mul(float4(input.worldPos, 1.0), CameraVP);
         float2 selfUv   = (selfClip.xy / selfClip.w) * float2(0.5, -0.5) + 0.5;
         return float4(tex2Dlod(SceneColor, float4(selfUv, 0, 0)).rgb, 1.0);
+    }
+#elif PBR_DEBUG_MODE == 11 || PBR_DEBUG_MODE == 12
+    {
+        // The cubemap's contribution to the final image and nothing else: no albedo, no
+        // direct light, no ambient, no SSR. This is literally the envSpec term with the
+        // SSR blend left out, so whatever shows here is exactly what the cubemap is
+        // worth in the shipping shader.
+        float3 cubeSpec = cubeCol * Fenv * (1.0 - roughness * 0.6);
+#if PBR_DEBUG_MODE == 12
+        cubeSpec *= 8.0;   // exposure only, to make a dim-but-correct result legible
+#endif
+        return float4(LinearToSrgb(cubeSpec), 1.0);
     }
 #endif
 
