@@ -226,6 +226,28 @@ void DX8Wrapper::Restore_Stage1_After_Pbr()
 					   : NULL);
 }
 
+// The same story one stage further out: the shared environment cubemap is bound to
+// stage 4 for a PBR draw, straight to the device like the ORM. Nothing in the
+// applied-texture cache knows to take it off, so the next fixed-function draw
+// inherits a texture on a stage it never asked for and renders through it.
+//
+// Sorted translucent geometry -- rotor discs, glow cones -- is exactly the kind of
+// draw that shows this, because it never routes to the programmable path and so is
+// always the one inheriting.
+static bool s_pbrExtraStagesBound = false;
+
+void DX8Wrapper::Restore_Pbr_Extra_Stages()
+{
+	if (!s_pbrExtraStagesBound)
+		return;
+	s_pbrExtraStagesBound = false;
+	Set_DX8_Texture(4, render_state.Textures[4] != nullptr
+					   ? render_state.Textures[4]->Peek_D3D_Base_Texture()
+					   : NULL);
+	Set_DX8_Texture_Stage_State(4, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	Set_DX8_Texture_Stage_State(4, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+}
+
 bool								_DX8SingleThreaded										= false;
 
 INT g_D3D9_BaseVertexIndex = 0;
@@ -3183,6 +3205,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// direct bind cannot desync a shared stage). Linear + clamp.
 				if (m_envCubeMap != nullptr) {
 					Set_DX8_Texture(4, m_envCubeMap);
+					s_pbrExtraStagesBound = true;
 					Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
@@ -3217,6 +3240,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// the unit shaders read. Stage 1 only needs putting back when a previous
 				// PBR draw actually left its ORM there.
 				Restore_Stage1_After_Pbr();
+				Restore_Pbr_Extra_Stages();
 				Set_Vertex_Shader_Constant(16, &sceneAmbient, 1);
 				for (int li = 0; li < 4; ++li) {
 					// Transform world-space light direction to camera space for unit_vs
@@ -3326,6 +3350,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// the vertex-buffer block already re-applied the FVF; restore the pixel
 			// shader, and reset the vertex shader when this draw carries an FVF.
 			Restore_Stage1_After_Pbr();
+			Restore_Pbr_Extra_Stages();
 			// A draw that brought its own vertex shader keeps it -- only the pixel
 			// shader goes back, since that geometry expects the fixed-function pixel
 			// pipeline it would have had before we bound ours.
