@@ -846,6 +846,7 @@ public:
 	static void Capture_Env_Light(const float dir[3], const float color[3], const float ambient[3]);
 	// Put texture stage 1 back after a PBR draw bound its ORM map straight to it.
 	static void Restore_Stage1_After_Pbr();
+	static void Restore_Pbr_Extra_Stages();
 	// Resolver (installed by the game layer) that maps a base texture to its ORM
 	// sibling texture (<name>_orm), or nullptr when the unit ships no PBR maps.
 	typedef TextureBaseClass* (*OrmResolverFunc)(TextureBaseClass* baseTexture);
