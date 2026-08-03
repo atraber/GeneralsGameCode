@@ -250,6 +250,34 @@ void DX8Wrapper::Restore_Stage5_After_Shadow()
 	Set_DX8_Texture_Stage_State(5, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 }
 
+// And the same again for the three stages the PBR path added later: the environment
+// cubemap on 4, and the two screen-space reflection targets on 6 and 7. They are bound
+// straight to the device like the ORM and the shadow map, so nothing in the applied-
+// texture cache knows to take them off, and the next fixed-function draw inherits
+// textures on stages it never asked for.
+//
+// Rotor discs are exactly that kind of draw -- sorted, translucent, never routed to the
+// programmable path -- which is why they are the thing that disappears when a stage is
+// left bound. That already happened once with stage 5; these three shipped without the
+// matching restore and put them back in the same hole.
+static bool s_pbrExtraStagesBound = false;
+
+void DX8Wrapper::Restore_Pbr_Extra_Stages()
+{
+	if (!s_pbrExtraStagesBound)
+		return;
+	s_pbrExtraStagesBound = false;
+	const unsigned pbrExtraStages[3] = { 4, 6, 7 };
+	for (int i = 0; i < 3; ++i) {
+		const unsigned stage = pbrExtraStages[i];
+		Set_DX8_Texture(stage, render_state.Textures[stage] != nullptr
+							   ? render_state.Textures[stage]->Peek_D3D_Base_Texture()
+							   : NULL);
+		Set_DX8_Texture_Stage_State(stage, D3DTSS_COLOROP, D3DTOP_DISABLE);
+		Set_DX8_Texture_Stage_State(stage, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	}
+}
+
 bool								_DX8SingleThreaded										= false;
 
 INT g_D3D9_BaseVertexIndex = 0;
@@ -2868,9 +2896,22 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		const bool prelitNoNormal =
 			!hasNormal && m_dwUnitPrelitVS != 0 && !texGenNeedsNormal;
 
+		// Soft-blended geometry (blending on, no alpha test) stays on fixed function.
+		//
+		// This is effect geometry, not surfaces: rotor discs, glows, blur sprites. The
+		// evidence is that only fixed function draws them at all. A helicopter rotor is
+		// visible with routing off and invisible with it on, and it disappears the same
+		// way through the PBR shader and through the plain unit shader -- forcing the PBR
+		// shader to output alpha 1 does not bring it back, so it is not the alpha or the
+		// blend maths in either. Something about these draws does not survive the
+		// programmable path, and until that is understood they do not belong in it.
+		//
+		// Note additiveBlend is already excluded below; this covers the standard
+		// SRCALPHA/INVSRCALPHA case that the rotor disc actually uses.
 		const bool useUnitShader =
 			!routingDisabled &&
 			!m_bShadowDepthPass &&
+			!softBlendedOverlay &&
 			(!additiveBlend || routeAdditive) &&
 			!m_bTerrainShaderPass &&
 			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
@@ -3111,8 +3152,23 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// which leaves it applying to almost nothing anyone looks at.
 			const bool pbrTeamColour = (m_shaderRoutingMask & SHADER_ROUTE_PBR_TEAMCOLOR) != 0;
 			TextureBaseClass* ormTex = nullptr;
+			// Translucent geometry is never a PBR surface. A metallic-roughness BRDF
+			// describes light reflecting off an opaque solid; a blended sprite is an
+			// effect whose appearance comes from its texture and its blend equation.
+			//
+			// Helicopter rotor discs are the case that exposed this: blended, no alpha
+			// test, carrying an authored ORM map, so the gate claimed them -- and they
+			// vanished completely. Measured on the actual draw: fvf 0x252, blend on,
+			// SRCALPHA/INVSRCALPHA, alpha test off. Forcing the shader to output alpha 1
+			// did not bring them back, so this is not the alpha or the blend maths; the
+			// geometry is not surviving the programmable path at all. Whatever the vertex
+			// stage does to it, an effect disc should never have been in there.
+			//
+			// The plain unit shader already declines additive draws (routeAdditive
+			// above); PBR had no blend check of any kind.
 			if (pbrRoutingOn && (!houseColoured || pbrTeamColour) &&
 				singleTexture && !texgenActive && hasNormal &&
+				!additiveBlend && !softBlendedOverlay &&
 				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0 && s_ormResolver != nullptr) {
 				ormTex = s_ormResolver(render_state.Textures[0]);
 			}
@@ -3203,6 +3259,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				}
 			}
 
+			// TEMPORARY: which meshes the PBR branch actually claims. If the rotor's
+			// texture appears here its geometry is failing inside this path; if it does
+			// not, PBR routing is diverting it somewhere else that drops it, and the
+			// whole PBR theory is about the wrong draw.
 			if (usePbr) {
 				// Bind ORM to stage 1. Apply() (rather than Peek_D3D_Texture) triggers
 				// the lazy texture load and updates the applied-texture cache, so the
@@ -3216,6 +3276,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// direct bind cannot desync a shared stage). Linear + clamp.
 				if (m_envCubeMap != nullptr) {
 					Set_DX8_Texture(4, m_envCubeMap);
+					s_pbrExtraStagesBound = true;
 					Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 					// The cubemap carries cloud detail and ships a mip chain; without a
@@ -3248,6 +3309,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// The strength in c17 is what actually switches the march off.
 				if (m_pSceneColor != nullptr) {
 					Set_DX8_Texture(6, m_pSceneColor);
+					s_pbrExtraStagesBound = true;
 					Set_DX8_Texture_Stage_State(6, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(6, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 					Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
@@ -3257,6 +3319,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					// Point filtering, as for the shadow map: packed depth is three bytes
 					// of one number, and interpolating them blends nonsense.
 					Set_DX8_Texture(7, m_pSceneDepth);
+					s_pbrExtraStagesBound = true;
 					Set_DX8_Texture_Stage_State(7, D3DTSS_MINFILTER, D3DTEXF_POINT);
 					Set_DX8_Texture_Stage_State(7, D3DTSS_MAGFILTER, D3DTEXF_POINT);
 					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
@@ -3300,6 +3363,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// the unit shaders read. Stage 1 only needs putting back when a previous
 				// PBR draw actually left its ORM there.
 				Restore_Stage1_After_Pbr();
+				Restore_Pbr_Extra_Stages();
 				Set_Vertex_Shader_Constant(16, &sceneAmbient, 1);
 				for (int li = 0; li < 4; ++li) {
 					Set_Vertex_Shader_Constant(8 + li * 2, &lightDir[li], 1);
@@ -3409,6 +3473,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// shader, and reset the vertex shader when this draw carries an FVF.
 			Restore_Stage1_After_Pbr();
 			Restore_Stage5_After_Shadow();
+			Restore_Pbr_Extra_Stages();
 			// A draw that brought its own vertex shader keeps it -- only the pixel
 			// shader goes back, since that geometry expects the fixed-function pixel
 			// pipeline it would have had before we bound ours.
