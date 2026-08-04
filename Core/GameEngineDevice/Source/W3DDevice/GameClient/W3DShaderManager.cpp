@@ -1478,6 +1478,32 @@ Int ShroudTextureShader::set(Int stage)
 	// use LESSEQUAL (as the flat-map shroud path already does) to tolerate the tiny
 	// depth mismatch while still rejecting geometry in front of the terrain.
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);
+	// LESSEQUAL is still an exact comparison, and exactness is the problem: this pass
+	// re-draws geometry that has already been drawn, and it no longer computes its depth
+	// the same way. A bridge's base pass runs through the programmable unit shader while
+	// this one is fixed-function, and the two disagree by a few ULPs -- enough for the
+	// comparison to fail wherever the fixed-function result lands fractionally behind.
+	// The failures are not scattered pixels but whole triangular regions, because the
+	// sign of the difference varies smoothly across a face and flips along a contour;
+	// they slide as the camera turns, which is what made a shrouded bridge look like it
+	// had holes cut in it. Measured directly: forcing ZFUNC to ALWAYS removes the pattern
+	// completely, while every other input to this pass (view, world, texgen source and
+	// matrix, sampler state) measured correct.
+	//
+	// So give the pass the tolerance the comparison cannot express: bias it a hair toward
+	// the camera. Slope-scaled because a co-planar pair diverges fastest where the surface
+	// is steep to the viewer, plus a small constant for the flat case. This is the usual
+	// remedy for a co-planar decal pass and it costs nothing when the two agree. Note
+	// D3DRS_ZBIAS cannot do this -- the D3D9 compatibility header maps it to a dummy
+	// render-state slot, so those calls have been doing nothing since the port.
+	{
+		const float slopeBias = -1.0f;
+		const float constBias = -1.0e-5f;
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_SLOPESCALEDEPTHBIAS,
+			*reinterpret_cast<const DWORD*>(&slopeBias));
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_DEPTHBIAS,
+			*reinterpret_cast<const DWORD*>(&constBias));
+	}
 
 	//We need to scale so shroud texel stretches over one full terrain cell.  Each texel
 	//is 1/128 the size of full texture. (assuming 128x128 vid-mem texture).
@@ -1523,6 +1549,9 @@ void ShroudTextureShader::reset()
 {
 	DX8Wrapper::Set_Texture(m_stageOfSet,nullptr);
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);
+	// Take the co-planar bias back off; nothing after this pass wants it.
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_SLOPESCALEDEPTHBIAS, 0);
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_DEPTHBIAS, 0);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(m_stageOfSet,  D3DTSS_TEXCOORDINDEX, m_stageOfSet);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(m_stageOfSet,  D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 }
