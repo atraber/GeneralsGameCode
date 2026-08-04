@@ -2863,6 +2863,14 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::m_dwTerrainPS == 0) {
 		LoadAndCreateD3DShader("shaders\\terrain_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwTerrainPS);
 	}
+	// Roads: the terrain's shading (cloud, noise, cast shadows) over a single UV set,
+	// keeping the road's alpha for the blend into the ground.
+	if (DX8Wrapper::m_dwRoadVS == 0) {
+		LoadAndCreateD3DShader("shaders\\road_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwRoadVS);
+	}
+	if (DX8Wrapper::m_dwRoadPS == 0) {
+		LoadAndCreateD3DShader("shaders\\road_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwRoadPS);
+	}
 	// PBR (Shader Model 3) variant of the unit shader, used for meshes that ship a
 	// <name>_orm map. Optional: if these fail to load, the plain unit shader is used.
 	if (DX8Wrapper::m_dwUnitPbrVS == 0) {
@@ -2925,6 +2933,14 @@ void W3DShaderManager::shutdownUnitShaders()
 	if (DX8Wrapper::m_dwTerrainPS != 0) {
 		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwTerrainPS)->Release();
 		DX8Wrapper::m_dwTerrainPS = 0;
+	}
+	if (DX8Wrapper::m_dwRoadVS != 0) {
+		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwRoadVS)->Release();
+		DX8Wrapper::m_dwRoadVS = 0;
+	}
+	if (DX8Wrapper::m_dwRoadPS != 0) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwRoadPS)->Release();
+		DX8Wrapper::m_dwRoadPS = 0;
 	}
 	if (DX8Wrapper::m_dwUnitPbrVS != 0) {
 		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwUnitPbrVS)->Release();

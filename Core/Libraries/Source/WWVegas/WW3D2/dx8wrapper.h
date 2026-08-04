@@ -947,6 +947,16 @@ public:
 	static void Debug_Report_Particle_Shadows();
 
 #endif
+	// Programmable road path. Roads are decals on the terrain and want the terrain's
+	// shading -- cloud, noise and, the reason this exists, cast shadows. Their own
+	// fixed-function path could not sample the shadow map, so a road stayed at full
+	// brightness through a shadow the ground around it was in. Flagged by W3DRoadBuffer
+	// the same way HeightMap flags a terrain pass.
+	static DWORD						m_dwRoadVS;
+	static DWORD						m_dwRoadPS;
+	static bool							m_bRoadShaderPass;    // current draws are road segments
+	static void Set_Road_Shader_Pass(bool active) { m_bRoadShaderPass = active; }
+	static bool Has_Road_Shader() { return m_dwRoadVS != 0 && m_dwRoadPS != 0; }
 	// Directional shadow mapping. During the depth pass every mesh/terrain draw is
 	// re-routed to the shadow-depth shaders (which just pack sun-space depth); during
 	// the normal lit passes the shadow map is bound + SunVP is fed so the unit/terrain
