@@ -185,6 +185,9 @@ float							DX8Wrapper::m_envAverage[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
 DX8Wrapper::OrmResolverFunc		DX8Wrapper::s_ormResolver = nullptr;
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
 DWORD							DX8Wrapper::m_dwTerrainPS = 0;
+DWORD							DX8Wrapper::m_dwRoadVS = 0;
+DWORD							DX8Wrapper::m_dwRoadPS = 0;
+bool							DX8Wrapper::m_bRoadShaderPass = false;
 DWORD							DX8Wrapper::m_dwShadowDepthVS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthPS = 0;
 IDirect3DBaseTexture8*			DX8Wrapper::m_pShadowMap = nullptr;
@@ -2767,6 +2770,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
 			!texgenActive;
 
+		// Roads, flagged by W3DRoadBuffer. Unlike the terrain there is no !texgenActive
+		// condition: the road shader reproduces the cloud and noise projections itself,
+		// from the world position, which is the whole reason a road can now be shaded in
+		// one pass instead of the fixed-function pipeline's stack of projected stages.
+		const bool useRoadShader =
+			!m_bShadowDepthPass &&
+			m_bRoadShaderPass && m_dwRoadVS != 0 && m_dwRoadPS != 0 &&
+			!(render_state_changed & (unsigned)VIEW_IDENTITY);
+
 		// The frame-buffer blend is applied by hardware after the shader, so the shader's
 		// "texture * light" output composites exactly as the equivalent fixed-function
 		// single-texture pass did -- for opaque, standard SRCALPHA/INVSRCALPHA, additive
@@ -2940,6 +2952,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Vertex_Shader != m_dwUnitPrelitVS &&
 			Vertex_Shader != m_dwUnitPbrVS &&
 			Vertex_Shader != m_dwTerrainVS &&
+			Vertex_Shader != m_dwRoadVS &&
 			Vertex_Shader != m_dwShadowDepthVS;
 
 		// Routing categories are selectable at runtime (options.ini ShaderRouting) so the
@@ -2987,6 +3000,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			!softBlendedOverlay &&
 			(!additiveBlend || routeAdditive) &&
 			!m_bTerrainShaderPass &&
+			!m_bRoadShaderPass &&
 			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
 			(curFVF & D3DFVF_XYZ) && (hasNormal || prelitNoNormal) &&
@@ -3156,6 +3170,65 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			DX8CALL(SetPixelShaderConstantF(0, reinterpret_cast<const float*>(&overlayEnable), 1));
 			Pixel_Shader_Constants[0] = *reinterpret_cast<const Vector4*>(&overlayEnable);
 			// Cloud/noise tile and wrap.
+			Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+			Set_DX8_Texture_Stage_State(3, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(3, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+		}
+		else if (useRoadShader) {
+			if (!m_bUnitShaderBound) {
+				s_dwOriginalPS = Pixel_Shader;
+				m_bUnitShaderBound = true;
+			}
+			Set_Vertex_Shader(m_dwRoadVS);
+			Set_Pixel_Shader(m_dwRoadPS);
+
+			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+			D3DXMATRIX proj;
+			if (FAILED(_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj)))) {
+				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
+			}
+			D3DXMATRIX wvp;
+			D3DXMatrixMultiply(&wvp, &world, &view);
+			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			Set_Vertex_Shader_Constant(0, &wvp, 4);
+			// Sun view-projection (VS c5) and the shadow map on stage 5, exactly as the
+			// terrain gets them -- this is what the fixed-function road path could not do.
+			Set_Vertex_Shader_Constant(5, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			Set_Pixel_Shader_Constant(1, m_shadowParams, 1);   // bias + strength + texel
+			if (m_pShadowMap != nullptr) {
+				Set_DX8_Texture(5, m_pShadowMap);
+				s_shadowStage5Bound = true;
+				Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			}
+
+			// The road texture is an atlas: clamp, and filter smoothly (the fixed-function
+			// road path set trilinear here when the terrain was set to, point otherwise).
+			Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+
+			// Cloud/noise overlays share the terrain's per-frame parameters: same textures,
+			// same scroll, same projection. Written through the device for the same reason
+			// the terrain path does -- see the note there about a device reset leaving the
+			// redundant-set cache claiming values the device no longer holds.
+			D3DXVECTOR4 cloudOffset(m_terrainCloudOffX, m_terrainCloudOffY, 0.0f, 0.0f);
+			DX8CALL(SetVertexShaderConstantF(4, reinterpret_cast<const float*>(&cloudOffset), 1));
+			Vertex_Shader_Constants[4] = *reinterpret_cast<const Vector4*>(&cloudOffset);
+			D3DXVECTOR4 overlayEnable(m_terrainCloudEnable ? 1.0f : 0.0f,
+									  m_terrainNoiseEnable ? 1.0f : 0.0f, 0.0f, 0.0f);
+			DX8CALL(SetPixelShaderConstantF(0, reinterpret_cast<const float*>(&overlayEnable), 1));
+			Pixel_Shader_Constants[0] = *reinterpret_cast<const Vector4*>(&overlayEnable);
 			Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 			Set_DX8_Texture_Stage_State(2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
