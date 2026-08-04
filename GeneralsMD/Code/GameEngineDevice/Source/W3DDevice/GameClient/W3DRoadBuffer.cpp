@@ -3313,6 +3313,31 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 	W3DShaderManager::setTexture(1,cloudTexture);	//cloud
 	W3DShaderManager::setTexture(2,noiseTexture);	//noise/lightmap
 
+	// Programmable road path: collapse the fixed-function stack of projected stages into
+	// a single pass on the road VS/PS. The point of it is the shadow map: the legacy path
+	// shades a road with its own pixel shader (or a two-stage fixed-function combine) and
+	// neither can sample the shadow map, so a road stayed at full brightness while the
+	// ground it lies on went dark -- most obvious where a road runs out from under a cliff
+	// or a building. The shader reproduces the cloud and noise projections from the world
+	// position, so the stages those needed are no longer set up at all.
+	const Bool useRoadProg = !wireframe && DX8Wrapper::Has_Road_Shader();
+	if (useRoadProg)
+	{
+		devicePasses = 1;
+		// Cloud and noise where the road shader samples them (and where the terrain
+		// shader takes them), rather than the stages the fixed-function path projected
+		// through.
+		DX8Wrapper::Set_Texture(2, cloudTexture);
+		DX8Wrapper::Set_Texture(3, noiseTexture);
+		float cx = 0.0f, cy = 0.0f;
+		W3DShaderManager::getCloudOffset(cx, cy);
+		DX8Wrapper::Set_Terrain_Overlay(cx, cy, cloudTexture != nullptr, noiseTexture != nullptr);
+		// Blend, depth test and depth write for a road decal: over the terrain, tested
+		// but not written. The shader replaces only the vertex/pixel stages; this still
+		// comes from W3D, as it does for every other routed draw.
+		DX8Wrapper::Set_Shader(detailAlphaShader);
+	}
+
 
 	Bool loadBuffers = false;
 	if (m_updateBuffers) {
@@ -3342,7 +3367,13 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 	#endif
 			for (Int pass=0; pass < devicePasses; pass++)
 			{
-				if (!wireframe)
+				if (useRoadProg) {
+					// applyTexture only records the road atlas with the shader manager --
+					// the legacy shaders bind it in their set(). Bind it here instead.
+					DX8Wrapper::Set_Texture(0, W3DShaderManager::getShaderTexture(0));
+					DX8Wrapper::Set_Road_Shader_Pass(true);
+				}
+				else if (!wireframe)
 		 			W3DShaderManager::setShader(st, pass);
 				//Draw all this road type.
 				DX8Wrapper::Draw_Triangles(	0, m_roadTypes[i].getNumIndices()/3, 0,	m_roadTypes[i].getNumVertices());
@@ -3351,9 +3382,16 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 #endif
 			}
 
-			if (!wireframe)	//shader was applied at least once?
+			if (!wireframe && !useRoadProg)	//shader was applied at least once?
  				W3DShaderManager::resetShader(st);
 		}
+	}
+
+	if (useRoadProg)
+	{	//hand the pipeline back: the next draw restores the fixed function it expects.
+		DX8Wrapper::Set_Road_Shader_Pass(false);
+		DX8Wrapper::Set_Texture(2, nullptr);
+		DX8Wrapper::Set_Texture(3, nullptr);
 	}
 #ifdef LOG_STATS
 	if (loadBuffers) {
