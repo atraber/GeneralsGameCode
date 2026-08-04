@@ -2187,18 +2187,38 @@ void HeightMapRenderObjClass::renderTerrainPass(CameraClass *pCamera)
 	DX8Wrapper::Set_Index_Buffer(m_indexBuffer,0);
 
 	// This pass re-draws the terrain tiles co-planar over the (shader-drawn) terrain and
-	// depth-tests LESSEQUAL to blend in the shroud. The programmable terrain pass writes
-	// a depth a few ULPs different from this fixed-function pass, so at grazing camera
-	// angles the shroud gets rejected in a camera-dependent pattern (gaps). Pull this
-	// pass very slightly toward the camera with a slope-scaled depth bias so it reliably
-	// lands on the surface. The terrain's own depth is left unchanged, so the stencil
-	// shadow volumes (which depth-test against it) are unaffected.
+	// depth-tests LESSEQUAL to blend in the shroud. The programmable terrain pass computes
+	// its depth from a CPU-concatenated WorldViewProj while this fixed-function pass uses
+	// the device's own concatenation, and the two disagree in the last bits -- enough for
+	// an exact comparison to reject the shroud in a camera-dependent pattern, leaving gaps.
+	// Pull this pass a hair toward the camera so it reliably lands on the surface. The
+	// terrain's own depth is left unchanged, so the stencil shadow volumes (which depth-test
+	// against it) are unaffected.
+	//
+	// The size of this bias matters in both directions, because the pass is drawn late (over
+	// the roads, scorch marks and bridges that have already been laid on the terrain) and a
+	// bias is indiscriminate: whatever it pulls the terrain in front of, it paints. At the
+	// -0.0005 this started with it reached clean through a bridge deck and drew the ravine's
+	// shroud over it -- a bridge is only ~10-20 world units above the ground it spans, and
+	// with this projection (near 10, far ~1734) 0.0005 of NDC depth is worth ~12 world units
+	// at a typical view distance. It was invisible on revealed ground, where the shroud is
+	// white and multiplying by it changes nothing, and obvious once the far side of a bridge
+	// fell under fog.
+	//
+	// Measured against the bridge replay by drawing this pass twice, the reference bias in
+	// red and a candidate over it in green: every terrain pixel is already covered with a
+	// candidate of 1e-6, while 5e-4 additionally covers most of a bridge deck. So the
+	// mismatch this compensates for really is only the last bits, and the value below sits
+	// an order of magnitude above what the terrain needs and far below what reaches anything
+	// standing on it. There is deliberately no slope-scaled term: it was the larger half of
+	// the punch-through (it grows without bound as a surface turns edge-on to the viewer,
+	// which is exactly when a bridge is seen along its length) and nothing needs it.
 	LPDIRECT3DDEVICE8 shroudDev = DX8Wrapper::_Get_D3D_Device8();
 	DWORD oldSlopeBias = 0, oldConstBias = 0;
 	if (shroudDev)
 	{
-		const float slopeBias = -1.0f;     // scales with polygon slope: grazing angles get more
-		const float constBias = -0.0005f;  // small constant pull toward the camera
+		const float slopeBias = 0.0f;
+		const float constBias = -1.0e-5f;
 		shroudDev->GetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, &oldSlopeBias);
 		shroudDev->GetRenderState(D3DRS_DEPTHBIAS, &oldConstBias);
 		shroudDev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD*>(&slopeBias));
