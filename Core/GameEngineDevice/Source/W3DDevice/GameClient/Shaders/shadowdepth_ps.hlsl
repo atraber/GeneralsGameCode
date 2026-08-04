@@ -7,6 +7,14 @@
 
 sampler BaseSampler : register(s0);   // the caster's own texture, for its alpha
 
+// x = alpha below which a texel casts nothing.
+//
+// Zero for ordinary casters, leaving the hardware alpha test as the only arbiter, so
+// opaque and cut-out geometry behave exactly as before. Non-zero only for blended
+// casters such as rotor discs, which carry no alpha test of their own and would
+// otherwise cast their whole quad as solid shadow.
+float4 ShadowCastParams : register(c0);
+
 struct PS_INPUT { float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1; };
 
 // Split the depth across three 8-bit channels, coarse to fine.
@@ -32,10 +40,13 @@ float4 main(PS_INPUT input) : COLOR
     // Clamp below 1.0: packDepth(1.0) wraps to (0,0,0) which unpacks to 0 (near),
     // which would make far geometry cast false shadows.
     float depth = min(input.lightPos.z / input.lightPos.w, 0.9999);
+    float texAlpha = tex2D(BaseSampler, input.texcoord).a;
+    // clip() discards only on a negative argument, so a cutoff of 0 discards nothing.
+    clip(texAlpha - ShadowCastParams.x);
     // Alpha out is the caster's texture alpha, and the depth pass leaves the scene's
     // alpha test alone, so the hardware discards the transparent texels of a cut-out
     // exactly as it does in the visible pass. Writing 1.0 here made a tree billboard
     // cast its whole rectangle -- a wall of shadow instead of a canopy. Meshes with no
     // alpha test ignore alpha entirely, so opaque casters are unaffected.
-    return packDepth(depth, tex2D(BaseSampler, input.texcoord).a);
+    return packDepth(depth, texAlpha);
 }
