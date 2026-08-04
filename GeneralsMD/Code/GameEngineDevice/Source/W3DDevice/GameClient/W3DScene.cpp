@@ -818,6 +818,19 @@ void RTS3DScene::renderOneObject(RenderInfoClass &rinfo, RenderObjClass *robj, I
 					rinfo.Pop_Material_Pass();
 				}
 			}
+			else if (m_customPassMode == SCENE_PASS_SHADOW_MAP ||
+					 m_customPassMode == SCENE_PASS_CAMERA_DEPTH)
+			{
+				// Depth passes want the mesh itself, not a stand-in. The alpha-mask pass
+				// below suppresses the base pass (RINFO_OVERRIDE_ADDITIONAL_PASSES_ONLY)
+				// and draws the geometry with the mask material instead, so every caster
+				// reached the depth shaders wearing the same opaque mask texture on stage
+				// 0 -- and stage 0 is exactly what shadowdepth_ps samples to cut a caster
+				// down to its own silhouette. Cut-out and blended geometry would cast its
+				// whole quad. Drawing the base pass costs the mesh's own material setup
+				// and gives the depth shaders the caster's real texture.
+				robj->Render(rinfo);
+			}
 			else if (m_maskMaterialPass)
 			{
 				rinfo.Push_Material_Pass(m_maskMaterialPass);

@@ -813,6 +813,13 @@ public:
 	static float						m_shadowParams[4];
 	static bool							m_bShadowDepthPass; // current draws render into the shadow map
 	static void Set_Shadow_Depth_Pass(bool active) { m_bShadowDepthPass = active; }
+	static bool Is_Shadow_Depth_Pass() { return m_bShadowDepthPass; }
+	// The current draw is a mesh the artist marked W3D_MESH_FLAG_CAST_SHADOW. Set by the
+	// mesh renderer for the duration of one mesh and cleared straight after, so only draws
+	// it owns can carry it. It is the tie-breaker for blended geometry, which the depth
+	// pass otherwise cannot tell from a ground decal. See Apply_Render_State_Changes.
+	static bool							m_bMeshCastsShadow;
+	static void Set_Mesh_Casts_Shadow(bool casts) { m_bMeshCastsShadow = casts; }
 	static void Set_Sun_VP(const float* m16);
 
 	// Screen-space reflections. The camera-view depth SSR marches against is produced

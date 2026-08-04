@@ -191,6 +191,7 @@ IDirect3DBaseTexture8*			DX8Wrapper::m_pShadowMap = nullptr;
 float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 bool							DX8Wrapper::m_bShadowDepthPass = false;
+bool							DX8Wrapper::m_bMeshCastsShadow = false;
 void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
@@ -2146,7 +2147,16 @@ void DX8Wrapper::Draw_Sorting_IB_VB(
 	// If using FVF format VB, set the FVF as vertex shader (may not be needed here KM)
 	unsigned fvf=dyn_vb_access.FVF_Info().Get_FVF();
 	if (fvf!=0) {
+		// The declaration has to describe the buffer just filled, but setting an FVF also
+		// unbinds the vertex shader -- and Apply_Render_State_Changes chose one a moment
+		// ago, since the depth pass binds its packing shader for every caster. Losing it
+		// here would put raw fixed-function colour in the middle of a depth map. Set the
+		// declaration, then put the shader straight back; the two are independent in D3D9.
+		const DWORD boundVS = Vertex_Shader;
 		Set_Vertex_Shader(fvf);
+		if (boundVS >= 0x10000) {
+			Set_Vertex_Shader(boundVS);
+		}
 	}
 	DX8_RECORD_VERTEX_BUFFER_CHANGE();
 
@@ -2348,16 +2358,17 @@ void DX8Wrapper::Draw_Triangles(
 	unsigned short vertex_count)
 {
 	if (buffer_type==BUFFER_TYPE_SORTING || buffer_type==BUFFER_TYPE_DYNAMIC_SORTING) {
-		// Sorted geometry must not enter the shadow depth pass. This call does not draw
-		// anything -- it hands the triangles to the sorting renderer, which defers them
-		// and replays them at its next flush. From the depth pass that means geometry
-		// transformed into the sun's clip space gets re-emitted into the visible frame,
-		// and it eats the shared sorting buffer the real draw needs. Translucent
-		// geometry has no business casting a shadow anyway. Helicopter rotor discs are
-		// sorted meshes, and were vanishing or not depending on how much else happened
-		// to be queued behind them.
-		if (m_bShadowDepthPass)
+		// Sorted geometry is drawn where it stands in the depth pass rather than deferred.
+		// This call does not draw anything on its own -- it hands the triangles to the
+		// sorting renderer, which replays them at its next flush -- and a depth pass has
+		// nothing to gain by waiting: it writes nearest-wins depth, so blend order is
+		// meaningless, while the wait costs a second traversal's worth of nodes out of the
+		// buffer the visible frame's own sorted draws need. Draw_Sorting_IB_VB copies
+		// straight out of the sorting buffers, which is all this needs.
+		if (m_bShadowDepthPass) {
+			Draw(D3DPT_TRIANGLELIST,start_index,polygon_count,min_vertex_index,vertex_count);
 			return;
+		}
 		SortingRendererClass::Insert_Triangles(start_index,polygon_count,min_vertex_index,vertex_count);
 	}
 	else {
@@ -2666,6 +2677,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// foliage is the exception and has to keep casting: it is alpha blended too, but
 		// the alpha *test* is what gives it a real silhouette, so that is the dividing
 		// line rather than blending alone.
+		// Blend classification. Declared here rather than further down because the
+		// shadow-cast decision below needs it; the routing decisions later use the same
+		// values.
+		const bool alphaBlendOn = RenderStates[D3DRS_ALPHABLENDENABLE] != FALSE;
+		const DWORD srcBlend = RenderStates[D3DRS_SRCBLEND];
+		const DWORD dstBlend = RenderStates[D3DRS_DESTBLEND];
+		const bool standardAlphaBlend =
+			srcBlend == D3DBLEND_SRCALPHA && dstBlend == D3DBLEND_INVSRCALPHA;
+		const bool additiveBlend =
+			(srcBlend == D3DBLEND_ONE || srcBlend == D3DBLEND_SRCALPHA) &&
+			dstBlend == D3DBLEND_ONE;
+
 		const bool softBlendedOverlay =
 			RenderStates[D3DRS_ALPHABLENDENABLE] != FALSE &&
 			RenderStates[D3DRS_ALPHATESTENABLE] == FALSE;
@@ -2674,10 +2697,50 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// the depth-packing shaders so it casts into the shadow map. 2D/UI (identity
 		// view) and non-mesh draws are excluded. When active it pre-empts the normal
 		// shaders.
+		// Which blended geometry is allowed to cast.
+		//
+		// Excluding all of it meant a helicopter cast a body shadow with a hole where its
+		// rotor should be, since rotor discs are blended with no alpha test. Admitting all
+		// of it is worse: ground decals, tyre tracks, scorch marks, water, light beams and
+		// lasers are blended too, and they would lay solid shadow over the terrain.
+		//
+		// Depth-write covers most of the split. Measured over a frame: those overlays draw
+		// with ZWRITEENABLE off, because they are marks painted onto a surface rather than
+		// surfaces themselves, while every solid caster -- rocks, crates, roofs, foliage,
+		// riverbanks -- writes depth. Something that does not occlude the scene's own
+		// depth has no business occluding the sun's.
+		//
+		// It does not cover the rotor. A rotor disc is a sorted, blended mesh with
+		// depth-write *off*, which is a decal's signature exactly: measured, it arrives
+		// byte-identical to a tyre track, so no render state can tell them apart. Where
+		// the state cannot, the asset does -- m_bMeshCastsShadow carries
+		// W3D_MESH_FLAG_CAST_SHADOW from the mesh the renderer is drawing right now, and
+		// over a full scene that flag is set on the two rotor discs and on no other sorted
+		// mesh. Only the mesh renderer raises it, so no decal or terrain draw can reach it.
+		//
+		// Additive stays out either way, flag or no flag: its alpha is brightness, not
+		// coverage, so no cutoff applied to it would mean anything.
+		const bool softBlendedCaster =
+			softBlendedOverlay && !additiveBlend &&
+			(RenderStates[D3DRS_ZWRITEENABLE] != FALSE || m_bMeshCastsShadow);
+		// The depth pass has to see sorted geometry too, which curFVF deliberately does not
+		// -- see the note above: sorting buffers are excluded there so the unit/PBR routing
+		// can never mistake one for a lit mesh. But a sorting buffer still carries a real
+		// FVF, and a SORT-flagged mesh (rotor discs, and anything else the artist marked
+		// for per-triangle sorting) is as solid a caster as any other. Reading the format
+		// separately here admits them to the depth pass without letting the colour routing
+		// near them. Without this every sorted mesh arrived with curFVF == 0, failed the
+		// position test, and was masked out as if it were a screen-space overlay.
+		DWORD depthFVF = curFVF;
+		if (depthFVF == 0 && render_state.vertex_buffers[0] != nullptr &&
+			(render_state.vertex_buffer_types[0] == BUFFER_TYPE_SORTING ||
+			 render_state.vertex_buffer_types[0] == BUFFER_TYPE_DYNAMIC_SORTING)) {
+			depthFVF = render_state.vertex_buffers[0]->FVF_Info().Get_FVF();
+		}
 		const bool useShadowDepth =
 			m_bShadowDepthPass && m_dwShadowDepthVS != 0 && m_dwShadowDepthPS != 0 &&
-			(curFVF & D3DFVF_XYZ) &&
-			!softBlendedOverlay &&
+			(depthFVF & D3DFVF_XYZ) &&
+			(!softBlendedOverlay || softBlendedCaster) &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY);
 
 		const bool useTerrainShader =
@@ -2694,14 +2757,6 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// over a shader-drawn base pass; splitting the two across the shader and fixed
 		// pipelines gave them slightly different depth and they z-fought (surface shimmer)
 		// as the camera rotates. Exotic blends we do not recognise stay on the fixed path.
-		const bool alphaBlendOn = RenderStates[D3DRS_ALPHABLENDENABLE] != FALSE;
-		const DWORD srcBlend = RenderStates[D3DRS_SRCBLEND];
-		const DWORD dstBlend = RenderStates[D3DRS_DESTBLEND];
-		const bool standardAlphaBlend =
-			srcBlend == D3DBLEND_SRCALPHA && dstBlend == D3DBLEND_INVSRCALPHA;
-		const bool additiveBlend =
-			(srcBlend == D3DBLEND_ONE || srcBlend == D3DBLEND_SRCALPHA) &&
-			dstBlend == D3DBLEND_ONE;
 		const bool multiplyBlend =
 			(srcBlend == D3DBLEND_ZERO && dstBlend == D3DBLEND_SRCCOLOR) ||
 			(srcBlend == D3DBLEND_DESTCOLOR && dstBlend == D3DBLEND_ZERO);
@@ -2969,6 +3024,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				s_dwOriginalPS = Pixel_Shader;
 				m_bUnitShaderBound = true;
 			}
+			// Alpha cutoff for this caster. Zero leaves the hardware alpha test in sole
+			// charge, which is what opaque and cut-out geometry want. Blended casters
+			// have no alpha test of their own, so they are cut here instead -- high
+			// enough that only the dense part of a rotor disc casts, not the wash of
+			// blur around it.
+			const float shadowAlphaCutoff = softBlendedCaster ? 0.45f : 0.0f;
+			const D3DXVECTOR4 shadowCastParams(shadowAlphaCutoff, 0.0f, 0.0f, 0.0f);
+			Set_Pixel_Shader_Constant(0, &shadowCastParams, 1);
 			Set_Vertex_Shader(m_dwShadowDepthVS);
 			Set_Pixel_Shader(m_dwShadowDepthPS);
 			if (m_bDepthPrepass) {
