@@ -2898,7 +2898,16 @@ void DX8Wrapper::Draw_Sorting_IB_VB(
 	// If using FVF format VB, set the FVF as vertex shader (may not be needed here KM)
 	unsigned fvf=dyn_vb_access.FVF_Info().Get_FVF();
 	if (fvf!=0) {
+		// The declaration has to describe the buffer just filled, but setting an FVF also
+		// unbinds the vertex shader -- and Apply_Render_State_Changes chose one a moment
+		// ago, since the depth pass binds its packing shader for every caster. Losing it
+		// here would put raw fixed-function colour in the middle of a depth map. Set the
+		// declaration, then put the shader straight back; the two are independent in D3D9.
+		const DWORD boundVS = Vertex_Shader;
 		Set_Vertex_Shader(fvf);
+		if (boundVS >= 0x10000) {
+			Set_Vertex_Shader(boundVS);
+		}
 	}
 	DX8_RECORD_VERTEX_BUFFER_CHANGE();
 
@@ -3100,16 +3109,17 @@ void DX8Wrapper::Draw_Triangles(
 	unsigned short vertex_count)
 {
 	if (buffer_type==BUFFER_TYPE_SORTING || buffer_type==BUFFER_TYPE_DYNAMIC_SORTING) {
-		// Sorted geometry must not enter the shadow depth pass. This call does not draw
-		// anything -- it hands the triangles to the sorting renderer, which defers them
-		// and replays them at its next flush. From the depth pass that means geometry
-		// transformed into the sun's clip space gets re-emitted into the visible frame,
-		// and it eats the shared sorting buffer the real draw needs. Translucent
-		// geometry has no business casting a shadow anyway. Helicopter rotor discs are
-		// sorted meshes, and were vanishing or not depending on how much else happened
-		// to be queued behind them.
-		if (m_bShadowDepthPass)
+		// Sorted geometry is drawn where it stands in the depth pass rather than deferred.
+		// This call does not draw anything on its own -- it hands the triangles to the
+		// sorting renderer, which replays them at its next flush -- and a depth pass has
+		// nothing to gain by waiting: it writes nearest-wins depth, so blend order is
+		// meaningless, while the wait costs a second traversal's worth of nodes out of the
+		// buffer the visible frame's own sorted draws need. Draw_Sorting_IB_VB copies
+		// straight out of the sorting buffers, which is all this needs.
+		if (m_bShadowDepthPass) {
+			Draw(D3DPT_TRIANGLELIST,start_index,polygon_count,min_vertex_index,vertex_count);
 			return;
+		}
 		SortingRendererClass::Insert_Triangles(start_index,polygon_count,min_vertex_index,vertex_count);
 	}
 	else {
@@ -3564,8 +3574,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		}
 		const bool useShadowDepth =
 			m_bShadowDepthPass && m_dwShadowDepthVS != 0 && m_dwShadowDepthPS != 0 &&
-			(curFVF & D3DFVF_XYZ) &&
-			!softBlendedOverlay &&
+			(depthFVF & D3DFVF_XYZ) &&
+			(!softBlendedOverlay || softBlendedCaster) &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY);
 
 
@@ -3975,6 +3985,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				s_dwOriginalPS = Pixel_Shader;
 				m_bUnitShaderBound = true;
 			}
+			// Alpha cutoff for this caster. Zero leaves the hardware alpha test in sole
+			// charge, which is what opaque and cut-out geometry want. Blended casters
+			// have no alpha test of their own, so they are cut here instead -- high
+			// enough that only the dense part of a rotor disc casts, not the wash of
+			// blur around it.
+			const float shadowAlphaCutoff = softBlendedCaster ? 0.45f : 0.0f;
+			const D3DXVECTOR4 shadowCastParams(shadowAlphaCutoff, 0.0f, 0.0f, 0.0f);
+			Set_Pixel_Shader_Constant(0, &shadowCastParams, 1);
 			Set_Vertex_Shader(m_dwShadowDepthVS);
 			Set_Pixel_Shader(m_dwShadowDepthPS);
 			if (m_bDepthPrepass) {
