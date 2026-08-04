@@ -2466,7 +2466,16 @@ Int CloudTextureShader::set(Int stage)
 	DX8Wrapper::Set_DX8_Texture_Stage_State( stage, D3DTSS_ALPHAARG2, D3DTA_CURRENT );
 	DX8Wrapper::Set_DX8_Texture_Stage_State( stage, D3DTSS_ALPHAOP,   D3DTOP_MODULATE );
 
-	DX8Wrapper::Set_DX8_Texture(stage, W3DShaderManager::getShaderTexture(stage)->Peek_D3D_Texture());
+	// Bind through the tracked setter, as the shroud pass above already does. Going
+	// straight to the device left render_state.Textures[stage] empty, and that is what the
+	// programmable routing reads to decide how many textures a draw has: a bridge came
+	// through as a single-texture draw, was given the single-texture unit pixel shader --
+	// which samples stage 0 and the shadow map, never stage 1 -- and the cloud modulate
+	// was dropped on the floor. The fixed-function path never noticed because it reads the
+	// stage states from the device rather than from render_state. Nothing here relies on
+	// the stage staying invisible: ShaderClass::Apply only touches stage 1 when the shader
+	// asks for a detail combine, and the bridge shader disables both detail functions.
+	DX8Wrapper::Set_Texture(stage, W3DShaderManager::getShaderTexture(stage));
 
 	m_stageOfSet=stage;
 	return TRUE;
@@ -2475,7 +2484,7 @@ Int CloudTextureShader::set(Int stage)
 void CloudTextureShader::reset()
 {
 	//Free reference to texture
-	DX8Wrapper::Set_DX8_Texture(m_stageOfSet, nullptr);
+	DX8Wrapper::Set_Texture(m_stageOfSet, nullptr);
 	//Turn off texture projection
 	DX8Wrapper::Set_DX8_Texture_Stage_State( m_stageOfSet, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 	DX8Wrapper::Set_DX8_Texture_Stage_State( m_stageOfSet, D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_PASSTHRU|m_stageOfSet);
