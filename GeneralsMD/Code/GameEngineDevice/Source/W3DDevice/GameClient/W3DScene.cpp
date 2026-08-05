@@ -53,6 +53,7 @@
 #include "W3DDevice/GameClient/W3DShadow.h"
 #include "W3DDevice/GameClient/W3DStatusCircle.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
+#include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "W3DDevice/GameClient/W3DShroud.h"
 #include "WW3D2/camera.h"
 #include "WW3D2/dx8renderer.h"
@@ -413,6 +414,14 @@ void RTS3DScene::Visibility_Check(CameraClass * camera)
 	if (currentFrame <= TheGlobalData->m_defaultOcclusionDelay)
 		currentFrame = TheGlobalData->m_defaultOcclusionDelay+1;	//make sure occlusion is enabled when game starts (frame 0).
 
+	// The shadow depth pass is run with the camera, but what it draws has to be chosen by
+	// the sun: a caster only needs to be inside the *light's* frustum for its shadow to
+	// land on screen. Culling it by the camera is why an aircraft's shadow vanished as
+	// soon as the zoom pushed the aircraft itself off the top of the view, and why a tree
+	// just past the edge of the screen stopped throwing its shadow into it.
+	const Bool cullBySun = (m_customPassMode == SCENE_PASS_SHADOW_MAP) &&
+						   W3DShaderManager::hasShadowFrustum();
+
 	if (ShaderClass::Is_Backface_Culling_Inverted())
 	{
 		//we are rendering reflections
@@ -463,7 +472,9 @@ void RTS3DScene::Visibility_Check(CameraClass * camera)
 				robj->Set_Visible(false);
 			} else {
 
-				bool isVisible=!camera->Cull_Sphere(robj->Get_Bounding_Sphere());
+				bool isVisible = cullBySun
+					? !W3DShaderManager::cullSphereFromShadowFrustum(robj->Get_Bounding_Sphere())
+					: !camera->Cull_Sphere(robj->Get_Bounding_Sphere());
 
 				if (isVisible)
 				{

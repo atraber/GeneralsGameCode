@@ -306,9 +306,22 @@ void W3DTreeBuffer::cull(const CameraClass * camera)
 	float z = zmod * camera_matrix[2][2] ;
 	m_cameraLookAtVector.Set(x,y,z);
 
+	// A tree that is off screen can still throw a long shadow into it -- at this sun's
+	// elevation a tall one reaches a hundred world units -- so the buffer has to keep the
+	// trees the *sun* can see as well as the ones the camera can, or their shadows blink
+	// out the moment the tree itself leaves the view. They are held apart rather than
+	// merged because only the camera's set is worth sorting or keying.
+	const Bool sunCulls = W3DShaderManager::hasShadowFrustum();
+
 	for (curTree=0; curTree<m_numTrees; curTree++) {
 		Bool doKey = false;	// We calculate the key when a tree becomes visible.
 		Bool visible = !camera->Cull_Sphere(m_trees[curTree].bounds);
+		Bool shadowVisible = sunCulls &&
+			!W3DShaderManager::cullSphereFromShadowFrustum(m_trees[curTree].bounds);
+		if (shadowVisible != m_trees[curTree].shadowVisible) {
+			m_trees[curTree].shadowVisible = shadowVisible;
+			m_anythingChanged = true;
+		}
 		if (visible != m_trees[curTree].visible) {
 			m_trees[curTree].visible=visible;
 			m_anythingChanged = true;
@@ -743,12 +756,24 @@ void W3DTreeBuffer::loadTreesInVertexAndIndexBuffers(RefRenderObjListIterator *p
 
 
 
-		for ( ;curTree<m_numTrees;curTree++) {
+		// Two passes: the trees the camera can see, then the ones only the sun can (which
+		// are in here for their shadows alone -- see cull). Ordering them that way means
+		// the "too many trees, stop" break below gives up a shadow before it gives up a
+		// tree that is actually on screen. Nothing sorts this buffer, so the split costs
+		// no correctness.
+		Bool bufferFull = false;
+		Int fillPass;
+		for (fillPass = 0; fillPass < 2 && !bufferFull; fillPass++) {
+		for (curTree = 0;curTree<m_numTrees;curTree++) {
 			Int type = m_trees[curTree].treeType;
 			if (type<0 || m_treeTypes[type].m_mesh == nullptr) {
 				continue; // Deleted tree or missing mesh. [6/9/2003]
 			}
-			if (!m_trees[curTree].visible) continue;
+			if (fillPass == 0) {
+				if (!m_trees[curTree].visible) continue;
+			} else {
+				if (m_trees[curTree].visible || !m_trees[curTree].shadowVisible) continue;
+			}
 			Real scale = m_trees[curTree].scale;
 			Vector3 loc = m_trees[curTree].location;
 			Real theSin = m_trees[curTree].sin;
@@ -791,11 +816,13 @@ void W3DTreeBuffer::loadTreesInVertexAndIndexBuffers(RefRenderObjListIterator *p
 
 			// If we happen to have too many trees, stop.
 			if (m_curNumTreeVertices[bNdx]+numVertex+2>= MAX_TREE_VERTEX) {
+				bufferFull = true;
 				break;
 			}
 			Int numIndex = m_treeTypes[type].m_mesh->Peek_Model()->Get_Polygon_Count();
 			const TriIndex *pPoly = m_treeTypes[type].m_mesh->Peek_Model()->Get_Polygon_Array();
 			if (m_curNumTreeIndices[bNdx]+3*numIndex+6 >= MAX_TREE_INDEX) {
+				bufferFull = true;
 				break;
 			}
 
@@ -900,6 +927,7 @@ void W3DTreeBuffer::loadTreesInVertexAndIndexBuffers(RefRenderObjListIterator *p
 				m_curNumTreeIndices[bNdx]+=3;
 			}
 		}
+		}	// fill pass
 	}
 
 }
@@ -942,7 +970,9 @@ void W3DTreeBuffer::updateVertexBuffer()
 				continue; // not toppling or pushed, no need to update. jba [7/11/2003]
 			}
 			m_anyPushChanged = true;
-			if (!m_trees[curTree].visible) continue;
+			// Off-screen trees held in the buffer for their shadows are updated too, or a
+			// tree toppling just past the edge of the view keeps casting a standing shadow.
+			if (!m_trees[curTree].visible && !m_trees[curTree].shadowVisible) continue;
 			Real scale = m_trees[curTree].scale;
 			Vector3 loc = m_trees[curTree].location;
 			Real theSin = m_trees[curTree].sin;
@@ -1369,6 +1399,7 @@ void W3DTreeBuffer::addTree(DrawableID id, Coord3D location, Real scale, Real an
 	m_trees[m_numTrees].bounds.Center += m_trees[m_numTrees].location;
 	// Initially set it invisible.  cull will update it's visibility flag.
 	m_trees[m_numTrees].visible = false;
+	m_trees[m_numTrees].shadowVisible = false;
 	m_trees[m_numTrees].drawableID = id;
 
 	m_trees[m_numTrees].firstIndex = 0;

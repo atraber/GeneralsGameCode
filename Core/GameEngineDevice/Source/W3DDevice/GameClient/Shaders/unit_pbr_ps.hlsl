@@ -36,7 +36,11 @@ float4 CameraPos     : register(c9);   // world-space camera position
 float4 MatAmbient    : register(c10);  // house-colour tint (white when none)
 float4 AlphaCtl      : register(c11);  // x = material opacity, y = 1 when lit (use it)
 row_major float4x4 SunVP : register(c12);  // sun view*projection (world -> shadow clip)
-float4 ShadowParams  : register(c16);  // x = depth bias, y = shadow strength (0 = off)
+float4 ShadowParams  : register(c16);  // x = ground depth bias, y = shadow strength (0 = off)
+// x = how far to lift the shadow lookup off the surface along its normal, in world units;
+// y = the depth bias left over once it is. Together they replace ShadowParams.x for
+// meshes -- see the note where they are computed in W3DView.
+float4 ShadowMeshParams : register(c23);
 
 struct PS_INPUT
 {
@@ -84,8 +88,15 @@ float unpackDepth(float4 rgba)
     return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
 }
 
-float computeShadow(float3 worldPos)
+float computeShadow(float3 worldPos, float3 worldNormal)
 {
+    // Normal offset: look up not at this surface but a little way off it along its own
+    // normal, which is what keeps a surface out of its own shadow for a fraction of the
+    // depth licence a compare bias needs. The M3 path does the same thing in its vertex
+    // shader; here the world normal has already reached the pixel, so it is done per
+    // pixel and follows the shading normal exactly.
+    worldPos += worldNormal * ShadowMeshParams.x;
+
     float4 clip = mul(float4(worldPos, 1.0), SunVP);
     float3 ndc  = clip.xyz / clip.w;
     float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;   // clip -> UV, flip Y for the texture
@@ -101,7 +112,7 @@ float computeShadow(float3 worldPos)
     [unroll] for (int x = -1; x <= 1; ++x)
         [unroll] for (int y = -1; y <= 1; ++y) {
             float stored = unpackDepth(tex2D(ShadowMap, uv + float2(x, y) * texel));
-            lit += (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+            lit += (ndc.z - ShadowMeshParams.y > stored) ? 0.0 : 1.0;
         }
     return lerp(1.0, lit / 9.0, ShadowParams.y);
 }
@@ -221,8 +232,9 @@ float4 main(PS_INPUT input) : COLOR
     Lo += DirectLight(N, V, LightDir2.xyz, LightDiffuse2.rgb, diffuseColor, F0, roughness);
     Lo += DirectLight(N, V, LightDir3.xyz, LightDiffuse3.rgb, diffuseColor, F0, roughness);
 
-    // Cast shadows darken the direct sunlight only (ambient + reflections remain).
-    Lo *= computeShadow(input.worldPos);
+    // Cast shadows darken the direct sunlight.
+    float shadow = computeShadow(input.worldPos, N);
+    Lo *= shadow;
 
     // Ambient diffuse under the scene ambient, attenuated by AO.
     float3 ambient   = diffuseColor * SceneAmbient.rgb * ao;

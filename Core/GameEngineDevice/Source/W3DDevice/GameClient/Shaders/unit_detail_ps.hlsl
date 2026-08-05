@@ -38,7 +38,10 @@ float4 Stage1AArg2 : register(c6);
 float4 Stage1AOp   : register(c7);
 
 sampler ShadowMap : register(s5);      // directional shadow map (packed depth)
-float4 ShadowParams : register(c8);    // x = depth bias, y = shadow strength (0 = off)
+float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow strength (0 = off)
+// y = this mesh's depth bias, small because unit_vs has already lifted the lookup off the
+// surface along its normal. See the note in unit_ps.
+float4 ShadowMeshParams : register(c9);
 
 // Cast-shadow term, matching unit_ps / terrain_ps. Single tap here rather than 2x2:
 // the combine emulation above already fills most of the ps_2_0 budget.
@@ -55,8 +58,9 @@ float shadowTerm(float4 lightPos)
     float3 ndc = lightPos.xyz / max(abs(lightPos.w), 1e-6);
     float2 uv  = ndc.xy * float2(0.5, -0.5) + 0.5;
     float inBounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+
     float stored = unpackDepth(tex2D(ShadowMap, uv));
-    float lit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+    float lit = (ndc.z - ShadowMeshParams.y > stored) ? 0.0 : 1.0;
     return saturate(lerp(1.0, lit, inBounds * ShadowParams.y));
 }
 

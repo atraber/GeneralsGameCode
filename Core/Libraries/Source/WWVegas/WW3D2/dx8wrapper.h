@@ -73,7 +73,8 @@ const unsigned MAX_TEXTURE_STAGES=8;
 const unsigned MAX_VERTEX_STREAMS=2;
 const unsigned MAX_VERTEX_SHADER_CONSTANTS=96;
 // The PBR pixel shader uses c0-c11 (lights, ambient, camera, material, opacity), c12-c15
-// (sun view-projection) and c16 (shadow bias/strength). This is the shadow-cache size;
+// (sun view-projection), c16 (shadow bias/strength) and c23 (shadow normal offset +
+// mesh bias). This is the shadow-cache size;
 // keep it above the highest register any pixel shader writes, or
 // Set_Pixel_Shader_Constant memcpys past the array and corrupts adjacent statics.
 const unsigned MAX_PIXEL_SHADER_CONSTANTS=32;
@@ -911,13 +912,21 @@ public:
 	// with the zoom. The texel size rides along so the PCF taps cannot fall out of step
 	// with SHADOW_MAP_SIZE.
 	static float						m_shadowParams[4];
+	// The mesh receivers' half of the same settings, kept apart because they defend
+	// themselves differently: x = how far the lookup is lifted along the surface normal,
+	// in world units, and y = the depth-compare bias left over once it is. Terrain and
+	// roads carry no vertex normal and stay on m_shadowParams[0]'s blanket bias.
+	static float						m_shadowMeshParams[4];
 	static bool							m_bShadowDepthPass; // current draws render into the shadow map
 	static void Set_Shadow_Depth_Pass(bool active) { m_bShadowDepthPass = active; }
 	static void Set_Sun_VP(const float* m16);
-	static void Set_Shadow_Params(float bias, float strength)
+	static void Set_Shadow_Params(float bias, float strength,
+								  float normalOffsetWorld, float meshBias)
 	{
 		m_shadowParams[0] = bias; m_shadowParams[1] = strength;
 		m_shadowParams[2] = 1.0f / (float)SHADOW_MAP_SIZE; m_shadowParams[3] = 0.0f;
+		m_shadowMeshParams[0] = normalOffsetWorld; m_shadowMeshParams[1] = meshBias;
+		m_shadowMeshParams[2] = 0.0f; m_shadowMeshParams[3] = 0.0f;
 	}
 	// The map is bound whenever it exists, even with shadow mapping switched off: the
 	// pixel shaders sample stage 5 unconditionally (ps_2_0 has no dynamic branching to
