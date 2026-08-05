@@ -1881,6 +1881,29 @@ void DX8TextureCategoryClass::Render()
 		const bool meshCastsShadow =
 			!!mesh->Peek_Model()->Get_Flag(MeshGeometryClass::CAST_SHADOW);
 		DX8Wrapper::Set_Mesh_Casts_Shadow(meshCastsShadow);
+		// Does this mesh have a pass that writes depth? That is what separates a surface
+		// from an effect, and the routing needs it to decide whether a soft-blended pass
+		// is a layer on a surface (route it, so the mesh stays on one pipeline) or is
+		// effect geometry in its own right (leave it on fixed function). Asking the mesh
+		// rather than the pass is the point: the answer is the same for every pass, so a
+		// mesh cannot end up split between the two pipelines. See useUnitShader.
+		{
+			MeshModelClass* mmc = mesh->Peek_Model();
+			bool hasSolidPass = false;
+			for (int p = 0; p < mmc->Get_Pass_Count(); ++p) {
+				// Polygon 0's shader covers both the single-shader and the per-polygon
+				// (shader array) cases.
+				if (mmc->Get_Shader(0, p).Get_Depth_Mask() == ShaderClass::DEPTH_WRITE_ENABLE) {
+					hasSolidPass = true;
+					break;
+				}
+			}
+			DX8Wrapper::Set_Mesh_Has_Solid_Pass(hasSolidPass);
+		}
+#ifdef RTS_DEBUG
+		// Names the mesh for the split-pipeline watchdog (see dx8wrapper.h).
+		DX8Wrapper::Set_Debug_Mesh_Name(mesh->Peek_Model()->Get_Name());
+#endif
 
 		// Sorting exists to get blend order right, and the depth pass does not blend: it
 		// writes nearest-wins depth with a forced ZWRITEENABLE, so the order these arrive
@@ -1949,6 +1972,10 @@ void DX8TextureCategoryClass::Render()
 		// Strictly per draw -- anything the mesh renderer is not responsible for (terrain,
 		// roads, decals, water, the sorting renderer's own flush) must not inherit it.
 		DX8Wrapper::Set_Mesh_Casts_Shadow(false);
+		DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
+#ifdef RTS_DEBUG
+		DX8Wrapper::Set_Debug_Mesh_Name(nullptr);
+#endif
 //--------------------------------------------------------------------
 		if (mesh->Get_ObjectScale() != 1.0f)
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_NORMALIZENORMALS, FALSE);

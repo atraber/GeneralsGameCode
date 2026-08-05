@@ -797,6 +797,26 @@ public:
 	// fixed-function path could not sample the shadow map, so a road stayed at full
 	// brightness through a shadow the ground around it was in. Flagged by W3DRoadBuffer
 	// the same way HeightMap flags a terrain pass.
+#ifdef RTS_DEBUG
+	// Split-pipeline watchdog. A mesh drawn by more than one pipeline z-fights with
+	// itself -- fixed function and the vertex shader do not compute identical depth, so
+	// coincident passes of the same mesh disagree in the last bits and the later one is
+	// rejected in a camera-dependent pattern. That is what makes civilian buildings
+	// flicker, and it has arrived twice now: first when milestone 3 left some passes
+	// behind, then when an exclusion meant for effect geometry was written as a blend
+	// test that ordinary blended surface passes match just as well.
+	//
+	// The routing gate is decided per pass, so nothing in its structure prevents a third
+	// time. Watch the invariant itself and name the offender the first time it breaks.
+	//
+	// Keyed on the model name, so two objects sharing an asset but drawn in genuinely
+	// different states -- one of them stealthed, say -- can report a split that is not
+	// one. Treat a report as a place to look rather than as a verdict.
+	static const char*					s_debugMeshName;
+	static void Set_Debug_Mesh_Name(const char* n) { s_debugMeshName = n; }
+	static void Debug_Note_Mesh_Routing(unsigned pipelineBit, unsigned ffReason);
+	static void Debug_Check_Mesh_Routing_Split();
+#endif
 	static DWORD						m_dwRoadVS;
 	static DWORD						m_dwRoadPS;
 	static bool							m_bRoadShaderPass;    // current draws are road segments
@@ -830,6 +850,14 @@ public:
 	// pass otherwise cannot tell from a ground decal. See Apply_Render_State_Changes.
 	static bool							m_bMeshCastsShadow;
 	static void Set_Mesh_Casts_Shadow(bool casts) { m_bMeshCastsShadow = casts; }
+	// Set per draw when the mesh being drawn has at least one depth-writing pass, i.e.
+	// it is a surface rather than an effect. Soft-blended passes of a surface are routed
+	// (they are part of a mesh that is on the programmable path anyway, and must not be
+	// split off it); soft-blended passes of an effect are not. Defaults to false, so
+	// anything that is not a mesh-renderer draw -- particles, decals -- keeps the
+	// conservative behaviour. See the note at useUnitShader.
+	static bool							m_bMeshHasSolidPass;
+	static void Set_Mesh_Has_Solid_Pass(bool solid) { m_bMeshHasSolidPass = solid; }
 	static void Set_Sun_VP(const float* m16);
 
 	// Screen-space reflections. The camera-view depth SSR marches against is produced
