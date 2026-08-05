@@ -204,6 +204,7 @@ DWORD							DX8Wrapper::m_dwShadowDepthPS = 0;
 IDirect3DBaseTexture8*			DX8Wrapper::m_pShadowMap = nullptr;
 float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 bool							DX8Wrapper::m_bShadowDepthPass = false;
 void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
@@ -3426,6 +3427,16 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					reinterpret_cast<const D3DXMATRIX*>(m_sunVP));
 				Set_Vertex_Shader_Constant(32, &worldSunVP, 4);
 				Set_Pixel_Shader_Constant(8, m_shadowParams, 1);   // bias + strength
+				// Normal offset + the small bias that goes with it, but only for the
+				// variant that has a normal to offset along. The pre-lit variant exists
+				// precisely because its geometry carries none, so it keeps the blanket
+				// bias -- it is ground decals, which is what that bias is sized for.
+				const float meshShadow[4] = {
+					hasNormal ? m_shadowMeshParams[0] : 0.0f,
+					hasNormal ? m_shadowMeshParams[1] : m_shadowParams[0],
+					0.0f, 0.0f };
+				Set_Vertex_Shader_Constant(36, meshShadow, 1);
+				Set_Pixel_Shader_Constant(9, meshShadow, 1);
 				if (m_pShadowMap != nullptr) {
 					Set_DX8_Texture(5, m_pShadowMap);
 					s_shadowStage5Bound = true;
@@ -3506,6 +3517,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
 				}
 				Set_Pixel_Shader_Constant(16, m_shadowParams, 1);   // bias + strength
+				// c23: normal offset + the bias left over once the lookup is offset. The
+				// PBR shader carries the world normal to the pixel, so it offsets there
+				// rather than in its vertex shader as the M3 path does.
+				Set_Pixel_Shader_Constant(23, m_shadowMeshParams, 1);
 				// SM3 pixel-shader lighting constants, all in world space (see c4 above).
 				// The light directions gathered above are in world space (from LightEnvironment),
 				// which matches what unit_pbr_ps expects.
