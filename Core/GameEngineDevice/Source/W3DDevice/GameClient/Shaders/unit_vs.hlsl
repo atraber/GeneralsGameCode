@@ -157,14 +157,17 @@ VS_OUTPUT main(VS_INPUT input)
         // the fixed-function pipeline sources the diffuse alpha from the vertex colour
         // unless D3DRS_DIFFUSEMATERIALSOURCE says otherwise -- which the wrapper already
         // resolves and hands to the pixel shader, where TexCtl.z picks between this alpha
-        // and the material's. Forcing 1.0 here makes that choice dead code and throws the
+        // and the material's. Forcing 1.0 here made that choice dead code and threw the
         // vertex alpha away for every lit mesh.
         //
         // Effect geometry is what that costs. A glow cone, a beacon's light shaft, a rotor
         // disc: all lit meshes whose fade lives entirely in the vertex alpha and not in any
         // texture. Handed alpha 1 they blend as if opaque, and where the material alpha
-        // stood in for them they vanish outright. Stage 0 alpha combines that do not source
-        // the diffuse at all are unaffected: the wrapper folds this factor to 1 for them.
+        // stood in for them they vanished outright -- which is why soft-blended geometry
+        // was once excluded from this path wholesale, an exclusion broad enough to catch
+        // ordinary blended passes on buildings and split those meshes across two pipelines.
+        // Stage 0 alpha combines that do not source the diffuse at all are unaffected: the
+        // wrapper folds this factor to 1 for them.
         output.color = float4(saturate(lit), input.color.a);
         shadowReceive = 1.0;
     }
