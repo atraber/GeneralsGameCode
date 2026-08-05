@@ -26,6 +26,10 @@ float4 TexGenCtl : register(c21);      // see unit_vs; modes 2 and 3 need a norm
 row_major float4x4 TexMatrix0 : register(c24);
 row_major float4x4 TexMatrix1 : register(c28);
 row_major float4x4 WorldSunVP : register(c32);  // object -> sun clip space
+// c36 (ShadowMeshParams in unit_vs) is deliberately not read here. Its normal offset
+// needs a normal, which is the one thing this variant's geometry does not carry; the
+// wrapper therefore zeroes the offset for these draws and feeds unit_ps the terrain's
+// blanket depth bias instead -- which suits them, being ground decals.
 
 struct VS_INPUT
 {

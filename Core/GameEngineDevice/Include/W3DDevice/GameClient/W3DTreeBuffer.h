@@ -91,6 +91,7 @@ typedef struct {
 	Real		cos;							///< Cosine of the rotation angle at location.
 	Int			treeType;					///< Type of tree.
 	Bool		visible;					///< Visible flag, updated each frame.
+	Bool		shadowVisible;		///< Inside the sun frustum: casts into the shadow map even when off screen.
 	SphereClass bounds;				///< Bounding sphere for culling to set the visible flag.
 	Real		sortKey;					///< Sort key, essentially the distance along the look at vector.
 	DrawableID		drawableID;	///< Drawable this tree corresponds to.

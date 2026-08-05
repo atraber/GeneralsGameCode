@@ -40,6 +40,10 @@ row_major float4x4 TexMatrix1 : register(c28);
 // shadow lookup needs world space.
 row_major float4x4 WorldSunVP : register(c32);
 
+// x = how far to lift the shadow lookup off this surface along its normal, in world
+// units. y (the leftover depth bias) is read by the pixel shader, not here.
+float4 ShadowMeshParams : register(c36);
+
 struct VS_INPUT
 {
     float3 position : POSITION;
@@ -173,6 +177,20 @@ VS_OUTPUT main(VS_INPUT input)
     output.texcoord  = lerp(gen0.xy, mul(gen0, TexMatrix0).xy, TexGenCtl.z);
     output.texcoord1 = lerp(gen1.xy, mul(gen1, TexMatrix1).xy, TexGenCtl.w);
 
+    // Normal offset: look the shadow map up not at this surface but a little way off it
+    // along its own normal. That is what keeps a surface out of its own shadow, and it
+    // does the job for a fraction of the depth licence a compare bias needs -- a bias has
+    // to cover the depth the surface gains across a shadow texel, which for a roof under
+    // a low sun runs to several world units and erases everything the building casts on
+    // itself. Offsetting instead moves such a shadow by the offset rather than removing
+    // it. See the note where the distance is computed in W3DView.
+    //
+    // The displacement is applied in object space and carried through WorldSunVP, which
+    // is exactly the sun-clip image of a world displacement of the same size along the
+    // world normal (the object normal is unit length and these transforms are rigid).
+    float3 offsetPos = input.position
+                     + Safe_Normalize(input.normal) * ShadowMeshParams.x;
+
     // (2,2,2,1) lands well outside the shadow map's [0,1] UV range, so a mesh that does
     // not receive shadows takes the pixel shader's "outside the sun frustum -> lit" path.
     //
@@ -181,7 +199,7 @@ VS_OUTPUT main(VS_INPUT input)
     // takes the pixel with it. That is the same trap Safe_Normalize above exists to
     // avoid; a degenerate sun matrix must not be able to reach a mesh that is not even
     // receiving shadows.
-    float4 sunClip = mul(float4(input.position, 1.0), WorldSunVP);
+    float4 sunClip = mul(float4(offsetPos, 1.0), WorldSunVP);
     output.lightPos = (shadowReceive > 0.5) ? sunClip : float4(2.0, 2.0, 2.0, 1.0);
     return output;
 }

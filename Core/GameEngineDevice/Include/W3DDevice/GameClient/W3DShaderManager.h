@@ -34,6 +34,7 @@
 #pragma once
 
 #include "WW3D2/texture.h"
+#include "WWMath/sphere.h"
 enum FilterTypes CPP_11(: Int);
 enum FilterModes CPP_11(: Int);
 enum CustomScenePassModes CPP_11(: Int);
@@ -93,6 +94,20 @@ public:
 	static void startShadowMapRendering();	///<redirect rendering into the shadow map (sun-view depth pass).
 	static void endShadowMapRendering();	///<restore the back buffer after the shadow depth pass.
 	static Bool isShadowMappingActive();	///<true when the shadow map is enabled and usable; the legacy volume/decal shadows stand down.
+	// The orthographic box the shadow map is currently fitted to, in world space.
+	// Published by the view when it builds SunVP so that the depth pass can cull casters
+	// against the light instead of against the camera -- they are different volumes, and
+	// culling by the camera is what makes a caster's shadow vanish the moment the caster
+	// itself leaves the screen.
+	static void setShadowFrustum(const Vector3 &eye, const Vector3 &lookDir,
+								 Real halfExtent, Real nearDist, Real farDist);
+	static Bool hasShadowFrustum() { return m_shadowFrustumValid; }
+	///<true when the sphere lies wholly outside the sun frustum, i.e. cannot cast into the map.
+	static Bool cullSphereFromShadowFrustum(const Vector3 &center, Real radius);
+	static Bool cullSphereFromShadowFrustum(const SphereClass &sphere)
+	{
+		return cullSphereFromShadowFrustum(sphere.Center, sphere.Radius);
+	}
 	static void initSsr();	///<create the camera-depth target and the scene-colour history texture.
 	static void shutdownSsr();	///<release the screen-space reflection resources.
 	static Bool isSsrActive();	///<true when SSR is enabled and its resources exist.
@@ -162,6 +177,16 @@ protected:
 	static IDirect3DSurface8 *m_pShadowMapDepthSurface;	///<the shadow map's own depth buffer
 	static IDirect3DSurface8 *m_shadowSavedRT;		///<render target saved across the shadow depth pass
 	static IDirect3DSurface8 *m_shadowSavedDepth;	///<depth surface saved across the shadow depth pass
+	// World-space description of the sun frustum, as an orthonormal light basis plus the
+	// box's half width and its near/far distances along the light.
+	static Bool m_shadowFrustumValid;
+	static Vector3 m_shadowFrustumEye;
+	static Vector3 m_shadowFrustumRight;
+	static Vector3 m_shadowFrustumUp;
+	static Vector3 m_shadowFrustumFwd;
+	static Real m_shadowFrustumHalfExtent;
+	static Real m_shadowFrustumNear;
+	static Real m_shadowFrustumFar;
 	static DWORD m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
 	// Screen-space reflections. The depth target is the shadow map's arrangement at
 	// screen size and from the camera; the history texture is last frame's scene, which

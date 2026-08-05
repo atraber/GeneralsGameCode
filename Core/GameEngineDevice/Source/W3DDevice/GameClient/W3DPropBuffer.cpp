@@ -60,6 +60,9 @@
 #include "WW3D2/dx8wrapper.h"
 #include "WW3D2/dx8renderer.h"
 #include "W3DDevice/GameClient/Module/W3DPropDraw.h"
+#include "W3DDevice/GameClient/W3DScene.h"
+#include "W3DDevice/GameClient/W3DCustomScene.h"
+#include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "W3DDevice/GameClient/W3DShroud.h"
 #include "W3DDevice/GameClient/BaseHeightMap.h"
 #include "GameLogic/PartitionManager.h"
@@ -351,9 +354,21 @@ void W3DPropBuffer::drawProps(RenderInfoClass &rinfo)
 			lightEnv.Add_Light(*m_light);
 	}
 
+	// In the shadow depth pass the question is not what the camera can see but what the
+	// sun can: a prop off the edge of the screen still throws its shadow into the view.
+	// Tested inline rather than through cull() so the camera's own visibility flags,
+	// which the rest of the frame reads, are left alone.
+	const Bool cullBySun =
+		((RTS3DScene *)rinfo.Camera.Get_User_Data())->getCustomPassMode() == SCENE_PASS_SHADOW_MAP &&
+		W3DShaderManager::hasShadowFrustum();
+
 	rinfo.light_environment = &lightEnv;
 	for	(i=0; i<m_numProps; i++) {
-		if (!m_props[i].visible) {
+		if (cullBySun) {
+			if (W3DShaderManager::cullSphereFromShadowFrustum(m_props[i].bounds)) {
+				continue;
+			}
+		} else if (!m_props[i].visible) {
 			continue;
 		}
 		if (m_props[i].m_robj==nullptr) {

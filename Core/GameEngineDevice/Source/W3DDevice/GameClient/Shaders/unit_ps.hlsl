@@ -18,7 +18,13 @@ sampler BaseSampler : register(s0);
 float4 TexCtl : register(c1);
 
 sampler ShadowMap : register(s5);      // directional shadow map (packed depth)
-float4 ShadowParams : register(c8);    // x = depth bias, y = shadow strength (0 = off)
+float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow strength (0 = off)
+// y = the depth bias for this mesh. The vertex shader has already lifted the lookup off
+// the surface along its normal (see unit_vs), so what is left here is numerical slack
+// rather than the whole depth a surface gains across a texel -- a small fraction of
+// ShadowParams.x, which is what the terrain, having no normal to offset along, still has
+// to use. Meshes that carry no normal are fed ShadowParams.x here instead, by the wrapper.
+float4 ShadowMeshParams : register(c9);
 
 struct PS_INPUT
 {
@@ -65,7 +71,7 @@ float shadowTerm(float4 lightPos)
         [unroll] for (int x = 0; x < 4; ++x) {
             float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
             float stored = unpackDepth(tex2D(ShadowMap, tapUv));
-            float tapLit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
+            float tapLit = (ndc.z - ShadowMeshParams.y > stored) ? 0.0 : 1.0;
             lit += tapLit * wx[x] * wy[y];
         }
     // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.

@@ -1947,6 +1947,17 @@ void W3DView::draw()
 
 		DX8Wrapper::Set_Sun_VP(reinterpret_cast<const float*>(&sunVP));
 
+		// The same box in world space, for culling. The depth pass draws whatever the
+		// scene decides is visible, and left to itself the scene decides that with the
+		// camera -- so a caster stopped casting the moment it left the screen, however
+		// far into the view its shadow reached. See W3DShaderManager::setShadowFrustum.
+		// Built from the same eye, direction and extent that went into sunVP above; the
+		// texel snap is left out, being worth less than a texel.
+		W3DShaderManager::setShadowFrustum(
+			Vector3(lightEye.x, lightEye.y, lightEye.z),
+			Vector3(targetPos.x - lightEye.x, targetPos.y - lightEye.y, targetPos.z - lightEye.z),
+			0.5f * shadowOrtho, 1.0f, SHADOW_FAR);
+
 		// Depth-compare bias, in the sun-clip depth units the shaders compare in. What it
 		// has to cover is the depth a surface gains across one shadow texel, so it is
 		// quoted in texels and converted: texel world size (the fitted extent over the map
@@ -1957,15 +1968,41 @@ void W3DView::draw()
 		//
 		// The sun's elevation matters as much as the zoom. A texel is square in the sun's
 		// view, but the ground it lands on is stretched along the light by 1/sin(elevation)
-		// -- at this map's ~23 degree sun that is a two-and-a-half times longer run of
-		// ground per texel, and so that much more depth gained across one. Leaving it out
-		// left barely any margin over flat ground, and the terrain shadowed itself across
-		// whole hillsides. Clamped so a sun near the horizon cannot run away.
+		// -- at this map's ~20 degree sun that is a three times longer run of ground per
+		// texel, and so that much more depth gained across one. Leaving it out left barely
+		// any margin over flat ground, and the terrain shadowed itself across whole
+		// hillsides. Clamped so a sun near the horizon cannot run away.
+		//
+		// This is the terrain's and the roads' bias. It cannot also be the meshes': a
+		// building's roof is exactly the worst case it is sized for -- a flat surface under
+		// a low sun -- and at full zoom-out it comes to four world units, more relief than
+		// most of what a building casts on itself has. That is why a barracks had no shadow
+		// on it until the zoom brought the number down. Meshes get the normal offset below
+		// instead, which is a lateral lift rather than a depth licence and so moves those
+		// shadows by a texel or two instead of erasing them.
 		const float SHADOW_BIAS_TEXELS = 3.0f;
 		const float texelWorld = shadowOrtho / (float)DX8Wrapper::SHADOW_MAP_SIZE;
 		const float sunElevation = max(fabsf(sunDir.Z), 0.15f);
-		DX8Wrapper::Set_Shadow_Params(
-			(SHADOW_BIAS_TEXELS * texelWorld) / (sunElevation * (SHADOW_FAR - 1.0f)), 1.0f);
+		const float groundBias =
+			(SHADOW_BIAS_TEXELS * texelWorld) / (sunElevation * (SHADOW_FAR - 1.0f));
+
+		// Normal offset. Rather than letting the receiver's depth compare pass by a margin,
+		// lift the point it looks the shadow map up at off its own surface along the
+		// surface normal. For a surface at any angle to the light, a lift of d buys a depth
+		// margin of d/(N.L) while the error to cover is texelWorld*sqrt(1-(N.L)^2) -- so a
+		// couple of texels is enough whatever the sun's elevation, where a depth bias for
+		// the same job has to grow as 1/sin(elevation). Three texels covers the 3x3 filter
+		// footprint as well. The cost is that a shadow sits a texel or two further from
+		// whatever casts it, which at these sizes is under two world units.
+		const float SHADOW_NORMAL_OFFSET_TEXELS = 3.0f;
+		const float normalOffsetWorld = SHADOW_NORMAL_OFFSET_TEXELS * texelWorld;
+		// What is left for the mesh depth compare is numerical slack -- interpolation of
+		// the sun-space position across a triangle, and the depth's own packing -- not the
+		// geometry's slope, which the offset above has already dealt with.
+		const float SHADOW_MESH_BIAS_TEXELS = 0.5f;
+		const float meshBias = (SHADOW_MESH_BIAS_TEXELS * texelWorld) / (SHADOW_FAR - 1.0f);
+
+		DX8Wrapper::Set_Shadow_Params(groundBias, 1.0f, normalOffsetWorld, meshBias);
 
 		// (The depth pass forces the full square viewport itself, inside the
 		// scene's SCENE_PASS_SHADOW_MAP branch, since the camera's Apply sets a
@@ -1981,7 +2018,9 @@ void W3DView::draw()
 		// Shadow mapping off: zero strength makes the unit and terrain shaders ignore
 		// whatever is still bound on stage 5, rather than reading a stale or unbound map
 		// (which unpacks to depth 0 and would shadow the entire scene).
-		DX8Wrapper::Set_Shadow_Params(0.0f, 0.0f);
+		DX8Wrapper::Set_Shadow_Params(0.0f, 0.0f, 0.0f, 0.0f);
+		W3DShaderManager::setShadowFrustum(Vector3(0.0f, 0.0f, 0.0f),
+										   Vector3(0.0f, 0.0f, 0.0f), 0.0f, 0.0f, 0.0f);
 	}
 
 	// Camera-view depth for screen-space reflections. Independent of the shadow map --

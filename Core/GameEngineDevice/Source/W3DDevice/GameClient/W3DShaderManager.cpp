@@ -3515,6 +3515,77 @@ Bool W3DShaderManager::isShadowMappingActive()
 }
 
 // ---------------------------------------------------------------------------
+// The sun frustum, published for culling.
+//
+// The depth pass runs over the scene with the camera, so everything it draws is chosen
+// by the camera's frustum -- and that is the wrong volume. A caster only has to be
+// inside the *sun's* frustum for its shadow to land on screen, and the two disagree
+// most exactly where it shows: anything above the ground is displaced up-sun from where
+// its shadow falls, so an aircraft whose shadow is in the middle of the view sits well
+// outside a zoomed-in camera frustum, and a tree just off the edge of the screen throws
+// a long shadow well inside it. Both stopped casting the moment the caster itself left
+// the screen.
+//
+// Kept as an explicit light basis rather than reusing SunVP: a CameraClass would be the
+// obvious carrier, but FrustumClass::Init always builds a perspective pyramid from the
+// view plane, so an ORTHO camera culls against the wrong shape.
+Bool W3DShaderManager::m_shadowFrustumValid = FALSE;
+Vector3 W3DShaderManager::m_shadowFrustumEye(0.0f, 0.0f, 0.0f);
+Vector3 W3DShaderManager::m_shadowFrustumRight(1.0f, 0.0f, 0.0f);
+Vector3 W3DShaderManager::m_shadowFrustumUp(0.0f, 1.0f, 0.0f);
+Vector3 W3DShaderManager::m_shadowFrustumFwd(0.0f, 0.0f, 1.0f);
+Real W3DShaderManager::m_shadowFrustumHalfExtent = 0.0f;
+Real W3DShaderManager::m_shadowFrustumNear = 0.0f;
+Real W3DShaderManager::m_shadowFrustumFar = 0.0f;
+
+void W3DShaderManager::setShadowFrustum(const Vector3 &eye, const Vector3 &lookDir,
+										Real halfExtent, Real nearDist, Real farDist)
+{
+	Vector3 fwd = lookDir;
+	if (fwd.Length2() < 1e-12f || halfExtent <= 0.0f)
+	{
+		m_shadowFrustumValid = FALSE;
+		return;
+	}
+	fwd.Normalize();
+
+	// Any two axes perpendicular to the light will do -- the box is square, so the cull
+	// does not care which way round it is. Pick the world axis the light is least
+	// aligned with so the cross product never degenerates.
+	const Vector3 hint = (fabsf(fwd.Z) > 0.9f) ? Vector3(0.0f, 1.0f, 0.0f)
+											   : Vector3(0.0f, 0.0f, 1.0f);
+	Vector3 right, up;
+	Vector3::Cross_Product(hint, fwd, &right);
+	right.Normalize();
+	Vector3::Cross_Product(fwd, right, &up);
+	up.Normalize();
+
+	m_shadowFrustumEye = eye;
+	m_shadowFrustumFwd = fwd;
+	m_shadowFrustumRight = right;
+	m_shadowFrustumUp = up;
+	m_shadowFrustumHalfExtent = halfExtent;
+	m_shadowFrustumNear = nearDist;
+	m_shadowFrustumFar = farDist;
+	m_shadowFrustumValid = TRUE;
+}
+
+Bool W3DShaderManager::cullSphereFromShadowFrustum(const Vector3 &center, Real radius)
+{
+	if (!m_shadowFrustumValid)
+		return FALSE;	// no frustum published: cull nothing, so nothing can go missing.
+
+	const Vector3 d = center - m_shadowFrustumEye;
+	const Real lateralLimit = m_shadowFrustumHalfExtent + radius;
+	if (fabsf(Vector3::Dot_Product(d, m_shadowFrustumRight)) > lateralLimit)
+		return TRUE;
+	if (fabsf(Vector3::Dot_Product(d, m_shadowFrustumUp)) > lateralLimit)
+		return TRUE;
+	const Real along = Vector3::Dot_Product(d, m_shadowFrustumFwd);
+	return along < m_shadowFrustumNear - radius || along > m_shadowFrustumFar + radius;
+}
+
+// ---------------------------------------------------------------------------
 // Screen-space reflections.
 //
 // Two resources: a camera-view depth target, rendered by the shadow map's own depth
