@@ -185,6 +185,74 @@ float							DX8Wrapper::m_envAverage[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
 DX8Wrapper::OrmResolverFunc		DX8Wrapper::s_ormResolver = nullptr;
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
 DWORD							DX8Wrapper::m_dwTerrainPS = 0;
+#ifdef RTS_DEBUG
+// Split-pipeline watchdog -- see the note in dx8wrapper.h. Records which pipeline drew
+// each pass of each mesh over a frame, and names any mesh that was drawn by more than
+// one, once per mesh per session.
+const char*						DX8Wrapper::s_debugMeshName = nullptr;
+namespace {
+	struct MeshRouteEntry { const char* name; unsigned mask; unsigned ffReasons; };
+	MeshRouteEntry s_meshRoutes[512];
+	int s_meshRouteCount = 0;
+	const char* s_reportedSplits[64];
+	int s_reportedSplitCount = 0;
+
+	bool AlreadyReportedSplit(const char* name)
+	{
+		for (int i = 0; i < s_reportedSplitCount; ++i) {
+			if (s_reportedSplits[i] == name) return true;
+		}
+		if (s_reportedSplitCount < 64) s_reportedSplits[s_reportedSplitCount++] = name;
+		return false;
+	}
+}
+
+void DX8Wrapper::Debug_Note_Mesh_Routing(unsigned pipelineBit, unsigned ffReason)
+{
+	if (s_debugMeshName == nullptr) return;
+	for (int i = 0; i < s_meshRouteCount; ++i) {
+		if (s_meshRoutes[i].name == s_debugMeshName) {
+			s_meshRoutes[i].mask |= pipelineBit;
+			if (ffReason) s_meshRoutes[i].ffReasons |= (1u << ffReason);
+			return;
+		}
+	}
+	if (s_meshRouteCount < 512) {
+		MeshRouteEntry& e = s_meshRoutes[s_meshRouteCount++];
+		e.name = s_debugMeshName;
+		e.mask = pipelineBit;
+		e.ffReasons = ffReason ? (1u << ffReason) : 0u;
+	}
+}
+
+void DX8Wrapper::Debug_Check_Mesh_Routing_Split()
+{
+	// Say so once, so that a silent log is known to mean "no splits" rather than
+	// "the watchdog was compiled out".
+	static bool announced = false;
+	if (!announced && s_meshRouteCount > 0) {
+		announced = true;
+		WWDEBUG_SAY(("Mesh routing watchdog active (%d meshes in the first traced frame).",
+			s_meshRouteCount));
+	}
+	for (int i = 0; i < s_meshRouteCount; ++i) {
+		const unsigned m = s_meshRoutes[i].mask;
+		if ((m & (m - 1)) == 0) continue;          // one pipeline: the invariant holds
+		if (AlreadyReportedSplit(s_meshRoutes[i].name)) continue;
+		const unsigned r = s_meshRoutes[i].ffReasons;
+		WWDEBUG_SAY(("MESH ROUTING SPLIT: %s drawn by%s%s%s%s in one frame -- its passes "
+			"will z-fight. The passes that fell to fixed function did so because:%s%s%s%s%s%s%s%s",
+			s_meshRoutes[i].name,
+			(m & 1) ? " fixed-function" : "", (m & 2) ? " unit_ps" : "",
+			(m & 4) ? " unit_detail_ps" : "", (m & 8) ? " unit_pbr_ps" : "",
+			(r & (1u<<1)) ? " sorted-mesh" : "", (r & (1u<<2)) ? " additive-blend" : "",
+			(r & (1u<<3)) ? " no-position-or-normal" : "", (r & (1u<<4)) ? " foreign-vertex-shader" : "",
+			(r & (1u<<5)) ? " no-texture" : "", (r & (1u<<6)) ? " unreproducible-blend" : "",
+			(r & (1u<<7)) ? " unreproducible-detail-combine" : "", (r & (1u<<8)) ? " unreproducible-texgen" : ""));
+	}
+	s_meshRouteCount = 0;
+}
+#endif // RTS_DEBUG
 DWORD							DX8Wrapper::m_dwShadowDepthVS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthPS = 0;
 IDirect3DBaseTexture8*			DX8Wrapper::m_pShadowMap = nullptr;
@@ -192,6 +260,8 @@ float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 bool							DX8Wrapper::m_bShadowDepthPass = false;
+bool							DX8Wrapper::m_bMeshCastsShadow = false;
+bool							DX8Wrapper::m_bMeshHasSolidPass = false;
 void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
@@ -2137,6 +2207,10 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 
 	DX8WebBrowser::Render(0);
 
+#ifdef RTS_DEBUG
+	Debug_Check_Mesh_Routing_Split();
+#endif
+
 	if (flip_frames) {
 		DX8_Assert();
 		HRESULT hr;
@@ -3172,9 +3246,36 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		const bool prelitNoNormal =
 			!hasNormal && m_dwUnitPrelitVS != 0 && !texGenNeedsNormal;
 
+		// Soft-blended geometry -- blending on, no alpha test -- stays on fixed function
+		// unless it belongs to a mesh that also has a depth-writing pass.
+		//
+		// The blend test alone is the obvious instrument and it is the wrong one. It does
+		// describe effect geometry -- a rotor disc, a light shaft. It equally describes an
+		// ordinary blended pass on an ordinary surface, and civilian buildings have
+		// several, so writing it that way puts some passes of those meshes on the shader
+		// and some on fixed function. The two pipelines do not compute identical depth, so
+		// a mesh drawn by both z-fights with itself, in a pattern that crawls as the camera
+		// moves. Measured on the civ_buildings replay with the blend test in place: six
+		// meshes split across pipelines, every one of them a CB* civilian building, every
+		// one for this reason.
+		//
+		// What separates the two cases is not the pass, it is the mesh the pass belongs to.
+		// A building is a surface: something in it writes depth, and the blended pass is a
+		// layer on top of that surface. A rotor disc, a beacon's light shaft, a smoke
+		// puff -- these write no depth in any pass, because they are not surfaces at all.
+		// So ask the mesh, not the blend. Being a property of the mesh, the answer is the
+		// same for every pass of it, which is what makes the split impossible rather than
+		// merely absent: an effect keeps all its passes on fixed function, and a surface
+		// keeps all of its on the shader.
+		//
+		// Anything that is not a mesh-renderer draw leaves the flag false and so keeps the
+		// old behaviour -- particle systems and decals are drawn soft-blended without ever
+		// coming through the mesh renderer, and they stay where they were.
+		const bool effectGeometryExcluded = softBlendedOverlay && !m_bMeshHasSolidPass;
 		const bool useUnitShader =
 			!routingDisabled &&
 			!m_bShadowDepthPass &&
+			!effectGeometryExcluded &&
 			(!additiveBlend || routeAdditive) &&
 			!m_bTerrainShaderPass &&
 			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
@@ -3186,6 +3287,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			  reproducibleBlend &&
 			  (singleTexture || detailCombineSupported) &&
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
+
+		// Which pipeline ends up drawing this pass: 1 = fixed function unless a branch
+		// below claims it. Read by the split-pipeline watchdog in debug builds.
+		unsigned diagRouteBit = 1;
 
 		if (useShadowDepth) {
 			// Force the full square shadow-map viewport right before the draw. The
@@ -3486,6 +3591,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// is undefined and can produce values that survive a zero weight (a NaN times
 			// zero is still NaN) and render the pixel black.
 			const bool useDetailShader = !usePbr && !singleTexture && detailCombineSupported;
+			diagRouteBit = usePbr ? 8u : (useDetailShader ? 4u : 2u);
 			// Geometry with no normal takes the pre-lit variant, whose declared inputs
 			// match what its FVF actually supplies.
 			Set_Vertex_Shader(usePbr ? m_dwUnitPbrVS
@@ -3813,6 +3919,25 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			m_bUnitShaderBound = false;
 		}
 
+#ifdef RTS_DEBUG
+		// Watch the one-mesh-one-pipeline invariant. Only mesh draws take part: the
+		// shadow-depth pass and the terrain are each drawn by a single pipeline by
+		// construction.
+		if (!m_bShadowDepthPass && !m_bTerrainShaderPass) {
+			unsigned ffReason = 0;
+			if (diagRouteBit == 1) {
+				if (effectGeometryExcluded)                      ffReason = 1;
+				else if (additiveBlend && !routeAdditive)        ffReason = 2;
+				else if (!(curFVF & D3DFVF_XYZ) || !(hasNormal || prelitNoNormal)) ffReason = 3;
+				else if (foreignVertexShader)                    ffReason = 4;
+				else if (!(render_state.Textures[0] != nullptr || untexturedDiffuseOnly)) ffReason = 5;
+				else if (!reproducibleBlend)                     ffReason = 6;
+				else if (!(singleTexture || detailCombineSupported)) ffReason = 7;
+				else if (texgenActive && !(texgenRoutingOn && texGenSupported)) ffReason = 8;
+			}
+			Debug_Note_Mesh_Routing(diagRouteBit, ffReason);
+		}
+#endif
 		// Debug visualization overrides, last of all: everything above has finished
 		// deciding and binding, so what this recolours a draw by is what the device is
 		// actually about to do.
