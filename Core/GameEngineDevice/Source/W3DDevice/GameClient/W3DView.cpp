@@ -1857,15 +1857,25 @@ void W3DView::draw()
 	{
 		// Sun frustum fitted to the ground area the camera can actually see, so that
 		// zooming in spends the whole map on a small area instead of always covering a
-		// fixed block. The eye is pushed well back along the sun direction and the far
-		// plane extended so all casters (and the ground slab) sit inside [near,far];
-		// only the lateral extent follows the camera.
-		const float SHADOW_ORTHO_MAX  = 2600.0f;  // widest the map covers (and the fallback)
+		// fixed block. Every dimension of it follows the camera: the lateral extent from
+		// the view corners below, and the eye distance and far plane from that extent and
+		// the sun's elevation, further down.
+		//
+		// None of it may be a fixed number tuned at one camera height. GameData.ini ships
+		// EnforceMaxCameraHeight = NO, so the camera is free to sit well above
+		// MaxCameraHeight, and it is exactly there that a fixed frustum stops covering
+		// what is on screen -- whereupon a receiver outside it reads as lit and a caster
+		// outside it is culled, so both the shadows on a building and the shadows it
+		// throws simply end.
+		const float SHADOW_ORTHO_MAX  = 6000.0f;  // sanity ceiling; not meant to be reached
 		const float SHADOW_ORTHO_MIN  = 600.0f;   // tightest, so a top-down zoom stays sane
 		const float SHADOW_ORTHO_STEP = 64.0f;    // extent quantum (see below)
 		const float SHADOW_MARGIN     = 96.0f;    // slack for casters just off the view edge
-		const float SHADOW_EYE        = 2600.0f;  // eye distance from the look-at
-		const float SHADOW_FAR        = 5200.0f;  // far plane (eye to beyond the scene)
+		// Room along the light either side of the fitted ground plane, for casters above it
+		// (aircraft, hilltops) and ground below it (valleys). Added to the plane's own
+		// depth spread, which is what actually sizes the frustum.
+		const float SHADOW_ABOVE      = 1200.0f;
+		const float SHADOW_BELOW      = 800.0f;
 
 		// Bound the four view corners projected onto the look-at ground plane. A circle
 		// rather than a box: the extent is then invariant under camera rotation, so
@@ -1917,15 +1927,37 @@ void W3DView::draw()
 		if (sunDir.Length2() < 1e-6f)
 			sunDir.Set(0.40f, 0.30f, 0.85f);   // degenerate map lighting: keep it overhead-ish
 		sunDir.Normalize();
+
+		// How much depth the fitted ground plane spans along the light. A square patch of
+		// horizontal ground is stretched along the light by cot(elevation) as the sun sees
+		// it, so the up-sun corner of the box is that much nearer to the sun than its
+		// centre and the down-sun corner that much further -- at this map's ~20 degree sun,
+		// close to three times the box's own width from end to end.
+		//
+		// The near and far planes have to be placed around that, and it is why they cannot
+		// be constants. The 2600/5200 they were left no room at all: measured at the
+		// nominal maximum camera height the plane already ran from -38 to 5238, so its
+		// up-sun corner fell behind the near plane and was clipped straight out of the
+		// map -- and that corner is precisely where the casters whose shadows reach into
+		// the view are standing. Raise the camera and the clipped strip grows with it.
+		//
+		// A lower floor on the elevation here than the bias below uses: this one has to
+		// over-estimate the spread to stay safe, where the bias has to under-estimate.
+		const float frustumSunElev = max(fabsf(sunDir.Z), 0.10f);
+		const float cotSun = sqrtf(max(1.0f - frustumSunElev * frustumSunElev, 0.0f)) / frustumSunElev;
+		const float halfDepthSpread = 0.5f * shadowOrtho * cotSun;
+		const float shadowEye = halfDepthSpread + SHADOW_ABOVE;
+		const float shadowFar = shadowEye + halfDepthSpread + SHADOW_BELOW;
+
 		D3DXVECTOR3 targetPos((float)shadowCentre.x, (float)shadowCentre.y, (float)shadowCentre.z);
-		D3DXVECTOR3 lightEye(targetPos.x + sunDir.X * SHADOW_EYE,
-							 targetPos.y + sunDir.Y * SHADOW_EYE,
-							 targetPos.z + sunDir.Z * SHADOW_EYE);
+		D3DXVECTOR3 lightEye(targetPos.x + sunDir.X * shadowEye,
+							 targetPos.y + sunDir.Y * shadowEye,
+							 targetPos.z + sunDir.Z * shadowEye);
 		D3DXVECTOR3 up = (fabsf(sunDir.Z) > 0.9f) ? D3DXVECTOR3(0.0f, 1.0f, 0.0f)
 												  : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
 		D3DXMATRIX sunView, sunProj, sunVP;
 		D3DXMatrixLookAtLH(&sunView, &lightEye, &targetPos, &up);
-		D3DXMatrixOrthoLH(&sunProj, shadowOrtho, shadowOrtho, 1.0f, SHADOW_FAR);
+		D3DXMatrixOrthoLH(&sunProj, shadowOrtho, shadowOrtho, 1.0f, shadowFar);
 		D3DXMatrixMultiply(&sunVP, &sunView, &sunProj);
 
 		// Snap the fitted frustum to whole shadow-map texels. Without this the centre
@@ -1956,7 +1988,7 @@ void W3DView::draw()
 		W3DShaderManager::setShadowFrustum(
 			Vector3(lightEye.x, lightEye.y, lightEye.z),
 			Vector3(targetPos.x - lightEye.x, targetPos.y - lightEye.y, targetPos.z - lightEye.z),
-			0.5f * shadowOrtho, 1.0f, SHADOW_FAR);
+			0.5f * shadowOrtho, 1.0f, shadowFar);
 
 		// Depth-compare bias, in the sun-clip depth units the shaders compare in. What it
 		// has to cover is the depth a surface gains across one shadow texel, so it is
@@ -1984,23 +2016,30 @@ void W3DView::draw()
 		const float texelWorld = shadowOrtho / (float)DX8Wrapper::SHADOW_MAP_SIZE;
 		const float sunElevation = max(fabsf(sunDir.Z), 0.15f);
 		const float groundBias =
-			(SHADOW_BIAS_TEXELS * texelWorld) / (sunElevation * (SHADOW_FAR - 1.0f));
+			(SHADOW_BIAS_TEXELS * texelWorld) / (sunElevation * (shadowFar - 1.0f));
 
 		// Normal offset. Rather than letting the receiver's depth compare pass by a margin,
 		// lift the point it looks the shadow map up at off its own surface along the
 		// surface normal. For a surface at any angle to the light, a lift of d buys a depth
-		// margin of d/(N.L) while the error to cover is texelWorld*sqrt(1-(N.L)^2) -- so a
-		// couple of texels is enough whatever the sun's elevation, where a depth bias for
-		// the same job has to grow as 1/sin(elevation). Three texels covers the 3x3 filter
-		// footprint as well. The cost is that a shadow sits a texel or two further from
-		// whatever casts it, which at these sizes is under two world units.
-		const float SHADOW_NORMAL_OFFSET_TEXELS = 3.0f;
+		// margin of d/(N.L) while the error to cover is texelWorld*sqrt(1-(N.L)^2) -- so
+		// one texel is enough whatever the sun's elevation, where a depth bias for the same
+		// job has to grow as 1/sin(elevation).
+		//
+		// A quarter over that and no more. The offset is not free: it slides the whole
+		// lookup sideways, so a shadow loses this much off every edge, and anything the
+		// caster is narrower than stops registering at all. That is the same failure the
+		// blanket bias had, reached by a different route, and it arrives at the same place
+		// -- with the camera high the texel is two thirds of a world unit, so three texels
+		// was erasing everything a building casts on itself that is under four units
+		// across. It has to be quoted in texels (the error it counters is a texel's worth
+		// of ground) but it must stay as close to one as acne allows.
+		const float SHADOW_NORMAL_OFFSET_TEXELS = 1.25f;
 		const float normalOffsetWorld = SHADOW_NORMAL_OFFSET_TEXELS * texelWorld;
 		// What is left for the mesh depth compare is numerical slack -- interpolation of
 		// the sun-space position across a triangle, and the depth's own packing -- not the
 		// geometry's slope, which the offset above has already dealt with.
 		const float SHADOW_MESH_BIAS_TEXELS = 0.5f;
-		const float meshBias = (SHADOW_MESH_BIAS_TEXELS * texelWorld) / (SHADOW_FAR - 1.0f);
+		const float meshBias = (SHADOW_MESH_BIAS_TEXELS * texelWorld) / (shadowFar - 1.0f);
 
 		DX8Wrapper::Set_Shadow_Params(groundBias, 1.0f, normalOffsetWorld, meshBias);
 
