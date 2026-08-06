@@ -919,7 +919,63 @@ public:
 	static float						m_shadowMeshParams[4];
 	static bool							m_bShadowDepthPass; // current draws render into the shadow map
 	static void Set_Shadow_Depth_Pass(bool active) { m_bShadowDepthPass = active; }
+	static bool Is_Shadow_Depth_Pass() { return m_bShadowDepthPass; }
+	// Backing store for the sun cull box declared below.
+	static bool							m_bSunCullBoxValid;
+	static Vector3						m_sunCullEye;
+	static Vector3						m_sunCullRight;
+	static Vector3						m_sunCullUp;
+	static Vector3						m_sunCullFwd;
+	static float						m_sunCullHalfWidth;
+	static float						m_sunCullUpMin;
+	static float						m_sunCullUpMax;
+	static float						m_sunCullNear;
+	static float						m_sunCullFar;
 	static void Set_Sun_VP(const float* m16);
+
+	// The same orthographic box as m_sunVP, kept in world space so geometry can be culled
+	// against it. The depth pass is drawn with the camera -- it has to be, the scene's
+	// traversal takes one -- so everything downstream of it would otherwise keep asking
+	// the camera what is visible, and a caster whose shadow reaches into the view but
+	// which is itself off screen would be dropped. MeshClass::Render is the last such
+	// place, and it is below the game layer, which is why the box lives here rather than
+	// only in W3DShaderManager.
+	//
+	// Published once per frame from the same eye/basis/extent that built m_sunVP. Not
+	// valid means cull nothing, so a frame that never sets it cannot lose geometry.
+	static void Set_Sun_Cull_Box(const Vector3 &eye, const Vector3 &right, const Vector3 &up,
+								 const Vector3 &fwd, float halfWidth, float upMin, float upMax,
+								 float nearDist, float farDist);
+	static void Clear_Sun_Cull_Box() { m_bSunCullBoxValid = false; }
+	static bool Has_Sun_Cull_Box() { return m_bSunCullBoxValid; }
+	static bool Cull_Sphere_By_Sun(const Vector3 &center, float radius);
+
+	// Screen-space reflections. The camera-view depth SSR marches against is produced
+	// by re-running the shadow depth pass from the camera instead of the sun: same
+	// shaders, same routing, same packed RGBA8 target. Only two things differ, and
+	// both are conditioned on this flag -- the matrix handed to the depth shader, and
+	// the viewport, which that pass forces square for the shadow map but which is
+	// already correct here because this target is the size of the screen.
+	static bool							m_bDepthPrepass;
+	static float						m_depthVP[16];    // camera view*projection, row-major
+	static void Set_Depth_Prepass(bool active) { m_bDepthPrepass = active; }
+	static void Set_Depth_VP(const float* m16);
+	// Bound for sampling by the PBR shader: the depth just described, and the scene
+	// colour the rays actually read. That colour is the *previous* frame's -- the
+	// current one is the live render target while units are drawing, and D3D9 leaves
+	// a read from the bound render target undefined.
+	static IDirect3DBaseTexture8*		m_pSceneDepth;
+	static IDirect3DBaseTexture8*		m_pSceneColor;
+	static bool Has_Ssr() { return m_pSceneDepth != nullptr && m_pSceneColor != nullptr; }
+	// x = strength (0 disables the march without unbinding anything, as the shadow
+	// strength does), y = max ray length in world units, zw = the projection's _33/_43,
+	// with which the shader turns a stored z/w back into a view-space distance.
+	static float						m_ssrParams[4];
+	static void Set_Ssr_Params(float strength, float maxDist, float proj33, float proj43)
+	{
+		m_ssrParams[0] = strength; m_ssrParams[1] = maxDist;
+		m_ssrParams[2] = proj33;   m_ssrParams[3] = proj43;
+	}
 	static void Set_Shadow_Params(float bias, float strength,
 								  float normalOffsetWorld, float meshBias)
 	{
