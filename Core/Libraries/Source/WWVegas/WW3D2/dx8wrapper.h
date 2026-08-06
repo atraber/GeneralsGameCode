@@ -864,7 +864,35 @@ public:
 	// conservative behaviour. See the note at useUnitShader.
 	static bool							m_bMeshHasSolidPass;
 	static void Set_Mesh_Has_Solid_Pass(bool solid) { m_bMeshHasSolidPass = solid; }
+	// Backing store for the sun cull box declared below.
+	static bool							m_bSunCullBoxValid;
+	static Vector3						m_sunCullEye;
+	static Vector3						m_sunCullRight;
+	static Vector3						m_sunCullUp;
+	static Vector3						m_sunCullFwd;
+	static float						m_sunCullHalfWidth;
+	static float						m_sunCullUpMin;
+	static float						m_sunCullUpMax;
+	static float						m_sunCullNear;
+	static float						m_sunCullFar;
 	static void Set_Sun_VP(const float* m16);
+
+	// The same orthographic box as m_sunVP, kept in world space so geometry can be culled
+	// against it. The depth pass is drawn with the camera -- it has to be, the scene's
+	// traversal takes one -- so everything downstream of it would otherwise keep asking
+	// the camera what is visible, and a caster whose shadow reaches into the view but
+	// which is itself off screen would be dropped. MeshClass::Render is the last such
+	// place, and it is below the game layer, which is why the box lives here rather than
+	// only in W3DShaderManager.
+	//
+	// Published once per frame from the same eye/basis/extent that built m_sunVP. Not
+	// valid means cull nothing, so a frame that never sets it cannot lose geometry.
+	static void Set_Sun_Cull_Box(const Vector3 &eye, const Vector3 &right, const Vector3 &up,
+								 const Vector3 &fwd, float halfWidth, float upMin, float upMax,
+								 float nearDist, float farDist);
+	static void Clear_Sun_Cull_Box() { m_bSunCullBoxValid = false; }
+	static bool Has_Sun_Cull_Box() { return m_bSunCullBoxValid; }
+	static bool Cull_Sphere_By_Sun(const Vector3 &center, float radius);
 
 	// Screen-space reflections. The camera-view depth SSR marches against is produced
 	// by re-running the shadow depth pass from the camera instead of the sun: same

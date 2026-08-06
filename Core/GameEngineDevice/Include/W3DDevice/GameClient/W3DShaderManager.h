@@ -105,7 +105,9 @@ public:
 	static void setShadowFrustum(const Vector3 &eye, const Vector3 &lookDir,
 								 Real halfWidth, Real upMin, Real upMax,
 								 Real nearDist, Real farDist);
-	static Bool hasShadowFrustum() { return m_shadowFrustumValid; }
+	// Stored by DX8Wrapper, not here: MeshClass::Render culls by the camera too, and it
+	// sits below this layer, so the box has to live where both can reach it.
+	static Bool hasShadowFrustum();
 	///<true when the sphere lies wholly outside the sun frustum, i.e. cannot cast into the map.
 	static Bool cullSphereFromShadowFrustum(const Vector3 &center, Real radius);
 	static Bool cullSphereFromShadowFrustum(const SphereClass &sphere)
@@ -181,18 +183,6 @@ protected:
 	static IDirect3DSurface8 *m_pShadowMapDepthSurface;	///<the shadow map's own depth buffer
 	static IDirect3DSurface8 *m_shadowSavedRT;		///<render target saved across the shadow depth pass
 	static IDirect3DSurface8 *m_shadowSavedDepth;	///<depth surface saved across the shadow depth pass
-	// World-space description of the sun frustum, as an orthonormal light basis plus the
-	// box's half width and its near/far distances along the light.
-	static Bool m_shadowFrustumValid;
-	static Vector3 m_shadowFrustumEye;
-	static Vector3 m_shadowFrustumRight;
-	static Vector3 m_shadowFrustumUp;
-	static Vector3 m_shadowFrustumFwd;
-	static Real m_shadowFrustumHalfWidth;
-	static Real m_shadowFrustumUpMin;
-	static Real m_shadowFrustumUpMax;
-	static Real m_shadowFrustumNear;
-	static Real m_shadowFrustumFar;
 	static DWORD m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
 	// Screen-space reflections. The depth target is the shadow map's arrangement at
 	// screen size and from the camera; the history texture is last frame's scene, which

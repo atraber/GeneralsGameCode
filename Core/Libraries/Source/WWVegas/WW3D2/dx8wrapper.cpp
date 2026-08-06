@@ -269,6 +269,50 @@ void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
 }
+bool							DX8Wrapper::m_bSunCullBoxValid = false;
+Vector3							DX8Wrapper::m_sunCullEye(0.0f, 0.0f, 0.0f);
+Vector3							DX8Wrapper::m_sunCullRight(1.0f, 0.0f, 0.0f);
+Vector3							DX8Wrapper::m_sunCullUp(0.0f, 1.0f, 0.0f);
+Vector3							DX8Wrapper::m_sunCullFwd(0.0f, 0.0f, 1.0f);
+float							DX8Wrapper::m_sunCullHalfWidth = 0.0f;
+float							DX8Wrapper::m_sunCullUpMin = 0.0f;
+float							DX8Wrapper::m_sunCullUpMax = 0.0f;
+float							DX8Wrapper::m_sunCullNear = 0.0f;
+float							DX8Wrapper::m_sunCullFar = 0.0f;
+
+void DX8Wrapper::Set_Sun_Cull_Box(const Vector3 &eye, const Vector3 &right, const Vector3 &up,
+								  const Vector3 &fwd, float halfWidth, float upMin, float upMax,
+								  float nearDist, float farDist)
+{
+	if (halfWidth <= 0.0f || upMax <= upMin || farDist <= nearDist) {
+		m_bSunCullBoxValid = false;
+		return;
+	}
+	m_sunCullEye = eye;
+	m_sunCullRight = right;
+	m_sunCullUp = up;
+	m_sunCullFwd = fwd;
+	m_sunCullHalfWidth = halfWidth;
+	m_sunCullUpMin = upMin;
+	m_sunCullUpMax = upMax;
+	m_sunCullNear = nearDist;
+	m_sunCullFar = farDist;
+	m_bSunCullBoxValid = true;
+}
+
+bool DX8Wrapper::Cull_Sphere_By_Sun(const Vector3 &center, float radius)
+{
+	if (!m_bSunCullBoxValid) return false;   // no box published: cull nothing
+
+	const Vector3 d = center - m_sunCullEye;
+	if (WWMath::Fabs(Vector3::Dot_Product(d, m_sunCullRight)) > m_sunCullHalfWidth + radius)
+		return true;
+	const float up = Vector3::Dot_Product(d, m_sunCullUp);
+	if (up < m_sunCullUpMin - radius || up > m_sunCullUpMax + radius)
+		return true;
+	const float along = Vector3::Dot_Product(d, m_sunCullFwd);
+	return along < m_sunCullNear - radius || along > m_sunCullFar + radius;
+}
 bool							DX8Wrapper::m_bDepthPrepass = false;
 float							DX8Wrapper::m_depthVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneDepth = nullptr;

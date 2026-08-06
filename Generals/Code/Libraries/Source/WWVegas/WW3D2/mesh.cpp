@@ -677,10 +677,30 @@ void MeshClass::Render(RenderInfoClass & rinfo)
 
 	} else {
 
-		const FrustumClass & frustum=rinfo.Camera.Get_Frustum();
+		// Which volume decides that this mesh is worth drawing depends on what is being
+		// drawn into. The shadow map's depth pass runs with the camera -- the scene's
+		// traversal takes one and there is nothing else to hand it -- but what has to
+		// reach that map is whatever the *sun* can see, and the two volumes differ most
+		// for anything above the ground: a caster sits up-sun of its own shadow by its
+		// height times cot(elevation), so a helicopter is off screen while the shadow it
+		// throws is still in the middle of it. Culling it here by the camera is what made
+		// that shadow vanish the instant the helicopter crossed the edge of the view -- and
+		// it did so a mesh at a time, so the fuselage went while the sorted rotor discs
+		// (which take the static-sort branch above and never reach this test) stayed,
+		// leaving a bare rotor cross on the ground.
+		//
+		// The scene already culls by the sun one level up, in RTS3DScene::Visibility_Check;
+		// this is the same test on the sub-meshes of whatever that admitted.
+		bool visible;
+		if (DX8Wrapper::Is_Shadow_Depth_Pass() && DX8Wrapper::Has_Sun_Cull_Box()) {
+			const SphereClass & sphere = Get_Bounding_Sphere();
+			visible = !DX8Wrapper::Cull_Sphere_By_Sun(sphere.Center,sphere.Radius);
+		} else {
+			const FrustumClass & frustum=rinfo.Camera.Get_Frustum();
+			visible = CollisionMath::Overlap_Test(frustum,Get_Bounding_Box())!=CollisionMath::OUTSIDE;
+		}
 
-		if (	Model->Get_Flag(MeshGeometryClass::SKIN) ||
-				CollisionMath::Overlap_Test(frustum,Get_Bounding_Box())!=CollisionMath::OUTSIDE )
+		if (	Model->Get_Flag(MeshGeometryClass::SKIN) || visible )
 		{
 			bool rendered_something = false;
 

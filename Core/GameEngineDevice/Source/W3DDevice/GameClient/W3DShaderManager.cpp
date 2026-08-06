@@ -3529,17 +3529,10 @@ Bool W3DShaderManager::isShadowMappingActive()
 // Kept as an explicit light basis rather than reusing SunVP: a CameraClass would be the
 // obvious carrier, but FrustumClass::Init always builds a perspective pyramid from the
 // view plane, so an ORTHO camera culls against the wrong shape.
-Bool W3DShaderManager::m_shadowFrustumValid = FALSE;
-Vector3 W3DShaderManager::m_shadowFrustumEye(0.0f, 0.0f, 0.0f);
-Vector3 W3DShaderManager::m_shadowFrustumRight(1.0f, 0.0f, 0.0f);
-Vector3 W3DShaderManager::m_shadowFrustumUp(0.0f, 1.0f, 0.0f);
-Vector3 W3DShaderManager::m_shadowFrustumFwd(0.0f, 0.0f, 1.0f);
-Real W3DShaderManager::m_shadowFrustumHalfWidth = 0.0f;
-Real W3DShaderManager::m_shadowFrustumUpMin = 0.0f;
-Real W3DShaderManager::m_shadowFrustumUpMax = 0.0f;
-Real W3DShaderManager::m_shadowFrustumNear = 0.0f;
-Real W3DShaderManager::m_shadowFrustumFar = 0.0f;
-
+// The box itself is stored by DX8Wrapper, next to the SunVP it mirrors. The last place
+// that still culled the depth pass by the camera is MeshClass::Render, which sits below
+// this layer and cannot see W3DShaderManager -- so there is one owner, and the two can
+// never disagree about what the sun can see.
 void W3DShaderManager::setShadowFrustum(const Vector3 &eye, const Vector3 &lookDir,
 										Real halfWidth, Real upMin, Real upMax,
 										Real nearDist, Real farDist)
@@ -3547,7 +3540,7 @@ void W3DShaderManager::setShadowFrustum(const Vector3 &eye, const Vector3 &lookD
 	Vector3 fwd = lookDir;
 	if (fwd.Length2() < 1e-12f || halfWidth <= 0.0f || upMax <= upMin)
 	{
-		m_shadowFrustumValid = FALSE;
+		DX8Wrapper::Clear_Sun_Cull_Box();
 		return;
 	}
 	fwd.Normalize();
@@ -3563,31 +3556,18 @@ void W3DShaderManager::setShadowFrustum(const Vector3 &eye, const Vector3 &lookD
 	Vector3::Cross_Product(fwd, right, &up);
 	up.Normalize();
 
-	m_shadowFrustumEye = eye;
-	m_shadowFrustumFwd = fwd;
-	m_shadowFrustumRight = right;
-	m_shadowFrustumUp = up;
-	m_shadowFrustumHalfWidth = halfWidth;
-	m_shadowFrustumUpMin = upMin;
-	m_shadowFrustumUpMax = upMax;
-	m_shadowFrustumNear = nearDist;
-	m_shadowFrustumFar = farDist;
-	m_shadowFrustumValid = TRUE;
+	DX8Wrapper::Set_Sun_Cull_Box(eye, right, up, fwd, halfWidth, upMin, upMax,
+								 nearDist, farDist);
+}
+
+Bool W3DShaderManager::hasShadowFrustum()
+{
+	return DX8Wrapper::Has_Sun_Cull_Box() ? TRUE : FALSE;
 }
 
 Bool W3DShaderManager::cullSphereFromShadowFrustum(const Vector3 &center, Real radius)
 {
-	if (!m_shadowFrustumValid)
-		return FALSE;	// no frustum published: cull nothing, so nothing can go missing.
-
-	const Vector3 d = center - m_shadowFrustumEye;
-	if (fabsf(Vector3::Dot_Product(d, m_shadowFrustumRight)) > m_shadowFrustumHalfWidth + radius)
-		return TRUE;
-	const Real up = Vector3::Dot_Product(d, m_shadowFrustumUp);
-	if (up < m_shadowFrustumUpMin - radius || up > m_shadowFrustumUpMax + radius)
-		return TRUE;
-	const Real along = Vector3::Dot_Product(d, m_shadowFrustumFwd);
-	return along < m_shadowFrustumNear - radius || along > m_shadowFrustumFar + radius;
+	return DX8Wrapper::Cull_Sphere_By_Sun(center, radius) ? TRUE : FALSE;
 }
 
 // ---------------------------------------------------------------------------
