@@ -3534,24 +3534,27 @@ Vector3 W3DShaderManager::m_shadowFrustumEye(0.0f, 0.0f, 0.0f);
 Vector3 W3DShaderManager::m_shadowFrustumRight(1.0f, 0.0f, 0.0f);
 Vector3 W3DShaderManager::m_shadowFrustumUp(0.0f, 1.0f, 0.0f);
 Vector3 W3DShaderManager::m_shadowFrustumFwd(0.0f, 0.0f, 1.0f);
-Real W3DShaderManager::m_shadowFrustumHalfExtent = 0.0f;
+Real W3DShaderManager::m_shadowFrustumHalfWidth = 0.0f;
+Real W3DShaderManager::m_shadowFrustumUpMin = 0.0f;
+Real W3DShaderManager::m_shadowFrustumUpMax = 0.0f;
 Real W3DShaderManager::m_shadowFrustumNear = 0.0f;
 Real W3DShaderManager::m_shadowFrustumFar = 0.0f;
 
 void W3DShaderManager::setShadowFrustum(const Vector3 &eye, const Vector3 &lookDir,
-										Real halfExtent, Real nearDist, Real farDist)
+										Real halfWidth, Real upMin, Real upMax,
+										Real nearDist, Real farDist)
 {
 	Vector3 fwd = lookDir;
-	if (fwd.Length2() < 1e-12f || halfExtent <= 0.0f)
+	if (fwd.Length2() < 1e-12f || halfWidth <= 0.0f || upMax <= upMin)
 	{
 		m_shadowFrustumValid = FALSE;
 		return;
 	}
 	fwd.Normalize();
 
-	// Any two axes perpendicular to the light will do -- the box is square, so the cull
-	// does not care which way round it is. Pick the world axis the light is least
-	// aligned with so the cross product never degenerates.
+	// The same basis D3DXMatrixLookAtLH builds from the same hint, so that "up" here is
+	// the axis the projection's asymmetric up range is quoted in. Pick the world axis the
+	// light is least aligned with so the cross product never degenerates.
 	const Vector3 hint = (fabsf(fwd.Z) > 0.9f) ? Vector3(0.0f, 1.0f, 0.0f)
 											   : Vector3(0.0f, 0.0f, 1.0f);
 	Vector3 right, up;
@@ -3564,7 +3567,9 @@ void W3DShaderManager::setShadowFrustum(const Vector3 &eye, const Vector3 &lookD
 	m_shadowFrustumFwd = fwd;
 	m_shadowFrustumRight = right;
 	m_shadowFrustumUp = up;
-	m_shadowFrustumHalfExtent = halfExtent;
+	m_shadowFrustumHalfWidth = halfWidth;
+	m_shadowFrustumUpMin = upMin;
+	m_shadowFrustumUpMax = upMax;
 	m_shadowFrustumNear = nearDist;
 	m_shadowFrustumFar = farDist;
 	m_shadowFrustumValid = TRUE;
@@ -3576,10 +3581,10 @@ Bool W3DShaderManager::cullSphereFromShadowFrustum(const Vector3 &center, Real r
 		return FALSE;	// no frustum published: cull nothing, so nothing can go missing.
 
 	const Vector3 d = center - m_shadowFrustumEye;
-	const Real lateralLimit = m_shadowFrustumHalfExtent + radius;
-	if (fabsf(Vector3::Dot_Product(d, m_shadowFrustumRight)) > lateralLimit)
+	if (fabsf(Vector3::Dot_Product(d, m_shadowFrustumRight)) > m_shadowFrustumHalfWidth + radius)
 		return TRUE;
-	if (fabsf(Vector3::Dot_Product(d, m_shadowFrustumUp)) > lateralLimit)
+	const Real up = Vector3::Dot_Product(d, m_shadowFrustumUp);
+	if (up < m_shadowFrustumUpMin - radius || up > m_shadowFrustumUpMax + radius)
 		return TRUE;
 	const Real along = Vector3::Dot_Product(d, m_shadowFrustumFwd);
 	return along < m_shadowFrustumNear - radius || along > m_shadowFrustumFar + radius;

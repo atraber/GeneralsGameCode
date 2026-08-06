@@ -1746,6 +1746,38 @@ void W3DView::getAxisAlignedViewRegion(Region3D &axisAlignedRegion)
 	axisAlignedRegion.hi.x += (DRAWABLE_OVERSCAN + m_guardBandBias.x);
 	axisAlignedRegion.hi.y += (DRAWABLE_OVERSCAN + m_guardBandBias.y);
 
+	// Reach further up-sun for cast shadows. This region is what decides which drawables
+	// get Drawable::draw() called, and that is what puts their current transform on the
+	// render object -- so a drawable outside it is not merely unlit, it is frozen where it
+	// last was, and casts its shadow from there.
+	//
+	// The region is the screen's footprint on the ground, and for anything at altitude
+	// that is the wrong test: a caster sits up-sun of its own shadow by its height times
+	// cot(sun elevation), which at this map's ~20 degree sun is nearly three times its
+	// height. A helicopter is therefore out of this region -- and its shadow stuck --
+	// while that shadow is still in the middle of the screen. The overscan of 75 covers a
+	// tank, not a helicopter at 150 units up.
+	//
+	// Extended only on the side the sun is on, and only by what a plausible flight
+	// altitude displaces, so the extra drawables updated are a band rather than a border.
+	if (W3DShaderManager::isShadowMappingActive())
+	{
+		const Real SHADOW_CASTER_CEILING = 200.0f;   // altitude worth keeping shadows for
+		Vector3 sunDir(-TheGlobalData->m_terrainLightPos[0].x,
+					   -TheGlobalData->m_terrainLightPos[0].y,
+					   -TheGlobalData->m_terrainLightPos[0].z);
+		if (sunDir.Length2() > 1e-6f)
+		{
+			sunDir.Normalize();
+			const Real elevation = max(fabsf(sunDir.Z), 0.15f);
+			const Real reach = SHADOW_CASTER_CEILING / elevation;
+			// toward the sun in plan, scaled by how far a caster at the ceiling is thrown
+			if (sunDir.X > 0.0f) axisAlignedRegion.hi.x += sunDir.X * reach;
+			else                 axisAlignedRegion.lo.x += sunDir.X * reach;
+			if (sunDir.Y > 0.0f) axisAlignedRegion.hi.y += sunDir.Y * reach;
+			else                 axisAlignedRegion.lo.y += sunDir.Y * reach;
+		}
+	}
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1876,6 +1908,9 @@ void W3DView::draw()
 		// depth spread, which is what actually sizes the frustum.
 		const float SHADOW_ABOVE      = 1200.0f;
 		const float SHADOW_BELOW      = 800.0f;
+		// Altitude worth keeping shadows for. Sizes the frustum's up side (below) and,
+		// in getAxisAlignedViewRegion, how far up-sun drawables keep being updated.
+		const float SHADOW_CASTER_CEILING = 200.0f;
 
 		// Bound the four view corners projected onto the look-at ground plane. A circle
 		// rather than a box: the extent is then invariant under camera rotation, so
@@ -1949,6 +1984,27 @@ void W3DView::draw()
 		const float shadowEye = halfDepthSpread + SHADOW_ABOVE;
 		const float shadowFar = shadowEye + halfDepthSpread + SHADOW_BELOW;
 
+		// The box is not square. It covers a patch of *ground*, and the sun sees ground
+		// foreshortened: a horizontal square of side L is only L*sin(elevation) tall in
+		// the sun's view, which at ~20 degrees is a third. A square frustum therefore
+		// spends two thirds of the map's height on nothing -- visible directly in a dump
+		// of the map, where the terrain occupies a wide band across the middle and the
+		// rest is cleared. Sizing the height for what actually lands there buys that back
+		// as resolution, which is the one thing fine self-shadowing on a building needs.
+		//
+		// Rotation-safe: the height depends on the sun's elevation, not on the camera's
+		// yaw, so orbiting does not resize it. Only the width follows the view, and that
+		// stays the rotation-invariant circle it was.
+		//
+		// Asymmetric, because height only displaces a caster one way: raising a point by h
+		// moves it +h*cos(elevation) in the sun's up axis, so the extra room is needed
+		// above the ground band and not below it.
+		const float sinSun = frustumSunElev;
+		const float cosSun = sqrtf(max(1.0f - sinSun * sinSun, 0.0f));
+		const float halfWidth  = 0.5f * shadowOrtho;
+		const float halfGround = 0.5f * shadowOrtho * sinSun + SHADOW_MARGIN;
+		const float casterUp   = SHADOW_CASTER_CEILING * cosSun;
+
 		D3DXVECTOR3 targetPos((float)shadowCentre.x, (float)shadowCentre.y, (float)shadowCentre.z);
 		D3DXVECTOR3 lightEye(targetPos.x + sunDir.X * shadowEye,
 							 targetPos.y + sunDir.Y * shadowEye,
@@ -1957,7 +2013,8 @@ void W3DView::draw()
 												  : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
 		D3DXMATRIX sunView, sunProj, sunVP;
 		D3DXMatrixLookAtLH(&sunView, &lightEye, &targetPos, &up);
-		D3DXMatrixOrthoLH(&sunProj, shadowOrtho, shadowOrtho, 1.0f, shadowFar);
+		D3DXMatrixOrthoOffCenterLH(&sunProj, -halfWidth, halfWidth,
+								   -halfGround, halfGround + casterUp, 1.0f, shadowFar);
 		D3DXMatrixMultiply(&sunVP, &sunView, &sunProj);
 
 		// Snap the fitted frustum to whole shadow-map texels. Without this the centre
@@ -1988,7 +2045,7 @@ void W3DView::draw()
 		W3DShaderManager::setShadowFrustum(
 			Vector3(lightEye.x, lightEye.y, lightEye.z),
 			Vector3(targetPos.x - lightEye.x, targetPos.y - lightEye.y, targetPos.z - lightEye.z),
-			0.5f * shadowOrtho, 1.0f, shadowFar);
+			halfWidth, -halfGround, halfGround + casterUp, 1.0f, shadowFar);
 
 		// Depth-compare bias, in the sun-clip depth units the shaders compare in. What it
 		// has to cover is the depth a surface gains across one shadow texel, so it is
@@ -2059,7 +2116,8 @@ void W3DView::draw()
 		// (which unpacks to depth 0 and would shadow the entire scene).
 		DX8Wrapper::Set_Shadow_Params(0.0f, 0.0f, 0.0f, 0.0f);
 		W3DShaderManager::setShadowFrustum(Vector3(0.0f, 0.0f, 0.0f),
-										   Vector3(0.0f, 0.0f, 0.0f), 0.0f, 0.0f, 0.0f);
+										   Vector3(0.0f, 0.0f, 0.0f),
+										   0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 	}
 
 	// Camera-view depth for screen-space reflections. Independent of the shadow map --

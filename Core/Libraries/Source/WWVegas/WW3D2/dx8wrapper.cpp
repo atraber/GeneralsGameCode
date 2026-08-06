@@ -2780,7 +2780,19 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		const DWORD dstBlend = RenderStates[D3DRS_DESTBLEND];
 		const bool standardAlphaBlend =
 			srcBlend == D3DBLEND_SRCALPHA && dstBlend == D3DBLEND_INVSRCALPHA;
-		const bool additiveBlend =
+		// Conditioned on blending actually being enabled. D3DRS_SRCBLEND and
+		// D3DRS_DESTBLEND are ignored by the hardware when D3DRS_ALPHABLENDENABLE is
+		// FALSE, so whatever the last blended draw left in them is still sitting there
+		// when the next opaque mesh arrives -- and reading them regardless declares that
+		// mesh additive. It is a stale-state read, and which meshes it catches depends on
+		// nothing but draw order: measured on one frame, the entire USA barracks, power
+		// plant and supply centre were classified additive and dropped to the fixed
+		// function pipeline, where there is no shadow map to sample, while the command
+		// centre beside them (drawn after something that left an ordinary blend) kept the
+		// shader and its shadows. That is the whole of "the barracks has no shadows on it
+		// but the HQ does" -- no bias would have fixed it, because those meshes were never
+		// asking the shadow map anything.
+		const bool additiveBlend = alphaBlendOn &&
 			(srcBlend == D3DBLEND_ONE || srcBlend == D3DBLEND_SRCALPHA) &&
 			dstBlend == D3DBLEND_ONE;
 
