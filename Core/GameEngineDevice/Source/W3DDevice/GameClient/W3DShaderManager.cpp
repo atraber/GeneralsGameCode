@@ -3043,6 +3043,22 @@ void W3DShaderManager::initUnitShaders()
 	}
 	// Install the base-texture -> ORM resolver the render path calls per draw.
 	DX8Wrapper::Set_Orm_Resolver(W3DShaderManager::resolveOrmTexture);
+	// Neutral ORM for every mesh that ships none, so PBR is not limited to the HD set.
+	initDefaultOrmMap();
+
+	// Say what the PBR path is actually able to do, once, at init. Every one of these
+	// silently routes every mesh away from PBR when it is wrong, and the symptom is
+	// identical in all four cases: the frame renders correctly, on the old shader. That
+	// is not something a screenshot can show, and a routing census that reads zero
+	// cannot say which of them it was.
+	DEBUG_LOG(("PBR: routing mask = %u (PBR %s, team-colour maps %s, authored-only %s); "
+		"shaders %s; default ORM map %s\n",
+		(unsigned)DX8Wrapper::m_shaderRoutingMask,
+		(DX8Wrapper::m_shaderRoutingMask & DX8Wrapper::SHADER_ROUTE_PBR) ? "on" : "OFF",
+		(DX8Wrapper::m_shaderRoutingMask & DX8Wrapper::SHADER_ROUTE_PBR_TEAMCOLOR) ? "on" : "off",
+		(DX8Wrapper::m_shaderRoutingMask & DX8Wrapper::SHADER_ROUTE_PBR_AUTHORED_ONLY) ? "ON" : "off",
+		(DX8Wrapper::m_dwUnitPbrVS != 0 && DX8Wrapper::m_dwUnitPbrPS != 0) ? "loaded" : "MISSING",
+		(DX8Wrapper::m_defaultOrmMap != nullptr) ? "created" : "MISSING"));
 	// Build the shared environment cubemap the PBR shader reflects.
 	initEnvMap();
 	// Directional shadow map (sun-view depth) for cast shadows.
@@ -3095,6 +3111,10 @@ void W3DShaderManager::shutdownUnitShaders()
 	}
 	DX8Wrapper::Set_Orm_Resolver(nullptr);
 	clearOrmCache();
+	if (DX8Wrapper::m_defaultOrmMap != nullptr) {
+		DX8Wrapper::m_defaultOrmMap->Release();
+		DX8Wrapper::m_defaultOrmMap = nullptr;
+	}
 	if (DX8Wrapper::m_envCubeMap != nullptr) {
 		DX8Wrapper::m_envCubeMap->Release();
 		DX8Wrapper::m_envCubeMap = nullptr;
@@ -3112,8 +3132,9 @@ void W3DShaderManager::shutdownUnitShaders()
 // For a mesh's base texture <name>.<ext>, the PBR maps live in a sibling
 // <name>_orm.dds (installed via !TexturesHD.big). This looks it up once per base
 // texture and caches the result (including "no map", stored as nullptr) so the
-// per-draw cost after the first hit is a single hash lookup. Units without a map
-// resolve to nullptr and keep using the M3 lit shader.
+// per-draw cost after the first hit is a single hash lookup. A nullptr no longer
+// means "not a PBR mesh" -- the render path binds the neutral default map for those
+// and shades them by PBR all the same (see initDefaultOrmMap).
 //=============================================================================
 static std::unordered_map<TextureBaseClass*, TextureBaseClass*> s_ormCache;
 
@@ -3165,6 +3186,96 @@ void W3DShaderManager::clearOrmCache()
 			it->second->Release_Ref();
 	}
 	s_ormCache.clear();
+}
+
+//=============================================================================
+// Neutral ORM map for meshes that ship none.
+//
+// Only the HD texture set has authored _orm siblings, so gating PBR on their
+// presence meant almost every faction unit and structure stayed on the M3 lit
+// shader -- and a frame containing both read as two different renderers: one lot
+// of buildings with GGX specular, cast shadows sampled per pixel and an
+// environment reflection, the lot beside them flat. This is what lets the rest
+// onto the same shader: one texel of stand-in ORM data, bound to stage 1 in place
+// of a real map, so the shader needs no variant and no branch.
+//
+// The channels are the values that put the metallic-roughness BRDF closest to what
+// the fixed-function pipeline drew for these meshes:
+//
+//   R  AO = 1.0        No occlusion. Fixed function applied the scene ambient at
+//                      full strength everywhere; there is no baked cavity data to
+//                      darken it with, and inventing some would be a guess.
+//
+//   B  metallic = 0.0  Everything is a dielectric. This is the important one. A
+//                      metal's diffuse goes to zero and its F0 becomes its albedo,
+//                      so guessing metal wrong turns a surface into dark tinted
+//                      chrome -- which is exactly the failure the house-colour
+//                      exclusion was written around, when a generated map read a
+//                      white team-colour texture as near-metal. Zero cannot make
+//                      that mistake: F0 stays 0.04, the albedo keeps its full
+//                      diffuse, and the texture reads as the texture.
+//
+//   G  roughness       The one genuine judgement call. Fixed function had no
+//                      specular term at all for these meshes, so 1.0 is the
+//                      literal match -- but it also switches off everything PBR
+//                      was added for, and a unit rendered at roughness 1.0 beside
+//                      an HD one is still visibly a different material.
+//
+//                      0.8 is the measured mean of the authored HD ORM set (its
+//                      maps run 0.51-0.53 minimum, 0.78-0.83 mean). Taking their
+//                      average is what makes a mapped unit and an unmapped one sit
+//                      in the same material family: a broad, dull sheen at grazing
+//                      angles and no highlight anywhere near a mirror.
+//
+//                      It is not free. The shader's SSR weight is
+//                      saturate(1 - roughness), so 0.8 opens a 32-step screen-space
+//                      march at 20% weight on every mesh in the scene, where before
+//                      only HD units marched. If that costs too much, raising this
+//                      towards 1.0 shuts the march off before it dims anything else
+//                      much -- the roughness fade on the cubemap term is only
+//                      (1 - 0.6*roughness), so the reflection survives either way.
+//
+//   A  height = 0      Flat. The height channel drives derivative-based bump
+//                      mapping, and a constant has zero gradient, so the shading
+//                      normal is left exactly as the geometry gave it. (Moot while
+//                      BUMP_STRENGTH is 0, but correct if it is ever raised.)
+//
+// One texel, D3DPOOL_MANAGED, no mip chain: it is sampled at every UV of every
+// mesh and returns the same value each time.
+//=============================================================================
+static const float DEFAULT_ORM_AO        = 1.0f;
+static const float DEFAULT_ORM_ROUGHNESS = 0.8f;
+static const float DEFAULT_ORM_METALLIC  = 0.0f;
+static const float DEFAULT_ORM_HEIGHT    = 0.0f;
+
+void W3DShaderManager::initDefaultOrmMap()
+{
+	if (DX8Wrapper::m_defaultOrmMap != nullptr)
+		return;
+	IDirect3DDevice8* dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	IDirect3DTexture8* tex = nullptr;
+	if (FAILED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex)) || tex == nullptr)
+		return;
+
+	D3DLOCKED_RECT lr;
+	if (FAILED(tex->LockRect(0, &lr, nullptr, 0))) {
+		tex->Release();
+		return;
+	}
+	// A8R8G8B8 is ARGB in memory order, and the shader reads the sampled texel as
+	// R=AO, G=roughness, B=metallic, A=height -- so the pack order here is
+	// (height, AO, roughness, metallic).
+	const unsigned char a = (unsigned char)(DEFAULT_ORM_HEIGHT    * 255.0f + 0.5f);
+	const unsigned char r = (unsigned char)(DEFAULT_ORM_AO        * 255.0f + 0.5f);
+	const unsigned char g = (unsigned char)(DEFAULT_ORM_ROUGHNESS * 255.0f + 0.5f);
+	const unsigned char b = (unsigned char)(DEFAULT_ORM_METALLIC  * 255.0f + 0.5f);
+	*(unsigned*)lr.pBits = ((unsigned)a << 24) | ((unsigned)r << 16) | ((unsigned)g << 8) | (unsigned)b;
+	tex->UnlockRect(0);
+
+	DX8Wrapper::m_defaultOrmMap = tex;
 }
 
 //=============================================================================

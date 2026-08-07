@@ -181,6 +181,7 @@ DWORD							DX8Wrapper::m_shaderRoutingMask = DX8Wrapper::SHADER_ROUTE_BASELINE;
 DWORD							DX8Wrapper::m_dwUnitPbrVS = 0;
 DWORD							DX8Wrapper::m_dwUnitPbrPS = 0;
 IDirect3DBaseTexture8*			DX8Wrapper::m_envCubeMap = nullptr;
+IDirect3DBaseTexture8*			DX8Wrapper::m_defaultOrmMap = nullptr;
 float							DX8Wrapper::m_envAverage[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
 DX8Wrapper::OrmResolverFunc		DX8Wrapper::s_ormResolver = nullptr;
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
@@ -223,6 +224,93 @@ void DX8Wrapper::Debug_Note_Mesh_Routing(unsigned pipelineBit, unsigned ffReason
 		e.mask = pipelineBit;
 		e.ffReasons = ffReason ? (1u << ffReason) : 0u;
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Routing census.
+//
+// The split watchdog above answers "is any one mesh drawn by two pipelines". This
+// answers the other question: across the whole frame, how many mesh passes each
+// pipeline actually claimed, and which meshes are on each.
+//
+// It exists because the PBR gate was widened from "meshes shipping an <name>_orm"
+// to "every eligible mesh, on the default map where it has none", and the only
+// honest way to check that landed is to have the renderer say what it did. Reading
+// it off the screen does not distinguish PBR-on-default from the M3 shader at a
+// glance -- that is the point of the default values -- so a screenshot cannot
+// confirm this either way.
+//
+// Every category is counted, not just the new one: a census where the numbers only
+// moved into pbr-default would be indistinguishable from one where the exclusions
+// stopped working, and the fixed-function and effect-geometry counts are what say
+// they still hold.
+//-----------------------------------------------------------------------------
+namespace {
+	enum { CENSUS_CATS = 6 };
+	const char* const s_censusNames[CENSUS_CATS] = {
+		"fixed-function", "unit_ps", "unit_detail_ps",
+		"pbr(authored orm)", "pbr(default orm)", "pbr(default orm, team-tinted)"
+	};
+	unsigned s_censusDraws[CENSUS_CATS] = { 0 };
+	// A few distinct model names per category, so the totals can be sanity-checked
+	// against what is actually on screen rather than taken on trust.
+	enum { CENSUS_NAMES = 8 };
+	const char* s_censusSamples[CENSUS_CATS][CENSUS_NAMES] = { { nullptr } };
+	int s_censusSampleCount[CENSUS_CATS] = { 0 };
+	int s_censusFrames = 0;
+
+	void CensusNote(unsigned cat, const char* name)
+	{
+		if (cat >= CENSUS_CATS) return;
+		++s_censusDraws[cat];
+		if (name == nullptr) return;
+		for (int i = 0; i < s_censusSampleCount[cat]; ++i) {
+			if (s_censusSamples[cat][i] == name) return;
+		}
+		if (s_censusSampleCount[cat] < CENSUS_NAMES)
+			s_censusSamples[cat][s_censusSampleCount[cat]++] = name;
+	}
+}
+
+void DX8Wrapper::Debug_Note_Routing_Census(unsigned category)
+{
+	CensusNote(category, s_debugMeshName);
+}
+
+void DX8Wrapper::Debug_Report_Routing_Census()
+{
+	++s_censusFrames;
+
+	// Accumulate over a window rather than reporting per frame: one frame is a
+	// snapshot of whatever happened to be on screen, and the early frames are the
+	// loading screen, where every count is zero and would read as a finding.
+	const int CENSUS_WINDOW = 600;
+	if (s_censusFrames < CENSUS_WINDOW)
+		return;
+
+	unsigned total = 0;
+	for (int c = 0; c < CENSUS_CATS; ++c) total += s_censusDraws[c];
+	if (total == 0) {   // nothing drawn yet; keep the window open
+		s_censusFrames = 0;
+		return;
+	}
+
+	WWDEBUG_SAY(("ROUTING CENSUS over %d frames, %u mesh passes:", s_censusFrames, total));
+	for (int c = 0; c < CENSUS_CATS; ++c) {
+		WWDEBUG_SAY(("  %-30s %8u (%2u%%)  e.g. %s %s %s %s",
+			s_censusNames[c], s_censusDraws[c],
+			(unsigned)((unsigned __int64)s_censusDraws[c] * 100 / total),
+			s_censusSampleCount[c] > 0 ? s_censusSamples[c][0] : "-",
+			s_censusSampleCount[c] > 1 ? s_censusSamples[c][1] : "",
+			s_censusSampleCount[c] > 2 ? s_censusSamples[c][2] : "",
+			s_censusSampleCount[c] > 3 ? s_censusSamples[c][3] : ""));
+	}
+
+	for (int c = 0; c < CENSUS_CATS; ++c) {
+		s_censusDraws[c] = 0;
+		s_censusSampleCount[c] = 0;
+	}
+	s_censusFrames = 0;
 }
 
 void DX8Wrapper::Debug_Check_Mesh_Routing_Split()
@@ -1981,6 +2069,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 
 #ifdef RTS_DEBUG
 	Debug_Check_Mesh_Routing_Split();
+	Debug_Report_Routing_Census();
 #endif
 
 	if (flip_frames) {
@@ -3158,6 +3247,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// Which pipeline ends up drawing this pass: 1 = fixed function unless a branch
 		// below claims it. Read by the split-pipeline watchdog in debug builds.
 		unsigned diagRouteBit = 1;
+		// The same thing as a census bucket rather than a bit, split one level finer:
+		// the two PBR paths are one pipeline but not one piece of evidence.
+		unsigned diagCensusCat = 0;   // 0 = fixed function
 
 		if (useShadowDepth) {
 			// Force the full square shadow-map viewport right before the draw. The
@@ -3432,28 +3524,46 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// House-colour meshes carry the team tint in a non-white material ambient
 			// over a white texture; their procedurally-generated ORM reads that bright
 			// texture as near-metallic, which PBR would render as dark metal instead of
-			// a tint. Route them to the M3 shader, which tints correctly.
+			// a tint. So their authored map is not trusted (unless SHADER_ROUTE_PBR_TEAMCOLOR
+			// says otherwise) -- but they are still shaded by PBR, on the neutral default
+			// map, whose metallic is zero and so cannot make that mistake.
 			const bool houseColoured =
 				(matAmbient.x < 0.95f || matAmbient.y < 0.95f || matAmbient.z < 0.95f);
 
-			// PBR path: if this mesh's base texture ships an ORM sibling (<name>_orm)
-			// and the PBR shaders loaded, run the metallic-roughness shader; otherwise
-			// the M3 lit shader. The resolver caches a nullptr for units without a map,
-			// so non-HD units are unaffected. Skip PBR until the ORM is resident, and
-			// for house-coloured meshes.
-			// PBR also needs texture stage 1 for the ORM map and reads the mesh's own
-			// coordinates, so a pass that already carries a detail texture there or wants
-			// generated coordinates keeps the plain unit shader.
-			// Off unless SHADER_ROUTE_PBR is selected, so the default build renders
-			// exactly what the milestone before it did and PBR can be A/B'd in game.
+			// PBR path: every eligible object mesh runs the metallic-roughness shader, not
+			// only the ones that ship an ORM sibling (<name>_orm). A mesh with no map of its
+			// own is bound the neutral default (m_defaultOrmMap) instead, so it is shaded by
+			// the same BRDF, under the same lights and the same cast shadows, as an HD unit --
+			// with unoccluded, fully dielectric, mostly-rough values chosen to land close to
+			// what the fixed-function pipeline drew.
+			//
+			// Before this the ORM maps decided which meshes got the new shading at all, and
+			// since only the HD set ships them that left the great majority of faction units
+			// and structures on the M3 shader: two renderers' worth of surface response
+			// standing next to each other in the same frame.
+			//
+			// PBR needs texture stage 1 for the ORM map and reads the mesh's own coordinates,
+			// so a pass that already carries a detail texture there or wants generated
+			// coordinates keeps the plain unit shader.
+			// Off unless SHADER_ROUTE_PBR is selected, so the default build renders exactly
+			// what the milestone before it did and PBR can be A/B'd in game.
 			const bool pbrRoutingOn = (m_shaderRoutingMask & SHADER_ROUTE_PBR) != 0;
+			// Opt-out restoring the old gate: PBR only where an ORM map actually exists, so
+			// the widened routing can be compared against what it replaced.
+			const bool pbrAuthoredOnly = (m_shaderRoutingMask & SHADER_ROUTE_PBR_AUTHORED_ONLY) != 0;
 			// The house-colour exclusion above is about procedurally generated ORM maps
 			// misreading a white team-colour texture as metal. Where the map was authored
 			// on purpose it should be obeyed instead -- and since every player-owned unit
-			// carries a team tint, the exclusion otherwise keeps PBR off all of them,
-			// which leaves it applying to almost nothing anyone looks at.
+			// carries a team tint, the exclusion otherwise keeps those maps off all of them,
+			// which leaves them applying to almost nothing anyone looks at.
+			//
+			// It now decides only *which* map a house-coloured mesh uses, not whether PBR
+			// shades it: the default map's metallic is zero, so there is nothing in it to
+			// misread, and holding team-coloured meshes back entirely would exclude precisely
+			// the faction units and buildings this path exists for. Without the flag they take
+			// the default map and their tint arrives through MatAmbient exactly as it does on
+			// the M3 shader.
 			const bool pbrTeamColour = (m_shaderRoutingMask & SHADER_ROUTE_PBR_TEAMCOLOR) != 0;
-			TextureBaseClass* ormTex = nullptr;
 			// Translucent geometry is never a PBR surface. A metallic-roughness BRDF
 			// describes light reflecting off an opaque solid; a blended sprite is an
 			// effect whose appearance comes from its texture and its blend equation.
@@ -3467,14 +3577,25 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// stage does to it, an effect disc should never have been in there.
 			//
 			// The plain unit shader already declines additive draws (routeAdditive
-			// above); PBR had no blend check of any kind.
-			if (pbrRoutingOn && (!houseColoured || pbrTeamColour) &&
+			// above); PBR had no blend check of any kind. These conditions gate the default
+			// map exactly as they gated the authored one -- widening PBR to every mesh must
+			// not widen it to geometry that was never a surface.
+			const bool pbrEligible =
+				pbrRoutingOn &&
 				singleTexture && !texgenActive && hasNormal &&
 				!additiveBlend && !softBlendedOverlay &&
-				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0 && s_ormResolver != nullptr) {
+				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0;
+			// The resolver caches a nullptr for meshes without a map, so asking costs a hash
+			// lookup after the first draw.
+			TextureBaseClass* ormTex = nullptr;
+			if (pbrEligible && (!houseColoured || pbrTeamColour) && s_ormResolver != nullptr) {
 				ormTex = s_ormResolver(render_state.Textures[0]);
 			}
-			const bool usePbr = (ormTex != nullptr);
+			// No map of its own -- shade it by PBR anyway, on the neutral default.
+			const bool useDefaultOrm =
+				pbrEligible && ormTex == nullptr &&
+				!pbrAuthoredOnly && m_defaultOrmMap != nullptr;
+			const bool usePbr = (ormTex != nullptr) || useDefaultOrm;
 
 			// Three variants: PBR, the detail (stage 1) combine, or the plain shader. The
 			// detail variant is bound only when a second texture is really present -- the
@@ -3483,6 +3604,12 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// zero is still NaN) and render the pixel black.
 			const bool useDetailShader = !usePbr && !singleTexture && detailCombineSupported;
 			diagRouteBit = usePbr ? 8u : (useDetailShader ? 4u : 2u);
+			// 3 = PBR on the mesh's own map, 4 = PBR on the default, 5 = PBR on the
+			// default and team-tinted (the meshes the house-colour rule used to hold
+			// back from PBR entirely, so the category that has to be non-empty for the
+			// faction units and buildings to have actually moved).
+			diagCensusCat = usePbr ? (ormTex != nullptr ? 3u : (houseColoured ? 5u : 4u))
+								   : (useDetailShader ? 2u : 1u);
 			// Geometry with no normal takes the pre-lit variant, whose declared inputs
 			// match what its FVF actually supplies.
 			Set_Vertex_Shader(usePbr ? m_dwUnitPbrVS
@@ -3572,15 +3699,19 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				}
 			}
 
-			// TEMPORARY: which meshes the PBR branch actually claims. If the rotor's
-			// texture appears here its geometry is failing inside this path; if it does
-			// not, PBR routing is diverting it somewhere else that drops it, and the
-			// whole PBR theory is about the wrong draw.
 			if (usePbr) {
-				// Bind ORM to stage 1. Apply() (rather than Peek_D3D_Texture) triggers
-				// the lazy texture load and updates the applied-texture cache, so the
-				// map actually becomes resident instead of staying a null peek forever.
-				ormTex->Apply(1);
+				if (ormTex != nullptr) {
+					// Bind ORM to stage 1. Apply() (rather than Peek_D3D_Texture) triggers
+					// the lazy texture load and updates the applied-texture cache, so the
+					// map actually becomes resident instead of staying a null peek forever.
+					ormTex->Apply(1);
+				} else {
+					// No authored map: the neutral default, bound straight to the device the
+					// way the cubemap and the shadow map are. It is not a TextureClass and
+					// has no asset-manager entry, so there is no Apply() to call and nothing
+					// to load lazily -- it is one texel that exists for the whole session.
+					Set_DX8_Texture(1, m_defaultOrmMap);
+				}
 				s_pbrOrmBound = true;
 				Set_DX8_Texture_Stage_State(1, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 				Set_DX8_Texture_Stage_State(1, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
@@ -3818,6 +3949,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				else if (texgenActive && !(texgenRoutingOn && texGenSupported)) ffReason = 8;
 			}
 			Debug_Note_Mesh_Routing(diagRouteBit, ffReason);
+			Debug_Note_Routing_Census(diagCensusCat);
 		}
 #endif
 	}

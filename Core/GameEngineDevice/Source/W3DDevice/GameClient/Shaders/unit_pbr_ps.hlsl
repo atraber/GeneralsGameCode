@@ -3,8 +3,10 @@
 // Textures:
 //   s0 Albedo   (<name>.dds, sRGB)
 //   s1 ORM      (<name>_orm.dds, linear: R=AO, G=Roughness, B=Metallic, A=Height)
-// The ORM map is optional per unit; the engine binds a neutral 1x1 default when a
-// unit ships no _orm, so this shader degrades to plain lit albedo for those.
+// The ORM map is optional per unit. Where one is not authored the engine binds a
+// neutral 1x1 default instead (unoccluded, dielectric, mostly rough -- see
+// initDefaultOrmMap), so every eligible mesh reaches this shader and nothing here
+// needs to know which kind of map it is sampling.
 //
 // The ORM alpha channel is a height map: it drives derivative-based bump mapping
 // (a tangent frame reconstructed from screen-space derivatives, so no per-vertex

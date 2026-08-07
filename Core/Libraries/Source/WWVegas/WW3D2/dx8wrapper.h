@@ -754,18 +754,28 @@ public:
 		SHADER_ROUTE_EVERYTHING    = 1 << 3,   // drop every restriction (diagnostic)
 		SHADER_ROUTE_OFF           = 1 << 4,   // no mesh routing at all (fixed function)
 		SHADER_ROUTE_ADDITIVE      = 1 << 6,   // additive effect passes too (diagnostic; see below)
-		SHADER_ROUTE_PBR           = 1 << 5,   // metallic-roughness shading where an ORM map exists
-		// PBR on house-coloured meshes as well. Normally they are held back, because a
-		// procedurally generated ORM reads their bright white base texture as
-		// near-metallic and PBR then renders dark metal where a team tint belongs. That
-		// reasoning is about *generated* maps: an authored ORM whose metallic is
-		// deliberate wants to be obeyed, and since every player-owned unit carries a team
-		// tint, the exclusion otherwise keeps PBR off all of them.
+		SHADER_ROUTE_PBR           = 1 << 5,   // metallic-roughness shading for object meshes
+		// PBR on house-coloured meshes with their *authored* ORM map. Normally they are
+		// held back from it, because a procedurally generated ORM reads their bright white
+		// base texture as near-metallic and PBR then renders dark metal where a team tint
+		// belongs. That reasoning is about *generated* maps: an authored ORM whose metallic
+		// is deliberate wants to be obeyed, and since every player-owned unit carries a team
+		// tint, the exclusion otherwise keeps the authored maps off all of them.
+		//
+		// Note this no longer decides whether a house-coloured mesh is shaded by PBR at
+		// all -- without this flag it still is, on the neutral default map, where there is
+		// no metallic channel to misread. It decides only whose ORM data it uses.
 		SHADER_ROUTE_PBR_TEAMCOLOR = 1 << 7,
+		// Restore the pre-migration behaviour: PBR only for meshes that actually ship an
+		// <name>_orm map, everything else on the M3 lit shader. Kept as an opt-out so the
+		// two can still be compared in game -- the shipping behaviour is that every
+		// eligible mesh is shaded by PBR, falling back to m_defaultOrmMap.
+		SHADER_ROUTE_PBR_AUTHORED_ONLY = 1 << 8,
 	};
 	static DWORD						m_shaderRoutingMask;
-	// PBR (metallic-roughness, SM3) variant of the unit shader. Bound in place of
-	// the plain unit shader for meshes whose base texture ships a <name>_orm map.
+	// PBR (metallic-roughness, SM3) variant of the unit shader. Bound in place of the
+	// plain unit shader for every eligible object mesh -- on its own <name>_orm map
+	// where one is authored, on m_defaultOrmMap where none is.
 	static DWORD						m_dwUnitPbrVS;
 	static DWORD						m_dwUnitPbrPS;
 	// Shared environment cubemap sampled by the PBR shader for reflections. Bound on
@@ -780,6 +790,13 @@ public:
 	static void Restore_Stage5_After_Shadow();
 	// Put stages 4/6/7 (env cubemap, SSR scene colour, SSR depth) back after a PBR draw.
 	static void Restore_Pbr_Extra_Stages();
+	// Neutral 1x1 ORM map, bound to stage 1 for meshes that ship no <name>_orm of their
+	// own so they can still be shaded by PBR. Its channels hold the values that make the
+	// metallic-roughness BRDF land closest to what the fixed-function pipeline drew:
+	// unoccluded (AO 1), fully dielectric (metallic 0), and rough enough that the
+	// specular lobe is a broad sheen rather than a highlight the original never had.
+	// Built by W3DShaderManager::initDefaultOrmMap.
+	static IDirect3DBaseTexture8*		m_defaultOrmMap;
 	// Resolver (installed by the game layer) that maps a base texture to its ORM
 	// sibling texture (<name>_orm), or nullptr when the unit ships no PBR maps.
 	typedef TextureBaseClass* (*OrmResolverFunc)(TextureBaseClass* baseTexture);
@@ -817,6 +834,11 @@ public:
 	static void Set_Debug_Mesh_Name(const char* n) { s_debugMeshName = n; }
 	static void Debug_Note_Mesh_Routing(unsigned pipelineBit, unsigned ffReason);
 	static void Debug_Check_Mesh_Routing_Split();
+	// Per-pipeline draw census, reported over a window of frames. Says which pipeline
+	// claimed how much of the frame -- the check that PBR really did widen to every
+	// eligible mesh, and that the exclusions around it still hold.
+	static void Debug_Note_Routing_Census(unsigned category);
+	static void Debug_Report_Routing_Census();
 #endif
 	static DWORD						m_dwRoadVS;
 	static DWORD						m_dwRoadPS;
