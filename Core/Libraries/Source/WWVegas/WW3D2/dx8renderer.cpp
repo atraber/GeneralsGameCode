@@ -1912,6 +1912,9 @@ void DX8TextureCategoryClass::Render()
 		// via Set_Shader/Set_Material, so the routing can classify it from those rather
 		// than from the device registers they wrote. See Set_Mesh_Renderer_Draw.
 		DX8Wrapper::Set_Mesh_Renderer_Draw(true);
+		// And what the asset already decided this batch is, worked out once when the
+		// mesh type was registered. See meshtechnique.h.
+		DX8Wrapper::Set_Mesh_Technique(renderer->Get_Technique());
 #ifdef RTS_DEBUG
 		// Names the mesh for the split-pipeline watchdog (see dx8wrapper.h).
 		DX8Wrapper::Set_Debug_Mesh_Name(mesh->Peek_Model()->Get_Name());
@@ -1986,6 +1989,7 @@ void DX8TextureCategoryClass::Render()
 		DX8Wrapper::Set_Mesh_Casts_Shadow(false);
 		DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
 		DX8Wrapper::Set_Mesh_Renderer_Draw(false);
+		DX8Wrapper::Set_Mesh_Technique(MESH_TECHNIQUE_UNCLASSIFIED);
 #ifdef RTS_DEBUG
 		DX8Wrapper::Set_Debug_Mesh_Name(nullptr);
 #endif

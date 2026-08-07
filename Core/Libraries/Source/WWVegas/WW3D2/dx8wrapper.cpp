@@ -225,6 +225,213 @@ void DX8Wrapper::Debug_Note_Mesh_Routing(unsigned pipelineBit, unsigned ffReason
 	}
 }
 
+//-----------------------------------------------------------------------------
+// Routing census.
+//
+// The split watchdog above answers "is any one mesh drawn by two pipelines". This
+// answers the other question: across the whole frame, how many mesh passes each
+// pipeline actually claimed, and which meshes are on each.
+//
+// It exists because the PBR gate was widened from "meshes shipping an <name>_orm"
+// to "every eligible mesh, on the default map where it has none", and the only
+// honest way to check that landed is to have the renderer say what it did. Reading
+// it off the screen does not distinguish PBR-on-default from the M3 shader at a
+// glance -- that is the point of the default values -- so a screenshot cannot
+// confirm this either way.
+//
+// Every category is counted, not just the new one: a census where the numbers only
+// moved into pbr-default would be indistinguishable from one where the exclusions
+// stopped working, and the fixed-function and effect-geometry counts are what say
+// they still hold.
+//-----------------------------------------------------------------------------
+namespace {
+	enum { CENSUS_CATS = 6 };
+	const char* const s_censusNames[CENSUS_CATS] = {
+		"fixed-function", "unit_ps", "unit_detail_ps",
+		"pbr(authored orm)", "pbr(default orm)", "pbr(default orm, team-tinted)"
+	};
+	unsigned s_censusDraws[CENSUS_CATS] = { 0 };
+	// A few distinct model names per category, so the totals can be sanity-checked
+	// against what is actually on screen rather than taken on trust.
+	enum { CENSUS_NAMES = 8 };
+	const char* s_censusSamples[CENSUS_CATS][CENSUS_NAMES] = { { nullptr } };
+	int s_censusSampleCount[CENSUS_CATS] = { 0 };
+	int s_censusFrames = 0;
+
+	void CensusNote(unsigned cat, const char* name)
+	{
+		if (cat >= CENSUS_CATS) return;
+		++s_censusDraws[cat];
+		if (name == nullptr) return;
+		for (int i = 0; i < s_censusSampleCount[cat]; ++i) {
+			if (s_censusSamples[cat][i] == name) return;
+		}
+		if (s_censusSampleCount[cat] < CENSUS_NAMES)
+			s_censusSamples[cat][s_censusSampleCount[cat]++] = name;
+	}
+}
+
+void DX8Wrapper::Debug_Note_Routing_Census(unsigned category)
+{
+	CensusNote(category, s_debugMeshName);
+}
+
+//-----------------------------------------------------------------------------
+// Technique check.
+//
+// The technique a mesh declares (meshtechnique.h, decided once at registration)
+// against what the per-draw routing block works out for itself. Nothing reads the
+// declared technique yet; this is what has to be quiet before anything does.
+//
+// Agreements are counted as well as mismatches, because a check that only counts
+// failures cannot tell "the classifier agrees everywhere" from "the classifier
+// never ran". The prelit column is counted separately: those are draws the
+// classifier calls pre-lit and the old block called a surface, which is the
+// defect this is meant to fix rather than a classifier error, so they are
+// expected to be non-zero and each one is a mesh that was being shaded wrong.
+//-----------------------------------------------------------------------------
+namespace {
+	struct TechniqueMismatch {
+		const char* mesh;
+		const char* texture;
+		MeshTechnique declared;
+		MeshTechnique live;
+		unsigned fvf;
+		unsigned count;
+	};
+	enum { MAX_TECH_MISMATCHES = 48 };
+	TechniqueMismatch s_techMismatches[MAX_TECH_MISMATCHES];
+	int s_techMismatchCount = 0;
+	unsigned s_techMismatchTotal = 0;
+	bool s_techMismatchOverflow = false;
+	unsigned s_techAgreed = 0;
+	unsigned s_techPrelitGain = 0;
+	const char* s_techPrelitSamples[8] = { nullptr };
+	int s_techPrelitSampleCount = 0;
+	int s_techFrames = 0;
+}
+
+void DX8Wrapper::Debug_Note_Technique_Agreement(MeshTechnique declared, bool prelitGain)
+{
+	if (prelitGain) {
+		++s_techPrelitGain;
+		const char* mesh = s_debugMeshName ? s_debugMeshName : "(non-mesh)";
+		for (int i = 0; i < s_techPrelitSampleCount; ++i)
+			if (s_techPrelitSamples[i] == mesh) return;
+		if (s_techPrelitSampleCount < 8)
+			s_techPrelitSamples[s_techPrelitSampleCount++] = mesh;
+		return;
+	}
+	(void)declared;
+	++s_techAgreed;
+}
+
+void DX8Wrapper::Debug_Note_Technique_Mismatch(
+	MeshTechnique declared, MeshTechnique live, TextureBaseClass* tex0, unsigned fvf)
+{
+	++s_techMismatchTotal;
+	const char* mesh = s_debugMeshName ? s_debugMeshName : "(non-mesh)";
+	for (int i = 0; i < s_techMismatchCount; ++i) {
+		TechniqueMismatch& e = s_techMismatches[i];
+		if (e.mesh == mesh && e.declared == declared && e.live == live) {
+			++e.count;
+			return;
+		}
+	}
+	if (s_techMismatchCount >= MAX_TECH_MISMATCHES) { s_techMismatchOverflow = true; return; }
+	TechniqueMismatch& e = s_techMismatches[s_techMismatchCount++];
+	e.mesh = mesh;
+	e.texture = tex0 ? tex0->Get_Texture_Name().str() : "(no texture)";
+	e.declared = declared;
+	e.live = live;
+	e.fvf = fvf;
+	e.count = 1;
+}
+
+void DX8Wrapper::Debug_Report_Technique_Check()
+{
+	// Same 600-frame window as the census, for the same reason: the early frames are
+	// the loading screen, where silence would mean "nothing drawn" rather than "agreed".
+	if (++s_techFrames < 600) return;
+	s_techFrames = 0;
+
+	if (s_techAgreed == 0 && s_techMismatchTotal == 0 && s_techPrelitGain == 0) {
+		WWDEBUG_SAY(("TECHNIQUE CHECK: no classified draws this window "
+					 "(no mesh declared a technique -- the classifier did not run)"));
+		return;
+	}
+
+	WWDEBUG_SAY(("TECHNIQUE CHECK: %u agreed, %u mismatched, %u newly pre-lit",
+		s_techAgreed, s_techMismatchTotal, s_techPrelitGain));
+	if (s_techPrelitGain > 0) {
+		WWDEBUG_SAY(("  meshes the asset calls pre-lit that the old block shaded as "
+					 "surfaces: %s %s %s %s",
+			s_techPrelitSampleCount > 0 ? s_techPrelitSamples[0] : "-",
+			s_techPrelitSampleCount > 1 ? s_techPrelitSamples[1] : "",
+			s_techPrelitSampleCount > 2 ? s_techPrelitSamples[2] : "",
+			s_techPrelitSampleCount > 3 ? s_techPrelitSamples[3] : ""));
+	}
+	for (int i = 0; i < s_techMismatchCount; ++i) {
+		const TechniqueMismatch& e = s_techMismatches[i];
+		WWDEBUG_SAY(("  declared %-14s live %-14s x%-7u fvf=%08x mesh=%s tex=%s",
+			Mesh_Technique_Name(e.declared), Mesh_Technique_Name(e.live),
+			e.count, e.fvf, e.mesh, e.texture));
+	}
+	if (s_techMismatchOverflow)
+		WWDEBUG_SAY(("  (mismatch list truncated)"));
+
+	s_techMismatchCount = 0;
+	s_techMismatchTotal = 0;
+	s_techMismatchOverflow = false;
+	s_techAgreed = 0;
+	s_techPrelitGain = 0;
+	s_techPrelitSampleCount = 0;
+}
+
+void DX8Wrapper::Debug_Report_Routing_Census()
+{
+	++s_censusFrames;
+
+	// Accumulate over a window rather than reporting per frame: one frame is a
+	// snapshot of whatever happened to be on screen, and the early frames are the
+	// loading screen, where every count is zero and would read as a finding.
+	const int CENSUS_WINDOW = 600;
+	if (s_censusFrames < CENSUS_WINDOW)
+		return;
+
+	unsigned total = 0;
+	for (int c = 0; c < CENSUS_CATS; ++c) total += s_censusDraws[c];
+	if (total == 0) {   // nothing drawn yet; keep the window open
+		s_censusFrames = 0;
+		return;
+	}
+
+	// The CPU side of the shadow constants, logged next to the census so the values the
+	// shader was handed can be checked against the values it actually received (see the
+	// PBR shader's debug mode 15). Same numbers reach both the M3 and the PBR path.
+	WWDEBUG_SAY(("SHADOW CONSTANTS: bias=%.6f strength=%.3f texel=%.6f | "
+		"normalOffset=%.4f meshBias=%.6f | map=%s",
+		m_shadowParams[0], m_shadowParams[1], m_shadowParams[2],
+		m_shadowMeshParams[0], m_shadowMeshParams[1],
+		m_pShadowMap != nullptr ? "bound" : "NULL"));
+	WWDEBUG_SAY(("ROUTING CENSUS over %d frames, %u mesh passes:", s_censusFrames, total));
+	for (int c = 0; c < CENSUS_CATS; ++c) {
+		WWDEBUG_SAY(("  %-30s %8u (%2u%%)  e.g. %s %s %s %s",
+			s_censusNames[c], s_censusDraws[c],
+			(unsigned)((unsigned __int64)s_censusDraws[c] * 100 / total),
+			s_censusSampleCount[c] > 0 ? s_censusSamples[c][0] : "-",
+			s_censusSampleCount[c] > 1 ? s_censusSamples[c][1] : "",
+			s_censusSampleCount[c] > 2 ? s_censusSamples[c][2] : "",
+			s_censusSampleCount[c] > 3 ? s_censusSamples[c][3] : ""));
+	}
+
+	for (int c = 0; c < CENSUS_CATS; ++c) {
+		s_censusDraws[c] = 0;
+		s_censusSampleCount[c] = 0;
+	}
+	s_censusFrames = 0;
+}
+
 void DX8Wrapper::Debug_Check_Mesh_Routing_Split()
 {
 	// Say so once, so that a silent log is known to mean "no splits" rather than
@@ -263,6 +470,7 @@ bool							DX8Wrapper::m_bShadowDepthPass = false;
 bool							DX8Wrapper::m_bMeshCastsShadow = false;
 bool							DX8Wrapper::m_bMeshHasSolidPass = false;
 bool							DX8Wrapper::m_bMeshRendererDraw = false;
+MeshTechnique					DX8Wrapper::m_meshTechnique = MESH_TECHNIQUE_UNCLASSIFIED;
 void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
@@ -2210,6 +2418,9 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 
 #ifdef RTS_DEBUG
 	Debug_Check_Mesh_Routing_Split();
+	Debug_Report_Routing_Census();
+	Debug_Report_Technique_Check();
+	Mesh_Technique_Report_Registrations();
 #endif
 
 	if (flip_frames) {
@@ -3082,6 +3293,22 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			? meshShader.Get_Depth_Mask() == ShaderClass::DEPTH_WRITE_ENABLE
 			: (RenderStates[D3DRS_ZWRITEENABLE] != FALSE);
 
+		// Whether this mesh expects to be lit at all, from the vertex material that
+		// decides it: VertexMaterialClass::Apply() sets D3DRS_LIGHTING from UseLighting,
+		// and forces it off for a null material and under Is_Coloring_Enabled -- both
+		// reproduced here.
+		//
+		// This is the fact that separates a pre-lit mesh, whose colour is already in its
+		// vertices or its material, from one that wants a lighting equation run over it.
+		// It is what the W3D interface models rely on, and reading it back off the device
+		// left it a draw-order-dependent guess like the blend states above. Used both for
+		// the diffuse-alpha resolution further down and for the technique check.
+		const bool litMesh = shaderDescribesDraw
+			? (render_state.material != nullptr &&
+			   const_cast<VertexMaterialClass*>(render_state.material)->Get_Lighting() &&
+			   !WW3D::Is_Coloring_Enabled())
+			: (RenderStates[D3DRS_LIGHTING] != FALSE);
+
 
 		// Shadow depth pass: every solid 3D draw (terrain, units, props) is re-routed to
 		// the depth-packing shaders so it casts into the shadow map. 2D/UI (identity
@@ -3382,10 +3609,59 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			  (singleTexture || detailCombineSupported) &&
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
 
+#ifdef RTS_DEBUG
+		// Does the technique the asset declared agree with what this block decides for
+		// itself? Nothing reads m_meshTechnique yet -- it is carried alongside the live
+		// decision and checked against it, so the classifier can be trusted before
+		// anything depends on it.
+		//
+		// Only the exclusions the classifier actually models are compared. It knows
+		// nothing about which pass of the frame is being drawn, what ShaderRouting
+		// permits, or whether a texgen can be reproduced, because none of those are
+		// properties of the asset; those are dispatch concerns and are excluded from the
+		// comparison rather than counted as disagreements.
+		//
+		// Draws with no position bit are the same kind of exclusion and are skipped for
+		// the same reason. Sorting buffers deliberately arrive with curFVF == 0 (see the
+		// note where it is read), so the live block sees no normal on them and would read
+		// as pre-lit, while the classifier -- looking at the container's real vertex
+		// format -- correctly calls a sorted glow mesh a surface. Dispatch declines those
+		// draws on the position test long before the technique matters, so comparing them
+		// measures nothing but the instrument. Measured, that was every one of the 6264
+		// disagreements in the first run: three sorted building light fixtures.
+		if (m_meshTechnique != MESH_TECHNIQUE_UNCLASSIFIED && (curFVF & D3DFVF_XYZ)) {
+			const bool liveEffect  = effectGeometryExcluded || additiveBlend;
+			const bool livePrelit  = !liveEffect && reproducibleBlend && !hasNormal;
+			const bool liveFixedFn = !liveEffect && !reproducibleBlend;
+
+			MeshTechnique liveTechnique = MESH_TECHNIQUE_SURFACE;
+			if (liveEffect)       liveTechnique = MESH_TECHNIQUE_EFFECT;
+			else if (liveFixedFn) liveTechnique = MESH_TECHNIQUE_FIXED_FUNCTION;
+			else if (livePrelit)  liveTechnique = MESH_TECHNIQUE_PRELIT;
+
+			// The classifier calls a mesh pre-lit when its material has lighting off as
+			// well as when it carries no normal; the live block has no equivalent test,
+			// which is the gap that let a pre-lit cursor be shaded as a surface. Treat
+			// that one direction as expected rather than as a disagreement -- it is the
+			// defect being fixed, not a classifier error.
+			const bool expectedPrelitGain =
+				m_meshTechnique == MESH_TECHNIQUE_PRELIT &&
+				liveTechnique == MESH_TECHNIQUE_SURFACE && !litMesh;
+
+			if (m_meshTechnique != liveTechnique && !expectedPrelitGain)
+				Debug_Note_Technique_Mismatch(m_meshTechnique, liveTechnique,
+					render_state.Textures[0], curFVF);
+			else
+				Debug_Note_Technique_Agreement(m_meshTechnique, expectedPrelitGain);
+		}
+#endif
 
 		// Which pipeline ends up drawing this pass: 1 = fixed function unless a branch
 		// below claims it. Read by the split-pipeline watchdog in debug builds.
 		unsigned diagRouteBit = 1;
+		// The same thing as a census bucket rather than a bit, split one level finer:
+		// the two PBR paths are one pipeline but not one piece of evidence.
+		unsigned diagCensusCat = 0;   // 0 = fixed function
 
 		if (useShadowDepth) {
 			// Force the full square shadow-map viewport right before the draw. The
@@ -3595,11 +3871,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// draw only when the draw came from the mesh renderer.
 			VertexMaterialClass * meshMaterial =
 				const_cast<VertexMaterialClass*>(render_state.material);
-			const bool litMesh = shaderDescribesDraw
-				? (meshMaterial != nullptr &&
-				   meshMaterial->Get_Lighting() &&
-				   !WW3D::Is_Coloring_Enabled())
-				: (RenderStates[D3DRS_LIGHTING] != FALSE);
+			// (litMesh itself is classified with the blend states at the top of the
+			// block, because the technique check needs it there too.)
 			// Whether the diffuse alpha comes from the material or from the vertex. The
 			// fixed-function pipeline takes it from the material only when told to, and
 			// the engine says so per vertex material (VertexMaterialClass sets
@@ -3708,6 +3981,12 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// zero is still NaN) and render the pixel black.
 			const bool useDetailShader = !usePbr && !singleTexture && detailCombineSupported;
 			diagRouteBit = usePbr ? 8u : (useDetailShader ? 4u : 2u);
+			// 3 = PBR on the mesh's own map, 4 = PBR on the default, 5 = PBR on the
+			// default and team-tinted (the meshes the house-colour rule used to hold
+			// back from PBR entirely, so the category that has to be non-empty for the
+			// faction units and buildings to have actually moved).
+			diagCensusCat = usePbr ? (ormTex != nullptr ? 3u : (houseColoured ? 5u : 4u))
+								   : (useDetailShader ? 2u : 1u);
 			// Geometry with no normal takes the pre-lit variant, whose declared inputs
 			// match what its FVF actually supplies.
 			Set_Vertex_Shader(usePbr ? m_dwUnitPbrVS
@@ -4052,6 +4331,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				else if (texgenActive && !(texgenRoutingOn && texGenSupported)) ffReason = 8;
 			}
 			Debug_Note_Mesh_Routing(diagRouteBit, ffReason);
+			Debug_Note_Routing_Census(diagCensusCat);
 		}
 #endif
 		// Debug visualization overrides, last of all: everything above has finished
