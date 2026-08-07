@@ -79,6 +79,15 @@ class DX8TextureCategoryClass : public MultiListObjectClass
 	TextureClass *									textures[MeshMatDescClass::MAX_TEX_STAGES];
 	ShaderClass										shader;
 	VertexMaterialClass *						material;
+	// Part of this category's identity, not a note attached to it: two meshes sharing a
+	// texture, material and shader but classified differently are different categories.
+	//
+	// That is what makes the category technique-uniform, and it is the whole reason the
+	// technique is in the key. Without it a category could hold a surface and an effect
+	// at once, and there would be no batch-level answer to bind a shader from -- the
+	// choice would have to be made per draw again, which is what all of this is for
+	// getting away from.
+	MeshTechnique									technique;
 	DX8PolygonRendererList						PolygonRendererList;
 	DX8FVFCategoryContainer*					container;
 
@@ -87,7 +96,7 @@ class DX8TextureCategoryClass : public MultiListObjectClass
 
 public:
 
-	DX8TextureCategoryClass(DX8FVFCategoryContainer* container,TextureClass** textures, ShaderClass shd, VertexMaterialClass* mat,int pass);
+	DX8TextureCategoryClass(DX8FVFCategoryContainer* container,TextureClass** textures, ShaderClass shd, VertexMaterialClass* mat,int pass,MeshTechnique tech);
 	virtual ~DX8TextureCategoryClass() override;
 
 	void									Add_Render_Task(DX8PolygonRendererClass * p_renderer,MeshClass * p_mesh);
@@ -99,6 +108,7 @@ public:
 	TextureClass *						Peek_Texture(int stage)	{ return textures[stage]; }
 	const VertexMaterialClass *	Peek_Material() { return material; }
 	ShaderClass							Get_Shader() { return shader; }
+	MeshTechnique						Get_Technique() const { return technique; }
 
 	DX8PolygonRendererList&			Get_Polygon_Renderer_List() { return PolygonRendererList; }
 
@@ -168,12 +178,14 @@ protected:
 		TextureClass* texture,
 		unsigned pass,
 		unsigned stage,
-		DX8TextureCategoryClass* ref_category);
+		DX8TextureCategoryClass* ref_category,
+		MeshTechnique technique);
 
 	DX8TextureCategoryClass* Find_Matching_Texture_Category(
 		VertexMaterialClass* vmat,
 		unsigned pass,
-		DX8TextureCategoryClass* ref_category);
+		DX8TextureCategoryClass* ref_category,
+		MeshTechnique technique);
 
 public:
 

@@ -61,22 +61,9 @@ DX8PolygonRendererClass::DX8PolygonRendererClass(
 	vertex_index_range(0),
 	index_count(index_count_),
 	strip(strip_),
-	pass(pass_),
-	technique(MESH_TECHNIQUE_UNCLASSIFIED)
+	pass(pass_)
 {
 	WWASSERT(index_count);
-	// Classify once, here, where the mesh and the material this batch was split out for
-	// are both in hand. Everything the classifier reads is asset data, and the material
-	// description behind it cannot change without Invalidate() re-registering the mesh,
-	// so this holds for the life of the registration.
-	if (tex_cat != nullptr && tex_cat->Get_Container() != nullptr) {
-		technique = Classify_Mesh_Technique(
-			mmc,
-			tex_cat->Get_Container()->Get_FVF(),
-			tex_cat->Get_Shader(),
-			tex_cat->Peek_Material(),
-			tex_cat->Peek_Texture(1));
-	}
 	mmc->PolygonRendererList.Add_Tail(this);
 }
 
@@ -90,20 +77,8 @@ DX8PolygonRendererClass::DX8PolygonRendererClass(const DX8PolygonRendererClass& 
 	vertex_index_range(src.vertex_index_range),
 	index_count(src.index_count),
 	strip(src.strip),
-	pass(src.pass),
-	technique(MESH_TECHNIQUE_UNCLASSIFIED)
+	pass(src.pass)
 {
-	// Reclassified rather than copied: this constructor rebinds the batch to a
-	// different mesh, and part of the answer (whether any pass writes depth) is a
-	// property of that mesh, not of the material it shares with the original.
-	if (texture_category != nullptr && texture_category->Get_Container() != nullptr) {
-		technique = Classify_Mesh_Technique(
-			mmc,
-			texture_category->Get_Container()->Get_FVF(),
-			texture_category->Get_Shader(),
-			texture_category->Peek_Material(),
-			texture_category->Peek_Texture(1));
-	}
 	mmc->PolygonRendererList.Add_Tail(this);
 }
 

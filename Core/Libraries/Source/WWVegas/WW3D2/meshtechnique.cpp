@@ -131,35 +131,31 @@ static MeshTechnique Classify_Mesh_Technique_Impl(
 	if (fvf != 0 && !(fvf & D3DFVF_XYZ))
 		return MESH_TECHNIQUE_FIXED_FUNCTION;
 
-	// Additive geometry: its alpha is brightness rather than coverage, so nothing that
-	// reasons about coverage applies to it, and the renderer has always kept it off the
-	// programmable path.
+	// Effect geometry: blended in a way that carries no coverage, on a mesh that is not
+	// a surface at all.
 	//
-	// This is the one rule here decided per pass instead of per mesh, and that is a
-	// defect, not a principle. Every other test below asks the mesh, so that all of its
-	// passes get the same answer and it cannot be drawn by two pipelines that compute
-	// different depth. This one asks the pass, so a building with an additive glow on it
-	// is classified EFFECT for that pass and SURFACE for the rest -- and splits.
+	// Two kinds of blend qualify. Additive, whose alpha is brightness rather than
+	// coverage, so nothing that reasons about coverage applies to it. And soft --
+	// blending on with no alpha test -- which has no silhouette either, the alpha *test*
+	// being what gives cut-out foliage a real one.
 	//
-	// It is reproduced exactly as the per-draw routing had it, because Stage 2 is meant
-	// to relocate the decision without changing it. Measured on chinooks.rep the cost is
-	// real and small: 9 split meshes, every one of them additive, CBNRIVERHO_N.RIVERHOUSE
-	// and ABPWRPLANT_N.CYLINDER01 among them, all of which the split watchdog was already
-	// reporting before any of this existed.
+	// Both are then asked the same question about the mesh, and that is the point. A
+	// building carries additive glows and blended overlays; something in it also writes
+	// depth, so those passes are layers on a surface and belong wherever the surface
+	// goes. A rotor disc, a light shaft, a smoke puff writes depth in no pass, because
+	// it is not a surface, and the whole of it stays on fixed function.
 	//
-	// The fix belongs with the batch key: once the technique is what the renderer batches
-	// on, a mesh whose passes disagree becomes expressible only as a deliberate choice,
-	// and the honest answer for a glow on a building is that the mesh is a surface and
-	// the glow is a pass of it.
-	if (shader.Is_Additive_Blend())
-		return MESH_TECHNIQUE_EFFECT;
-
-	// Soft-blended -- blending on with no alpha test -- and belonging to a mesh that
-	// writes depth nowhere. See Mesh_Has_Depth_Writing_Pass.
-	const bool softBlended =
-		shader.Is_Blend_Enabled() &&
-		shader.Get_Alpha_Test() == ShaderClass::ALPHATEST_DISABLE;
-	if (softBlended && !Mesh_Has_Depth_Writing_Pass(mmc))
+	// Asking the pass instead is what splits a mesh. Until this was unified the additive
+	// test was per pass, so a building's glow classified EFFECT while the rest of it
+	// classified SURFACE, the two were drawn by pipelines that do not compute identical
+	// depth, and the coincident passes z-fought: 9 meshes on chinooks.rep, every one of
+	// them additive, CBNRIVERHO_N.RIVERHOUSE and ABPWRPLANT_N.CYLINDER01 among them. The
+	// soft-blend test had already been through exactly this and been fixed the same way.
+	const bool blendWithoutCoverage =
+		shader.Is_Additive_Blend() ||
+		(shader.Is_Blend_Enabled() &&
+		 shader.Get_Alpha_Test() == ShaderClass::ALPHATEST_DISABLE);
+	if (blendWithoutCoverage && !Mesh_Has_Depth_Writing_Pass(mmc))
 		return MESH_TECHNIQUE_EFFECT;
 
 	// Blends the shaders cannot composite the same way stay where they are. The

@@ -66,9 +66,6 @@ class DX8PolygonRendererClass : public MultiListObjectClass
 	unsigned							vertex_index_range;		// range to the last vertex our polys reference
 	bool								strip;						// is this a strip?
 	unsigned							pass;					// rendering pass
-	// What kind of surface this batch is, decided from the asset when the mesh type was
-	// registered rather than inferred per draw. See meshtechnique.h.
-	MeshTechnique					technique;
 
 public:
 	DX8PolygonRendererClass(
@@ -89,7 +86,6 @@ public:
 	unsigned							Get_Vertex_Offset()	{ return vertex_offset; }
 	unsigned							Get_Index_Offset()	{ return index_offset; }
 	unsigned						Get_Pass()	{ return pass; }
-	MeshTechnique					Get_Technique() const { return technique; }
 
 	MeshModelClass*				Get_Mesh_Model_Class() { return mmc; }
 	DX8TextureCategoryClass*	Get_Texture_Category() { return texture_category; }
