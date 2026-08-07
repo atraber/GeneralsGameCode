@@ -278,6 +278,118 @@ void DX8Wrapper::Debug_Note_Routing_Census(unsigned category)
 }
 
 //-----------------------------------------------------------------------------
+// Technique check.
+//
+// The technique a mesh declares (meshtechnique.h, decided once at registration)
+// against what the per-draw routing block works out for itself. Nothing reads the
+// declared technique yet; this is what has to be quiet before anything does.
+//
+// Agreements are counted as well as mismatches, because a check that only counts
+// failures cannot tell "the classifier agrees everywhere" from "the classifier
+// never ran". The prelit column is counted separately: those are draws the
+// classifier calls pre-lit and the old block called a surface, which is the
+// defect this is meant to fix rather than a classifier error, so they are
+// expected to be non-zero and each one is a mesh that was being shaded wrong.
+//-----------------------------------------------------------------------------
+namespace {
+	struct TechniqueMismatch {
+		const char* mesh;
+		const char* texture;
+		MeshTechnique declared;
+		MeshTechnique live;
+		unsigned fvf;
+		unsigned count;
+	};
+	enum { MAX_TECH_MISMATCHES = 48 };
+	TechniqueMismatch s_techMismatches[MAX_TECH_MISMATCHES];
+	int s_techMismatchCount = 0;
+	unsigned s_techMismatchTotal = 0;
+	bool s_techMismatchOverflow = false;
+	unsigned s_techAgreed = 0;
+	unsigned s_techPrelitGain = 0;
+	const char* s_techPrelitSamples[8] = { nullptr };
+	int s_techPrelitSampleCount = 0;
+	int s_techFrames = 0;
+}
+
+void DX8Wrapper::Debug_Note_Technique_Agreement(MeshTechnique declared, bool prelitGain)
+{
+	if (prelitGain) {
+		++s_techPrelitGain;
+		const char* mesh = s_debugMeshName ? s_debugMeshName : "(non-mesh)";
+		for (int i = 0; i < s_techPrelitSampleCount; ++i)
+			if (s_techPrelitSamples[i] == mesh) return;
+		if (s_techPrelitSampleCount < 8)
+			s_techPrelitSamples[s_techPrelitSampleCount++] = mesh;
+		return;
+	}
+	(void)declared;
+	++s_techAgreed;
+}
+
+void DX8Wrapper::Debug_Note_Technique_Mismatch(
+	MeshTechnique declared, MeshTechnique live, TextureBaseClass* tex0, unsigned fvf)
+{
+	++s_techMismatchTotal;
+	const char* mesh = s_debugMeshName ? s_debugMeshName : "(non-mesh)";
+	for (int i = 0; i < s_techMismatchCount; ++i) {
+		TechniqueMismatch& e = s_techMismatches[i];
+		if (e.mesh == mesh && e.declared == declared && e.live == live) {
+			++e.count;
+			return;
+		}
+	}
+	if (s_techMismatchCount >= MAX_TECH_MISMATCHES) { s_techMismatchOverflow = true; return; }
+	TechniqueMismatch& e = s_techMismatches[s_techMismatchCount++];
+	e.mesh = mesh;
+	e.texture = tex0 ? tex0->Get_Texture_Name().str() : "(no texture)";
+	e.declared = declared;
+	e.live = live;
+	e.fvf = fvf;
+	e.count = 1;
+}
+
+void DX8Wrapper::Debug_Report_Technique_Check()
+{
+	// Same 600-frame window as the census, for the same reason: the early frames are
+	// the loading screen, where silence would mean "nothing drawn" rather than "agreed".
+	if (++s_techFrames < 600) return;
+	s_techFrames = 0;
+
+	if (s_techAgreed == 0 && s_techMismatchTotal == 0 && s_techPrelitGain == 0) {
+		WWDEBUG_SAY(("TECHNIQUE CHECK: no classified draws this window "
+					 "(no mesh declared a technique -- the classifier did not run)"));
+		return;
+	}
+
+	WWDEBUG_SAY(("TECHNIQUE CHECK: %u agreed, %u mismatched, %u newly pre-lit",
+		s_techAgreed, s_techMismatchTotal, s_techPrelitGain));
+	if (s_techPrelitGain > 0) {
+		WWDEBUG_SAY(("  meshes the asset calls pre-lit that the old block shaded as "
+					 "surfaces: %s %s %s %s",
+			s_techPrelitSampleCount > 0 ? s_techPrelitSamples[0] : "-",
+			s_techPrelitSampleCount > 1 ? s_techPrelitSamples[1] : "",
+			s_techPrelitSampleCount > 2 ? s_techPrelitSamples[2] : "",
+			s_techPrelitSampleCount > 3 ? s_techPrelitSamples[3] : ""));
+	}
+	for (int i = 0; i < s_techMismatchCount; ++i) {
+		const TechniqueMismatch& e = s_techMismatches[i];
+		WWDEBUG_SAY(("  declared %-14s live %-14s x%-7u fvf=%08x mesh=%s tex=%s",
+			Mesh_Technique_Name(e.declared), Mesh_Technique_Name(e.live),
+			e.count, e.fvf, e.mesh, e.texture));
+	}
+	if (s_techMismatchOverflow)
+		WWDEBUG_SAY(("  (mismatch list truncated)"));
+
+	s_techMismatchCount = 0;
+	s_techMismatchTotal = 0;
+	s_techMismatchOverflow = false;
+	s_techAgreed = 0;
+	s_techPrelitGain = 0;
+	s_techPrelitSampleCount = 0;
+}
+
+//-----------------------------------------------------------------------------
 // Frame dump. Saves the back buffer (and the shadow map beside it) to PNG every
 // DUMP_EVERY frames, capped, so a rendering question can be answered by looking at
 // the pixels instead of reasoning about them.
@@ -407,6 +519,7 @@ bool							DX8Wrapper::m_bShadowDepthPass = false;
 bool							DX8Wrapper::m_bMeshCastsShadow = false;
 bool							DX8Wrapper::m_bMeshHasSolidPass = false;
 bool							DX8Wrapper::m_bMeshRendererDraw = false;
+MeshTechnique					DX8Wrapper::m_meshTechnique = MESH_TECHNIQUE_UNCLASSIFIED;
 void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
@@ -2124,6 +2237,8 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 #ifdef RTS_DEBUG
 	Debug_Check_Mesh_Routing_Split();
 	Debug_Report_Routing_Census();
+	Debug_Report_Technique_Check();
+	Mesh_Technique_Report_Registrations();
 	Debug_Dump_Frame();
 #endif
 
@@ -3025,6 +3140,22 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			? meshShader.Get_Depth_Mask() == ShaderClass::DEPTH_WRITE_ENABLE
 			: (RenderStates[D3DRS_ZWRITEENABLE] != FALSE);
 
+		// Whether this mesh expects to be lit at all, from the vertex material that
+		// decides it: VertexMaterialClass::Apply() sets D3DRS_LIGHTING from UseLighting,
+		// and forces it off for a null material and under Is_Coloring_Enabled -- both
+		// reproduced here.
+		//
+		// This is the fact that separates a pre-lit mesh, whose colour is already in its
+		// vertices or its material, from one that wants a lighting equation run over it.
+		// It is what the W3D interface models rely on, and reading it back off the device
+		// left it a draw-order-dependent guess like the blend states above. Used both for
+		// the diffuse-alpha resolution further down and for the technique check.
+		const bool litMesh = shaderDescribesDraw
+			? (render_state.material != nullptr &&
+			   const_cast<VertexMaterialClass*>(render_state.material)->Get_Lighting() &&
+			   !WW3D::Is_Coloring_Enabled())
+			: (RenderStates[D3DRS_LIGHTING] != FALSE);
+
 
 		// Shadow depth pass: every solid 3D draw (terrain, units, props) is re-routed to
 		// the depth-packing shaders so it casts into the shadow map. 2D/UI (identity
@@ -3336,6 +3467,52 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			  (singleTexture || detailCombineSupported) &&
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
 
+#ifdef RTS_DEBUG
+		// Does the technique the asset declared agree with what this block decides for
+		// itself? Nothing reads m_meshTechnique yet -- it is carried alongside the live
+		// decision and checked against it, so the classifier can be trusted before
+		// anything depends on it.
+		//
+		// Only the exclusions the classifier actually models are compared. It knows
+		// nothing about which pass of the frame is being drawn, what ShaderRouting
+		// permits, or whether a texgen can be reproduced, because none of those are
+		// properties of the asset; those are dispatch concerns and are excluded from the
+		// comparison rather than counted as disagreements.
+		//
+		// Draws with no position bit are the same kind of exclusion and are skipped for
+		// the same reason. Sorting buffers deliberately arrive with curFVF == 0 (see the
+		// note where it is read), so the live block sees no normal on them and would read
+		// as pre-lit, while the classifier -- looking at the container's real vertex
+		// format -- correctly calls a sorted glow mesh a surface. Dispatch declines those
+		// draws on the position test long before the technique matters, so comparing them
+		// measures nothing but the instrument. Measured, that was every one of the 6264
+		// disagreements in the first run: three sorted building light fixtures.
+		if (m_meshTechnique != MESH_TECHNIQUE_UNCLASSIFIED && (curFVF & D3DFVF_XYZ)) {
+			const bool liveEffect  = effectGeometryExcluded || additiveBlend;
+			const bool livePrelit  = !liveEffect && reproducibleBlend && !hasNormal;
+			const bool liveFixedFn = !liveEffect && !reproducibleBlend;
+
+			MeshTechnique liveTechnique = MESH_TECHNIQUE_SURFACE;
+			if (liveEffect)       liveTechnique = MESH_TECHNIQUE_EFFECT;
+			else if (liveFixedFn) liveTechnique = MESH_TECHNIQUE_FIXED_FUNCTION;
+			else if (livePrelit)  liveTechnique = MESH_TECHNIQUE_PRELIT;
+
+			// The classifier calls a mesh pre-lit when its material has lighting off as
+			// well as when it carries no normal; the live block has no equivalent test,
+			// which is the gap that let a pre-lit cursor be shaded as a surface. Treat
+			// that one direction as expected rather than as a disagreement -- it is the
+			// defect being fixed, not a classifier error.
+			const bool expectedPrelitGain =
+				m_meshTechnique == MESH_TECHNIQUE_PRELIT &&
+				liveTechnique == MESH_TECHNIQUE_SURFACE && !litMesh;
+
+			if (m_meshTechnique != liveTechnique && !expectedPrelitGain)
+				Debug_Note_Technique_Mismatch(m_meshTechnique, liveTechnique,
+					render_state.Textures[0], curFVF);
+			else
+				Debug_Note_Technique_Agreement(m_meshTechnique, expectedPrelitGain);
+		}
+#endif
 
 		// Which pipeline ends up drawing this pass: 1 = fixed function unless a branch
 		// below claims it. Read by the split-pipeline watchdog in debug builds.
@@ -3612,11 +3789,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// draw only when the draw came from the mesh renderer.
 			VertexMaterialClass * meshMaterial =
 				const_cast<VertexMaterialClass*>(render_state.material);
-			const bool litMesh = shaderDescribesDraw
-				? (meshMaterial != nullptr &&
-				   meshMaterial->Get_Lighting() &&
-				   !WW3D::Is_Coloring_Enabled())
-				: (RenderStates[D3DRS_LIGHTING] != FALSE);
+			// (litMesh itself is classified with the blend states at the top of the
+			// block, because the technique check needs it there too.)
 			// Whether the diffuse alpha comes from the material or from the vertex. The
 			// fixed-function pipeline takes it from the material only when told to, and
 			// the engine says so per vertex material (VertexMaterialClass sets

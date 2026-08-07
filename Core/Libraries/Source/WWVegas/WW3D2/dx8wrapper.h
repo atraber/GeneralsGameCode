@@ -48,6 +48,7 @@
 #include "statistics.h"
 #include "WWLib/wwstring.h"
 #include "WW3D2/lightenvironment.h"
+#include "WW3D2/meshtechnique.h"
 #include "WW3D2/shader.h"
 #include "WWMath/vector4.h"
 #include "WWLib/cpudetect.h"
@@ -839,6 +840,12 @@ public:
 	// eligible mesh, and that the exclusions around it still hold.
 	static void Debug_Note_Routing_Census(unsigned category);
 	static void Debug_Report_Routing_Census();
+	// Declared technique (meshtechnique.h) against the per-draw routing block's own
+	// answer. Must be quiet before anything is allowed to read the declared value.
+	static void Debug_Note_Technique_Agreement(MeshTechnique declared, bool prelitGain);
+	static void Debug_Note_Technique_Mismatch(
+		MeshTechnique declared, MeshTechnique live, TextureBaseClass* tex0, unsigned fvf);
+	static void Debug_Report_Technique_Check();
 
 	// Periodic back-buffer + shadow-map PNG dump, so a rendering question can be
 	// settled by looking at the pixels rather than reasoning about them.
@@ -908,6 +915,12 @@ public:
 	// declare, the way terrain and roads already declare theirs.
 	static bool							m_bMeshRendererDraw;
 	static void Set_Mesh_Renderer_Draw(bool active) { m_bMeshRendererDraw = active; }
+	// What the asset says this batch is, decided when the mesh type was registered
+	// (see meshtechnique.h) rather than inferred here from render state. Set by the
+	// mesh renderer per draw and cleared after it, like the flags above;
+	// MESH_TECHNIQUE_UNCLASSIFIED for everything that does not come through it.
+	static MeshTechnique				m_meshTechnique;
+	static void Set_Mesh_Technique(MeshTechnique t) { m_meshTechnique = t; }
 	// Backing store for the sun cull box declared below.
 	static bool							m_bSunCullBoxValid;
 	static Vector3						m_sunCullEye;
