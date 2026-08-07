@@ -314,6 +314,24 @@ public:
 	void	Set_Texturing(TexturingType x)							{ ShaderBits&=~MASK_TEXTURING; ShaderBits|=(x<<SHIFT_TEXTURING);	}
 	void	Set_NPatch_Enable(NPatchEnableType x)					{ ShaderBits&=~MASK_NPATCHENABLE; ShaderBits|=(x<<SHIFT_NPATCHENABLE);	}
 
+	// What blend Apply() actually installs.
+	//
+	// The blend funcs alone do not answer this, for two reasons. A shader with colour
+	// writes disabled applies ZERO/ONE whatever its blend funcs say, and the enum values
+	// do not map positionally onto D3DBLEND -- SRCBLEND_ONE_MINUS_SRC_ALPHA applies
+	// D3DBLEND_DESTCOLOR, not D3DBLEND_INVSRCALPHA. Both facts live in Apply() and its
+	// lookup tables, so these live beside it rather than being re-derived by callers off
+	// the enum names (which would be wrong) or read back out of the device state after
+	// the fact (which is only correct until something else writes those registers).
+	//
+	// Blending off leaves D3DRS_SRCBLEND and D3DRS_DESTBLEND untouched, so a caller that
+	// reads them back sees whatever the previous blended draw left behind. Asking the
+	// shader cannot go stale that way: it describes this draw and nothing else.
+	bool	Is_Blend_Enabled() const;
+	bool	Is_Standard_Alpha_Blend() const;	// SRCALPHA / INVSRCALPHA
+	bool	Is_Additive_Blend() const;			// (ONE | SRCALPHA) / ONE
+	bool	Is_Multiply_Blend() const;			// ZERO/SRCCOLOR or DESTCOLOR/ZERO
+
 	void	Init_From_Material3(const W3dMaterial3Struct & mat3);
 	void	Enable_Fog (const char *source);
 

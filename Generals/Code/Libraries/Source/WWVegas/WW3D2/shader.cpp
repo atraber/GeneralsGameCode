@@ -393,6 +393,58 @@ const Blend dstBlendLUT[ShaderClass::DSTBLEND_MAX] =
  	Blend(D3DBLEND_INVSRCALPHA, true)
 };
 
+// ----------------------------------------------------------------------------
+// The blend Apply() installs, answered from the shader rather than from the
+// device state it writes.
+//
+// Both helpers reproduce the first block of Apply() exactly: the colour-mask
+// override, then the LUT lookup. Kept in this file, immediately below the tables
+// they read, so the two cannot drift -- the enum-to-D3DBLEND mapping is not
+// positional and is not guessable from the enum names.
+// ----------------------------------------------------------------------------
+static void Get_Applied_Blend(const ShaderClass & shader, D3DBLEND & sf, D3DBLEND & df)
+{
+	// Colour writes off: Apply() substitutes ZERO/ONE for whatever the blend funcs
+	// say, so the draw contributes nothing to the colour buffer.
+	if (shader.Get_Color_Mask() != ShaderClass::COLOR_WRITE_ENABLE) {
+		sf = D3DBLEND_ZERO;
+		df = D3DBLEND_ONE;
+		return;
+	}
+	sf = srcBlendLUT[int(shader.Get_Src_Blend_Func())].func;
+	df = dstBlendLUT[int(shader.Get_Dst_Blend_Func())].func;
+}
+
+bool ShaderClass::Is_Blend_Enabled() const
+{
+	D3DBLEND sf, df;
+	Get_Applied_Blend(*this, sf, df);
+	// Apply()'s own test for D3DRS_ALPHABLENDENABLE.
+	return (sf != D3DBLEND_ONE || df != D3DBLEND_ZERO);
+}
+
+bool ShaderClass::Is_Standard_Alpha_Blend() const
+{
+	D3DBLEND sf, df;
+	Get_Applied_Blend(*this, sf, df);
+	return (sf == D3DBLEND_SRCALPHA && df == D3DBLEND_INVSRCALPHA);
+}
+
+bool ShaderClass::Is_Additive_Blend() const
+{
+	D3DBLEND sf, df;
+	Get_Applied_Blend(*this, sf, df);
+	return (sf == D3DBLEND_ONE || sf == D3DBLEND_SRCALPHA) && df == D3DBLEND_ONE;
+}
+
+bool ShaderClass::Is_Multiply_Blend() const
+{
+	D3DBLEND sf, df;
+	Get_Applied_Blend(*this, sf, df);
+	return (sf == D3DBLEND_ZERO && df == D3DBLEND_SRCCOLOR) ||
+		   (sf == D3DBLEND_DESTCOLOR && df == D3DBLEND_ZERO);
+}
+
 
 /***********************************************************************************************
  * ShaderClass::Apply -- Apply the renderstates for this shader                                *

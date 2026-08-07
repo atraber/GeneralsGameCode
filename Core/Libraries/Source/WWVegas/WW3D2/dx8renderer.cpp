@@ -1908,6 +1908,10 @@ void DX8TextureCategoryClass::Render()
 			}
 			DX8Wrapper::Set_Mesh_Has_Solid_Pass(hasSolidPass);
 		}
+		// This draw's state came from the mesh's own ShaderClass and VertexMaterialClass
+		// via Set_Shader/Set_Material, so the routing can classify it from those rather
+		// than from the device registers they wrote. See Set_Mesh_Renderer_Draw.
+		DX8Wrapper::Set_Mesh_Renderer_Draw(true);
 #ifdef RTS_DEBUG
 		// Names the mesh for the split-pipeline watchdog (see dx8wrapper.h).
 		DX8Wrapper::Set_Debug_Mesh_Name(mesh->Peek_Model()->Get_Name());
@@ -1981,6 +1985,7 @@ void DX8TextureCategoryClass::Render()
 		// roads, decals, water, the sorting renderer's own flush) must not inherit it.
 		DX8Wrapper::Set_Mesh_Casts_Shadow(false);
 		DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
+		DX8Wrapper::Set_Mesh_Renderer_Draw(false);
 #ifdef RTS_DEBUG
 		DX8Wrapper::Set_Debug_Mesh_Name(nullptr);
 #endif
