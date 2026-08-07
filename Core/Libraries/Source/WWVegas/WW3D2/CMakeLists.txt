@@ -127,6 +127,8 @@ set(WW3D2_SRC
     #meshmdl.cpp
     #meshmdl.h
     #meshmdlio.cpp
+    meshtechnique.cpp
+    meshtechnique.h
     metalmap.cpp
     metalmap.h
     missingtexture.cpp

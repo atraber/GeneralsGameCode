@@ -49,6 +49,7 @@
 #include "WWLib/wwstring.h"
 #include "WW3D2/lightenvironment.h"
 #include "WW3D2/debugvis.h"
+#include "WW3D2/meshtechnique.h"
 #include "WW3D2/shader.h"
 #include "WWMath/vector4.h"
 #include "WWLib/cpudetect.h"
@@ -913,6 +914,18 @@ public:
 	static void Set_Debug_Mesh_Name(const char* n) { s_debugMeshName = n; }
 	static void Debug_Note_Mesh_Routing(unsigned pipelineBit, unsigned ffReason);
 	static void Debug_Check_Mesh_Routing_Split();
+	// Per-pipeline draw census, reported over a window of frames. Says which pipeline
+	// claimed how much of the frame -- the check that PBR really did widen to every
+	// eligible mesh, and that the exclusions around it still hold.
+	static void Debug_Note_Routing_Census(unsigned category);
+	static void Debug_Report_Routing_Census();
+	// Declared technique (meshtechnique.h) against the per-draw routing block's own
+	// answer. Must be quiet before anything is allowed to read the declared value.
+	static void Debug_Note_Technique_Agreement(MeshTechnique declared, bool prelitGain);
+	static void Debug_Note_Technique_Mismatch(
+		MeshTechnique declared, MeshTechnique live, TextureBaseClass* tex0, unsigned fvf);
+	static void Debug_Report_Technique_Check();
+
 #endif
 	// Directional shadow mapping. During the depth pass every mesh/terrain draw is
 	// re-routed to the shadow-depth shaders (which just pack sun-space depth); during
@@ -984,6 +997,12 @@ public:
 	// declare, the way terrain and roads already declare theirs.
 	static bool							m_bMeshRendererDraw;
 	static void Set_Mesh_Renderer_Draw(bool active) { m_bMeshRendererDraw = active; }
+	// What the asset says this batch is, decided when the mesh type was registered
+	// (see meshtechnique.h) rather than inferred here from render state. Set by the
+	// mesh renderer per draw and cleared after it, like the flags above;
+	// MESH_TECHNIQUE_UNCLASSIFIED for everything that does not come through it.
+	static MeshTechnique				m_meshTechnique;
+	static void Set_Mesh_Technique(MeshTechnique t) { m_meshTechnique = t; }
 	static void Set_Sun_VP(const float* m16);
 
 	// The same orthographic box as m_sunVP, kept in world space so geometry can be culled
