@@ -85,6 +85,7 @@ public:
 	static void getCloudOffset(float& x, float& y); ///<current scrolling cloud-overlay offset.
 	static TextureBaseClass* resolveOrmTexture(TextureBaseClass* baseTexture); ///<PBR ORM map for a base texture, or null (cached).
 	static void clearOrmCache();	///<release cached ORM lookups.
+	static void initDefaultOrmMap();	///<build the neutral 1x1 ORM map used by meshes that ship none.
 	static void initEnvMap();	///<build the shared environment cubemap for PBR reflections.
 	static void updateEnvMap();	///<re-bake the env cubemap when scene lighting drifts (once/frame).
 
