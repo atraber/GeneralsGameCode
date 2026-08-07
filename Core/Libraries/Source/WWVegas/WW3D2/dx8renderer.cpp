@@ -190,10 +190,12 @@ DX8TextureCategoryClass::DX8TextureCategoryClass(
 	TextureClass** texs,
 	ShaderClass shd,
 	VertexMaterialClass* mat,
-	int pass_)
+	int pass_,
+	MeshTechnique tech)
 	:
 	pass(pass_),
 	shader(shd),
+	technique(tech),
 	render_task_head(nullptr),
 	material(mat),
 	container(container_)
@@ -462,9 +464,12 @@ DX8TextureCategoryClass* DX8FVFCategoryContainer::Find_Matching_Texture_Category
 	TextureClass* texture,
 	unsigned pass,
 	unsigned stage,
-	DX8TextureCategoryClass* ref_category)
+	DX8TextureCategoryClass* ref_category,
+	MeshTechnique technique)
 {
 	// Find texture category which matches ref_category's properties but has 'texture' on given pass and stage.
+	// The technique is part of that identity: moving a batch into a category classified
+	// differently would leave that category with no single answer to dispatch from.
 	DX8TextureCategoryClass* dest_tex_category=nullptr;
 	TextureCategoryListIterator dest_it(&texture_category_list[pass]);
 	while (!dest_it.Is_Done()) {
@@ -479,7 +484,8 @@ DX8TextureCategoryClass* DX8FVFCategoryContainer::Find_Matching_Texture_Category
 			}
 			if (all_textures_same &&
 				Equal_Material(dest_tex_category->Peek_Material(),ref_category->Peek_Material()) &&
-				dest_tex_category->Get_Shader()==ref_category->Get_Shader()) {
+				dest_tex_category->Get_Shader()==ref_category->Get_Shader() &&
+				dest_tex_category->Get_Technique()==technique) {
 				return dest_tex_category;
 			}
 		}
@@ -491,7 +497,8 @@ DX8TextureCategoryClass* DX8FVFCategoryContainer::Find_Matching_Texture_Category
 DX8TextureCategoryClass* DX8FVFCategoryContainer::Find_Matching_Texture_Category(
 		VertexMaterialClass* vmat,
 		unsigned pass,
-		DX8TextureCategoryClass* ref_category)
+		DX8TextureCategoryClass* ref_category,
+		MeshTechnique technique)
 {
 	// Find texture category which matches ref_category's properties but has 'vmat' on given pass
 	DX8TextureCategoryClass* dest_tex_category=nullptr;
@@ -504,7 +511,8 @@ DX8TextureCategoryClass* DX8FVFCategoryContainer::Find_Matching_Texture_Category
 			for (unsigned int s = 0; s < MeshMatDescClass::MAX_TEX_STAGES; s++)
 				all_textures_same = all_textures_same && (dest_tex_category->Peek_Texture(s) == ref_category->Peek_Texture(s));
 			if (all_textures_same &&
-				dest_tex_category->Get_Shader()==ref_category->Get_Shader()) {
+				dest_tex_category->Get_Shader()==ref_category->Get_Shader() &&
+				dest_tex_category->Get_Technique()==technique) {
 				return dest_tex_category;
 			}
 		}
@@ -542,7 +550,11 @@ void DX8FVFCategoryContainer::Change_Polygon_Renderer_Texture(
 				DX8TextureCategoryClass *prc=polygon_renderer->Get_Texture_Category();
 
 				if (prc==src_tex_category) {
-					DX8TextureCategoryClass* dest_tex_category=Find_Matching_Texture_Category(new_texture,pass,stage,src_tex_category);
+					// Swapping a texture cannot change what the mesh is: no texture is an
+					// input to the classification. The batch keeps the technique it was
+					// given when it was registered.
+					const MeshTechnique technique=src_tex_category->Get_Technique();
+					DX8TextureCategoryClass* dest_tex_category=Find_Matching_Texture_Category(new_texture,pass,stage,src_tex_category,technique);
 
 					if (!dest_tex_category) {
 						TextureClass * tmp_textures[MeshMatDescClass::MAX_TEX_STAGES];
@@ -556,7 +568,8 @@ void DX8FVFCategoryContainer::Change_Polygon_Renderer_Texture(
 							tmp_textures,
 							src_tex_category->Get_Shader(),
 							const_cast<VertexMaterialClass*>(src_tex_category->Peek_Material()),
-							pass);
+							pass,
+							technique);
 
 						/*
 						** Add the texture category object into the list, immediately after any existing
@@ -634,7 +647,17 @@ void DX8FVFCategoryContainer::Change_Polygon_Renderer_Material(
 				DX8TextureCategoryClass *prc=polygon_renderer->Get_Texture_Category();
 				if (prc==src_tex_category) {
 					foundtexture=true;
-					DX8TextureCategoryClass* dest_tex_category=Find_Matching_Texture_Category(new_vmat,pass,src_tex_category);
+					// Unlike a texture swap, this can change the answer: the vertex
+					// material is where lighting-on-or-off lives, and that is what
+					// separates a pre-lit mesh from a surface. Reclassify against the
+					// material the batch is moving to rather than inheriting.
+					const MeshTechnique technique=Classify_Mesh_Technique(
+						polygon_renderer->Get_Mesh_Model_Class(),
+						FVF,
+						src_tex_category->Get_Shader(),
+						new_vmat,
+						src_tex_category->Peek_Texture(1));
+					DX8TextureCategoryClass* dest_tex_category=Find_Matching_Texture_Category(new_vmat,pass,src_tex_category,technique);
 
 					if (!dest_tex_category) {
 						TextureClass * tmp_textures[MeshMatDescClass::MAX_TEX_STAGES];
@@ -647,7 +670,8 @@ void DX8FVFCategoryContainer::Change_Polygon_Renderer_Material(
 							tmp_textures,
 							src_tex_category->Get_Shader(),
 							const_cast<VertexMaterialClass*>(new_vmat),
-							pass);
+							pass,
+							technique);
 
 						/*
 						** Add the texture category object into the list, immediately after any existing
@@ -1119,8 +1143,19 @@ void DX8FVFCategoryContainer::Insert_To_Texture_Category(
 	unsigned vertex_offset)
 {
 	/*
+	** What the asset says this batch is. Part of the category's identity below, not a
+	** label applied afterwards: two meshes can share a texture, material and shader and
+	** still be different kinds of thing, because part of the answer -- whether the mesh
+	** writes depth anywhere -- belongs to the mesh rather than to the material. Matching
+	** on it is what leaves every category with a single technique, and therefore with a
+	** single answer to bind a shader from.
+	*/
+	const MeshTechnique technique = Classify_Mesh_Technique(
+		split_table.Get_Mesh_Model_Class(), FVF, shader, mat, texs[1]);
+
+	/*
 	** Try to find a DX8TextureCategoryClass in this FVF container which matches the
-	** given textures(one per stage), material and shader combination.
+	** given textures(one per stage), material, shader and technique combination.
 	*/
 	bool fit_in_existing_category = false;
 	TextureCategoryListIterator it(&texture_category_list[pass]);
@@ -1131,7 +1166,8 @@ void DX8FVFCategoryContainer::Insert_To_Texture_Category(
 		for (unsigned int stage = 0; stage < MeshMatDescClass::MAX_TEX_STAGES; stage++) {
 			all_textures_same = all_textures_same && (tex_category->Peek_Texture(stage) == texs[stage]);
 		}
-		if (all_textures_same && Equal_Material(tex_category->Peek_Material(),mat) && tex_category->Get_Shader()==shader) {
+		if (all_textures_same && Equal_Material(tex_category->Peek_Material(),mat) && tex_category->Get_Shader()==shader &&
+			tex_category->Get_Technique()==technique) {
 			used_indices+=tex_category->Add_Mesh(split_table,vertex_offset,used_indices,index_buffer,pass);
 			fit_in_existing_category = true;
 			break;
@@ -1141,7 +1177,7 @@ void DX8FVFCategoryContainer::Insert_To_Texture_Category(
 
 	if (!fit_in_existing_category) {
 
-		DX8TextureCategoryClass * new_tex_category=W3DNEW DX8TextureCategoryClass(this,texs,shader,mat,pass);
+		DX8TextureCategoryClass * new_tex_category=W3DNEW DX8TextureCategoryClass(this,texs,shader,mat,pass,technique);
 		used_indices+=new_tex_category->Add_Mesh(split_table,vertex_offset,used_indices,index_buffer,pass);
 
 		/*
@@ -1912,9 +1948,10 @@ void DX8TextureCategoryClass::Render()
 		// via Set_Shader/Set_Material, so the routing can classify it from those rather
 		// than from the device registers they wrote. See Set_Mesh_Renderer_Draw.
 		DX8Wrapper::Set_Mesh_Renderer_Draw(true);
-		// And what the asset already decided this batch is, worked out once when the
-		// mesh type was registered. See meshtechnique.h.
-		DX8Wrapper::Set_Mesh_Technique(renderer->Get_Technique());
+		// And what the asset already decided this batch is. Read from the category
+		// rather than the mesh: the technique is part of the category's key, so every
+		// mesh in this one shares it. See meshtechnique.h.
+		DX8Wrapper::Set_Mesh_Technique(technique);
 #ifdef RTS_DEBUG
 		// Names the mesh for the split-pipeline watchdog (see dx8wrapper.h).
 		DX8Wrapper::Set_Debug_Mesh_Name(mesh->Peek_Model()->Get_Name());

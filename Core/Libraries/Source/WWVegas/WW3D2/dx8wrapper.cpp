@@ -444,7 +444,20 @@ void DX8Wrapper::Debug_Check_Mesh_Routing_Split()
 	}
 	for (int i = 0; i < s_meshRouteCount; ++i) {
 		const unsigned m = s_meshRoutes[i].mask;
-		if ((m & (m - 1)) == 0) continue;          // one pipeline: the invariant holds
+		// What the invariant is actually about is depth agreement, not shader identity.
+		// unit_vs, unit_prelit_vs and unit_pbr_vs all transform the position by the same
+		// CPU-concatenated WorldViewProj, so a mesh spread across unit_ps, the detail
+		// variant and PBR computes one depth and cannot z-fight with itself. Only the
+		// fixed-function pipeline, which concatenates on the device, disagrees in the low
+		// bits. So the split that matters is bit 0 against any of the rest.
+		//
+		// Reporting every multi-bit mask instead would have made this stage look like a
+		// regression: moving a building's additive glow off fixed function and onto
+		// unit_ps leaves the mesh on two shaders and one pipeline, which is the fix, and
+		// the old test would have called it the same fault under a new name.
+		const bool onFixedFunction  = (m & 1u) != 0;
+		const bool onProgrammable   = (m & ~1u) != 0;
+		if (!(onFixedFunction && onProgrammable)) continue;   // one pipeline: invariant holds
 		if (AlreadyReportedSplit(s_meshRoutes[i].name)) continue;
 		const unsigned r = s_meshRoutes[i].ffReasons;
 		WWDEBUG_SAY(("MESH ROUTING SPLIT: %s drawn by%s%s%s%s in one frame -- its passes "
@@ -3593,11 +3606,33 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// old behaviour -- particle systems and decals are drawn soft-blended without ever
 		// coming through the mesh renderer, and they stay where they were.
 		const bool effectGeometryExcluded = softBlendedOverlay && !m_bMeshHasSolidPass;
+
+		// The same reasoning, applied to additive passes, which it had never been.
+		//
+		// Additive was excluded outright, and being a per-pass test it did to additive
+		// exactly what the blend test used to do to soft-blended overlays: a building
+		// carrying an additive glow had that pass on fixed function and the rest of it on
+		// the shader, the two computed different depth, and the coincident passes
+		// z-fought. That was the last remaining split -- 9 meshes on chinooks.rep, every
+		// one reported by the watchdog as "because: additive-blend", among them
+		// CBNRIVERHO_N.RIVERHOUSE and ABPWRPLANT_N.CYLINDER01.
+		//
+		// So ask the mesh here too. The classifier already does: a mesh that writes depth
+		// somewhere is a SURFACE and its additive passes are layers on it, while a rotor
+		// disc or a light shaft writes depth nowhere, classifies EFFECT, and keeps every
+		// pass on fixed function as before. The frame-buffer blend is applied by hardware
+		// after the pixel shader, so an additive pass composites identically either way.
+		//
+		// Draws with no declared technique keep the old blanket exclusion: nothing that
+		// skips the mesh renderer has a mesh to ask.
+		const bool additiveExcluded = additiveBlend && !routeAdditive &&
+			m_meshTechnique != MESH_TECHNIQUE_SURFACE;
+
 		const bool useUnitShader =
 			!routingDisabled &&
 			!m_bShadowDepthPass &&
 			!effectGeometryExcluded &&
-			(!additiveBlend || routeAdditive) &&
+			!additiveExcluded &&
 			!m_bTerrainShaderPass &&
 			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
@@ -3630,7 +3665,13 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// measures nothing but the instrument. Measured, that was every one of the 6264
 		// disagreements in the first run: three sorted building light fixtures.
 		if (m_meshTechnique != MESH_TECHNIQUE_UNCLASSIFIED && (curFVF & D3DFVF_XYZ)) {
-			const bool liveEffect  = effectGeometryExcluded || additiveBlend;
+			// Mirrors the classifier's single mesh-level rule: a blend that carries no
+			// coverage -- additive, or soft with no alpha test -- on a mesh that writes
+			// depth nowhere. Both halves ask the mesh, so both are reproduced that way
+			// here; comparing against the old per-pass additive test would report every
+			// building glow as a disagreement when moving it is the point.
+			const bool liveEffect =
+				(softBlendedOverlay || additiveBlend) && !m_bMeshHasSolidPass;
 			const bool livePrelit  = !liveEffect && reproducibleBlend && !hasNormal;
 			const bool liveFixedFn = !liveEffect && !reproducibleBlend;
 
@@ -4322,7 +4363,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			unsigned ffReason = 0;
 			if (diagRouteBit == 1) {
 				if (effectGeometryExcluded)                      ffReason = 1;
-				else if (additiveBlend && !routeAdditive)        ffReason = 2;
+				else if (additiveExcluded)                       ffReason = 2;
 				else if (!(curFVF & D3DFVF_XYZ) || !(hasNormal || prelitNoNormal)) ffReason = 3;
 				else if (foreignVertexShader)                    ffReason = 4;
 				else if (!(render_state.Textures[0] != nullptr || untexturedDiffuseOnly)) ffReason = 5;
