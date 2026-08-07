@@ -210,6 +210,7 @@ static DWORD s_dwOriginalPS = 0;  // fixed-function pixel shader to restore afte
 // set this, and undoing it unconditionally would strip stage 1 from draws that put
 // their own texture there.
 static bool s_pbrOrmBound = false;
+IDirect3DBaseTexture8*			DX8Wrapper::m_defaultOrmMap = nullptr;
 
 // Put texture stage 1 back the way the engine expects it after a PBR draw bound its
 // ORM map there. That bind went straight to the device, behind the applied-texture
@@ -3100,34 +3101,60 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// House-colour meshes carry the team tint in a non-white material ambient
 			// over a white texture; their procedurally-generated ORM reads that bright
 			// texture as near-metallic, which PBR would render as dark metal instead of
-			// a tint. Route them to the M3 shader, which tints correctly.
+			// a tint. So their authored map is not trusted (unless SHADER_ROUTE_PBR_TEAMCOLOR
+			// says otherwise) -- but they are still shaded by PBR, on the neutral default
+			// map, whose metallic is zero and so cannot make that mistake.
 			const bool houseColoured =
 				(matAmbient.x < 0.95f || matAmbient.y < 0.95f || matAmbient.z < 0.95f);
 
-			// PBR path: if this mesh's base texture ships an ORM sibling (<name>_orm)
-			// and the PBR shaders loaded, run the metallic-roughness shader; otherwise
-			// the M3 lit shader. The resolver caches a nullptr for units without a map,
-			// so non-HD units are unaffected. Skip PBR until the ORM is resident, and
-			// for house-coloured meshes.
-			// PBR also needs texture stage 1 for the ORM map and reads the mesh's own
-			// coordinates, so a pass that already carries a detail texture there or wants
-			// generated coordinates keeps the plain unit shader.
-			// Off unless SHADER_ROUTE_PBR is selected, so the default build renders
-			// exactly what the milestone before it did and PBR can be A/B'd in game.
+			// PBR path: every eligible object mesh runs the metallic-roughness shader, not
+			// only the ones that ship an ORM sibling (<name>_orm). A mesh with no map of its
+			// own is bound the neutral default (m_defaultOrmMap) instead, so it is shaded by
+			// the same BRDF, under the same lights and the same cast shadows, as an HD unit --
+			// with unoccluded, fully dielectric, mostly-rough values chosen to land close to
+			// what the fixed-function pipeline drew.
+			//
+			// Before this the ORM maps decided which meshes got the new shading at all, and
+			// since only the HD set ships them that left the great majority of faction units
+			// and structures on the M3 shader: two renderers' worth of surface response
+			// standing next to each other in the same frame.
+			//
+			// PBR needs texture stage 1 for the ORM map and reads the mesh's own coordinates,
+			// so a pass that already carries a detail texture there or wants generated
+			// coordinates keeps the plain unit shader.
+			// Off unless SHADER_ROUTE_PBR is selected, so the default build renders exactly
+			// what the milestone before it did and PBR can be A/B'd in game.
 			const bool pbrRoutingOn = (m_shaderRoutingMask & SHADER_ROUTE_PBR) != 0;
+			// Opt-out restoring the old gate: PBR only where an ORM map actually exists, so
+			// the widened routing can be compared against what it replaced.
+			const bool pbrAuthoredOnly = (m_shaderRoutingMask & SHADER_ROUTE_PBR_AUTHORED_ONLY) != 0;
 			// The house-colour exclusion above is about procedurally generated ORM maps
 			// misreading a white team-colour texture as metal. Where the map was authored
 			// on purpose it should be obeyed instead -- and since every player-owned unit
 			// carries a team tint, the exclusion otherwise keeps those maps off all of them,
 			// which leaves it applying to almost nothing anyone looks at.
 			const bool pbrTeamColour = (m_shaderRoutingMask & SHADER_ROUTE_PBR_TEAMCOLOR) != 0;
-			TextureBaseClass* ormTex = nullptr;
-			if (pbrRoutingOn && (!houseColoured || pbrTeamColour) &&
+			// Translucent geometry is never a PBR surface. A metallic-roughness BRDF
+			// describes light reflecting off an opaque solid; a blended sprite is an
+			// effect whose appearance comes from its texture and its blend equation. The
+			// plain unit shader already declines additive draws; PBR had no blend check of
+			// any kind, and widening it to every mesh must not widen it to geometry that
+			// was never a surface.
+			const bool pbrEligible =
+				pbrRoutingOn &&
 				singleTexture && !texgenActive &&
-				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0 && s_ormResolver != nullptr) {
+				(curFVF & D3DFVF_NORMAL) != 0 &&
+				!additiveBlend &&
+				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0;
+			TextureBaseClass* ormTex = nullptr;
+			if (pbrEligible && (!houseColoured || pbrTeamColour) && s_ormResolver != nullptr) {
 				ormTex = s_ormResolver(render_state.Textures[0]);
 			}
-			const bool usePbr = (ormTex != nullptr);
+			// No map of its own -- shade it by PBR anyway, on the neutral default.
+			const bool useDefaultOrm =
+				pbrEligible && ormTex == nullptr &&
+				!pbrAuthoredOnly && m_defaultOrmMap != nullptr;
+			const bool usePbr = (ormTex != nullptr) || useDefaultOrm;
 
 			// Three variants: PBR, the detail (stage 1) combine, or the plain shader. The
 			// detail variant is bound only when a second texture is really present -- the
@@ -3200,10 +3227,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			}
 
 			if (usePbr) {
-				// Bind ORM to stage 1. Apply() (rather than Peek_D3D_Texture) triggers
-				// the lazy texture load and updates the applied-texture cache, so the
-				// map actually becomes resident instead of staying a null peek forever.
-				ormTex->Apply(1);
+				if (ormTex != nullptr) {
+					// Bind ORM to stage 1. Apply() (rather than Peek_D3D_Texture) triggers
+					// the lazy texture load and updates the applied-texture cache, so the
+					// map actually becomes resident instead of staying a null peek forever.
+					ormTex->Apply(1);
+				} else {
+					// No authored map: the neutral default, bound straight to the device the
+					// way the cubemap and the shadow map are. It is not a TextureClass and
+					// has no asset-manager entry, so there is no Apply() to call and nothing
+					// to load lazily -- it is one texel that exists for the whole session.
+					Set_DX8_Texture(1, m_defaultOrmMap);
+				}
 				s_pbrOrmBound = true;
 				Set_DX8_Texture_Stage_State(1, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 				Set_DX8_Texture_Stage_State(1, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
