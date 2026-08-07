@@ -277,6 +277,51 @@ void DX8Wrapper::Debug_Note_Routing_Census(unsigned category)
 	CensusNote(category, s_debugMeshName);
 }
 
+//-----------------------------------------------------------------------------
+// Frame dump. Saves the back buffer (and the shadow map beside it) to PNG every
+// DUMP_EVERY frames, capped, so a rendering question can be answered by looking at
+// the pixels instead of reasoning about them.
+//
+// The shadow map is dumped alongside deliberately: a back buffer with no visible
+// shadows has two causes -- the map is empty, or the receivers are not sampling it
+// -- and they are indistinguishable from the back buffer alone.
+//-----------------------------------------------------------------------------
+void DX8Wrapper::Debug_Dump_Frame()
+{
+	// Off by default: this writes multi-megabyte PNGs into the game directory, which is
+	// not something an ordinary debug run should do to someone's install. Flip it on for
+	// the session that needs to look at pixels.
+	const bool DUMP_ENABLED = false;
+	const int  DUMP_EVERY   = 300;
+	const int  DUMP_MAX     = 6;
+	static int frame = 0;
+	static int dumped = 0;
+	++frame;
+	if (!DUMP_ENABLED || dumped >= DUMP_MAX || (frame % DUMP_EVERY) != 0)
+		return;
+
+	IDirect3DDevice8* dev = _Get_D3D_Device8();
+	if (dev == nullptr) return;
+
+	char path[MAX_PATH];
+	IDirect3DSurface8* back = nullptr;
+	if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) && back != nullptr) {
+		sprintf(path, "dump_frame%04d_back.png", frame);
+		D3DXSaveSurfaceToFileA(path, D3DXIFF_PNG, back, nullptr, nullptr);
+		back->Release();
+	}
+	if (m_pShadowMap != nullptr) {
+		IDirect3DSurface8* sm = nullptr;
+		if (SUCCEEDED(((IDirect3DTexture8*)m_pShadowMap)->GetSurfaceLevel(0, &sm)) && sm != nullptr) {
+			sprintf(path, "dump_frame%04d_shadowmap.png", frame);
+			D3DXSaveSurfaceToFileA(path, D3DXIFF_PNG, sm, nullptr, nullptr);
+			sm->Release();
+		}
+	}
+	++dumped;
+	WWDEBUG_SAY(("FRAME DUMP %d written (dump_frame%04d_*.png)", dumped, frame));
+}
+
 void DX8Wrapper::Debug_Report_Routing_Census()
 {
 	++s_censusFrames;
@@ -295,6 +340,14 @@ void DX8Wrapper::Debug_Report_Routing_Census()
 		return;
 	}
 
+	// The CPU side of the shadow constants, logged next to the census so the values the
+	// shader was handed can be checked against the values it actually received (see the
+	// PBR shader's debug mode 15). Same numbers reach both the M3 and the PBR path.
+	WWDEBUG_SAY(("SHADOW CONSTANTS: bias=%.6f strength=%.3f texel=%.6f | "
+		"normalOffset=%.4f meshBias=%.6f | map=%s",
+		m_shadowParams[0], m_shadowParams[1], m_shadowParams[2],
+		m_shadowMeshParams[0], m_shadowMeshParams[1],
+		m_pShadowMap != nullptr ? "bound" : "NULL"));
 	WWDEBUG_SAY(("ROUTING CENSUS over %d frames, %u mesh passes:", s_censusFrames, total));
 	for (int c = 0; c < CENSUS_CATS; ++c) {
 		WWDEBUG_SAY(("  %-30s %8u (%2u%%)  e.g. %s %s %s %s",
@@ -2070,6 +2123,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 #ifdef RTS_DEBUG
 	Debug_Check_Mesh_Routing_Split();
 	Debug_Report_Routing_Census();
+	Debug_Dump_Frame();
 #endif
 
 	if (flip_frames) {

@@ -839,6 +839,9 @@ public:
 	// eligible mesh, and that the exclusions around it still hold.
 	static void Debug_Note_Routing_Census(unsigned category);
 	static void Debug_Report_Routing_Census();
+	// Periodic back-buffer + shadow-map PNG dump, so a rendering question can be
+	// settled by looking at the pixels rather than reasoning about them.
+	static void Debug_Dump_Frame();
 #endif
 	static DWORD						m_dwRoadVS;
 	static DWORD						m_dwRoadPS;

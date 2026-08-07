@@ -345,9 +345,39 @@ float4 main(PS_INPUT input) : COLOR
     Lo += DirectLight(N, V, LightDir2.xyz, LightDiffuse2.rgb, diffuseColor, F0, roughness);
     Lo += DirectLight(N, V, LightDir3.xyz, LightDiffuse3.rgb, diffuseColor, F0, roughness);
 
-    // Cast shadows darken the direct sunlight.
+    // Cast shadows.
+    //
+    // This is what was missing, and it is why PBR meshes read as not receiving shadows.
+    // The term itself was always fine -- measured on this map, 255 distinct values with
+    // 64% of PBR pixels genuinely shadowed -- but it only ever reached Lo. The ambient
+    // below was left at full strength, and in this engine ambient is the larger half of a
+    // surface's brightness (SceneAmbient ~0.48 against a cubemap averaging ~0.16), so a
+    // fully shadowed mesh stayed nearly as bright as a lit one.
+    //
+    // The renderer has one convention for this and PBR now joins it: terrain_ps and
+    // unit_ps both do `col *= lerp(0.35, 1.0, shadow)` over their whole colour, and
+    // unit_ps notes that the constant is matched to the terrain's on purpose, so that a
+    // mesh and its own cast shadow on the ground sit at the same brightness. Applying the
+    // same factor to everything is what keeps a PBR mesh at the brightness of the ground
+    // it is standing on, whatever the balance of direct and ambient happens to be on it.
+    //
+    // Driving the direct term to zero instead (Lo *= shadow) is the more physical
+    // reading -- an occluded surface receives no sunlight and its highlight should go with
+    // it -- and it was tried first. Measured, it put 30% of PBR pixels below 0.35 and the
+    // darkest at 0.004: sun-dominated pixels lose nearly everything, so units went black
+    // in shadows the ground beside them merely dimmed. Wrong in the other direction, and
+    // more noticeable than the highlight this preserves, because it is the comparison
+    // against the neighbouring surface that the eye actually makes.
+    //
+    // The cost is that a GGX highlight survives at 35% inside a shadow. That is the same
+    // thing the M3 and terrain shaders do with their own baked specular, so it is at
+    // least consistent; splitting DirectLight's diffuse from its specular to kill only
+    // the latter is the improvement if it ever looks wrong.
+    const float SHADOW_MIN = 0.35;
     float shadow = computeShadow(input.worldPos, N);
-    Lo *= shadow;
+    float shadowFill = lerp(SHADOW_MIN, 1.0, shadow);
+    float3 LoUnshadowed = Lo;   // debug mode 16 only
+    Lo *= shadowFill;
 
     // Ambient diffuse, attenuated by AO.
     //
@@ -379,7 +409,7 @@ float4 main(PS_INPUT input) : COLOR
     float3 envIrradiance = texCUBElod(EnvSampler, float4(N, ENV_IRRADIANCE_LOD)).rgb;
     float3 envRelative   = envIrradiance / max(EnvAverage.rgb, 0.0001);
     float3 ambientLight  = SceneAmbient.rgb * lerp(1.0, envRelative, ENV_DIFFUSE_IBL);
-    float3 ambient   = diffuseColor * ambientLight * ao;
+    float3 ambient   = diffuseColor * ambientLight * ao * shadowFill;
 
     // Reflection of the shared environment cubemap, Fresnel-weighted and faded on
     // rough surfaces. World-space reflection vector indexes the cubemap directly.
@@ -462,6 +492,38 @@ float4 main(PS_INPUT input) : COLOR
     //                               to judge; use 1 to see the cubemap itself.
     //  12 = cubemap contribution, exposed up 8x so the shape of it is legible. Absolute
     //                               brightness is meaningless here -- only the pattern is.
+    //  13 = cast-shadow term      -- computeShadow's raw output on PBR meshes only, white
+    //                               = lit, black = fully shadowed. Everything else in the
+    //                               frame (terrain, M3 meshes) still shades normally, so the
+    //                               frame carries its own control: if the ground shows a
+    //                               shadow and the unit standing in it stays white, the term
+    //                               is broken; if the unit greys where the ground darkens,
+    //                               the term works and the question is how it is combined.
+    //  14 = shadow lookup bisect -- takes computeShadow apart on screen, one colour per
+    //                               failure. RED = the reprojected UV landed outside the
+    //                               sun frustum, so the early-out fires and nothing is ever
+    //                               sampled (SunVP wrong, or worldPos not in the space it
+    //                               expects). Otherwise green = this pixel's own sun-clip
+    //                               depth, blue = the depth the map holds there: blue
+    //                               flat-saturated means the sampler is not reading the map
+    //                               at all, and green ~= blue means both agree and the
+    //                               compare is the thing to look at.
+    //  15 = shadow constants     -- what the shader actually received, as colour, to be read
+    //                               back numerically. R = ShadowParams.y (strength; 255 means
+    //                               1.0), G = ShadowMeshParams.y x10, B = ShadowMeshParams.y
+    //                               x1000 (the leftover depth bias, bracketed across two
+    //                               scales so whichever magnitude it is, one channel is
+    //                               legible). Compare against the CPU-side values logged by
+    //                               the routing census -- if they disagree the upload is
+    //                               wrong, if they agree the values themselves are.
+    //  16 = shadow keep-fraction -- what fraction of its fully-lit brightness a PBR pixel
+    //                               retains once the shadow is applied. This is the quantity
+    //                               that was actually broken: before the ambient fix it sat
+    //                               near 1.0 even where the term said fully shadowed. The
+    //                               terrain and the M3 unit shader both bottom out at 0.35,
+    //                               so that is the number to land near -- well below it means
+    //                               PBR meshes are now darker in shadow than the ground they
+    //                               stand on, which is the over-correction to watch for.
 #define PBR_DEBUG_MODE 0
 #if   PBR_DEBUG_MODE == 1
     // sRGB-encoded like the real output, so what you see is what the bake looks like
@@ -566,6 +628,41 @@ float4 main(PS_INPUT input) : COLOR
         cubeSpec *= 8.0;   // exposure only, to make a dim-but-correct result legible
 #endif
         return float4(LinearToSrgb(cubeSpec), 1.0);
+    }
+#elif PBR_DEBUG_MODE == 13
+    return float4(shadow.xxx, 1.0);
+#elif PBR_DEBUG_MODE == 14
+    {
+        float3 wp   = input.worldPos + N * ShadowMeshParams.x;
+        float4 clip = mul(float4(wp, 1.0), SunVP);
+        float3 ndc  = clip.xyz / clip.w;
+        float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+            return float4(1.0, 0.0, 0.0, 1.0);
+        float stored = unpackDepth(tex2D(ShadowMap, uv));
+        return float4(0.0, saturate(ndc.z), saturate(stored), 1.0);
+    }
+#elif PBR_DEBUG_MODE == 15
+    return float4(ShadowParams.y,
+                  saturate(ShadowMeshParams.y * 10.0),
+                  saturate(ShadowMeshParams.y * 1000.0), 1.0);
+#elif PBR_DEBUG_MODE == 16
+    {
+        // The ratio is only meaningful where the lit value is large enough to divide by.
+        // On a near-black pixel it is noise, and reading that noise as over-darkening is
+        // exactly the mistake this mode exists to avoid -- so those are painted pure blue
+        // and excluded on the way out, rather than left to sink the distribution.
+        float3 envFull = envCol * Fenv * (1.0 - roughness * 0.6);
+        float3 lit     = LoUnshadowed + (ambient / max(shadowFill, 1e-4)) + envFull;
+        float  litSum  = dot(lit, 1.0);
+        if (litSum < 0.05)
+            return float4(0.0, 0.0, 1.0, 1.0);
+        // Written into red alone, with green and blue forced to zero. Greyscale was
+        // unreadable: the filter that picks the result back out of the frame cannot tell
+        // a grey debug pixel from dark terrain or grey UI, and counting those as
+        // over-darkened PBR is what made the first two measurements look alarming. A pure
+        // red ramp is a channel combination the rest of the frame never produces.
+        return float4(saturate(dot(color, 1.0) / litSum), 0.0, 0.0, 1.0);
     }
 #endif
 
