@@ -262,6 +262,7 @@ float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 bool							DX8Wrapper::m_bShadowDepthPass = false;
 bool							DX8Wrapper::m_bMeshCastsShadow = false;
 bool							DX8Wrapper::m_bMeshHasSolidPass = false;
+bool							DX8Wrapper::m_bMeshRendererDraw = false;
 void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];
@@ -3016,19 +3017,122 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// foliage is the exception and has to keep casting: it is alpha blended too, but
 		// the alpha *test* is what gives it a real silhouette, so that is the dividing
 		// line rather than blending alone.
-		const bool softBlendedOverlay =
-			RenderStates[D3DRS_ALPHABLENDENABLE] != FALSE &&
-			RenderStates[D3DRS_ALPHATESTENABLE] == FALSE;
+		// Blend classification. Declared here rather than further down because the
+		// shadow-cast decision below needs it; the routing decisions later use the same
+		// values.
+		//
+		// Asked of the ShaderClass the draw is carrying rather than of the device
+		// registers that ShaderClass wrote -- but only for draws where it is the thing
+		// that wrote them.
+		//
+		// Where it is, the shader is the better source because the registers are not a
+		// faithful record of it. Apply() writes D3DRS_SRCBLEND and D3DRS_DESTBLEND only
+		// when blending is on, so when it is off they still hold whatever the last
+		// blended draw left behind, and reading them regardless declared ordinary opaque
+		// meshes additive. Which meshes it caught depended on nothing but draw order:
+		// measured on one frame, the entire USA barracks, power plant and supply centre
+		// were classified additive and dropped to the fixed-function pipeline, where
+		// there is no shadow map to sample, while the command centre beside them (drawn
+		// after something that left an ordinary blend) kept the shader and its shadows.
+		// That is the whole of "the barracks has no shadows on it but the HQ does". The
+		// old code contained the hazard by guarding every read with alphaBlendOn; asking
+		// the shader removes it, and the guard goes away with it.
+		//
+		// Where it is not -- the terrain blender, water, the shroud, the W3DShaderManager
+		// effects, all of which write blend and depth registers straight to the device
+		// and never call Set_Shader -- render_state.shader still holds the last mesh's
+		// bits, and reading it would be the same stale read pointed the other way. Those
+		// keep the device state, which for them is the only account of the draw that
+		// exists. m_bMeshRendererDraw is what separates the two cases; measured over a
+		// replay it is worth 5031 draws per 600 frames, every one of them non-mesh, and
+		// 3354 of them changing whether the draw entered the shadow map.
+		//
+		// Stage 2 closes the gap by having those callers declare a technique of their
+		// own, the way terrain and roads already declare theirs, at which point the
+		// device-state half of each of these can go.
+		const ShaderClass & meshShader = render_state.shader;
+		const bool shaderDescribesDraw = m_bMeshRendererDraw;
+
+		const bool alphaBlendOn = shaderDescribesDraw
+			? meshShader.Is_Blend_Enabled()
+			: (RenderStates[D3DRS_ALPHABLENDENABLE] != FALSE);
+		const bool standardAlphaBlend = shaderDescribesDraw
+			? meshShader.Is_Standard_Alpha_Blend()
+			: (RenderStates[D3DRS_SRCBLEND] == D3DBLEND_SRCALPHA &&
+			   RenderStates[D3DRS_DESTBLEND] == D3DBLEND_INVSRCALPHA);
+		const bool additiveBlend = shaderDescribesDraw
+			? meshShader.Is_Additive_Blend()
+			: (alphaBlendOn &&
+			   (RenderStates[D3DRS_SRCBLEND] == D3DBLEND_ONE ||
+			    RenderStates[D3DRS_SRCBLEND] == D3DBLEND_SRCALPHA) &&
+			   RenderStates[D3DRS_DESTBLEND] == D3DBLEND_ONE);
+		const bool multiplyBlend = shaderDescribesDraw
+			? meshShader.Is_Multiply_Blend()
+			: ((RenderStates[D3DRS_SRCBLEND] == D3DBLEND_ZERO &&
+			    RenderStates[D3DRS_DESTBLEND] == D3DBLEND_SRCCOLOR) ||
+			   (RenderStates[D3DRS_SRCBLEND] == D3DBLEND_DESTCOLOR &&
+			    RenderStates[D3DRS_DESTBLEND] == D3DBLEND_ZERO));
+
+		const bool softBlendedOverlay = alphaBlendOn &&
+			(shaderDescribesDraw
+				? meshShader.Get_Alpha_Test() == ShaderClass::ALPHATEST_DISABLE
+				: RenderStates[D3DRS_ALPHATESTENABLE] == FALSE);
+
+		const bool meshDepthWrite = shaderDescribesDraw
+			? meshShader.Get_Depth_Mask() == ShaderClass::DEPTH_WRITE_ENABLE
+			: (RenderStates[D3DRS_ZWRITEENABLE] != FALSE);
+
 
 		// Shadow depth pass: every solid 3D draw (terrain, units, props) is re-routed to
 		// the depth-packing shaders so it casts into the shadow map. 2D/UI (identity
 		// view) and non-mesh draws are excluded. When active it pre-empts the normal
 		// shaders.
+		// Which blended geometry is allowed to cast.
+		//
+		// Excluding all of it meant a helicopter cast a body shadow with a hole where its
+		// rotor should be, since rotor discs are blended with no alpha test. Admitting all
+		// of it is worse: ground decals, tyre tracks, scorch marks, water, light beams and
+		// lasers are blended too, and they would lay solid shadow over the terrain.
+		//
+		// Depth-write covers most of the split. Measured over a frame: those overlays draw
+		// with ZWRITEENABLE off, because they are marks painted onto a surface rather than
+		// surfaces themselves, while every solid caster -- rocks, crates, roofs, foliage,
+		// riverbanks -- writes depth. Something that does not occlude the scene's own
+		// depth has no business occluding the sun's.
+		//
+		// It does not cover the rotor. A rotor disc is a sorted, blended mesh with
+		// depth-write *off*, which is a decal's signature exactly: measured, it arrives
+		// byte-identical to a tyre track, so no render state can tell them apart. Where
+		// the state cannot, the asset does -- m_bMeshCastsShadow carries
+		// W3D_MESH_FLAG_CAST_SHADOW from the mesh the renderer is drawing right now, and
+		// over a full scene that flag is set on the two rotor discs and on no other sorted
+		// mesh. Only the mesh renderer raises it, so no decal or terrain draw can reach it.
+		//
+		// Additive stays out either way, flag or no flag: its alpha is brightness, not
+		// coverage, so no cutoff applied to it would mean anything.
+		const bool softBlendedCaster =
+			softBlendedOverlay && !additiveBlend &&
+			(meshDepthWrite || m_bMeshCastsShadow);
+		// The depth pass has to see sorted geometry too, which curFVF deliberately does not
+		// -- see the note above: sorting buffers are excluded there so the unit/PBR routing
+		// can never mistake one for a lit mesh. But a sorting buffer still carries a real
+		// FVF, and a SORT-flagged mesh (rotor discs, and anything else the artist marked
+		// for per-triangle sorting) is as solid a caster as any other. Reading the format
+		// separately here admits them to the depth pass without letting the colour routing
+		// near them. Without this every sorted mesh arrived with curFVF == 0, failed the
+		// position test, and was masked out as if it were a screen-space overlay.
+		DWORD depthFVF = curFVF;
+		if (depthFVF == 0 && render_state.vertex_buffers[0] != nullptr &&
+			(render_state.vertex_buffer_types[0] == BUFFER_TYPE_SORTING ||
+			 render_state.vertex_buffer_types[0] == BUFFER_TYPE_DYNAMIC_SORTING)) {
+			depthFVF = render_state.vertex_buffers[0]->FVF_Info().Get_FVF();
+		}
 		const bool useShadowDepth =
 			m_bShadowDepthPass && m_dwShadowDepthVS != 0 && m_dwShadowDepthPS != 0 &&
 			(curFVF & D3DFVF_XYZ) &&
 			!softBlendedOverlay &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY);
+
 
 		const bool useTerrainShader =
 			!m_bShadowDepthPass &&
@@ -3044,17 +3148,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// over a shader-drawn base pass; splitting the two across the shader and fixed
 		// pipelines gave them slightly different depth and they z-fought (surface shimmer)
 		// as the camera rotates. Exotic blends we do not recognise stay on the fixed path.
-		const bool alphaBlendOn = RenderStates[D3DRS_ALPHABLENDENABLE] != FALSE;
-		const DWORD srcBlend = RenderStates[D3DRS_SRCBLEND];
-		const DWORD dstBlend = RenderStates[D3DRS_DESTBLEND];
-		const bool standardAlphaBlend =
-			srcBlend == D3DBLEND_SRCALPHA && dstBlend == D3DBLEND_INVSRCALPHA;
-		const bool additiveBlend =
-			(srcBlend == D3DBLEND_ONE || srcBlend == D3DBLEND_SRCALPHA) &&
-			dstBlend == D3DBLEND_ONE;
-		const bool multiplyBlend =
-			(srcBlend == D3DBLEND_ZERO && dstBlend == D3DBLEND_SRCCOLOR) ||
-			(srcBlend == D3DBLEND_DESTCOLOR && dstBlend == D3DBLEND_ZERO);
+		// (multiplyBlend is classified with the other blend modes above.)
 		const bool reproducibleBlend =
 			!alphaBlendOn || standardAlphaBlend || additiveBlend || multiplyBlend;
 
@@ -3288,6 +3382,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			  (singleTexture || detailCombineSupported) &&
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
 
+
 		// Which pipeline ends up drawing this pass: 1 = fixed function unless a branch
 		// below claims it. Read by the split-pipeline watchdog in debug builds.
 		unsigned diagRouteBit = 1;
@@ -3488,8 +3583,23 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// units rendered either fully opaque or (on the PBR path, where COLOR0.a is
 			// undefined) vanished. Feed the material opacity in: lit meshes use it, pre-lit
 			// meshes keep their genuine per-vertex alpha.
-			const bool litMesh = RenderStates[D3DRS_LIGHTING] != FALSE;
-
+			//
+			// Taken from the vertex material, which is what decides it: Apply() sets
+			// D3DRS_LIGHTING from UseLighting, or forces it off for a null material and
+			// under Is_Coloring_Enabled. Both of those are reproduced here. This is the
+			// one fact in the whole routing block that separates a pre-lit mesh -- one
+			// whose colour is already in its vertices or its material, like the W3D mouse
+			// cursor -- from a mesh that expects to be lit, and reading it back off the
+			// device left it a draw-order-dependent guess like the blend states above.
+			// Gated the same way as the blend states: the vertex material describes the
+			// draw only when the draw came from the mesh renderer.
+			VertexMaterialClass * meshMaterial =
+				const_cast<VertexMaterialClass*>(render_state.material);
+			const bool litMesh = shaderDescribesDraw
+				? (meshMaterial != nullptr &&
+				   meshMaterial->Get_Lighting() &&
+				   !WW3D::Is_Coloring_Enabled())
+				: (RenderStates[D3DRS_LIGHTING] != FALSE);
 			// Whether the diffuse alpha comes from the material or from the vertex. The
 			// fixed-function pipeline takes it from the material only when told to, and
 			// the engine says so per vertex material (VertexMaterialClass sets
@@ -3500,8 +3610,11 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// with it loses out. Bridges blend into the terrain that way and their pass
 			// is alpha tested, so the wrong alpha does not just mis-blend, it discards
 			// the wrong fragments and mottles the deck.
-			const bool diffuseAlphaFromMaterial =
-				litMesh && RenderStates[D3DRS_DIFFUSEMATERIALSOURCE] == D3DMCS_MATERIAL;
+			const bool diffuseAlphaFromMaterial = litMesh &&
+				(shaderDescribesDraw
+					? meshMaterial->Get_Diffuse_Color_Source() == VertexMaterialClass::MATERIAL
+					: RenderStates[D3DRS_DIFFUSEMATERIALSOURCE] == D3DMCS_MATERIAL);
+
 			D3DXVECTOR4 alphaCtl(matOpacity, diffuseAlphaFromMaterial ? 1.0f : 0.0f, 0.0f, 0.0f);
 			// House-colour meshes carry the team tint in a non-white material ambient
 			// over a white texture; their procedurally-generated ORM reads that bright
@@ -3575,6 +3688,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				(curFVF & D3DFVF_NORMAL) != 0 &&
 				!additiveBlend &&
 				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0;
+
+			// The resolver caches a nullptr for meshes without a map, so asking costs a hash
+			// lookup after the first draw.
 			TextureBaseClass* ormTex = nullptr;
 			if (pbrEligible && (!houseColoured || pbrTeamColour) && s_ormResolver != nullptr) {
 				ormTex = s_ormResolver(render_state.Textures[0]);
