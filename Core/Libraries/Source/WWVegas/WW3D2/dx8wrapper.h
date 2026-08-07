@@ -839,6 +839,7 @@ public:
 	// eligible mesh, and that the exclusions around it still hold.
 	static void Debug_Note_Routing_Census(unsigned category);
 	static void Debug_Report_Routing_Census();
+
 	// Periodic back-buffer + shadow-map PNG dump, so a rendering question can be
 	// settled by looking at the pixels rather than reasoning about them.
 	static void Debug_Dump_Frame();
@@ -889,6 +890,24 @@ public:
 	// conservative behaviour. See the note at useUnitShader.
 	static bool							m_bMeshHasSolidPass;
 	static void Set_Mesh_Has_Solid_Pass(bool solid) { m_bMeshHasSolidPass = solid; }
+	// Whether render_state.shader describes the draw about to happen.
+	//
+	// It does for anything that arrived through Set_Shader -- the mesh renderer, which is
+	// what raises this. It does not for callers that write blend, depth and alpha-test
+	// registers straight to the device and never touch the wrapper's shader: the terrain
+	// blender, the water and shroud passes, the W3DShaderManager effects. For those,
+	// render_state.shader still holds whatever the last mesh left in it, and the device
+	// registers are the only description of the draw that exists.
+	//
+	// So the routing classifies from the shader when this is set and from the device
+	// state when it is not. Measured over a replay, that distinction is worth 5031 draws
+	// per 600 frames -- every one of them a non-mesh draw, and 3354 of them changing
+	// whether the draw entered the shadow map.
+	//
+	// Stage 2 removes the split by giving those callers a technique of their own to
+	// declare, the way terrain and roads already declare theirs.
+	static bool							m_bMeshRendererDraw;
+	static void Set_Mesh_Renderer_Draw(bool active) { m_bMeshRendererDraw = active; }
 	// Backing store for the sun cull box declared below.
 	static bool							m_bSunCullBoxValid;
 	static Vector3						m_sunCullEye;
