@@ -919,6 +919,15 @@ public:
 	// eligible mesh, and that the exclusions around it still hold.
 	static void Debug_Note_Routing_Census(unsigned category);
 	static void Debug_Report_Routing_Census();
+	// Draws reaching the routing block with no declared technique, grouped by texture.
+	// These are the callers that bypass the mesh renderer and the last users of the
+	// inference; this is the survey of what they are. Temporary, for stage 6.
+	static void Debug_Note_Unclassified_Draw(
+		TextureBaseClass* tex0, unsigned fvf, bool wentToShader, bool blended, bool softOverlay);
+	static void Debug_Report_Unclassified_Draws();
+	// Frame time over the census window: mean, median, p95 and worst, so a cost can be
+	// judged on its distribution rather than its average.
+	static void Debug_Report_Frame_Timing();
 	// Declared technique (meshtechnique.h) against the per-draw routing block's own
 	// answer. Must be quiet before anything is allowed to read the declared value.
 	static void Debug_Note_Technique_Agreement(MeshTechnique declared, bool prelitGain);

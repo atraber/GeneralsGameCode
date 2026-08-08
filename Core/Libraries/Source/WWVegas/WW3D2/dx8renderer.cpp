@@ -292,6 +292,28 @@ void DX8FVFCategoryContainer::Add_Visible_Material_Pass(MaterialPassClass * pass
 	AnythingToRender=true;
 }
 
+/*
+** Does any pass of this mesh write depth?
+**
+** What separates a surface from an effect, and the routing's answer to whether a
+** soft-blended pass is a layer on something solid or is effect geometry in its own
+** right. Being a property of the mesh, every pass of it gets the same answer, which is
+** what stops one mesh being drawn by two pipelines that compute different depth.
+**
+** Shared by the mesh path and the material-pass path so the two cannot drift. Polygon
+** 0's shader covers both the single-shader and the per-polygon (shader array) cases.
+*/
+static bool Mesh_Has_Solid_Pass(MeshClass * mesh)
+{
+	MeshModelClass * mmc = mesh->Peek_Model();
+	if (mmc == nullptr) return false;
+	for (int p = 0; p < mmc->Get_Pass_Count(); ++p) {
+		if (mmc->Get_Shader(0, p).Get_Depth_Mask() == ShaderClass::DEPTH_WRITE_ENABLE)
+			return true;
+	}
+	return false;
+}
+
 void DX8FVFCategoryContainer::Render_Procedural_Material_Passes()
 {
 	// additional passes
@@ -312,7 +334,32 @@ void DX8FVFCategoryContainer::Render_Procedural_Material_Passes()
    			continue;
    		}
 
+#ifdef RTS_DEBUG
+		// Name the mesh for the split watchdog. Material passes are drawn here rather than
+		// through DX8TextureCategoryClass::Render, so nothing has ever named them and the
+		// watchdog has been blind to them since it was written -- a mesh whose base passes
+		// are on the shader and whose overlay lands on fixed function is exactly the split
+		// it exists to catch, and it could not see it.
+		//
+		// Only the name is set. Nothing else about the draw changes: the technique stays
+		// undeclared and the routing keeps inferring it, so this reports what already
+		// happens rather than altering it.
+		DX8Wrapper::Set_Debug_Mesh_Name(mpr->Peek_Mesh()->Peek_Model()->Get_Name());
+#endif
+		// A material pass is a pass of a mesh, drawn over that mesh's own geometry at the
+		// same depth, so it has to reach the same pipeline as the rest of it.
+		//
+		// Nothing set this, so m_bMeshHasSolidPass was false for every material pass ever
+		// drawn: each soft-blended one was classified as effect geometry and landed on
+		// fixed function while its mesh was on the shader. Measured on chinooks.rep, once
+		// the watchdog could see these draws at all, that was 986 split meshes and every
+		// one of them was this.
+		DX8Wrapper::Set_Mesh_Has_Solid_Pass(Mesh_Has_Solid_Pass(mpr->Peek_Mesh()));
 		mpr->Peek_Mesh()->Render_Material_Pass(mpr->Peek_Material_Pass(),index_buffer);
+		DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
+#ifdef RTS_DEBUG
+		DX8Wrapper::Set_Debug_Mesh_Name(nullptr);
+#endif
 		MatPassTaskClass * next_mpr = mpr->Get_Next_Visible();
 
 		// remove from list, then delete
@@ -359,7 +406,32 @@ void DX8RigidFVFCategoryContainer::Render_Delayed_Procedural_Material_Passes()
 	MatPassTaskClass * mpr = delayed_matpass_head;
 	while (mpr != nullptr) {
 
+#ifdef RTS_DEBUG
+		// Name the mesh for the split watchdog. Material passes are drawn here rather than
+		// through DX8TextureCategoryClass::Render, so nothing has ever named them and the
+		// watchdog has been blind to them since it was written -- a mesh whose base passes
+		// are on the shader and whose overlay lands on fixed function is exactly the split
+		// it exists to catch, and it could not see it.
+		//
+		// Only the name is set. Nothing else about the draw changes: the technique stays
+		// undeclared and the routing keeps inferring it, so this reports what already
+		// happens rather than altering it.
+		DX8Wrapper::Set_Debug_Mesh_Name(mpr->Peek_Mesh()->Peek_Model()->Get_Name());
+#endif
+		// A material pass is a pass of a mesh, drawn over that mesh's own geometry at the
+		// same depth, so it has to reach the same pipeline as the rest of it.
+		//
+		// Nothing set this, so m_bMeshHasSolidPass was false for every material pass ever
+		// drawn: each soft-blended one was classified as effect geometry and landed on
+		// fixed function while its mesh was on the shader. Measured on chinooks.rep, once
+		// the watchdog could see these draws at all, that was 986 split meshes and every
+		// one of them was this.
+		DX8Wrapper::Set_Mesh_Has_Solid_Pass(Mesh_Has_Solid_Pass(mpr->Peek_Mesh()));
 		mpr->Peek_Mesh()->Render_Material_Pass(mpr->Peek_Material_Pass(),index_buffer);
+		DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
+#ifdef RTS_DEBUG
+		DX8Wrapper::Set_Debug_Mesh_Name(nullptr);
+#endif
 		MatPassTaskClass * next_mpr = mpr->Get_Next_Visible();
 
 		delete mpr;
@@ -1931,19 +2003,7 @@ void DX8TextureCategoryClass::Render()
 		// effect geometry in its own right (leave it on fixed function). Asking the mesh
 		// rather than the pass is the point: the answer is the same for every pass, so a
 		// mesh cannot end up split between the two pipelines. See useUnitShader.
-		{
-			MeshModelClass* mmc = mesh->Peek_Model();
-			bool hasSolidPass = false;
-			for (int p = 0; p < mmc->Get_Pass_Count(); ++p) {
-				// Polygon 0's shader covers both the single-shader and the per-polygon
-				// (shader array) cases.
-				if (mmc->Get_Shader(0, p).Get_Depth_Mask() == ShaderClass::DEPTH_WRITE_ENABLE) {
-					hasSolidPass = true;
-					break;
-				}
-			}
-			DX8Wrapper::Set_Mesh_Has_Solid_Pass(hasSolidPass);
-		}
+		DX8Wrapper::Set_Mesh_Has_Solid_Pass(Mesh_Has_Solid_Pass(mesh));
 		// This draw's state came from the mesh's own ShaderClass and VertexMaterialClass
 		// via Set_Shader/Set_Material, so the routing can classify it from those rather
 		// than from the device registers they wrote. See Set_Mesh_Renderer_Draw.
