@@ -453,6 +453,7 @@ namespace {
 		const char* texture;
 		MeshTechnique declared;
 		MeshTechnique live;
+		const char* site;
 		unsigned fvf;
 		unsigned count;
 	};
@@ -502,6 +503,7 @@ void DX8Wrapper::Debug_Note_Technique_Mismatch(
 	e.declared = declared;
 	e.live = live;
 	e.fvf = fvf;
+	e.site = s_declarationSite;
 	e.count = 1;
 }
 
@@ -530,9 +532,9 @@ void DX8Wrapper::Debug_Report_Technique_Check()
 	}
 	for (int i = 0; i < s_techMismatchCount; ++i) {
 		const TechniqueMismatch& e = s_techMismatches[i];
-		WWDEBUG_SAY(("  declared %-14s live %-14s x%-7u fvf=%08x mesh=%s tex=%s",
+		WWDEBUG_SAY(("  declared %-14s live %-14s x%-7u fvf=%08x site=%s mesh=%s tex=%s",
 			Mesh_Technique_Name(e.declared), Mesh_Technique_Name(e.live),
-			e.count, e.fvf, e.mesh, e.texture));
+			e.count, e.fvf, e.site ? e.site : "(none)", e.mesh, e.texture));
 	}
 	if (s_techMismatchOverflow)
 		WWDEBUG_SAY(("  (mismatch list truncated)"));
@@ -641,6 +643,9 @@ bool							DX8Wrapper::m_bMeshCastsShadow = false;
 bool							DX8Wrapper::m_bMeshHasSolidPass = false;
 bool							DX8Wrapper::m_bMeshRendererDraw = false;
 MeshTechnique					DX8Wrapper::m_meshTechnique = MESH_TECHNIQUE_UNCLASSIFIED;
+#ifdef RTS_DEBUG
+const char*						DX8Wrapper::s_declarationSite = nullptr;
+#endif
 void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_sunVP[i] = m16[i];

@@ -1012,6 +1012,13 @@ public:
 	// MESH_TECHNIQUE_UNCLASSIFIED for everything that does not come through it.
 	static MeshTechnique				m_meshTechnique;
 	static void Set_Mesh_Technique(MeshTechnique t) { m_meshTechnique = t; }
+#ifdef RTS_DEBUG
+	// Which DeclaredTechniqueClass scope, if any, a draw is inside. Names the source
+	// of a declaration so a wrong one can be found from its report.
+	static const char*					s_declarationSite;
+	static void Set_Declaration_Site(const char* site) { s_declarationSite = site; }
+	static const char* Get_Declaration_Site() { return s_declarationSite; }
+#endif
 	static void Set_Sun_VP(const float* m16);
 
 	// The same orthographic box as m_sunVP, kept in world space so geometry can be culled
@@ -1086,6 +1093,46 @@ public:
 	friend class WW3D;
 	friend class DX8IndexBufferClass;
 	friend class DX8VertexBufferClass;
+};
+
+/**
+** DeclaredTechniqueClass
+**
+** Declares what the draws inside a scope are, for the renderers that never go through
+** the mesh renderer and so have no asset for the routing to ask -- particle systems,
+** decals, tracks, projected shadows, water.
+**
+** Scoped rather than a pair of calls because these render functions return early in
+** several places, and a declaration left standing would be inherited by whatever drew
+** next. That is the same class of bug as the per-draw flags this replaces: state that
+** outlives the thing it describes.
+**
+** Usage:
+**     DeclaredTechniqueClass declare(MESH_TECHNIQUE_EFFECT);
+*/
+class DeclaredTechniqueClass
+{
+public:
+	// The name identifies which declaration a draw was made under. Without it a
+	// disagreement between a declaration and the routing says only that some scope is
+	// wrong, and finding which means bisecting across as many runs as there are scopes.
+	explicit DeclaredTechniqueClass(MeshTechnique technique, const char * site = "?")
+	{
+		DX8Wrapper::Set_Mesh_Technique(technique);
+#ifdef RTS_DEBUG
+		DX8Wrapper::Set_Declaration_Site(site);
+#endif
+	}
+	~DeclaredTechniqueClass()
+	{
+		DX8Wrapper::Set_Mesh_Technique(MESH_TECHNIQUE_UNCLASSIFIED);
+#ifdef RTS_DEBUG
+		DX8Wrapper::Set_Declaration_Site(nullptr);
+#endif
+	}
+private:
+	DeclaredTechniqueClass(const DeclaredTechniqueClass &);
+	DeclaredTechniqueClass & operator = (const DeclaredTechniqueClass &);
 };
 
 // shader system updates KJM v

@@ -675,6 +675,15 @@ void TestBlendRender(RenderInfoClass & rinfo)
 
 void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowType type)
 {
+	// The decals themselves: blended marks painted onto surfaces, writing no depth
+	// and having no silhouette of their own.
+	//
+	// Declared here rather than around renderShadows, which was the first attempt and
+	// was wrong: that function also rasterises the casting objects into the shadow
+	// texture, so the declaration covered real building geometry and called it an
+	// effect. The technique check caught it -- 19412 draws a window reporting
+	// "declared effect, live surface" on atroofparts01.tga, a roof.
+	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "flushDecals");
 	static	Matrix4x4 mWorld(true);	//initialize to identity matrix
 
 	if (nShadowDecalVertsInBatch == 0 && nShadowDecalPolysInBatch == 0)

@@ -312,6 +312,8 @@ Bool W3DSmudgeManager::testHardwareSupport()
 
 void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 {
+	// Heat-haze smudges: a screen distortion, never a surface.
+	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "smudge");
 	//Verify that the card supports the effect.
 	if (!testHardwareSupport())
 		return;

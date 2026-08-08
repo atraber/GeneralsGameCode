@@ -601,6 +601,20 @@ void SortingRendererClass::Flush_Sorting_Pool()
 void SortingRendererClass::Flush()
 {
 	WWPROFILE("SortingRenderer::Flush");
+
+	// Nothing flushed here is described by whatever declaration happens to be standing.
+	//
+	// Sorted geometry is queued at one point in the frame and drawn at another, and the
+	// flush can be triggered from anywhere -- the smudge pass forces one so it can copy
+	// the back buffer. A DeclaredTechniqueClass scope open at that moment would be
+	// inherited by every deferred draw in the queue, none of which it describes. Measured
+	// on chinooks.rep: 19412 draws a window of sorted building roof parts inheriting the
+	// smudge pass's "effect" declaration.
+	//
+	// The queued draws have no declaration of their own -- that is the long-standing
+	// limitation that a per-draw flag does not survive deferral -- so the honest value
+	// here is none, and the routing infers them as it always has.
+	DeclaredTechniqueClass declareNothing(MESH_TECHNIQUE_UNCLASSIFIED, "sorting-flush");
 	Matrix4x4 old_view;
 	Matrix4x4 old_world;
 	DX8Wrapper::Get_Transform(D3DTS_VIEW,old_view);
