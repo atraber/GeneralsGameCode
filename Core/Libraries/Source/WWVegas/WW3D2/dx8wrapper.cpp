@@ -277,6 +277,163 @@ void DX8Wrapper::Debug_Note_Routing_Census(unsigned category)
 }
 
 //-----------------------------------------------------------------------------
+// Unclassified draws: everything that reaches the routing block without a
+// declared technique, grouped by its stage-0 texture.
+//
+// These are the callers that never come through the mesh renderer -- water, the
+// shroud, decals, particles, projected textures -- and they are the last users of
+// the inference. Giving them techniques means knowing which they are and what
+// each would declare, and the texture is the only identity a non-mesh draw has:
+// there is no model name, and the FVF is shared by half the renderer.
+//
+// Counted per reporting window so a caller that only draws under some condition
+// (water on a map that has some, the shroud once it is torn) still appears.
+//-----------------------------------------------------------------------------
+namespace {
+	struct UnclassifiedGroup {
+		const char* texture;
+		unsigned fvf;
+		unsigned count;
+		unsigned toShader;      // how many the inference sent to the programmable path
+		unsigned blended;       // how many were blended at all
+		unsigned softOverlay;   // blended with no alpha test
+	};
+	enum { MAX_UNCLASSIFIED = 24 };
+	UnclassifiedGroup s_unclassified[MAX_UNCLASSIFIED];
+	int s_unclassifiedCount = 0;
+	unsigned s_unclassifiedTotal = 0;
+	int s_unclassifiedFrames = 0;
+}
+
+void DX8Wrapper::Debug_Note_Unclassified_Draw(
+	TextureBaseClass* tex0, unsigned fvf, bool wentToShader, bool blended, bool softOverlay)
+{
+	++s_unclassifiedTotal;
+	const char* name = tex0 ? tex0->Get_Texture_Name().str() : "(no texture)";
+	for (int i = 0; i < s_unclassifiedCount; ++i) {
+		UnclassifiedGroup& g = s_unclassified[i];
+		if (g.texture == name && g.fvf == fvf) {
+			++g.count;
+			if (wentToShader) ++g.toShader;
+			if (blended)      ++g.blended;
+			if (softOverlay)  ++g.softOverlay;
+			return;
+		}
+	}
+	if (s_unclassifiedCount >= MAX_UNCLASSIFIED) return;
+	UnclassifiedGroup& g = s_unclassified[s_unclassifiedCount++];
+	g.texture = name;
+	g.fvf = fvf;
+	g.count = 1;
+	g.toShader = wentToShader ? 1 : 0;
+	g.blended = blended ? 1 : 0;
+	g.softOverlay = softOverlay ? 1 : 0;
+}
+
+void DX8Wrapper::Debug_Report_Unclassified_Draws()
+{
+	if (++s_unclassifiedFrames < 600) return;
+	s_unclassifiedFrames = 0;
+
+	if (s_unclassifiedTotal == 0) {
+		WWDEBUG_SAY(("UNCLASSIFIED DRAWS: none this window -- every draw reaching the "
+					 "routing block declared a technique"));
+		return;
+	}
+	WWDEBUG_SAY(("UNCLASSIFIED DRAWS: %u over 600 frames, %d distinct "
+				 "(texture x vertex format):", s_unclassifiedTotal, s_unclassifiedCount));
+	for (int i = 0; i < s_unclassifiedCount; ++i) {
+		const UnclassifiedGroup& g = s_unclassified[i];
+		WWDEBUG_SAY(("  %-28s fvf=%08x  x%-7u  ->shader %u  blended %u  soft %u",
+			g.texture, g.fvf, g.count, g.toShader, g.blended, g.softOverlay));
+	}
+	s_unclassifiedCount = 0;
+	s_unclassifiedTotal = 0;
+}
+
+//-----------------------------------------------------------------------------
+// Frame timing.
+//
+// Reported over the same window as the census so the two line up: what the
+// renderer spent, next to what it drew.
+//
+// This measures whether the renderer kept up, and nothing finer. Replay playback
+// drives rendering from the 30 Hz simulation, so a frame that finishes early waits
+// and reads 33.3 ms whatever it did -- useful for "did anything miss the budget",
+// useless for "which of these two is cheaper".
+//
+// D3D9 timestamp queries were tried for the finer question and removed. They are
+// not trustworthy here: a positive control rendering 2.25x the pixels (1280x720
+// against 1920x1080, identical shaders) measured 18.6% *faster*, reproducibly and
+// well outside its noise floor. The likely cause is GPU power management -- at the
+// 30 fps cap there is roughly half the frame spare, so the GPU sits downclocked
+// and heavier work makes it boost, shortening every timestamp delta including the
+// ones being compared. Whatever the cause, an instrument that reports more work as
+// less time cannot rank configurations, and one that is silently inverted is worse
+// than none at all. Answering that question properly needs locked clocks or a
+// vendor profiler.
+//
+// The mean alone is not enough to accept or reject a cost. A change that adds a
+// millisecond evenly is a different thing from one that leaves most frames alone
+// and doubles the worst ones, and only the second is felt as stutter -- so the
+// 95th percentile and the worst frame are reported beside it.
+//
+// The first frame of a window is dropped: after a load, or after the routing mask
+// changes, it carries shader compilation and texture residency that belong to
+// neither configuration being compared.
+//-----------------------------------------------------------------------------
+namespace {
+	enum { FRAME_WINDOW = 600 };
+	double s_frameMs[FRAME_WINDOW];
+	int s_frameCount = 0;
+	LARGE_INTEGER s_lastFrameTick = { 0 };
+	double s_tickToMs = 0.0;
+
+	int CompareDouble(const void* a, const void* b)
+	{
+		const double x = *(const double*)a, y = *(const double*)b;
+		return (x < y) ? -1 : (x > y) ? 1 : 0;
+	}
+}
+
+void DX8Wrapper::Debug_Report_Frame_Timing()
+{
+	if (s_tickToMs == 0.0) {
+		LARGE_INTEGER freq;
+		if (!QueryPerformanceFrequency(&freq) || freq.QuadPart == 0) return;
+		s_tickToMs = 1000.0 / (double)freq.QuadPart;
+	}
+
+	LARGE_INTEGER now;
+	QueryPerformanceCounter(&now);
+	if (s_lastFrameTick.QuadPart != 0 && s_frameCount < FRAME_WINDOW) {
+		s_frameMs[s_frameCount++] =
+			(double)(now.QuadPart - s_lastFrameTick.QuadPart) * s_tickToMs;
+	}
+	s_lastFrameTick = now;
+
+	if (s_frameCount < FRAME_WINDOW) return;
+
+	// Copy before sorting: the percentile needs order, the mean needs the samples.
+	static double sorted[FRAME_WINDOW];
+	double total = 0.0;
+	for (int i = 0; i < FRAME_WINDOW; ++i) { sorted[i] = s_frameMs[i]; total += s_frameMs[i]; }
+	qsort(sorted, FRAME_WINDOW, sizeof(double), CompareDouble);
+
+	const double mean = total / FRAME_WINDOW;
+	const double median = sorted[FRAME_WINDOW / 2];
+	const double p95 = sorted[(int)(FRAME_WINDOW * 0.95)];
+	const double worst = sorted[FRAME_WINDOW - 1];
+
+	WWDEBUG_SAY(("FRAME TIMING over %d frames (routing mask %u): "
+		"mean %.2f ms (%.1f fps) | median %.2f | p95 %.2f | worst %.2f",
+		FRAME_WINDOW, (unsigned)m_shaderRoutingMask,
+		mean, mean > 0.0 ? 1000.0 / mean : 0.0, median, p95, worst));
+
+	s_frameCount = 0;
+}
+
+//-----------------------------------------------------------------------------
 // Technique check.
 //
 // The technique a mesh declares (meshtechnique.h, decided once at registration)
@@ -2430,8 +2587,14 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	DX8WebBrowser::Render(0);
 
 #ifdef RTS_DEBUG
+	// Measures the debug build, which pays for every per-draw diagnostic below it, so the
+	// numbers are not the shipped build's. Kept here anyway because the report is a
+	// WWDEBUG_SAY and logging follows RTS_DEBUG: outside this block it would have cost a
+	// timestamp and a sort per frame in release and printed nothing at all.
+	Debug_Report_Frame_Timing();
 	Debug_Check_Mesh_Routing_Split();
 	Debug_Report_Routing_Census();
+	Debug_Report_Unclassified_Draws();
 	Debug_Report_Technique_Check();
 	Mesh_Technique_Report_Registrations();
 #endif
@@ -4415,6 +4578,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			}
 			Debug_Note_Mesh_Routing(diagRouteBit, ffReason);
 			Debug_Note_Routing_Census(diagCensusCat);
+			if (!classifiedDraw && (curFVF & D3DFVF_XYZ) &&
+				!(render_state_changed & (unsigned)VIEW_IDENTITY))
+				Debug_Note_Unclassified_Draw(render_state.Textures[0], curFVF,
+					diagRouteBit != 1u, alphaBlendOn, softBlendedOverlay);
 		}
 #endif
 		// Debug visualization overrides, last of all: everything above has finished
