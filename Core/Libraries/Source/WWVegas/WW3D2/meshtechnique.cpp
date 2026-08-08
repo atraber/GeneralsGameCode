@@ -43,6 +43,12 @@ namespace {
 	const char * s_samples[MESH_TECHNIQUE_COUNT][TECH_SAMPLES] = { { nullptr } };
 	int s_sampleCount[MESH_TECHNIQUE_COUNT] = { 0 };
 	bool s_dirty = false;
+	// How many of the above the assets declared for themselves rather than had inferred.
+	// Reported next to the totals so the two are never confused: a technique that is
+	// mostly inferred is mostly a guess, however confident the table looks.
+	unsigned s_declaredCount = 0;
+
+	void Note_Declaration() { ++s_declaredCount; }
 
 	void Note_Registration(MeshTechnique technique, const char * name)
 	{
@@ -64,7 +70,10 @@ void Mesh_Technique_Report_Registrations()
 	if (!s_dirty) return;
 	s_dirty = false;
 
-	WWDEBUG_SAY(("TECHNIQUE REGISTRATIONS (batches classified so far):"));
+	unsigned total = 0;
+	for (int t = 0; t < MESH_TECHNIQUE_COUNT; ++t) total += s_registered[t];
+	WWDEBUG_SAY(("TECHNIQUE REGISTRATIONS (%u batches: %u declared by the asset, "
+				 "%u inferred):", total, s_declaredCount, total - s_declaredCount));
 	for (int t = 0; t < MESH_TECHNIQUE_COUNT; ++t) {
 		if (s_registered[t] == 0) continue;
 		WWDEBUG_SAY(("  %-16s %6u  e.g. %s %s %s %s",
@@ -196,6 +205,104 @@ static MeshTechnique Classify_Mesh_Technique_Impl(
 	return MESH_TECHNIQUE_SURFACE;
 }
 
+/*
+** A technique declared by the asset itself, in the mesh's W3D user text.
+**
+** Everything above this is inference: reasonable rules applied to blend state, vertex
+** format and material flags to work out what an artist meant. It is right on the assets
+** measured, but it is still a guess, and where it guesses wrong there has until now been
+** nowhere to say so except by changing the rules for everyone.
+**
+** The user text chunk is part of the W3D format and is already loaded per mesh
+** (MeshGeometryClass reads W3D_CHUNK_MESH_USER_TEXT), so a mesh can carry
+**
+**     technique=prelit
+**
+** and be believed. Anything the asset does not declare falls through to the inference,
+** which is what every shipped mesh does today.
+**
+** A value that is not a technique name is reported rather than ignored: a typo in an
+** asset should be visible at load, not silently render as something else.
+*/
+static bool Parse_Declared_Technique(const char * userText, MeshTechnique & declared)
+{
+	if (userText == nullptr) return false;
+	const char * key = strstr(userText, "technique=");
+	if (key == nullptr) return false;
+	const char * value = key + 10;   // strlen("technique=")
+
+	static const struct { const char * name; MeshTechnique technique; } names[] = {
+		{ "surface",        MESH_TECHNIQUE_SURFACE        },
+		{ "prelit",         MESH_TECHNIQUE_PRELIT         },
+		{ "effect",         MESH_TECHNIQUE_EFFECT         },
+		{ "fixed-function", MESH_TECHNIQUE_FIXED_FUNCTION },
+	};
+	for (int i = 0; i < (int)(sizeof(names)/sizeof(names[0])); ++i) {
+		const size_t len = strlen(names[i].name);
+		if (strncmp(value, names[i].name, len) == 0) {
+			// The whole token has to match, so that "surfacex" is a typo rather than
+			// a surface.
+			const char end = value[len];
+			if (end == '\0' || end == ' ' || end == '\t' || end == '\r' || end == '\n' ||
+				end == ';' || end == ',') {
+				declared = names[i].technique;
+				return true;
+			}
+		}
+	}
+	WWDEBUG_SAY(("TECHNIQUE: unrecognised declaration in mesh user text: \"%s\" "
+				 "-- falling back to classification", key));
+	return false;
+}
+
+#ifdef RTS_DEBUG
+/*
+** Self-test for the declaration parser.
+**
+** No mesh in the shipped asset set carries user text -- measured, zero across a full
+** replay -- so this parser would otherwise be code that has never once run, waiting to
+** be wrong the first time somebody authors an asset that uses it. It costs one pass over
+** a dozen strings at startup to know it works.
+*/
+static void Self_Test_Declaration_Parser()
+{
+	struct Case { const char * text; bool expectMatch; MeshTechnique expect; };
+	static const Case cases[] = {
+		{ "technique=surface",             true,  MESH_TECHNIQUE_SURFACE        },
+		{ "technique=prelit",              true,  MESH_TECHNIQUE_PRELIT         },
+		{ "technique=effect",              true,  MESH_TECHNIQUE_EFFECT         },
+		{ "technique=fixed-function",      true,  MESH_TECHNIQUE_FIXED_FUNCTION },
+		{ "author=bob technique=prelit",   true,  MESH_TECHNIQUE_PRELIT         },
+		{ "technique=prelit; lod=2",       true,  MESH_TECHNIQUE_PRELIT         },
+		{ "technique=surfacex",            false, MESH_TECHNIQUE_UNCLASSIFIED   },
+		{ "technique=",                    false, MESH_TECHNIQUE_UNCLASSIFIED   },
+		{ "shadow=on",                     false, MESH_TECHNIQUE_UNCLASSIFIED   },
+		{ "",                              false, MESH_TECHNIQUE_UNCLASSIFIED   },
+	};
+	int failures = 0;
+	for (int i = 0; i < (int)(sizeof(cases)/sizeof(cases[0])); ++i) {
+		MeshTechnique got = MESH_TECHNIQUE_UNCLASSIFIED;
+		const bool matched = Parse_Declared_Technique(cases[i].text, got);
+		if (matched != cases[i].expectMatch ||
+			(matched && got != cases[i].expect)) {
+			++failures;
+			WWDEBUG_SAY(("TECHNIQUE SELF-TEST FAILED: \"%s\" -> matched=%d value=%s "
+				"(expected matched=%d value=%s)",
+				cases[i].text, (int)matched, Mesh_Technique_Name(got),
+				(int)cases[i].expectMatch, Mesh_Technique_Name(cases[i].expect)));
+		}
+	}
+	// Also exercise the null path, which no case above can reach.
+	MeshTechnique dummy = MESH_TECHNIQUE_UNCLASSIFIED;
+	if (Parse_Declared_Technique(nullptr, dummy)) {
+		++failures;
+		WWDEBUG_SAY(("TECHNIQUE SELF-TEST FAILED: null user text matched"));
+	}
+	WWDEBUG_SAY(("TECHNIQUE SELF-TEST: %d cases, %d failures",
+		(int)(sizeof(cases)/sizeof(cases[0])) + 1, failures));
+}
+#endif
+
 MeshTechnique Classify_Mesh_Technique(
 	const MeshModelClass * mmc,
 	unsigned fvf,
@@ -203,6 +310,42 @@ MeshTechnique Classify_Mesh_Technique(
 	const VertexMaterialClass * material,
 	const TextureClass * stage1Texture)
 {
+#ifdef RTS_DEBUG
+	static bool selfTested = false;
+	if (!selfTested) { selfTested = true; Self_Test_Declaration_Parser(); }
+#endif
+
+	// The asset's own answer wins where it gives one.
+	const char * userText =
+		mmc != nullptr ? const_cast<MeshModelClass *>(mmc)->Get_User_Text() : nullptr;
+
+#ifdef RTS_DEBUG
+	// Report any user text at all, once per distinct string, whether or not it declares
+	// a technique. Nothing in the shipped asset set is known to use this chunk, so
+	// without this the parser above is untested code that silently never runs -- and a
+	// mesh that does carry user text in some other format is worth seeing before the
+	// convention is settled.
+	if (userText != nullptr && *userText != '\0') {
+		static const char * seen[16] = { nullptr };
+		static int seenCount = 0;
+		bool isNew = true;
+		for (int i = 0; i < seenCount; ++i)
+			if (seen[i] == userText) { isNew = false; break; }
+		if (isNew && seenCount < 16) {
+			seen[seenCount++] = userText;
+			WWDEBUG_SAY(("TECHNIQUE: mesh %s carries user text \"%s\"",
+				const_cast<MeshModelClass *>(mmc)->Get_Name(), userText));
+		}
+	}
+#endif
+
+	MeshTechnique declared;
+	if (mmc != nullptr && Parse_Declared_Technique(userText, declared)) {
+		Note_Registration(declared, const_cast<MeshModelClass *>(mmc)->Get_Name());
+		Note_Declaration();
+		return declared;
+	}
+
 	const MeshTechnique technique =
 		Classify_Mesh_Technique_Impl(mmc, fvf, shader, material, stage1Texture);
 	Note_Registration(technique,
