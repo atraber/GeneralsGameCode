@@ -789,6 +789,8 @@ void TerrainTracksRenderObjClassSystem::update()
 //=============================================================================
 void TerrainTracksRenderObjClassSystem::flush()
 {
+	// Tyre and tread marks: blended decals laid on the terrain.
+	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "terrainTracks");
 /** @todo: Optimize system by drawing tracks as triangle strips and use dynamic vertex buffer access.
 May also try rendering all tracks with one call to W3D/D3D by grouping them by texture.
 Try improving the fit to vertical surfaces like cliffs.

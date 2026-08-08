@@ -848,6 +848,8 @@ void setFPMode();
 //=============================================================================
 void WaterTracksRenderSystem::flush(RenderInfoClass & rinfo)
 {
+	// Wake and shore marks on the water: blended decals.
+	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "waterTracks");
 /** @todo: Optimize system by drawing tracks as triangle strips and use dynamic vertex buffer access.
 May also try rendering all tracks with one call to W3D/D3D by grouping them by texture.
 Try improving the fit to vertical surfaces like cliffs.

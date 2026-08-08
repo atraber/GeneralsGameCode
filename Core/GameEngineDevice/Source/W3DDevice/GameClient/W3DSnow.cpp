@@ -322,6 +322,8 @@ flush_particles:
 
 void W3DSnowManager::render(RenderInfoClass &rinfo)
 {
+	// Snow particles.
+	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "snow");
 	if (!TheWeatherSetting->m_snowEnabled || !m_isVisible)
 		return;
 
