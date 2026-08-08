@@ -3140,8 +3140,32 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// plain unit shader already declines additive draws; PBR had no blend check of
 			// any kind, and widening it to every mesh must not widen it to geometry that
 			// was never a surface.
+			//
+			// A base texture is required, because this shader has no way to do without one.
+			//
+			// unit_ps is told whether stage 0 is bound (TexCtl.x) and folds the sample to
+			// white when it is not, which reproduces the fixed-function untextured pass
+			// exactly: the colour then comes from the lit equation over the material.
+			// unit_pbr_ps has no such control. It samples AlbedoSampler unconditionally,
+			// so an unbound stage reads undefined -- black in practice -- and
+			// `albedo = SrgbToLinear(albedoTex.rgb) * MatAmbient.rgb` carries that through
+			// everything downstream. No amount of light brings a black albedo back.
+			//
+			// The goto move hint is exactly this. Measured: SCMOVEHINT.CYLINDER02-05, FVF
+			// 0x12 -- position and normal only, no texture coordinates and no vertex
+			// colour at all -- stage 0 SELECTARG2/DIFFUSE, no texture bound, drawn in two
+			// passes whose vertex materials carry black and the player colour. Its whole
+			// appearance is the material, and PBR multiplies the material by an albedo it
+			// invented from an unbound sampler.
+			//
+			// Checked like the detail combine and the texgen sources: a pass the
+			// programmable path cannot reproduce does not go to it. There is nothing to
+			// reconstruct here either -- a metallic-roughness BRDF is defined over an
+			// albedo map, and a mesh that has none is not a PBR surface however opaque and
+			// well lit it is.
 			const bool pbrEligible =
 				pbrRoutingOn &&
+				render_state.Textures[0] != nullptr &&
 				singleTexture && !texgenActive &&
 				(curFVF & D3DFVF_NORMAL) != 0 &&
 				!additiveBlend &&
