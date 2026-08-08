@@ -3561,9 +3561,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		const bool routeEverything = (m_shaderRoutingMask & SHADER_ROUTE_EVERYTHING) != 0;
 		const bool routingDisabled = (m_shaderRoutingMask & SHADER_ROUTE_OFF) != 0;
 
-		// Additive effect geometry is kept on the fixed-function pipeline (see below);
-		// ADDITIVE routes it here anyway so the two can be compared.
-		const bool routeAdditive = (m_shaderRoutingMask & SHADER_ROUTE_ADDITIVE) != 0;
+		// Effect geometry is kept on the fixed-function pipeline (see below); this routes
+		// it here anyway so the two can be compared in game.
+		//
+		// The flag used to mean "additive passes too", from when additive was excluded by
+		// itself. Since that became one mesh-level rule with the soft-blend test, the
+		// thing it opts in is the whole EFFECT technique -- rotor discs, light shafts,
+		// glows -- which is the same set it always described, now named for what it is.
+		const bool routeEffects = (m_shaderRoutingMask & SHADER_ROUTE_ADDITIVE) != 0;
+		const bool routeAdditive = routeEffects;   // unclassified draws, see below
 
 		// A normal is only wanted for two things: the lit equation, and the texgen sources
 		// derived from it. Geometry that has neither -- roads and tank tracks are pre-lit
@@ -3628,21 +3634,46 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		const bool additiveExcluded = additiveBlend && !routeAdditive &&
 			m_meshTechnique != MESH_TECHNIQUE_SURFACE;
 
+		// What kind of thing is this?
+		//
+		// A declared technique answers it outright, which is the point of having one: the
+		// asset was classified once, from its own material description, and the three
+		// tests below no longer have to be re-derived from render state on every draw.
+		// EFFECT and FIXED_FUNCTION are the two that stay on the fixed-function pipeline;
+		// SURFACE and PRELIT both belong on the programmable one, differing in which
+		// shader they get rather than in whether they get one.
+		//
+		// A draw with no technique never came through the mesh renderer -- terrain,
+		// roads, water, the shroud, decals, particles -- and there is no asset to ask, so
+		// those keep the inference. That is the remaining half of this to remove, and it
+		// goes when those callers declare techniques of their own.
+		const bool classifiedDraw = m_meshTechnique != MESH_TECHNIQUE_UNCLASSIFIED;
+		const bool kindAllowsProgrammable = classifiedDraw
+			? (m_meshTechnique == MESH_TECHNIQUE_SURFACE ||
+			   m_meshTechnique == MESH_TECHNIQUE_PRELIT ||
+			   routeEffects)
+			: (!effectGeometryExcluded && !additiveExcluded && reproducibleBlend);
+
 		const bool useUnitShader =
+			// Context: which pass of the frame this is, and whether the path is usable
+			// at all. Nothing here is a property of the mesh.
 			!routingDisabled &&
 			!m_bShadowDepthPass &&
-			!effectGeometryExcluded &&
-			!additiveExcluded &&
 			!m_bTerrainShaderPass &&
 			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
 			(curFVF & D3DFVF_XYZ) && (hasNormal || prelitNoNormal) &&
 			!foreignVertexShader &&
+			// Kind: what the asset is.
+			kindAllowsProgrammable &&
+			// Capability: what these shaders can reproduce for this particular draw.
+			// Unlike the kind, this is not a property of the asset -- the same mesh can
+			// be drawn with a stage-1 combine one pass and without it the next.
 			(routeEverything ||
 			 ((render_state.Textures[0] != nullptr || untexturedDiffuseOnly) &&
-			  reproducibleBlend &&
 			  (singleTexture || detailCombineSupported) &&
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
+
 
 #ifdef RTS_DEBUG
 		// Does the technique the asset declared agree with what this block decides for
@@ -3995,8 +4026,19 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// reconstruct here either -- a metallic-roughness BRDF is defined over an
 			// albedo map, and a mesh that has none is not a PBR surface however opaque and
 			// well lit it is.
+			// Only a SURFACE. PRELIT means the colour is already decided and no lighting
+			// equation should touch it, which is the one thing a BRDF cannot honour --
+			// unit_pbr_ps has no emissive term and reads the vertex colour only for its
+			// alpha, so it re-derives the colour from albedo and light and discards
+			// whatever the asset had put there. Draws with no technique keep the old
+			// behaviour; the blend tests below are what stood in for this for them.
+			const bool pbrKindAllows =
+				m_meshTechnique == MESH_TECHNIQUE_SURFACE ||
+				m_meshTechnique == MESH_TECHNIQUE_UNCLASSIFIED;
+
 			const bool pbrEligible =
 				pbrRoutingOn &&
+				pbrKindAllows &&
 				render_state.Textures[0] != nullptr &&
 				singleTexture && !texgenActive &&
 				(curFVF & D3DFVF_NORMAL) != 0 &&
