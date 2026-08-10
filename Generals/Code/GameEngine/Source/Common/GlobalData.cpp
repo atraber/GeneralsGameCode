@@ -113,6 +113,7 @@ GlobalData* GlobalData::m_theOriginal = nullptr;
 	{ "TerrainDetailRelief",				INI::parseReal,				nullptr,			offsetof( GlobalData, m_terrainDetailRelief ) },
 	{ "TerrainDetailScale",					INI::parseReal,				nullptr,			offsetof( GlobalData, m_terrainDetailScale ) },
 	{ "TerrainDetailColor",					INI::parseReal,				nullptr,			offsetof( GlobalData, m_terrainDetailColor ) },
+	{ "CloudShadowStrength",				INI::parseReal,				nullptr,			offsetof( GlobalData, m_cloudShadowStrength ) },
 	{ "TextureReductionFactor",			INI::parseInt,				nullptr,			offsetof( GlobalData, m_textureReductionFactor ) },
 	{ "UseBehindBuildingMarker",		INI::parseBool,				nullptr,			offsetof( GlobalData, m_enableBehindBuildingMarkers ) },
 	{ "WaterPositionX",							INI::parseReal,				nullptr,			offsetof( GlobalData, m_waterPositionX ) },
@@ -676,6 +677,7 @@ GlobalData::GlobalData()
 	m_terrainDetailScale = 1.0f;
 	// Colour is the effect most likely to look wrong if overdone, so it starts low.
 	m_terrainDetailColor = 0.12f;
+	m_cloudShadowStrength = 1.0f;
 	m_textureReductionFactor = -1;
 	m_enableBehindBuildingMarkers = TRUE;
 	m_scriptDebug = FALSE;

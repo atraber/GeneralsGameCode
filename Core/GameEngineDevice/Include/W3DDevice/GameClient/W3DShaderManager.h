@@ -109,7 +109,7 @@ public:
 	static IDirect3DTexture8 *m_debugBrightTexture;	///<copy of the bloom bright pass, made only while DEBUG_VIS_BLOOM is on
 	static IDirect3DSurface8 *m_debugBrightSurface;	///<its surface, the StretchRect destination
 	static void shutdownUnitShaders();	///<release the unit shaders and vertex declaration.
-	static void getCloudOffset(float& x, float& y); ///<current scrolling cloud-overlay offset.
+	static void getCloudScroll(float& ax, float& ay, float& bx, float& by); ///<world-space drift of the two cloud layers.
 	static TextureBaseClass* resolveOrmTexture(TextureBaseClass* baseTexture); ///<PBR ORM map for a base texture, or null (cached).
 	static void clearOrmCache();	///<release cached ORM lookups.
 	static void initDefaultOrmMap();	///<build the neutral 1x1 ORM map used by meshes that ship none.

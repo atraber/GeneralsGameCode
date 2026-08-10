@@ -43,6 +43,10 @@ class WorldHeightMap;
 
 // Side of the procedural terrain detail texture (see TerrainDetailTextureClass).
 #define TERRAIN_DETAIL_DIM 256
+
+// Side of the procedural cloud shadow field (see CloudMapTerrainTextureClass). Larger
+// than the detail texture because it is projected over thousands of world units.
+#define TERRAIN_CLOUD_DIM 512
 /** ***********************************************************************
 **                             TerrainTextureClass
 ***************************************************************************/
@@ -175,19 +179,31 @@ public:
 		// just use default destructor. ~ScorchTextureClass();
 };
 
+/** ***********************************************************************
+**                        CloudMapTerrainTextureClass
+**
+** The cloud shadow field, generated at load rather than loaded from a file.
+**
+** This used to be TSCloudMed.tga: 128x128, projected over 315 world units.
+** At the game's scale -- a tank is roughly 25 world units and eight metres --
+** that made the entire cloud pattern about 100 metres across, with features
+** around 20. Real cumulus shadows are hundreds of metres to kilometres. Being
+** that small caused both of the things wrong with it: the pattern tiled two or
+** three times across a single screen so it read as texture rather than
+** weather, and small features cross their own width quickly, so it looked fast
+** even though the field was only drifting at about 3.6 m/s.
+**
+** Generating it means it can be both much larger and much higher resolution
+** without shipping an asset, and -- more useful -- that its contrast can be
+** shaped. Stored is *coverage*: 0 where the sky is clear, 1 under full cloud,
+** with most of the field at 0. A plain noise texture instead leaves everything
+** permanently half-shaded, which is the other half of "too uniform".
+***************************************************************************/
 class CloudMapTerrainTextureClass : public TextureClass
 {
 	W3DMPO_CODE(CloudMapTerrainTextureClass)
 protected:
 		virtual void Apply(unsigned int stage) override;
-
-protected:
-		float m_xSlidePerSecond ;	 ///< How far the clouds move per second.
-		float m_ySlidePerSecond ;	 ///< How far the clouds move per second.
-		int	  m_curTick;
-		float m_xOffset;
-		float m_yOffset;
-
 
 public:
 		// Create texture from a height map.
@@ -195,5 +211,6 @@ public:
 
 		// just use default destructor. ~TerrainTextureClass();
 
+		void update();	///< Generates the cloud field. Depends on nothing; call once.
 		void restore();
 };

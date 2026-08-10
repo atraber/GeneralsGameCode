@@ -13,15 +13,47 @@ sampler CloudSampler : register(s2);
 sampler NoiseSampler : register(s3);
 sampler ShadowMap    : register(s5);   // directional shadow map (packed depth)
 
-float4 OverlayEnable : register(c0); // x = cloud layer on, y = noise layer on
+float4 OverlayEnable : register(c0); // x = cloud on, y = noise on, z = cloud shade strength
 float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 = off), z = texel
 
+
+// Cloud shadow from the two drifting layers.
+//
+// The texture holds *coverage*, not brightness: 0 under clear sky, 1 under full cloud,
+// and mostly 0. Two layers are combined as a union -- the probability that at least one
+// deck is overhead -- which is what two real cloud layers do, and which keeps the field
+// mostly clear instead of stacking into permanent gloom.
+//
+// The result darkens toward a tint rather than multiplying toward black. Shade is the
+// loss of *direct sun*; the sky still lights the ground, and skylight is blue, so shaded
+// ground goes darker and cooler rather than simply dimmer. Multiplying by the texture --
+// what this did before -- drives everything toward black and reads as dirt on the lens.
+// Colour of ground under full cloud. Luminance works out near 0.66, so a fully shaded
+// patch is about a third darker than sunlit ground, and cooler because what is left
+// lighting it is skylight. The first pass used 0.66/0.71/0.82 against a strength of
+// 0.75, which bottomed out at only 78% brightness even under solid cloud -- far too
+// timid to read as weather.
+static const float3 CLOUD_SHADE_TINT = float3(0.60, 0.66, 0.79);
+
+float3 cloudShade(float4 cloudUV, float enable, float strength)
+{
+    // The texture stores brightness so the fixed-function fallback can still multiply by
+    // it; coverage is its complement.
+    float a = 1.0 - tex2D(CloudSampler, cloudUV.xy).r;
+    float b = 1.0 - tex2D(CloudSampler, cloudUV.zw).r;
+    float coverage = 1.0 - (1.0 - a) * (1.0 - b);
+    float lit = 1.0 - coverage * strength * enable;
+    return lerp(CLOUD_SHADE_TINT, float3(1.0, 1.0, 1.0), lit);
+}
+
+// Deliberately identical to terrain_ps's cloudShade, for the same reason the shadow
+// filter is: a road is a decal on the ground and must take exactly the ground's shade.
 struct PS_INPUT
 {
     float4 position : POSITION;
     float4 color    : COLOR0;
     float2 uv0      : TEXCOORD0;
-    float2 cloudUV  : TEXCOORD2;
+    float4 cloudUV  : TEXCOORD2;   // xy = cloud layer A, zw = layer B
     float2 noiseUV  : TEXCOORD3;
     float4 lightPos : TEXCOORD4;
 };
@@ -75,9 +107,9 @@ float4 main(PS_INPUT input) : COLOR
 
     // Multiplicative overlays, as the fixed-function road pass applied them (stage 1 and
     // stage 2, both MODULATE against the running colour). Off layers lerp to white.
-    float3 cloudTex = tex2D(CloudSampler, input.cloudUV).rgb;
+
     float3 noiseTex = tex2D(NoiseSampler, input.noiseUV).rgb;
-    float3 cloud = lerp(float3(1.0, 1.0, 1.0), cloudTex, OverlayEnable.x);
+    float3 cloud = cloudShade(input.cloudUV, OverlayEnable.x, OverlayEnable.z);
     float3 noise = lerp(float3(1.0, 1.0, 1.0), noiseTex, OverlayEnable.y);
 
     // Cast shadows: the road colour has its lighting baked in, so darken toward the same
