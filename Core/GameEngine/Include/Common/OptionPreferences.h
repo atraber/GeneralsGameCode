@@ -65,6 +65,8 @@ public:
 	Bool getBloomEnabled() const;
 	Bool getShadowMappingEnabled() const;
 	Bool getParticleShadowsEnabled() const;
+	Bool getTerrainTileVariationEnabled() const;
+	Bool getTerrainDetailEnabled() const;
 	UnsignedInt getLANIPAddress();
 	UnsignedInt getOnlineIPAddress();
 	void setLANIPAddress(AsciiString IP);

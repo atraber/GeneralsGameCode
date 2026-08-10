@@ -151,6 +151,12 @@ public:
 	Bool m_useShadowDecals;
 	Bool m_useShadowMapping;					///< directional shadow map; when it runs it replaces the volume/decal shadows
 	Bool m_useParticleShadows;				///< let physical particle systems (smoke, dust) cast into that shadow map
+	Bool m_terrainTileVariation;			///< break up the terrain texture's repeat with stochastic tiling
+	Bool m_terrainDetail;							///< procedural detail + per-pixel relief layer over the terrain
+	Real m_terrainDetailAlbedo;				///< strength of the detail layer's albedo modulation
+	Real m_terrainDetailRelief;				///< strength of the normal perturbation lit as relief
+	Real m_terrainDetailScale;				///< multiplies the detail layer's world periods; >1 is broader
+	Real m_terrainDetailColor;				///< macro warm/cool and saturation variation across the map
 	Int  m_textureReductionFactor;	//how much to cut texture resolution: 2 is half, 3 is quarter, etc.
 	Bool m_enableBehindBuildingMarkers;
 	Real m_waterPositionX;
