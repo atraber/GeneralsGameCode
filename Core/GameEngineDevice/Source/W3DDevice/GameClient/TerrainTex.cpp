@@ -1118,17 +1118,95 @@ void AlphaEdgeTextureClass::Apply(unsigned int stage)
 /** Constructor. Calls parent constructor to load the .tga texture, and sets
 up the "sliding" parameters for the clouds to slide over the terrain. */
 //=============================================================================
-//@todo - Allow adjustment of the cloud slide rate, and lose the hard coded "cloudmap.tga"
 CloudMapTerrainTextureClass::CloudMapTerrainTextureClass(MipCountType mipLevelCount) :
-	TextureClass("TSCloudMed.tga","TSCloudMed.tga", mipLevelCount )
+	TextureClass(TERRAIN_CLOUD_DIM, TERRAIN_CLOUD_DIM,
+		WW3D_FORMAT_A8R8G8B8, mipLevelCount )
 {
-	Get_Filter().Set_Mip_Mapping( TextureFilterClass::FILTER_TYPE_FAST );
-	m_xSlidePerSecond = -0.02f;
-	m_ySlidePerSecond =  1.50f * m_xSlidePerSecond;
-	m_curTick = 0;
-	m_xOffset = 0;
-	m_yOffset = 0;
+}
 
+//=============================================================================
+// CloudMapTerrainTextureClass::update
+//=============================================================================
+/** Generates the cloud coverage field.
+
+	Coverage rather than brightness: the noise is thresholded so most of the field
+	is clear sky and cloud appears as distinct patches. A raw fBm would put every
+	part of the map under partial shade all of the time, which is exactly the
+	"uniform" look this is meant to replace -- what sells a cloud shadow is the
+	contrast with the sunlit ground around it, and there has to be sunlit ground.
+
+	The threshold is soft rather than hard so patch edges stay believable; a hard
+	cut gives shadows a cut-out look and aliases badly once minified. */
+//=============================================================================
+void CloudMapTerrainTextureClass::update()
+{
+	IDirect3DSurface8 *surface_level;
+	D3DSURFACE_DESC surface_desc;
+	D3DLOCKED_RECT locked_rect;
+	DX8_ErrorCode(Peek_D3D_Texture()->GetSurfaceLevel(0, &surface_level));
+	DX8_ErrorCode(surface_level->GetDesc(&surface_desc));
+	if (surface_desc.Format != D3DFMT_A8R8G8B8) {
+		surface_level->Release();
+		return;
+	}
+	DX8_ErrorCode(surface_level->LockRect(&locked_rect, nullptr, 0));
+
+	// Where the threshold sits decides how much of the map is under cloud at once.
+	//
+	// Worth knowing if these are ever retuned: averaging four octaves concentrates the
+	// field tightly around 0.5 rather than spreading it over [0,1], so the useful
+	// thresholds all sit in a narrow band and intuition about them is badly wrong. A
+	// first guess of 0.56 left 4% coverage. These give 16% per layer, and since the
+	// shader unions two layers the combined figure is about 30% -- a third of the map
+	// under cloud, two thirds in full sun. The measured value is logged below.
+	const Real CLOUD_THRESHOLD = 0.49f;
+	const Real CLOUD_EDGE      = 0.15f;
+
+	const Int dim = TERRAIN_CLOUD_DIM;
+	Real coverageSum = 0.0f;
+
+	Int x, y;
+	for (y = 0; y < dim; y++) {
+		UnsignedInt *row = (UnsignedInt*)((UnsignedByte*)locked_rect.pBits + y*locked_rect.Pitch);
+		for (x = 0; x < dim; x++) {
+			const Real u = (Real)x / (Real)dim;
+			const Real v = (Real)y / (Real)dim;
+
+			// Four octaves from 3 cells across the texture. Projected over ~1800 world
+			// units that puts the broadest shapes near 600 units and the finest near 75 --
+			// the range a real cloud deck covers, rather than the 20-unit speckle the old
+			// 128x128 gave.
+			Real sum = 0.0f, amp = 0.5f, total = 0.0f;
+			Int period = 3;
+			for (UnsignedInt o = 0; o < 4; o++) {
+				sum   += amp * detailValueNoise(u*period, v*period, period, o + 64);
+				total += amp;
+				amp   *= 0.5f;
+				period *= 2;
+			}
+			const Real h = sum / total;
+
+			// Smoothstep the threshold.
+			Real t = (h - CLOUD_THRESHOLD) / CLOUD_EDGE;
+			if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+			const Real coverage = t*t*(3.0f - 2.0f*t);
+			coverageSum += coverage;
+
+			// Stored as brightness (1 = full sun) rather than coverage, because the
+			// fixed-function fallback still multiplies the terrain by this texture
+			// directly. Storing coverage there would multiply the ground by nearly zero
+			// and render it black. The shader recovers coverage as 1 - stored.
+			const Int c = (Int)((1.0f - coverage) * 255.0f + 0.5f);
+			row[x] = 0xFF000000 | ((UnsignedInt)c << 16) | ((UnsignedInt)c << 8) | (UnsignedInt)c;
+		}
+	}
+
+	surface_level->UnlockRect();
+	surface_level->Release();
+	DX8_ErrorCode(D3DXFilterTexture(Peek_D3D_Texture(), nullptr, 0, D3DX_FILTER_BOX));
+
+	DEBUG_LOG(("CLOUD FIELD: %dx%d, mean coverage %.1f%% (threshold %.2f, edge %.2f)",
+		dim, dim, 100.0f * coverageSum / (Real)(dim*dim), CLOUD_THRESHOLD, CLOUD_EDGE));
 }
 
 //=============================================================================

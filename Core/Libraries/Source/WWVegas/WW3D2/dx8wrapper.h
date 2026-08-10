@@ -1136,14 +1136,22 @@ public:
 	// is what decides whether the result counts, and it is zero when the feature is off.
 	static bool Has_Shadow_Map() { return m_dwShadowDepthVS != 0 && m_dwShadowDepthPS != 0 && m_pShadowMap != nullptr; }
 	// Terrain overlay params: cloud scroll offset and which overlays are active.
-	static float						m_terrainCloudOffX;
-	static float						m_terrainCloudOffY;
 	static bool							m_terrainCloudEnable;
 	static bool							m_terrainNoiseEnable;
-	static void Set_Terrain_Overlay(float offX, float offY, bool cloud, bool noise)
+	// Cloud shadow: two layers drifting in world units, plus how dark the shade goes.
+	// Roads read these too -- a cloud shadow has to cross a road without changing.
+	static float						m_cloudScrollAX, m_cloudScrollAY;
+	static float						m_cloudScrollBX, m_cloudScrollBY;
+	static float						m_cloudStrength;
+	static void Set_Terrain_Overlay(bool cloud, bool noise)
 	{
-		m_terrainCloudOffX = offX; m_terrainCloudOffY = offY;
 		m_terrainCloudEnable = cloud; m_terrainNoiseEnable = noise;
+	}
+	static void Set_Cloud_Shadow(float ax, float ay, float bx, float by, float strength)
+	{
+		m_cloudScrollAX = ax; m_cloudScrollAY = ay;
+		m_cloudScrollBX = bx; m_cloudScrollBY = by;
+		m_cloudStrength = strength;
 	}
 	// Stochastic tiling of the base terrain texture (terrain_ps c2/c3). The atlas size
 	// has to come from the map -- its height is sized to whatever the class list needs --

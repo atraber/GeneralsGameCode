@@ -1708,6 +1708,18 @@ void MaskTextureShader::reset()
 /*=========      Terrain Shaders	=========================================================*/
 /*===========================================================================================*/
 
+
+// Wind for the programmable cloud path, in world units per second, and the periods the
+// two layers are projected at. Layer B is slower and pulls in a different direction:
+// two decks drifting together at slightly different rates is what stops the field
+// reading as one texture being slid across the map.
+static const float CLOUD_PERIOD_A = 1800.0f;
+static const float CLOUD_PERIOD_B = 2900.0f;
+static const float CLOUD_WIND_AX  = -8.9f;
+static const float CLOUD_WIND_AY  = -13.3f;
+static const float CLOUD_WIND_BX  = -7.5f;
+static const float CLOUD_WIND_BY  = -8.0f;
+
 ///regular terrain shader that should work on all multi-texture video cards (slowest version)
 class TerrainShader2Stage : public W3DShaderInterface
 {
@@ -1716,6 +1728,10 @@ public:
 	float m_ySlidePerSecond ;	 ///< How far the clouds move per second.
 	float m_xOffset;
 	float m_yOffset;
+	// The programmable path drifts the two cloud layers in *world* units instead, so one
+	// wind speed reads the same however the layers are scaled.
+	float m_cloudWorldAX, m_cloudWorldAY;
+	float m_cloudWorldBX, m_cloudWorldBY;
 
 	virtual Int set(Int pass) override;		///<setup shader for the specified rendering pass.
 	virtual Int init() override;			///<perform any one time initialization and validation
@@ -1767,6 +1783,8 @@ Int TerrainShader2Stage::init()
 	//initialize settings for uv animated clouds
 	m_xSlidePerSecond = -0.02f;
 	m_ySlidePerSecond =  1.50f * m_xSlidePerSecond;
+	m_cloudWorldAX = m_cloudWorldAY = 0.0f;
+	m_cloudWorldBX = m_cloudWorldBY = 0.0f;
 	m_xOffset = 0;
 	m_yOffset = 0;
 
@@ -1808,6 +1826,22 @@ void TerrainShader2Stage::updateCloud()
 	// This moves offsets towards zero when smaller -1.0 or larger 1.0
 	m_xOffset -= (Int)m_xOffset;
 	m_yOffset -= (Int)m_yOffset;
+
+	// World-space drift for the programmable path. The old field moved about 11 world
+	// units a second, which is only ~3.6 m/s. It looked fast because its features were
+	// 20 units wide and crossed their own width in a few seconds; now that the shapes are
+	// hundreds of units across the same wind reads as calm.
+	m_cloudWorldAX += CLOUD_WIND_AX * frame_time;
+	m_cloudWorldAY += CLOUD_WIND_AY * frame_time;
+	m_cloudWorldBX += CLOUD_WIND_BX * frame_time;
+	m_cloudWorldBY += CLOUD_WIND_BY * frame_time;
+
+	// Wrap on each layer's period, so a long game cannot drift the accumulator into the
+	// range where a float stops resolving world-unit steps.
+	m_cloudWorldAX -= CLOUD_PERIOD_A * (Int)(m_cloudWorldAX / CLOUD_PERIOD_A);
+	m_cloudWorldAY -= CLOUD_PERIOD_A * (Int)(m_cloudWorldAY / CLOUD_PERIOD_A);
+	m_cloudWorldBX -= CLOUD_PERIOD_B * (Int)(m_cloudWorldBX / CLOUD_PERIOD_B);
+	m_cloudWorldBY -= CLOUD_PERIOD_B * (Int)(m_cloudWorldBY / CLOUD_PERIOD_B);
 }
 
 void TerrainShader2Stage::updateNoise1(D3DXMATRIX *destMatrix,D3DXMATRIX *curViewInverse, Bool doUpdate)
@@ -4277,12 +4311,15 @@ void W3DShaderManager::updateEnvMap()
 }
 
 //=============================================================================
-/** Current scrolling cloud-overlay offset (kept up to date by updateCloud). */
+/** World-space drift of the two programmable-path cloud layers. World units, not UV,
+	so the shader can divide by whatever period each layer is projected at. */
 //=============================================================================
-void W3DShaderManager::getCloudOffset(float& x, float& y)
+void W3DShaderManager::getCloudScroll(float& ax, float& ay, float& bx, float& by)
 {
-	x = terrainShader2Stage.m_xOffset;
-	y = terrainShader2Stage.m_yOffset;
+	ax = terrainShader2Stage.m_cloudWorldAX;
+	ay = terrainShader2Stage.m_cloudWorldAY;
+	bx = terrainShader2Stage.m_cloudWorldBX;
+	by = terrainShader2Stage.m_cloudWorldBY;
 }
 
 // W3DShaderManager::shutdown =======================================================

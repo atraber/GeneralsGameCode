@@ -2045,9 +2045,13 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 			DX8Wrapper::Set_Texture(2, cloudOn ? m_stageTwoTexture : nullptr);
 			DX8Wrapper::Set_Texture(3, noiseOn ? m_stageThreeTexture : nullptr);
 			DX8Wrapper::Set_Texture(4, m_map ? m_map->getTerrainDetailTexture() : nullptr);
-			float cx = 0.0f, cy = 0.0f;
-			W3DShaderManager::getCloudOffset(cx, cy);
-			DX8Wrapper::Set_Terrain_Overlay(cx, cy, cloudOn, noiseOn);
+			DX8Wrapper::Set_Terrain_Overlay(cloudOn, noiseOn);
+			// Cloud shadow drifts in world units, two layers at different rates. Roads
+			// set the same values, so a shadow crosses a road unchanged.
+			float sax = 0.0f, say = 0.0f, sbx = 0.0f, sby = 0.0f;
+			W3DShaderManager::getCloudScroll(sax, say, sbx, sby);
+			DX8Wrapper::Set_Cloud_Shadow(sax, say, sbx, sby,
+										 TheGlobalData->m_cloudShadowStrength);
 			// The lattice is sized in world units. 160 is four cells of a width-2 class
 			// (the common case), so a given offset covers a few repeats of the artwork
 			// before the next one takes over.

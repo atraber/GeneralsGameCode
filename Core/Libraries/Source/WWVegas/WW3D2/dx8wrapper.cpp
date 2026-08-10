@@ -796,10 +796,13 @@ void DX8Wrapper::Set_Depth_VP(const float* m16)
 }
 bool							DX8Wrapper::m_bUnitShaderBound = false;
 bool							DX8Wrapper::m_bTerrainShaderPass = false;
-float							DX8Wrapper::m_terrainCloudOffX = 0.0f;
-float							DX8Wrapper::m_terrainCloudOffY = 0.0f;
 bool							DX8Wrapper::m_terrainCloudEnable = false;
 bool							DX8Wrapper::m_terrainNoiseEnable = false;
+float							DX8Wrapper::m_cloudScrollAX = 0.0f;
+float							DX8Wrapper::m_cloudScrollAY = 0.0f;
+float							DX8Wrapper::m_cloudScrollBX = 0.0f;
+float							DX8Wrapper::m_cloudScrollBY = 0.0f;
+float							DX8Wrapper::m_cloudStrength = 0.75f;
 // Sized from the atlas the moment a map's terrain texture is built; the defaults stand
 // only for the window before that, when no terrain is being drawn anyway.
 Vector4							DX8Wrapper::m_terrainAtlasParams(2048.0f, 1024.0f, 1.0f/2048.0f, 1.0f/1024.0f);
@@ -4275,11 +4278,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// matches while the device holds 0 -- and the overlays get stuck off
 			// (terrain renders with no cloud/noise). Force these writes through the
 			// device directly and keep the cache coherent so later cached sets work.
-			D3DXVECTOR4 cloudOffset(m_terrainCloudOffX, m_terrainCloudOffY, 0.0f, 0.0f);
+			// c4 is now the two cloud layers' world-space drift rather than one UV offset;
+			// the shader divides each by its own projection period.
+			D3DXVECTOR4 cloudOffset(m_cloudScrollAX, m_cloudScrollAY, m_cloudScrollBX, m_cloudScrollBY);
 			DX8CALL(SetVertexShaderConstantF(4, reinterpret_cast<const float*>(&cloudOffset), 1));
 			Vertex_Shader_Constants[4] = *reinterpret_cast<const Vector4*>(&cloudOffset);
 			D3DXVECTOR4 overlayEnable(m_terrainCloudEnable ? 1.0f : 0.0f,
-									  m_terrainNoiseEnable ? 1.0f : 0.0f, 0.0f, 0.0f);
+									  m_terrainNoiseEnable ? 1.0f : 0.0f,
+									  m_cloudStrength, 0.0f);
 			DX8CALL(SetPixelShaderConstantF(0, reinterpret_cast<const float*>(&overlayEnable), 1));
 			Pixel_Shader_Constants[0] = *reinterpret_cast<const Vector4*>(&overlayEnable);
 			// Stochastic tiling. The class table on stage 1 must be read exactly as it
@@ -4359,11 +4365,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// same scroll, same projection. Written through the device for the same reason
 			// the terrain path does -- see the note there about a device reset leaving the
 			// redundant-set cache claiming values the device no longer holds.
-			D3DXVECTOR4 cloudOffset(m_terrainCloudOffX, m_terrainCloudOffY, 0.0f, 0.0f);
+			// c4 is now the two cloud layers' world-space drift rather than one UV offset;
+			// the shader divides each by its own projection period.
+			D3DXVECTOR4 cloudOffset(m_cloudScrollAX, m_cloudScrollAY, m_cloudScrollBX, m_cloudScrollBY);
 			DX8CALL(SetVertexShaderConstantF(4, reinterpret_cast<const float*>(&cloudOffset), 1));
 			Vertex_Shader_Constants[4] = *reinterpret_cast<const Vector4*>(&cloudOffset);
 			D3DXVECTOR4 overlayEnable(m_terrainCloudEnable ? 1.0f : 0.0f,
-									  m_terrainNoiseEnable ? 1.0f : 0.0f, 0.0f, 0.0f);
+									  m_terrainNoiseEnable ? 1.0f : 0.0f,
+									  m_cloudStrength, 0.0f);
 			DX8CALL(SetPixelShaderConstantF(0, reinterpret_cast<const float*>(&overlayEnable), 1));
 			Pixel_Shader_Constants[0] = *reinterpret_cast<const Vector4*>(&overlayEnable);
 			Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);

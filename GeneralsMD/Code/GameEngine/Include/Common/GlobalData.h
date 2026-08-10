@@ -157,6 +157,7 @@ public:
 	Real m_terrainDetailRelief;				///< strength of the normal perturbation lit as relief
 	Real m_terrainDetailScale;				///< multiplies the detail layer's world periods; >1 is broader
 	Real m_terrainDetailColor;				///< macro warm/cool and saturation variation across the map
+	Real m_cloudShadowStrength;				///< how deeply a cloud shadow darkens the ground
 	Int  m_textureReductionFactor;	//how much to cut texture resolution: 2 is half, 3 is quarter, etc.
 	Bool m_enableBehindBuildingMarkers;
 	Real m_waterPositionX;

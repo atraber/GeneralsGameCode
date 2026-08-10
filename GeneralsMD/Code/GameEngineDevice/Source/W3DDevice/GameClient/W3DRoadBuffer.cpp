@@ -3329,9 +3329,13 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 		// through.
 		DX8Wrapper::Set_Texture(2, cloudTexture);
 		DX8Wrapper::Set_Texture(3, noiseTexture);
-		float cx = 0.0f, cy = 0.0f;
-		W3DShaderManager::getCloudOffset(cx, cy);
-		DX8Wrapper::Set_Terrain_Overlay(cx, cy, cloudTexture != nullptr, noiseTexture != nullptr);
+		DX8Wrapper::Set_Terrain_Overlay(cloudTexture != nullptr, noiseTexture != nullptr);
+		// Same cloud shadow the ground gets. Set here rather than relying on the terrain
+		// pass having run first: a road must never disagree with the ground it lies on.
+		float cax = 0.0f, cay = 0.0f, cbx = 0.0f, cby = 0.0f;
+		W3DShaderManager::getCloudScroll(cax, cay, cbx, cby);
+		DX8Wrapper::Set_Cloud_Shadow(cax, cay, cbx, cby,
+									 TheGlobalData->m_cloudShadowStrength);
 		// Blend, depth test and depth write for a road decal: over the terrain, tested
 		// but not written. The shader replaces only the vertex/pixel stages; this still
 		// comes from W3D, as it does for every other routed draw.

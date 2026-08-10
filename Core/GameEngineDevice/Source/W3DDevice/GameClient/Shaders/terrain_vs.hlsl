@@ -7,11 +7,19 @@
 // with a scroll offset for the cloud layer.
 
 row_major float4x4 WorldViewProj : register(c0);
-float4 CloudOffset : register(c4);   // xy = cloud scroll offset
+float4 CloudOffset : register(c4);   // xy = cloud layer A drift, zw = layer B (world units)
 row_major float4x4 SunVP : register(c5);   // sun view*projection (terrain verts are world-space)
 
 // 1 / (63 * MAP_XY_FACTOR / 2), MAP_XY_FACTOR = 10  ->  1/315
 static const float STRETCH_FACTOR = 1.0 / 315.0;
+
+// Cloud shadow. Two layers, each projected over thousands of world units and drifting
+// at its own rate, so the field does not read as one texture sliding rigidly across the
+// map. CloudOffset carries both layers' drift in *world* units; dividing here rather
+// than scrolling in UV means one wind speed means the same thing at either scale.
+static const float CLOUD_PERIOD_A = 1800.0;
+static const float CLOUD_PERIOD_B = 2900.0;
+
 
 struct VS_INPUT
 {
@@ -27,7 +35,7 @@ struct VS_OUTPUT
     float4 color    : COLOR0;
     float2 uv0      : TEXCOORD0;
     float2 uv1      : TEXCOORD1;
-    float2 cloudUV  : TEXCOORD2;
+    float4 cloudUV  : TEXCOORD2;   // xy = layer A, zw = layer B
     float2 noiseUV  : TEXCOORD3;
     float4 lightPos : TEXCOORD4;   // position in the sun's clip space (for shadowing)
     float3 worldPos : TEXCOORD5;   // raw world position; XY drives the tiling lattice and the
@@ -51,8 +59,9 @@ VS_OUTPUT main(VS_INPUT input)
     output.uv1      = input.uv1;
 
     float2 stretched = input.position.xy * STRETCH_FACTOR;
-    output.cloudUV   = stretched + CloudOffset.xy;  // scrolling cloud layer
     output.noiseUV   = stretched;                   // static noise-detail layer
+    output.cloudUV   = float4((input.position.xy + CloudOffset.xy) / CLOUD_PERIOD_A,
+                              (input.position.xy + CloudOffset.zw) / CLOUD_PERIOD_B);
 
     // Unscaled, so the tiling lattice and the detail layer can be sized in world units
     // rather than in whatever the overlay stretch happens to be.
