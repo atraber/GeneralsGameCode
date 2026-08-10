@@ -30,6 +30,9 @@ struct VS_OUTPUT
     float2 cloudUV  : TEXCOORD2;
     float2 noiseUV  : TEXCOORD3;
     float4 lightPos : TEXCOORD4;   // position in the sun's clip space (for shadowing)
+    float3 worldPos : TEXCOORD5;   // raw world position; XY drives the tiling lattice and the
+                                   // detail projection, Z lets the pixel shader recover the
+                                   // geometric normal from its own derivatives
 };
 
 VS_OUTPUT main(VS_INPUT input)
@@ -47,8 +50,12 @@ VS_OUTPUT main(VS_INPUT input)
     output.uv0      = input.uv0;
     output.uv1      = input.uv1;
 
-    float2 worldXY  = input.position.xy * STRETCH_FACTOR;
-    output.cloudUV  = worldXY + CloudOffset.xy;  // scrolling cloud layer
-    output.noiseUV  = worldXY;                   // static noise-detail layer
+    float2 stretched = input.position.xy * STRETCH_FACTOR;
+    output.cloudUV   = stretched + CloudOffset.xy;  // scrolling cloud layer
+    output.noiseUV   = stretched;                   // static noise-detail layer
+
+    // Unscaled, so the tiling lattice and the detail layer can be sized in world units
+    // rather than in whatever the overlay stretch happens to be.
+    output.worldPos = input.position;
     return output;
 }

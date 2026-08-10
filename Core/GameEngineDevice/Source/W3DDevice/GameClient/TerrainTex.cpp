@@ -64,24 +64,33 @@
 //=============================================================================
 // TerrainTextureClass::TerrainTextureClass
 //=============================================================================
-/** Constructor. Calls parent constructor to create a 16 bit per pixel D3D
-texture of the desired height and mip level. */
+/** Constructor. Calls parent constructor to create a 32 bit per pixel D3D
+texture of the desired height and mip level.
+
+The atlas used to be A1R5G5B5. Five bits per channel is not enough for the
+terrain: every tile that is mostly one hue with a slow gradient across it --
+sand, dirt, dry grass, which is most of the ground in most maps -- banded
+visibly, and the bands sat still under the camera so they read as part of the
+texture rather than as noise. Widening to eight bits per channel doubles the
+atlas (2048 x pow2Height x 4 bytes) and costs nothing else; the tile source
+data was always 24-bit, so this stops discarding it. */
 //=============================================================================
 TerrainTextureClass::TerrainTextureClass(int height) :
 	TextureClass(TEXTURE_WIDTH, height,
-		WW3D_FORMAT_A1R5G5B5, MIP_LEVELS_3 )
+		WW3D_FORMAT_A8R8G8B8, MIP_LEVELS_3 )
 {
 }
 
 //=============================================================================
 // TerrainTextureClass::TerrainTextureClass
 //=============================================================================
-/** Constructor. Calls parent constructor to create a 16 bit per pixel D3D
-texture of the desired height and mip level. */
+/** Constructor. Calls parent constructor to create a 32 bit per pixel D3D
+texture of the desired height and mip level. This is the flat-terrain (low LOD)
+variant; it is filled by updateFlat and follows the base atlas's format. */
 //=============================================================================
 TerrainTextureClass::TerrainTextureClass(int height, int width) :
 	TextureClass(width, height,
-		WW3D_FORMAT_A1R5G5B5, MIP_LEVELS_ALL )
+		WW3D_FORMAT_A8R8G8B8, MIP_LEVELS_ALL )
 {
 }
 
@@ -117,18 +126,9 @@ int TerrainTextureClass::update(WorldHeightMap *htMap)
 	//DEBUG_ASSERTCRASH(tilesPerRow*numRows >= htMap->m_numBitmapTiles, ("Too many tiles."));
 	DEBUG_ASSERTCRASH((Int)surface_desc.Width >= tilePixelExtent*tilesPerRow, ("Bitmap too small."));
 #endif
-	if (surface_desc.Format == D3DFMT_A1R5G5B5) {
-#if 0
-		UnsignedInt cellX, cellY;
-		for (cellX = 0; cellX < surface_desc.Width; cellX++) {
-			for (cellY = 0; cellY < surface_desc.Height; cellY++) {
-				UnsignedByte *pBGR = ((UnsignedByte *)locked_rect.pBits)+(cellY*surface_desc.Width+cellX)*2;
-				*((Short*)pBGR) = (((255-2*cellY)>>3)<<10) + ((4*cellX)>>4);
-			}
-		}
-#endif
+	if (surface_desc.Format == D3DFMT_A8R8G8B8) {
 		Int tileNdx;
-		Int pixelBytes = 2;
+		Int pixelBytes = 4;
 		for (tileNdx=0; tileNdx < htMap->m_numBitmapTiles; tileNdx++) {
 			TileData *pTile = htMap->getSourceTile(tileNdx);
 			if (!pTile) continue;
@@ -146,7 +146,8 @@ int TerrainTextureClass::update(WorldHeightMap *htMap)
 				Int column = position.x;
 				pBGRX += column*pixelBytes;
 				for (i=0; i<tilePixelExtent; i++) {
-					*((Short*)pBGRX) = 0x8000 + ((pBGR[2]>>3)<<10) + ((pBGR[1]>>3)<<5) + (pBGR[0]>>3);
+					// Source is BGR; the atlas is ARGB8888 and terrain is always opaque.
+					*((UnsignedInt*)pBGRX) = 0xFF000000 | (pBGR[2]<<16) | (pBGR[1]<<8) | pBGR[0];
 					pBGRX +=pixelBytes;
 					pBGR +=TILE_BYTES_PER_PIXEL;
 				}
@@ -391,19 +392,10 @@ Bool TerrainTextureClass::updateFlat(WorldHeightMap *htMap, Int xCell, Int yCell
 	DX8_ErrorCode(surface_level->LockRect(&locked_rect, nullptr, 0));
 
 
-	if (surface_desc.Format == D3DFMT_A1R5G5B5) {
+	if (surface_desc.Format == D3DFMT_A8R8G8B8) {
 
-		Int pixelBytes = 2;
+		Int pixelBytes = 4;
 		Int cellX, cellY;
-#if 0
-		UnsignedInt X, Y;
-		for (X = 0; X < surface_desc.Width; X++) {
-			for (Y = 0; Y < surface_desc.Height; Y++) {
-				UnsignedByte *pBGR = ((UnsignedByte *)locked_rect.pBits)+(Y*surface_desc.Width+X)*pixelBytes;
-				*((Short*)pBGR) = (((255-2*Y)>>3)<<10) + ((2*X)>>4);
-			}
-		}
-#endif
 		for (cellX = 0; cellX < cellWidth; cellX++) {
 			for (cellY = 0; cellY < cellWidth; cellY++) {
 				UnsignedByte *pBGRX_data = ((UnsignedByte*)locked_rect.pBits);
@@ -414,7 +406,8 @@ Bool TerrainTextureClass::updateFlat(WorldHeightMap *htMap, Int xCell, Int yCell
 					UnsignedByte *pBGRX = pBGRX_data + (pixelsPerCell*(cellWidth-cellY-1)+k)*surface_desc.Width*pixelBytes +
 						cellX*pixelsPerCell*pixelBytes;
 					for (l=0; l<pixelsPerCell; l++) {
-						*((Short*)pBGRX) = 0x8000 + ((pBGR[2]>>3)<<10) + ((pBGR[1]>>3)<<5) + (pBGR[0]>>3);
+						// Source is BGR; the atlas is ARGB8888 and terrain is always opaque.
+						*((UnsignedInt*)pBGRX) = 0xFF000000 | (pBGR[2]<<16) | (pBGR[1]<<8) | pBGR[0];
 						pBGRX +=pixelBytes;
 						pBGR +=TILE_BYTES_PER_PIXEL;
 					}
@@ -471,6 +464,219 @@ void TerrainTextureClass::Apply(unsigned int stage)
 }
 
 /******************************************************************************
+					TerrainClassMapTextureClass
+******************************************************************************/
+
+//=============================================================================
+// TerrainClassMapTextureClass::TerrainClassMapTextureClass
+//=============================================================================
+TerrainClassMapTextureClass::TerrainClassMapTextureClass() :
+	TextureClass(TERRAIN_CLASS_MAP_DIM, TERRAIN_CLASS_MAP_DIM,
+		WW3D_FORMAT_A8R8G8B8, MIP_LEVELS_1 )
+{
+}
+
+//=============================================================================
+// TerrainClassMapTextureClass::update
+//=============================================================================
+/** Records, for every tile slot the atlas has, which texture class covers it and
+	where that class begins. See the class comment for why the shader cannot work
+	this out from a UV on its own.
+
+	Must be called after updateTileTexturePositions has placed the classes. */
+//=============================================================================
+void TerrainClassMapTextureClass::update(WorldHeightMap *htMap)
+{
+	IDirect3DSurface8 *surface_level;
+	D3DSURFACE_DESC surface_desc;
+	D3DLOCKED_RECT locked_rect;
+	DX8_ErrorCode(Peek_D3D_Texture()->GetSurfaceLevel(0, &surface_level));
+	DX8_ErrorCode(surface_level->GetDesc(&surface_desc));
+	if (surface_desc.Format != D3DFMT_A8R8G8B8) {
+		surface_level->Release();
+		return;
+	}
+	DX8_ErrorCode(surface_level->LockRect(&locked_rect, nullptr, 0));
+
+	// Alpha 0 everywhere means "no class here"; the shader falls back to a plain
+	// unoffset sample for those, so an incomplete table degrades rather than breaks.
+	Int x, y;
+	for (y = 0; y < TERRAIN_CLASS_MAP_DIM; y++) {
+		UnsignedInt *row = (UnsignedInt*)((UnsignedByte*)locked_rect.pBits + y*locked_rect.Pitch);
+		for (x = 0; x < TERRAIN_CLASS_MAP_DIM; x++) {
+			row[x] = 0;
+		}
+	}
+
+	const Int pitch = TILE_PIXEL_EXTENT + TILE_OFFSET;
+	Int texClass;
+	for (texClass = 0; texClass < htMap->m_numTextureClasses; texClass++) {
+		const Int width = htMap->m_textureClasses[texClass].width;
+		const ICoord2D origin = htMap->m_textureClasses[texClass].positionInTexture;
+		// x <= 0 marks a class that found no room in the atlas -- same test the tile
+		// fill and the UV lookup use.
+		if (origin.x <= 0 || width <= 0) continue;
+
+		// positionInTexture is the class rect's top-left in texels; the slots it
+		// occupies follow from the uniform grid updateTileTexturePositions placed it on.
+		const Int originCol = (origin.x - TILE_OFFSET/2) / pitch;
+		const Int originRow = (origin.y - TILE_OFFSET/2) / pitch;
+
+		Int i, j;
+		for (j = 0; j < width; j++) {
+			for (i = 0; i < width; i++) {
+				const Int col = originCol + i;
+				const Int row = originRow + j;
+				if (col < 0 || col >= TERRAIN_CLASS_MAP_DIM) continue;
+				if (row < 0 || row >= TERRAIN_CLASS_MAP_DIM) continue;
+				UnsignedInt *dst = (UnsignedInt*)((UnsignedByte*)locked_rect.pBits + row*locked_rect.Pitch);
+				dst[col] = 0xFF000000 | ((UnsignedInt)width << 16) | ((UnsignedInt)i << 8) | (UnsignedInt)j;
+			}
+		}
+	}
+
+	surface_level->UnlockRect();
+	surface_level->Release();
+}
+
+/******************************************************************************
+					TerrainDetailTextureClass
+******************************************************************************/
+
+//=============================================================================
+// Periodic value noise.
+//
+// The lattice index is wrapped to the octave's period before hashing, which is what
+// makes the finished field tile: sampling at u and u+1 hits the same lattice points,
+// so the texture can be addressed with WRAP and shows no seam.
+//=============================================================================
+static Real detailLatticeValue(Int x, Int y, Int period, UnsignedInt octave)
+{
+	x = ((x % period) + period) % period;
+	y = ((y % period) + period) % period;
+	UnsignedInt h = (UnsignedInt)x * 374761393u + (UnsignedInt)y * 668265263u + octave * 2246822519u;
+	h = (h ^ (h >> 13)) * 1274126177u;
+	h ^= h >> 16;
+	return (Real)(h & 0xFFFFFFu) / (Real)0xFFFFFF;
+}
+
+static Real detailValueNoise(Real x, Real y, Int period, UnsignedInt octave)
+{
+	const Int xi = (Int)floorf(x);
+	const Int yi = (Int)floorf(y);
+	const Real xf = x - (Real)xi;
+	const Real yf = y - (Real)yi;
+	// Smoothstep the interpolant; linear interpolation between lattice points leaves
+	// creases along the lattice that read as a grid once this is lit as relief.
+	const Real u = xf*xf*(3.0f - 2.0f*xf);
+	const Real v = yf*yf*(3.0f - 2.0f*yf);
+
+	const Real a = detailLatticeValue(xi,   yi,   period, octave);
+	const Real b = detailLatticeValue(xi+1, yi,   period, octave);
+	const Real c = detailLatticeValue(xi,   yi+1, period, octave);
+	const Real d = detailLatticeValue(xi+1, yi+1, period, octave);
+
+	const Real top = a + (b - a)*u;
+	const Real bot = c + (d - c)*u;
+	return top + (bot - top)*v;
+}
+
+//=============================================================================
+// TerrainDetailTextureClass::TerrainDetailTextureClass
+//=============================================================================
+TerrainDetailTextureClass::TerrainDetailTextureClass() :
+	TextureClass(TERRAIN_DETAIL_DIM, TERRAIN_DETAIL_DIM,
+		WW3D_FORMAT_A8R8G8B8, MIP_LEVELS_ALL )
+{
+}
+
+//=============================================================================
+// TerrainDetailTextureClass::update
+//=============================================================================
+/** Builds the noise field and its gradient.
+
+	Four octaves, each on a lattice whose period divides the texture, so the whole
+	field is periodic. The mip chain matters as much as the base level here: filtering
+	drives the gradient channels toward 0.5 and the height toward its mean, so the
+	relief and the albedo detail both fade out with distance on their own rather than
+	shimmering into aliasing. */
+//=============================================================================
+void TerrainDetailTextureClass::update()
+{
+	IDirect3DSurface8 *surface_level;
+	D3DSURFACE_DESC surface_desc;
+	D3DLOCKED_RECT locked_rect;
+	DX8_ErrorCode(Peek_D3D_Texture()->GetSurfaceLevel(0, &surface_level));
+	DX8_ErrorCode(surface_level->GetDesc(&surface_desc));
+	if (surface_desc.Format != D3DFMT_A8R8G8B8) {
+		surface_level->Release();
+		return;
+	}
+	DX8_ErrorCode(surface_level->LockRect(&locked_rect, nullptr, 0));
+
+	const Int dim = TERRAIN_DETAIL_DIM;
+	Real *height = MSGNEW("TerrainDetail") Real[dim*dim];
+
+	Int x, y;
+	for (y = 0; y < dim; y++) {
+		for (x = 0; x < dim; x++) {
+			const Real u = (Real)x / (Real)dim;
+			const Real v = (Real)y / (Real)dim;
+			// Octaves start at 2 lattice cells across the texture, not 8. The first cut
+			// started four times finer and read as busy: its top octave put a feature
+			// every half a world unit, well under a pixel at playing distance, so it
+			// registered as grain over the ground rather than as shape in it. Starting
+			// coarse puts the finest feature at roughly a terrain cell instead.
+			Real sum = 0.0f, amp = 0.5f, total = 0.0f;
+			Int period = 2;
+			for (UnsignedInt o = 0; o < 4; o++) {
+				sum   += amp * detailValueNoise(u*period, v*period, period, o);
+				total += amp;
+				amp   *= 0.5f;
+				period *= 2;
+			}
+			height[y*dim + x] = sum / total;
+		}
+	}
+
+	// Central differences, wrapped, so the gradient is periodic too. The scale brings a
+	// typical texel-to-texel step into the byte range without clipping the steep ones
+	// flat; anything past the range is clamped rather than wrapped, which would invert
+	// the lighting on the few texels that reach it.
+	//
+	// fBm is scale-invariant in slope -- halving the amplitude while doubling the
+	// frequency leaves each octave contributing the same gradient -- so moving the
+	// octaves four steps coarser divided the whole field's gradient by four. The scale
+	// is multiplied by four to match, which keeps the relief as deep as it was and only
+	// stretches it out. Lower TerrainDetailRelief if that is too much.
+	const Real GRADIENT_SCALE = 24.0f;
+	for (y = 0; y < dim; y++) {
+		UnsignedInt *row = (UnsignedInt*)((UnsignedByte*)locked_rect.pBits + y*locked_rect.Pitch);
+		for (x = 0; x < dim; x++) {
+			const Real hL = height[y*dim + ((x - 1 + dim) % dim)];
+			const Real hR = height[y*dim + ((x + 1) % dim)];
+			const Real hD = height[((y - 1 + dim) % dim)*dim + x];
+			const Real hU = height[((y + 1) % dim)*dim + x];
+
+			Real gx = (hR - hL) * GRADIENT_SCALE;
+			Real gy = (hU - hD) * GRADIENT_SCALE;
+			if (gx < -1.0f) gx = -1.0f; else if (gx > 1.0f) gx = 1.0f;
+			if (gy < -1.0f) gy = -1.0f; else if (gy > 1.0f) gy = 1.0f;
+
+			const Int r = (Int)((gx*0.5f + 0.5f) * 255.0f + 0.5f);
+			const Int g = (Int)((gy*0.5f + 0.5f) * 255.0f + 0.5f);
+			const Int b = (Int)(height[y*dim + x] * 255.0f + 0.5f);
+			row[x] = 0xFF000000 | ((UnsignedInt)r << 16) | ((UnsignedInt)g << 8) | (UnsignedInt)b;
+		}
+	}
+
+	delete [] height;
+	surface_level->UnlockRect();
+	surface_level->Release();
+	DX8_ErrorCode(D3DXFilterTexture(Peek_D3D_Texture(), nullptr, 0, D3DX_FILTER_BOX));
+}
+
+/******************************************************************************
 						AlphaTerrainTextureClass
 ******************************************************************************/
 //-----------------------------------------------------------------------------
@@ -487,7 +693,7 @@ saving lots of texture memory, and preventing seams between blended tiles. */
 //=============================================================================
 AlphaTerrainTextureClass::AlphaTerrainTextureClass( TextureClass *pBaseTex ):
 	TextureClass(8, 8,
-		WW3D_FORMAT_A1R5G5B5, MIP_LEVELS_1 )
+		WW3D_FORMAT_A8R8G8B8, MIP_LEVELS_1 )
 {
 	// Attach the base texture's d3d texture.
 	IDirect3DTexture8 * d3d_tex = pBaseTex->Peek_D3D_Texture();

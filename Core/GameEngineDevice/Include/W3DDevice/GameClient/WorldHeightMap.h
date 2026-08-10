@@ -92,6 +92,8 @@ class OutputStream;
 class DataChunkInput;
 struct DataChunkInfo;
 class TerrainTextureClass;
+class TerrainClassMapTextureClass;
+class TerrainDetailTextureClass;
 class AlphaTerrainTextureClass;
 class AlphaEdgeTextureClass;
 
@@ -101,6 +103,8 @@ class WorldHeightMap : public RefCountClass,
                        public WorldHeightMapInterfaceClass
 {
 	friend class TerrainTextureClass;
+	friend class TerrainClassMapTextureClass;
+	friend class TerrainDetailTextureClass;
 	friend class AlphaTerrainTextureClass;
 	friend class W3DCustomEdging;
 	friend class AlphaEdgeTextureClass;
@@ -181,6 +185,12 @@ protected:
 	 texture. */
 	TerrainTextureClass *m_terrainTex;
 	Int	m_terrainTexHeight; /// Height of m_terrainTex allocated.
+	/** Slot table describing where each texture class sits in m_terrainTex, so the
+			stochastic-tiling shader can find the bounds it has to wrap within. */
+	TerrainClassMapTextureClass *m_terrainClassMap;
+	/** Procedural fBm detail/relief layer, projected from world XY. Independent of the
+			map, but built and released alongside the rest so its lifetime needs no special case. */
+	TerrainDetailTextureClass *m_terrainDetail;
 	/** The texture that contains the alpha edge tiles that get blended on
 			top of the base texture. getAlphaUVData does the mapping. */
 	AlphaTerrainTextureClass *m_alphaTerrainTex;
@@ -286,6 +296,9 @@ public:  // tile and texture info.
 	TextureClass *getTerrainTexture();  //< generates if needed and returns the terrain texture
 	TextureClass *getAlphaTerrainTexture(); //< generates if needed and returns alpha terrain texture
 	TextureClass *getEdgeTerrainTexture(); //< generates if needed and returns blend edge texture
+	TextureClass *getTerrainClassMapTexture(); //< generates if needed and returns the class slot table
+	TextureClass *getTerrainDetailTexture(); //< generates if needed and returns the procedural detail layer
+	Int getTerrainTexHeight() const { return m_terrainTexHeight; } //< allocated height of the base atlas
 	/// UV mapping data for a cell to map into the terrain texture.  Returns true if the textures had to be stretched for cliffs.
 	Bool getUVData(Int xIndex, Int yIndex, float U[4], float V[4]);
 	Bool getFlipState(Int xIndex, Int yIndex) const;

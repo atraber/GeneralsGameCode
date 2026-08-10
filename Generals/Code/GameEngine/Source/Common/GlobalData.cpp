@@ -107,6 +107,12 @@ GlobalData* GlobalData::m_theOriginal = nullptr;
 	{ "UseShadowDecals",						INI::parseBool,				nullptr,			offsetof( GlobalData, m_useShadowDecals ) },
 	{ "UseShadowMapping",						INI::parseBool,				nullptr,			offsetof( GlobalData, m_useShadowMapping ) },
 	{ "UseParticleShadows",					INI::parseBool,				nullptr,			offsetof( GlobalData, m_useParticleShadows ) },
+	{ "TerrainTileVariation",				INI::parseBool,				nullptr,			offsetof( GlobalData, m_terrainTileVariation ) },
+	{ "TerrainDetail",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_terrainDetail ) },
+	{ "TerrainDetailAlbedo",				INI::parseReal,				nullptr,			offsetof( GlobalData, m_terrainDetailAlbedo ) },
+	{ "TerrainDetailRelief",				INI::parseReal,				nullptr,			offsetof( GlobalData, m_terrainDetailRelief ) },
+	{ "TerrainDetailScale",					INI::parseReal,				nullptr,			offsetof( GlobalData, m_terrainDetailScale ) },
+	{ "TerrainDetailColor",					INI::parseReal,				nullptr,			offsetof( GlobalData, m_terrainDetailColor ) },
 	{ "TextureReductionFactor",			INI::parseInt,				nullptr,			offsetof( GlobalData, m_textureReductionFactor ) },
 	{ "UseBehindBuildingMarker",		INI::parseBool,				nullptr,			offsetof( GlobalData, m_enableBehindBuildingMarkers ) },
 	{ "WaterPositionX",							INI::parseReal,				nullptr,			offsetof( GlobalData, m_waterPositionX ) },
@@ -661,6 +667,15 @@ GlobalData::GlobalData()
 	m_useShadowDecals = FALSE;
 	m_useShadowMapping = TRUE;
 	m_useParticleShadows = TRUE;
+	m_terrainTileVariation = TRUE;
+	m_terrainDetail = TRUE;
+	// Deliberately gentle: the relief is meant to read as surface, not as a texture laid
+	// over one. Tunable from GameData.ini without a rebuild.
+	m_terrainDetailAlbedo = 0.35f;
+	m_terrainDetailRelief = 0.60f;
+	m_terrainDetailScale = 1.0f;
+	// Colour is the effect most likely to look wrong if overdone, so it starts low.
+	m_terrainDetailColor = 0.12f;
 	m_textureReductionFactor = -1;
 	m_enableBehindBuildingMarkers = TRUE;
 	m_scriptDebug = FALSE;
@@ -1247,6 +1262,8 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	TheWritableGlobalData->m_useBloom = optionPref.getBloomEnabled();
 	TheWritableGlobalData->m_useShadowMapping = optionPref.getShadowMappingEnabled();
 	TheWritableGlobalData->m_useParticleShadows = optionPref.getParticleShadowsEnabled();
+	TheWritableGlobalData->m_terrainTileVariation = optionPref.getTerrainTileVariationEnabled();
+	TheWritableGlobalData->m_terrainDetail = optionPref.getTerrainDetailEnabled();
 
 	Int val=optionPref.getGammaValue();
 	//generate a value between 0.6 and 2.0.

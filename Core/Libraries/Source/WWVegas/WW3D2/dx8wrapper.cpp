@@ -800,6 +800,13 @@ float							DX8Wrapper::m_terrainCloudOffX = 0.0f;
 float							DX8Wrapper::m_terrainCloudOffY = 0.0f;
 bool							DX8Wrapper::m_terrainCloudEnable = false;
 bool							DX8Wrapper::m_terrainNoiseEnable = false;
+// Sized from the atlas the moment a map's terrain texture is built; the defaults stand
+// only for the window before that, when no terrain is being drawn anyway.
+Vector4							DX8Wrapper::m_terrainAtlasParams(2048.0f, 1024.0f, 1.0f/2048.0f, 1.0f/1024.0f);
+Vector4							DX8Wrapper::m_terrainTilingParams(0.0f, 160.0f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_terrainDetailParams(0.0f, 0.0f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_terrainSunDir(0.0f, 0.0f, 1.0f, 0.0f);
+Vector4							DX8Wrapper::m_terrainColourParams(0.0f, 0.0f, 0.0f, 0.0f);
 static DWORD s_dwOriginalPS = 0;  // fixed-function pixel shader to restore after unit draws
 // True while a PBR draw's ORM map is still bound on texture stage 1. That bind goes
 // straight to the device, so nothing else knows to undo it -- but only a PBR draw can
@@ -4275,6 +4282,30 @@ void DX8Wrapper::Apply_Render_State_Changes()
 									  m_terrainNoiseEnable ? 1.0f : 0.0f, 0.0f, 0.0f);
 			DX8CALL(SetPixelShaderConstantF(0, reinterpret_cast<const float*>(&overlayEnable), 1));
 			Pixel_Shader_Constants[0] = *reinterpret_cast<const Vector4*>(&overlayEnable);
+			// Stochastic tiling. The class table on stage 1 must be read exactly as it
+			// was written -- its bytes are a width and two slot offsets, and a filtered
+			// tap between two slots decodes to a class that does not exist.
+			Set_DX8_Texture_Stage_State(1, D3DTSS_MINFILTER, D3DTEXF_POINT);
+			Set_DX8_Texture_Stage_State(1, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+			Set_DX8_Texture_Stage_State(1, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+			Set_DX8_Texture_Stage_State(1, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+			Set_DX8_Texture_Stage_State(1, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			Set_Pixel_Shader_Constant(2, &m_terrainAtlasParams, 1);
+			Set_Pixel_Shader_Constant(3, &m_terrainTilingParams, 1);
+
+			// Procedural detail layer on stage 4. Filtered and mipped, unlike the class
+			// table: its mip chain is what fades the relief out with distance instead of
+			// letting the gradient alias into shimmer. WRAP because the field is built
+			// periodic precisely so it can be projected across the whole map.
+			Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(4, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+			Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+			Set_Pixel_Shader_Constant(4, &m_terrainDetailParams, 1);
+			Set_Pixel_Shader_Constant(5, &m_terrainSunDir, 1);
+			Set_Pixel_Shader_Constant(6, &m_terrainColourParams, 1);
+
 			// Cloud/noise tile and wrap.
 			Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 			Set_DX8_Texture_Stage_State(2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);

@@ -2037,11 +2037,62 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 			Bool noiseOn = (st == W3DShaderManager::ST_TERRAIN_BASE_NOISE2 ||
 							st == W3DShaderManager::ST_TERRAIN_BASE_NOISE12);
 			DX8Wrapper::Set_Texture(0, m_stageZeroTexture);
+			// Stage 1 carries the class slot table for the stochastic tiling. Bound
+			// through Set_Texture rather than straight to the device so the ordinary
+			// applied-texture bookkeeping takes it off again -- stages left bound behind
+			// a shader pass have bitten this renderer more than once.
+			DX8Wrapper::Set_Texture(1, m_map ? m_map->getTerrainClassMapTexture() : nullptr);
 			DX8Wrapper::Set_Texture(2, cloudOn ? m_stageTwoTexture : nullptr);
 			DX8Wrapper::Set_Texture(3, noiseOn ? m_stageThreeTexture : nullptr);
+			DX8Wrapper::Set_Texture(4, m_map ? m_map->getTerrainDetailTexture() : nullptr);
 			float cx = 0.0f, cy = 0.0f;
 			W3DShaderManager::getCloudOffset(cx, cy);
 			DX8Wrapper::Set_Terrain_Overlay(cx, cy, cloudOn, noiseOn);
+			// The lattice is sized in world units. 160 is four cells of a width-2 class
+			// (the common case), so a given offset covers a few repeats of the artwork
+			// before the next one takes over.
+			DX8Wrapper::Set_Terrain_Tiling((float)TEXTURE_WIDTH,
+										   m_map ? (float)m_map->getTerrainTexHeight() : 1024.0f,
+										   TheGlobalData->m_terrainTileVariation != 0,
+										   160.0f);
+			// Same sun the CPU baked the vertex lighting with (see doTheLight), negated
+			// the same way, so the relief agrees with the shading already in the vertex
+			// colour rather than lighting the ground from a second direction.
+			Vector3 towardSun(0.0f, 0.0f, 1.0f);
+			if (TheGlobalData->m_numGlobalLights > 0) {
+				const Coord3D *sun = &TheGlobalData->m_terrainLightPos[0];
+				towardSun.Set(-sun->x, -sun->y, -sun->z);
+				if (towardSun.Length2() < 1e-8f) {
+					towardSun.Set(0.0f, 0.0f, 1.0f);
+				}
+			}
+			DX8Wrapper::Set_Terrain_Detail(TheGlobalData->m_terrainDetail != 0,
+										   TheGlobalData->m_terrainDetailAlbedo,
+										   TheGlobalData->m_terrainDetailRelief,
+										   TheGlobalData->m_terrainDetailScale,
+										   TheGlobalData->m_terrainDetailColor,
+										   towardSun);
+#ifdef RTS_DEBUG
+			{
+				// How much relief a normal perturbation can produce depends entirely on
+				// where the sun is: near the top of the cosine, tilting the normal barely
+				// changes dot(N,L) and can only ever darken. Log it rather than infer it
+				// from how the result looks.
+				static Bool reported = FALSE;
+				if (!reported) {
+					reported = TRUE;
+					Vector3 n = towardSun;
+					n.Normalize();
+					DEBUG_LOG(("TERRAIN DETAIL: lights=%d towardSun=(%.3f,%.3f,%.3f) "
+						"elevation=%.1f deg, flat-ground NdotL=%.3f | albedo=%.2f relief=%.2f",
+						TheGlobalData->m_numGlobalLights, n.X, n.Y, n.Z,
+						asinf(n.Z <= -1.0f ? -1.0f : (n.Z >= 1.0f ? 1.0f : n.Z)) * 180.0f / PI,
+						n.Z,
+						TheGlobalData->m_terrainDetailAlbedo,
+						TheGlobalData->m_terrainDetailRelief));
+				}
+			}
+#endif
 			DX8Wrapper::Set_Terrain_Shader_Pass(true);
 		}
 		else if (!doMultiPassWireFrame)	//multi-pass wireframe doesn't use regular shaders.
@@ -2087,7 +2138,14 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 		if (pass)	//shader was applied at least once?
  			W3DShaderManager::resetShader(st);
 
-		if (useTerrainProg) DX8Wrapper::Set_Terrain_Shader_Pass(false);
+		if (useTerrainProg) {
+			// Take the class table and the detail layer back off: the passes that follow
+			// (shorelines, extra blends, edging) are fixed-function and would otherwise
+			// inherit textures on stages they never asked for.
+			DX8Wrapper::Set_Texture(1, nullptr);
+			DX8Wrapper::Set_Texture(4, nullptr);
+			DX8Wrapper::Set_Terrain_Shader_Pass(false);
+		}
 
 		//Draw feathered shorelines
 		renderShoreLines(&rinfo.Camera);

@@ -140,6 +140,28 @@ Bool OptionPreferences::getBloomEnabled() const
 	return parseIniBool(it->second.str(), TRUE);
 }
 
+Bool OptionPreferences::getTerrainTileVariationEnabled() const
+{
+	// Per-cell orientation variation of the base terrain tile. Defaults to on when the
+	// key is absent; exposed so the flat original can be compared in game without a
+	// rebuild, and so it can be switched off on a map where it reads badly.
+	OptionPreferences::const_iterator it = find("TerrainTileVariation");
+	if (it == end())
+		return TRUE;
+	return parseIniBool(it->second.str(), TRUE);
+}
+
+Bool OptionPreferences::getTerrainDetailEnabled() const
+{
+	// Procedural detail/relief layer over the terrain. Defaults to on when the key is
+	// absent; kept separate from TerrainTileVariation because the two fix different
+	// things and are worth being able to judge one at a time.
+	OptionPreferences::const_iterator it = find("TerrainDetail");
+	if (it == end())
+		return TRUE;
+	return parseIniBool(it->second.str(), TRUE);
+}
+
 Bool OptionPreferences::getShadowMappingEnabled() const
 {
 	// Directional shadow map. Defaults to on when the key is absent; when it runs it

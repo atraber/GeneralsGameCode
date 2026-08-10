@@ -410,6 +410,8 @@ WorldHeightMap::~WorldHeightMap()
 	}
 	REF_PTR_RELEASE(m_terrainTex);
 	REF_PTR_RELEASE(m_alphaTerrainTex);
+	REF_PTR_RELEASE(m_terrainClassMap);
+	REF_PTR_RELEASE(m_terrainDetail);
 	REF_PTR_RELEASE(m_alphaEdgeTex);
 }
 
@@ -440,7 +442,7 @@ WorldHeightMap::WorldHeightMap():
 	m_tileMode(TILE_4x4),
 #endif
 	m_numCliffInfo(1),
-	m_terrainTex(nullptr), m_alphaTerrainTex(nullptr), m_numBitmapTiles(0), m_numBlendedTiles(1)
+	m_terrainTex(nullptr), m_alphaTerrainTex(nullptr), m_terrainClassMap(nullptr), m_terrainDetail(nullptr), m_numBitmapTiles(0), m_numBlendedTiles(1)
 {
 	Int i;
 	for (i=0; i<NUM_SOURCE_TILES; i++) {
@@ -479,7 +481,7 @@ WorldHeightMap::WorldHeightMap(ChunkInputStream *pStrm, Bool logicalDataOnly):
 	m_tileMode(TILE_4x4),
 #endif
 	m_numCliffInfo(1),
-	m_terrainTex(nullptr), m_alphaTerrainTex(nullptr), m_numBitmapTiles(0), m_numBlendedTiles(1)
+	m_terrainTex(nullptr), m_alphaTerrainTex(nullptr), m_terrainClassMap(nullptr), m_terrainDetail(nullptr), m_numBitmapTiles(0), m_numBlendedTiles(1)
 {
 
 	int i;
@@ -2127,8 +2129,44 @@ TextureClass *WorldHeightMap::getTerrainTexture()
 		char buf[64];
 		sprintf(buf, "Base tex height %d", pow2Height);
 		DEBUG_LOG((buf));
+
+		// The stochastic-tiling shader finds a pixel's texture class by inverting the slot
+		// grid updateTileTexturePositions places classes on: slot = (texel - TILE_OFFSET/2)
+		// / (TILE_PIXEL_EXTENT + TILE_OFFSET). A class that did not land on that grid would
+		// decode to the wrong rect and the shader would sample another terrain type, so say
+		// so rather than let it show up as a rendering oddity.
+		{
+			const Int pitch = TILE_PIXEL_EXTENT + TILE_OFFSET;
+			Int offGrid = 0;
+			for (Int tc = 0; tc < m_numTextureClasses; tc++) {
+				const TXTextureClass &k = m_textureClasses[tc];
+				if (k.positionInTexture.x <= 0) continue;	// no room in the atlas
+				if (((k.positionInTexture.x - TILE_OFFSET/2) % pitch) != 0 ||
+					((k.positionInTexture.y - TILE_OFFSET/2) % pitch) != 0) {
+					offGrid++;
+					DEBUG_LOG(("TERRAIN ATLAS: class '%s' at (%d,%d) is off the %d-texel slot grid; "
+						"stochastic tiling will mis-read its bounds",
+						k.name.str(), k.positionInTexture.x, k.positionInTexture.y, pitch));
+				}
+			}
+			DEBUG_LOG(("TERRAIN ATLAS: %d classes, %dx%d, slot pitch %d, %d off grid",
+				m_numTextureClasses, TEXTURE_WIDTH, m_terrainTexHeight, pitch, offGrid));
+		}
 		REF_PTR_RELEASE(m_alphaTerrainTex);
 		m_alphaTerrainTex = MSGNEW("WorldHeightMap_getTerrainTexture") AlphaTerrainTextureClass(m_terrainTex);
+
+		// Built from the same class placement the atlas fill just used, so the two can
+		// never disagree about where a class lives.
+		REF_PTR_RELEASE(m_terrainClassMap);
+		m_terrainClassMap = MSGNEW("WorldHeightMap_getTerrainTexture") TerrainClassMapTextureClass();
+		m_terrainClassMap->update(this);
+
+		// Purely procedural -- it takes nothing from the map. Built here anyway so it is
+		// created, reset and released on exactly the same path as the rest of the terrain
+		// textures rather than needing a lifetime of its own.
+		REF_PTR_RELEASE(m_terrainDetail);
+		m_terrainDetail = MSGNEW("WorldHeightMap_getTerrainTexture") TerrainDetailTextureClass();
+		m_terrainDetail->update();
 
 		pow2Height = 1;
 		while (pow2Height<edgeHeight) {
@@ -2173,6 +2211,22 @@ TextureClass *WorldHeightMap::getEdgeTerrainTexture()
 		getTerrainTexture();
 	}
 	return m_alphaEdgeTex;
+}
+
+TextureClass *WorldHeightMap::getTerrainClassMapTexture()
+{
+	if (m_terrainClassMap == nullptr) {
+		getTerrainTexture();
+	}
+	return m_terrainClassMap;
+}
+
+TextureClass *WorldHeightMap::getTerrainDetailTexture()
+{
+	if (m_terrainDetail == nullptr) {
+		getTerrainTexture();
+	}
+	return m_terrainDetail;
 }
 
 TerrainTextureClass *WorldHeightMap::getFlatTexture(Int xCell, Int yCell, Int cellWidth, Int pixelsPerCell)

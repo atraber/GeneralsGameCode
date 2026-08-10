@@ -36,6 +36,13 @@
 
 class WorldHeightMap;
 #define TILE_OFFSET 8
+
+// Side of the terrain class map (see TerrainClassMapTextureClass). One texel per tile
+// slot in the base atlas; 2048/(64+8) = 28 slots across, rounded up to a power of two.
+#define TERRAIN_CLASS_MAP_DIM 32
+
+// Side of the procedural terrain detail texture (see TerrainDetailTextureClass).
+#define TERRAIN_DETAIL_DIM 256
 /** ***********************************************************************
 **                             TerrainTextureClass
 ***************************************************************************/
@@ -59,6 +66,55 @@ public:
 	void setLOD(Int LOD);
 };
 
+
+/** ***********************************************************************
+**                          TerrainClassMapTextureClass
+**
+** A tiny side-table for the base atlas, one texel per 72x72-texel tile slot.
+**
+** The stochastic-tiling shader has to re-sample a terrain type at an offset and
+** wrap back around, which means it needs the bounds of the texture class the
+** pixel belongs to. It can derive the slot from the UV (the slots are a uniform
+** grid), but not the class: a class occupies width x width slots and nothing in
+** the UV says whether width is 1, 2 or 4, nor which slot the class started at.
+**
+** So each slot records it: R = class width in tiles, G/B = this slot's offset
+** from the class's origin slot, A = 0 for slots no class covers. Point sampled,
+** never filtered, 4KB. Rebuilt whenever the atlas is.
+***************************************************************************/
+class TerrainClassMapTextureClass : public TextureClass
+{
+	W3DMPO_CODE(TerrainClassMapTextureClass)
+public:
+		TerrainClassMapTextureClass();
+
+	void update(WorldHeightMap *htMap);	///< Fills in the slot table from the class list.
+};
+
+/** ***********************************************************************
+**                          TerrainDetailTextureClass
+**
+** Procedural fBm noise, generated at load, that gives the ground surface
+** definition the base artwork cannot carry.
+**
+** The base atlas is about 3 texels per world unit, and terrain lighting is
+** baked per vertex, so a field reads as a flat-shaded plane with a pattern on
+** it. This supplies the two things that fixes: a fine albedo modulation, and a
+** gradient the shader lights per pixel as relief.
+**
+** RG = the height field's gradient, 0.5-biased; B = the height itself, used as
+** the albedo modulation; A unused. Generating it rather than shipping a file
+** keeps the "no new art assets" constraint, and lets the field be built
+** periodic so it tiles with WRAP addressing.
+***************************************************************************/
+class TerrainDetailTextureClass : public TextureClass
+{
+	W3DMPO_CODE(TerrainDetailTextureClass)
+public:
+		TerrainDetailTextureClass();
+
+	void update();	///< Generates the noise. Depends on nothing; call once after creation.
+};
 
 class AlphaTerrainTextureClass : public TextureClass
 {

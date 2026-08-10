@@ -1145,6 +1145,31 @@ public:
 		m_terrainCloudOffX = offX; m_terrainCloudOffY = offY;
 		m_terrainCloudEnable = cloud; m_terrainNoiseEnable = noise;
 	}
+	// Stochastic tiling of the base terrain texture (terrain_ps c2/c3). The atlas size
+	// has to come from the map -- its height is sized to whatever the class list needs --
+	// and the lattice size is in world units.
+	static Vector4						m_terrainAtlasParams;   // xy = atlas texels, zw = 1/atlas texels
+	static Vector4						m_terrainTilingParams;  // x = on, y = lattice size
+	static void Set_Terrain_Tiling(float atlasWidth, float atlasHeight, bool on, float latticeSize)
+	{
+		m_terrainAtlasParams.Set(atlasWidth, atlasHeight,
+								 atlasWidth > 0.0f ? 1.0f/atlasWidth : 0.0f,
+								 atlasHeight > 0.0f ? 1.0f/atlasHeight : 0.0f);
+		m_terrainTilingParams.Set(on ? 1.0f : 0.0f, latticeSize, 0.0f, 0.0f);
+	}
+	// Procedural detail/relief layer (terrain_ps c4/c5). The sun direction is the same
+	// one the CPU baked the terrain's vertex lighting with, so the relief agrees with the
+	// shading already in the vertex colour instead of lighting from somewhere else.
+	static Vector4						m_terrainDetailParams;  // x = on, y = albedo strength, z = relief strength, w = scale
+	static Vector4						m_terrainSunDir;        // xyz = direction toward the sun
+	static Vector4						m_terrainColourParams;  // x = macro colour variation strength
+	static void Set_Terrain_Detail(bool on, float albedoStrength, float reliefStrength,
+								   float scale, float colourStrength, const Vector3 &towardSun)
+	{
+		m_terrainDetailParams.Set(on ? 1.0f : 0.0f, albedoStrength, reliefStrength, scale);
+		m_terrainSunDir.Set(towardSun.X, towardSun.Y, towardSun.Z, 0.0f);
+		m_terrainColourParams.Set(colourStrength, 0.0f, 0.0f, 0.0f);
+	}
 
 	friend void DX8_Assert();
 	friend class WW3D;
