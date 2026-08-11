@@ -66,6 +66,9 @@ set(_rts_shaders
     debugshroud_ps
     debugnormal_vs
     debugnormal_ps
+    # ... and its particle-sprite variant (vertex alpha + dithered coverage)
+    shadowdepthparticle_vs
+    shadowdepthparticle_ps
 )
 
 file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")

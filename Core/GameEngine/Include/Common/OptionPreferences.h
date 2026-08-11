@@ -64,6 +64,7 @@ public:
 	TextureFilterClass::AnisotropicFilterMode getTextureAnisotropyLevel() const;
 	Bool getBloomEnabled() const;
 	Bool getShadowMappingEnabled() const;
+	Bool getParticleShadowsEnabled() const;
 	UnsignedInt getLANIPAddress();
 	UnsignedInt getOnlineIPAddress();
 	void setLANIPAddress(AsciiString IP);

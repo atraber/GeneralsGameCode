@@ -752,6 +752,7 @@ void Particle::loadPostProcess()
 ParticleSystemInfo::ParticleSystemInfo()
 {
 	m_priority = PARTICLE_PRIORITY_LOWEST;
+	m_shadowType = SHADOW_AUTO;
 	m_isGroundAligned = false;
 	m_isEmitAboveGroundOnly = false;
 	m_isParticleUpTowardsEmitter = false;
@@ -781,6 +782,58 @@ ParticleSystemInfo::ParticleSystemInfo()
 }
 
 
+// ------------------------------------------------------------------------------------------------
+/** Does this system cast into the shadow map?
+	*
+	* SHADOW_YES / SHADOW_NO are the art's word on it and are taken as given. SHADOW_AUTO --
+	* the default, and what every system that has never been edited will be -- is answered
+	* from what the system already says about itself, so that the common cases come out
+	* right with no asset touched at all. There are on the order of a thousand particle
+	* systems shipped inside the game's archives, and a scheme where each had to opt in
+	* would in practice mean none of them did.
+	*
+	* What it is deciding is whether a system is matter or light. Matter -- smoke, dust,
+	* steam, a cloud of debris -- blocks the sun and casts. Light does not: a laser, a
+	* particle beam, a muzzle flash, an explosion's flare and the glow around a fire are all
+	* things the sun shines through, and a shadow under any of them is instantly wrong.
+	*
+	* The blend mode turns out to be almost exactly that distinction, because it has to be:
+	* an additive sprite adds its colour to what is behind it, which is what light does and
+	* what matter cannot do, so the art has already sorted the two apart for reasons that
+	* have nothing to do with shadows. Multiply is a stain on what is behind it -- a mark,
+	* not a body. That leaves the alpha modes, which are the ones that occlude.
+	*/
+Bool ParticleSystemInfo::castsShadows() const
+{
+	if (m_shadowType == SHADOW_YES) return TRUE;
+	if (m_shadowType == SHADOW_NO)  return FALSE;
+
+	// Only actual sprites. A DRAWABLE system draws models, which cast through the mesh
+	// renderer already and would cast twice from here; a STREAK is a tracer, all light;
+	// a SMUDGE is a distortion of the background and has no substance to it whatsoever.
+	if (m_particleType != PARTICLE && m_particleType != VOLUME_PARTICLE)
+		return FALSE;
+
+	// Matter, not light. See above.
+	if (m_shaderType != ALPHA && m_shaderType != ALPHA_TEST)
+		return FALSE;
+
+	// Ground-aligned systems lie flat on the terrain: scorch marks, dust films, the
+	// spreading rings of an impact. They are marks painted onto a surface rather than
+	// bodies standing above one, and a mark that casts shadows the very ground it is
+	// painted on -- a coplanar caster and receiver, which is the worst case a shadow map
+	// has. Every one of them would be a black smear.
+	if (m_isGroundAligned)
+		return FALSE;
+
+	// Scorch marks are ground-aligned in spirit even where they are not flagged as such.
+	if (m_priority == SCORCHMARK)
+		return FALSE;
+
+	return TRUE;
+}
+
+// ------------------------------------------------------------------------------------------------
 void ParticleSystemInfo::tintAllColors( Color tintColor )
 {
 	RGBColor rgb;
@@ -1186,6 +1239,7 @@ ParticleSystem::ParticleSystem( const ParticleSystemTemplate *sysTemplate,
 	m_windAngle = GameClientRandomValueReal( m_windMotionStartAngle, m_windMotionEndAngle );
 
 	m_shaderType = sysTemplate->m_shaderType;
+	m_shadowType = sysTemplate->m_shadowType;
 
 	m_particleType = sysTemplate->m_particleType;
 	m_particleTypeName = sysTemplate->m_particleTypeName;
@@ -2661,6 +2715,7 @@ const FieldParse ParticleSystemTemplate::m_fieldParseTable[] =
 	{ "Priority",								INI::parseIndexList, ParticlePriorityNames, offsetof( ParticleSystemTemplate, m_priority ) },
 	{ "IsOneShot",							INI::parseBool,						nullptr,		offsetof( ParticleSystemTemplate, m_isOneShot ) },
 	{ "Shader",									INI::parseIndexList,			ParticleShaderTypeNames,		offsetof( ParticleSystemTemplate, m_shaderType ) },
+	{ "CastsShadows",						INI::parseIndexList,			ParticleShadowTypeNames,		offsetof( ParticleSystemTemplate, m_shadowType ) },
 	{ "Type",										INI::parseIndexList,			ParticleTypeNames,		offsetof( ParticleSystemTemplate, m_particleType ) },
 	{ "ParticleName",						INI::parseAsciiString,		nullptr,		offsetof( ParticleSystemTemplate, m_particleTypeName ) },
 #if PARTICLE_USE_XY_ROTATION

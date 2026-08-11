@@ -26,12 +26,14 @@
 // W3D Particle System implementation
 // Author: Michael S. Booth, November 2001
 
+#include "Common/GlobalData.h"
 #include "GameClient/Color.h"
 #include "W3DDevice/GameClient/W3DParticleSys.h"
 #include "W3DDevice/GameClient/W3DAssetManager.h"
 #include "W3DDevice/GameClient/W3DDisplay.h"
 #include "W3DDevice/GameClient/HeightMap.h"
 #include "WW3D2/camera.h"
+#include "WW3D2/dx8wrapper.h"
 
 //------------------------------------------------------------------------------ Performance Timers
 //#include "Common/PerfMetrics.h"
@@ -49,6 +51,9 @@ W3DParticleSystemManager::W3DParticleSystemManager()
 	m_sizeBuffer = nullptr;
 	m_angleBuffer = nullptr;
 	m_readyToRender = false;
+#ifdef RTS_DEBUG
+	m_lastShadowParticleCount = 0;
+#endif
 
 	m_onScreenParticleCount = 0;
 
@@ -96,6 +101,153 @@ void DoParticles( RenderInfoClass &rinfo )
 {
 	if (TheParticleSystemManager)
 		TheParticleSystemManager->doParticles(rinfo);
+}
+
+/**
+ * Nasty hack's counterpart for the shadow map. Called directly by the scene's depth pass.
+ */
+void DoParticleShadows( RenderInfoClass &rinfo )
+{
+	if (TheParticleSystemManager)
+		TheParticleSystemManager->doParticleShadows(rinfo);
+}
+
+/**
+ * Submit the shadow-casting particle systems into the sun's shadow map.
+ *
+ * A second pass over the frame's particles, and deliberately not a re-use of doParticles.
+ * Three things differ and none of them is a parameter:
+ *
+ * - It must not touch m_readyToRender. That latch is set once per frame and cleared by
+ *   whoever draws first; the depth pass runs before the visible one, so consuming it here
+ *   would leave the visible pass with no particles at all.
+ * - It culls against the sun's box rather than the camera's visible box. A smoke column
+ *   standing off the edge of the screen still casts a shadow that reaches into it, and
+ *   the camera cull would have dropped it -- the same mistake the mesh depth pass had to
+ *   be corrected for.
+ * - It skips everything the shadow map cannot use: systems classified as light rather
+ *   than matter, streaks, smudges, and sprites too small to survive a texel.
+ */
+void W3DParticleSystemManager::doParticleShadows(RenderInfoClass &rinfo)
+{
+	if (!TheGlobalData->m_useParticleShadows)
+		return;
+	// The pass and the frustum both have to be real: Render_Sun_Depth checks these too,
+	// but a whole frame's worth of array-filling ahead of the check is worth avoiding.
+	if (!DX8Wrapper::Is_Shadow_Depth_Pass() || !DX8Wrapper::Has_Sun_Cull_Box())
+		return;
+	if (m_pointGroup == nullptr)
+		return;
+
+	// Sprites below this cast nothing. A shadow texel is between roughly half and two
+	// world units across depending on the zoom, so a sprite a couple of units wide is
+	// already at the resolution floor -- what it would contribute is not a shadow but a
+	// speckle, and there are far more of these (sparks, grit, embers) than there are of
+	// anything worth drawing.
+	const Real MIN_SHADOW_PARTICLE_SIZE = 3.0f;
+
+	unsigned systemsSeen = 0, systemsCast = 0, particlesSubmitted = 0;
+
+	ParticleSystemManager::ParticleSystemList &particleSysList = TheParticleSystemManager->getAllParticleSystems();
+	for( ParticleSystemManager::ParticleSystemListIt it = particleSysList.begin(); it != particleSysList.end(); ++it)
+	{
+		ParticleSystem *sys = (*it);
+		if (!sys)
+			continue;
+
+		++systemsSeen;
+
+		// Drawable-based systems already cast through the mesh renderer; casting them
+		// again from here would double every shadow they have.
+		if (sys->isUsingDrawables())
+			continue;
+
+		if (!sys->castsShadows())
+			continue;
+
+		Int count = 0;
+		Vector3 *posArray = m_posBuffer->Get_Array();
+		Real *sizeArray = m_sizeBuffer->Get_Array();
+		Vector4 *RGBAArray = m_RGBABuffer->Get_Array();
+		uint8 *angleArray = m_angleBuffer->Get_Array();
+
+		for (Particle *p = sys->getFirstParticle(); p; p = p->m_systemNext)
+		{
+			const Real psize = p->getSize();
+			if (psize < MIN_SHADOW_PARTICLE_SIZE)
+				continue;
+
+			const Coord3D *pos = p->getPosition();
+			// Half the quad's diagonal, so a sprite clipped by the box edge still gets in.
+			const Vector3 centre(pos->x, pos->y, pos->z);
+			if (DX8Wrapper::Cull_Sphere_By_Sun(centre, psize * 0.71f))
+				continue;
+
+			posArray[count] = centre;
+			sizeArray[count] = psize;
+
+			// Only the alpha is read by the sprite depth shader, but the whole colour goes
+			// across: the vertex format carries it either way and splitting it out would
+			// mean a second packing path for no saving.
+			const RGBColor *color = p->getColor();
+			RGBAArray[count].X = color->red;
+			RGBAArray[count].Y = color->green;
+			RGBAArray[count].Z = color->blue;
+			RGBAArray[count].W = p->getAlpha();
+
+			angleArray[count] = (uint8)(p->getAngle() * 255.0f / (2.0f * PI));
+
+#ifdef RTS_DEBUG
+			DX8Wrapper::Debug_Note_Particle_Shadow_Sprite(psize, RGBAArray[count].W);
+#endif
+
+			if (++count == MAX_POINTS_PER_GROUP)
+				break;
+		}
+
+		if (count == 0)
+			continue;
+
+		TextureClass *texture = W3DDisplay::m_assetManager->Get_Texture( sys->getParticleTypeName().str() );
+
+		m_pointGroup->Set_Texture( texture );
+		texture->Release_Ref();	//release reference since it's held by pointGroup
+
+		// The shader is set for the render state it leaves on the device, not for any
+		// blending: the depth pass forces blending off and binds its own shaders. But the
+		// routing reads those states to decide what kind of draw this is, and a point
+		// group carrying the last system's shader would be classified as the last system.
+		switch( sys->getShaderType() )
+		{
+			case ParticleSystemInfo::ALPHA:
+				m_pointGroup->Set_Shader( ShaderClass::_PresetAlphaSpriteShader );
+				break;
+			case ParticleSystemInfo::ALPHA_TEST:
+				m_pointGroup->Set_Shader( ShaderClass::_PresetATestSpriteShader );
+				break;
+			default:
+				// castsShadows() admits no other blend mode; if that ever changes, the
+				// sprite cannot be drawn as something it is not.
+				continue;
+		}
+
+		m_pointGroup->Set_Point_Mode( PointGroupClass::QUADS );
+		m_pointGroup->Set_Arrays( m_posBuffer, m_RGBABuffer, nullptr, m_sizeBuffer, m_angleBuffer, nullptr, count );
+		m_pointGroup->Set_Point_Frame( 0 );
+
+		// One layer even for a volume particle system. The extra layers exist to give the
+		// sprite visible depth from the camera; through the sun they would be the same
+		// silhouette rasterised several times over, at the same cost and to no effect.
+		m_pointGroup->Render_Sun_Depth();
+
+		++systemsCast;
+		particlesSubmitted += (unsigned)count;
+	}
+
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Particle_Shadow_Submit(systemsSeen, systemsCast, particlesSubmitted);
+	m_lastShadowParticleCount = (Int)particlesSubmitted;
+#endif
 }
 
 void W3DParticleSystemManager::doParticles(RenderInfoClass &rinfo)

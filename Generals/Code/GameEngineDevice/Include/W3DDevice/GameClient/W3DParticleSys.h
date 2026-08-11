@@ -45,7 +45,14 @@ public:
 	virtual ~W3DParticleSystemManager() override;
 
 	virtual void doParticles(RenderInfoClass &rinfo) override;
+	virtual void doParticleShadows(RenderInfoClass &rinfo) override;
 	virtual void queueParticleRender() override;
+
+#ifdef RTS_DEBUG
+	/// How many sprites the last shadow submission actually sent. Lets a diagnostic
+	/// capture land on a frame with something on it rather than an arbitrary one.
+	Int getLastShadowParticleCount() const { return m_lastShadowParticleCount; }
+#endif
 	///< returns the number of particles shown on screen per frame
 	virtual Int getOnScreenParticleCount() override { return m_onScreenParticleCount; }
 
@@ -59,4 +66,7 @@ private:
 	ShareBufferClass<float> *m_sizeBuffer;			///< array of particle sizes
 	ShareBufferClass<uint8> *m_angleBuffer;			///< array of particle orientations
 	Bool m_readyToRender;											///< if true, it is OK to render
+#ifdef RTS_DEBUG
+	Int m_lastShadowParticleCount;						///< sprites sent by the last shadow submission
+#endif
 };

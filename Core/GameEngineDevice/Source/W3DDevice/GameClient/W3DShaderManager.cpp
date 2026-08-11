@@ -3796,6 +3796,18 @@ void W3DShaderManager::initShadowMap()
 		return;   // shaders missing -> shadow mapping stays off (Has_Shadow_Map() false)
 	}
 
+	// The particle-sprite variant of the same pair. Not fatal if it is missing: the
+	// routing checks both handles and falls back to leaving particles out of the map, so
+	// an install with the older shader set loses smoke shadows rather than all shadows.
+	if (DX8Wrapper::m_dwShadowDepthParticleVS == 0)
+		LoadAndCreateD3DShader("shaders\\shadowdepthparticle_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwShadowDepthParticleVS);
+	if (DX8Wrapper::m_dwShadowDepthParticlePS == 0)
+		LoadAndCreateD3DShader("shaders\\shadowdepthparticle_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwShadowDepthParticlePS);
+	if (DX8Wrapper::m_dwShadowDepthParticleVS == 0 || DX8Wrapper::m_dwShadowDepthParticlePS == 0)
+	{
+		DEBUG_LOG(("Shadow map: particle depth shaders did not load -- particles will not cast\n"));
+	}
+
 	HRESULT texHr = dev->CreateTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 1, D3DUSAGE_RENDERTARGET,
 			D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_pShadowMapTexture);
 	if (FAILED(texHr) || m_pShadowMapTexture == nullptr)
@@ -3835,7 +3847,33 @@ void W3DShaderManager::shutdownShadowMap()
 		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwShadowDepthPS)->Release();
 		DX8Wrapper::m_dwShadowDepthPS = 0;
 	}
+	if (DX8Wrapper::m_dwShadowDepthParticleVS) {
+		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwShadowDepthParticleVS)->Release();
+		DX8Wrapper::m_dwShadowDepthParticleVS = 0;
+	}
+	if (DX8Wrapper::m_dwShadowDepthParticlePS) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwShadowDepthParticlePS)->Release();
+		DX8Wrapper::m_dwShadowDepthParticlePS = 0;
+	}
 }
+
+#ifdef RTS_DEBUG
+// Save the shadow map to PNG part-way through the depth pass.
+//
+// The end-of-frame dump shows the finished map, in which one contributor cannot be told
+// from another -- a smoke silhouette and the terrain it stands on are both just depth.
+// Dumping either side of a single submission makes the difference between the two files
+// exactly that submission's contribution, and nothing else, within one frame. No second
+// run, and so no assumption that two runs put the particles in the same place.
+void W3DShaderManager::debugDumpShadowMap(const char *tag)
+{
+	if (m_pShadowMapSurface == nullptr)
+		return;
+	char path[MAX_PATH];
+	sprintf(path, "dump_shadowmap_%s.png", tag);
+	D3DXSaveSurfaceToFileA(path, D3DXIFF_PNG, m_pShadowMapSurface, nullptr, nullptr);
+}
+#endif
 
 // Single answer to "are cast shadows coming from the shadow map this frame?", so the
 // depth pass and the legacy volume/decal shadows can never both decide they are on.
