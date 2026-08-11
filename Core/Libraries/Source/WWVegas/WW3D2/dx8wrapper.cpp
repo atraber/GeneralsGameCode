@@ -547,6 +547,91 @@ void DX8Wrapper::Debug_Report_Technique_Check()
 	s_techPrelitSampleCount = 0;
 }
 
+//-----------------------------------------------------------------------------
+// Particle shadow casting, counted at both ends. See the declarations for why both.
+//-----------------------------------------------------------------------------
+static unsigned s_partShadowFrames = 0;
+static unsigned s_partShadowSystemsSeen = 0;
+static unsigned s_partShadowSystemsCast = 0;
+static unsigned s_partShadowParticles = 0;
+static unsigned s_partShadowDrawsParticle = 0;
+static unsigned s_partShadowDrawsMesh = 0;
+
+static float s_partShadowSizeSum = 0.0f;
+static float s_partShadowAlphaSum = 0.0f;
+static unsigned s_partShadowAlphaHist[5] = { 0, 0, 0, 0, 0 };
+static unsigned s_partShadowFrameMax = 0;
+static unsigned s_partShadowFramesWithAny = 0;
+
+void DX8Wrapper::Debug_Note_Particle_Shadow_Submit(unsigned systemsSeen, unsigned systemsCast,
+												   unsigned particles)
+{
+	s_partShadowSystemsSeen += systemsSeen;
+	s_partShadowSystemsCast += systemsCast;
+	s_partShadowParticles += particles;
+	if (particles > s_partShadowFrameMax) s_partShadowFrameMax = particles;
+	if (particles > 0) ++s_partShadowFramesWithAny;
+}
+
+// The two numbers that decide whether a submitted sprite is worth anything: how wide it
+// is (against a shadow texel) and how opaque (against the dither). A sprite can be
+// counted, routed and rasterised and still contribute nothing if either is near zero,
+// which is indistinguishable from the outside from the feature not working.
+void DX8Wrapper::Debug_Note_Particle_Shadow_Sprite(float size, float alpha)
+{
+	s_partShadowSizeSum += size;
+	s_partShadowAlphaSum += alpha;
+	int bucket = (int)(alpha * 5.0f);
+	if (bucket < 0) bucket = 0;
+	if (bucket > 4) bucket = 4;
+	++s_partShadowAlphaHist[bucket];
+}
+
+void DX8Wrapper::Debug_Note_Shadow_Caster_Draw(bool particleVariant)
+{
+	if (particleVariant) ++s_partShadowDrawsParticle;
+	else                 ++s_partShadowDrawsMesh;
+}
+
+void DX8Wrapper::Debug_Report_Particle_Shadows()
+{
+	// Same 600-frame window as the census, so the numbers can be read side by side.
+	if (++s_partShadowFrames < 600) return;
+	s_partShadowFrames = 0;
+
+	// The mesh count is the control. Zero for both means the depth pass never ran and
+	// nothing below it can be concluded; a healthy mesh count next to a zero particle
+	// count localises the fault to this feature.
+	WWDEBUG_SAY(("PARTICLE SHADOWS: %u systems seen, %u cast, %u particles submitted; "
+				 "draws reaching the depth shaders: %u sprite, %u mesh (control)",
+		s_partShadowSystemsSeen, s_partShadowSystemsCast, s_partShadowParticles,
+		s_partShadowDrawsParticle, s_partShadowDrawsMesh));
+	if (s_partShadowParticles > 0 && s_partShadowDrawsParticle == 0)
+		WWDEBUG_SAY(("  submitted but never routed -- the sprite shaders are missing, or "
+					 "the declaration is not reaching Apply_Render_State_Changes"));
+	if (s_partShadowParticles > 0) {
+		WWDEBUG_SAY(("  sprite size mean %.1f world units, alpha mean %.3f; "
+					 "alpha buckets [0-.2 .2-.4 .4-.6 .6-.8 .8-1] = %u %u %u %u %u",
+			s_partShadowSizeSum / (float)s_partShadowParticles,
+			s_partShadowAlphaSum / (float)s_partShadowParticles,
+			s_partShadowAlphaHist[0], s_partShadowAlphaHist[1], s_partShadowAlphaHist[2],
+			s_partShadowAlphaHist[3], s_partShadowAlphaHist[4]));
+		WWDEBUG_SAY(("  per frame: %u frames had any, busiest frame %u particles",
+			s_partShadowFramesWithAny, s_partShadowFrameMax));
+	}
+
+	s_partShadowSystemsSeen = 0;
+	s_partShadowSystemsCast = 0;
+	s_partShadowParticles = 0;
+	s_partShadowDrawsParticle = 0;
+	s_partShadowDrawsMesh = 0;
+	s_partShadowSizeSum = 0.0f;
+	s_partShadowAlphaSum = 0.0f;
+	for (int i = 0; i < 5; ++i) s_partShadowAlphaHist[i] = 0;
+	s_partShadowFrameMax = 0;
+	s_partShadowFramesWithAny = 0;
+}
+
 void DX8Wrapper::Debug_Report_Routing_Census()
 {
 	++s_censusFrames;
@@ -634,12 +719,15 @@ void DX8Wrapper::Debug_Check_Mesh_Routing_Split()
 #endif // RTS_DEBUG
 DWORD							DX8Wrapper::m_dwShadowDepthVS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthPS = 0;
+DWORD							DX8Wrapper::m_dwShadowDepthParticleVS = 0;
+DWORD							DX8Wrapper::m_dwShadowDepthParticlePS = 0;
 IDirect3DBaseTexture8*			DX8Wrapper::m_pShadowMap = nullptr;
 float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 bool							DX8Wrapper::m_bShadowDepthPass = false;
 bool							DX8Wrapper::m_bMeshCastsShadow = false;
+bool							DX8Wrapper::m_bEffectCastsShadow = false;
 bool							DX8Wrapper::m_bMeshHasSolidPass = false;
 bool							DX8Wrapper::m_bMeshRendererDraw = false;
 MeshTechnique					DX8Wrapper::m_meshTechnique = MESH_TECHNIQUE_UNCLASSIFIED;
@@ -2610,6 +2698,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Routing_Census();
 	Debug_Report_Unclassified_Draws();
 	Debug_Report_Technique_Check();
+	Debug_Report_Particle_Shadows();
 	Mesh_Technique_Report_Registrations();
 #endif
 
@@ -3553,11 +3642,17 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// over a full scene that flag is set on the two rotor discs and on no other sorted
 		// mesh. Only the mesh renderer raises it, so no decal or terrain draw can reach it.
 		//
+		// Particles are the third case, and they have neither state nor mesh flag to be
+		// told apart by: a dust cloud and a laser beam are both blended, both alpha-tested
+		// nowhere and both write no depth. So their renderer declares them instead --
+		// m_bEffectCastsShadow, raised only around a submission the particle system has
+		// been classified as matter rather than light. See ShadowCastingEffectClass.
+		//
 		// Additive stays out either way, flag or no flag: its alpha is brightness, not
 		// coverage, so no cutoff applied to it would mean anything.
 		const bool softBlendedCaster =
 			softBlendedOverlay && !additiveBlend &&
-			(meshDepthWrite || m_bMeshCastsShadow);
+			(meshDepthWrite || m_bMeshCastsShadow || m_bEffectCastsShadow);
 		// The depth pass has to see sorted geometry too, which curFVF deliberately does not
 		// -- see the note above: sorting buffers are excluded there so the unit/PBR routing
 		// can never mistake one for a lit mesh. But a sorting buffer still carries a real
@@ -3756,7 +3851,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Vertex_Shader != m_dwUnitPrelitVS &&
 			Vertex_Shader != m_dwUnitPbrVS &&
 			Vertex_Shader != m_dwTerrainVS &&
-			Vertex_Shader != m_dwShadowDepthVS;
+			Vertex_Shader != m_dwShadowDepthVS &&
+			Vertex_Shader != m_dwShadowDepthParticleVS;
 
 		// Routing categories are selectable at runtime (options.ini ShaderRouting) so the
 		// pipeline split can be compared in game without a rebuild: EVERYTHING drops the
@@ -3985,16 +4081,46 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				s_dwOriginalPS = Pixel_Shader;
 				m_bUnitShaderBound = true;
 			}
+			// A declared particle caster gets the sprite variant of the pair. Two things
+			// separate it from every other caster and neither is expressible as a
+			// constant: its opacity is in the vertex colour, which the shared shader
+			// never reads, and it is genuinely translucent, which one depth per texel
+			// cannot represent -- so that variant dithers coverage instead of thresholding
+			// it. Only in the sun's pass: SSR marches against solid surfaces, and smoke
+			// stippled into the camera depth would punch holes in the reflections behind
+			// it.
+			const bool particleCaster =
+				m_bEffectCastsShadow && !m_bDepthPrepass &&
+				m_dwShadowDepthParticleVS != 0 && m_dwShadowDepthParticlePS != 0;
+
 			// Alpha cutoff for this caster. Zero leaves the hardware alpha test in sole
 			// charge, which is what opaque and cut-out geometry want. Blended casters
 			// have no alpha test of their own, so they are cut here instead -- high
 			// enough that only the dense part of a rotor disc casts, not the wash of
 			// blur around it.
+			//
+			// y is the particle variant's density ceiling instead, since it dithers rather
+			// than cuts: the fraction of the sun a fully opaque sprite texel is allowed to
+			// take. Short of 1 on purpose. Smoke that stops the sun outright reads as a
+			// hole in the ground rather than as smoke, and the alpha these sprites carry
+			// is authored for compositing over a scene, not for optical depth.
+			//
+			// Raised from the 0.7 it was first tried at. Measured against a tank battle,
+			// that gave a mean darkening of about 9% of local brightness under a dust
+			// trail -- present, but easy to miss on the thinner effects, which are most of
+			// them. The headroom to 1.0 is what stops a dense plume going to a silhouette,
+			// so there is room to spend some of it without losing that.
 			const float shadowAlphaCutoff = softBlendedCaster ? 0.45f : 0.0f;
-			const D3DXVECTOR4 shadowCastParams(shadowAlphaCutoff, 0.0f, 0.0f, 0.0f);
+			const float PARTICLE_SHADOW_DENSITY = 0.85f;
+			const D3DXVECTOR4 shadowCastParams(shadowAlphaCutoff, PARTICLE_SHADOW_DENSITY,
+											   0.0f, 0.0f);
 			Set_Pixel_Shader_Constant(0, &shadowCastParams, 1);
-			Set_Vertex_Shader(m_dwShadowDepthVS);
-			Set_Pixel_Shader(m_dwShadowDepthPS);
+			Set_Vertex_Shader(particleCaster ? m_dwShadowDepthParticleVS : m_dwShadowDepthVS);
+			Set_Pixel_Shader(particleCaster ? m_dwShadowDepthParticlePS : m_dwShadowDepthPS);
+#ifdef RTS_DEBUG
+			if (!m_bDepthPrepass)
+				Debug_Note_Shadow_Caster_Draw(particleCaster);
+#endif
 			if (m_bDepthPrepass) {
 				// Build the camera view-projection from the state the pipeline is
 				// actually drawing with, rather than having the view push its own copy.

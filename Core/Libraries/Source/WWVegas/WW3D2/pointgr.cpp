@@ -1000,6 +1000,101 @@ void PointGroupClass::Render(RenderInfoClass &rinfo)
 }
 
 
+/**************************************************************************
+ * PointGroupClass::Render_Sun_Depth -- cast these points into the shadow  *
+ *                                     map.                                *
+ *========================================================================*/
+void PointGroupClass::Render_Sun_Depth()
+{
+	// Only ever the sun's pass. The wrapper would route this draw to the depth shaders
+	// on the strength of that flag alone, and outside the pass those shaders would write
+	// packed depth into the frame the player is looking at.
+	if (!DX8Wrapper::Is_Shadow_Depth_Pass()) return;
+	if (PointCount == 0) return;
+	if (PointMode != QUADS) return;   // the sun build makes quads; nothing else casts
+
+	// No basis, no cast. A frame that never fitted a sun frustum has no direction for the
+	// sprites to face, and guessing one would put the shadows somewhere arbitrary.
+	if (!DX8Wrapper::Has_Sun_Cull_Box()) return;
+	const Vector3 sunRight = DX8Wrapper::Get_Sun_Right();
+	const Vector3 sunUp    = DX8Wrapper::Get_Sun_Up();
+
+	WWASSERT(PointLoc && PointLoc->Get_Array());
+
+	// The point arrays, uncompressed. Unlike Render this does not handle an active point
+	// table: the particle manager fills these arrays densely and does not use one, and a
+	// path that is only exercised by dead code is a path that is quietly wrong.
+	WWASSERT(APT == nullptr);
+	if (APT != nullptr) return;
+	Vector3 *current_loc = PointLoc->Get_Array();
+	Vector4 *current_diffuse = PointDiffuse ? PointDiffuse->Get_Array() : nullptr;
+	float *current_size = PointSize ? PointSize->Get_Array() : nullptr;
+	unsigned char *current_orient = PointOrientation ? PointOrientation->Get_Array() : nullptr;
+	unsigned char *current_frame = PointFrame ? PointFrame->Get_Array() : nullptr;
+	if (current_size == nullptr || current_orient == nullptr) return;
+
+	int vnum, pnum;
+	Update_Arrays(current_loc, current_diffuse, current_size, current_orient, current_frame,
+		PointCount, PointLoc->Get_Count(), vnum, pnum, &sunRight, &sunUp);
+
+	// World identity, so the depth shader's World * SunVP is just SunVP over the
+	// world-space quads above. The view is deliberately left alone: an identity view is
+	// how the routing recognises a screen-space overlay, and one set here would have the
+	// wrapper mask this draw out of the map as if it were part of the interface.
+	DX8Wrapper::Set_World_Identity();
+
+	DX8Wrapper::Set_Material(PointMaterial);
+	DX8Wrapper::Set_Shader(Shader);
+	DX8Wrapper::Set_Texture(0,Texture);
+
+	// Declare the draws physical casters for as long as they are being submitted. Without
+	// it the routing has no way to tell this from a laser beam and masks it out; see
+	// ShadowCastingEffectClass.
+	ShadowCastingEffectClass declareCaster;
+
+	// Never sorted, unlike the visible pass. Sorting exists to get translucent geometry
+	// compositing in the right order, and this pass composites nothing -- it writes depth
+	// and the nearest fragment wins whenever it arrives. Queuing it would also hand the
+	// draws to SortingRendererClass::Flush, which clears declarations for its duration
+	// precisely because what it draws was described by something no longer standing.
+	int current = 0;
+	while (current<vnum)
+	{
+		int delta=MIN(vnum-current,MAX_VB_SIZE);
+		DynamicVBAccessClass PointVerts (BUFFER_TYPE_DYNAMIC_DX8, dynamic_fvf_type, delta);
+
+		{
+			DynamicVBAccessClass::WriteLockClass Lock(&PointVerts);
+			unsigned char *vb=(unsigned char*)Lock.Get_Formatted_Vertex_Array();
+			const FVFInfoClass& fvfinfo=PointVerts.FVF_Info();
+
+			for (int i = current; i < current + delta; i++)
+			{
+				*(Vector3*)(vb+fvfinfo.Get_Location_Offset())=VertexLoc[i];
+				// The diffuse carries the per-particle alpha, which is half of what the
+				// sprite depth shader cuts on -- the other half being the texture. A
+				// system with no colour array is fully opaque and says so.
+				if (current_diffuse) {
+					unsigned color=DX8Wrapper::Convert_Color_Clamp(VertexDiffuse[i]);
+					*(unsigned int*)(vb+fvfinfo.Get_Diffuse_Offset())=color;
+				}
+				else
+					*(unsigned int*)(vb+fvfinfo.Get_Diffuse_Offset())=
+						DX8Wrapper::Convert_Color_Clamp(Vector4(DefaultPointColor[0],DefaultPointColor[1],DefaultPointColor[2],DefaultPointAlpha));
+				*(Vector2*)(vb+fvfinfo.Get_Tex_Offset(0))=VertexUV[i];
+				vb+=fvfinfo.Get_FVF_Size();
+			}
+		}
+
+		DX8Wrapper::Set_Index_Buffer (static_cast<IndexBufferClass*>(Quads), 0);
+		DX8Wrapper::Set_Vertex_Buffer (PointVerts);
+		DX8Wrapper::Draw_Triangles (0, delta / 2, 0, delta);
+
+		current+=delta;
+	}
+}
+
+
 
 
 
@@ -1026,7 +1121,9 @@ void PointGroupClass::Update_Arrays(
 	int active_points,
 	int total_points,
 	int &vnum,
-	int &pnum)
+	int &pnum,
+	const Vector3 *sun_right,
+	const Vector3 *sun_up)
 {
 	int verts_per_point = (PointMode == QUADS) ? 4 : 3;
 	int polys_per_point = (PointMode == QUADS) ? 2 : 1;
@@ -1074,9 +1171,17 @@ void PointGroupClass::Update_Arrays(
 		SCREEN_SIZE_NOORIENT		= ((int)SCREENSPACE << 2) + 1,
 		SCREEN_NOSIZE_ORIENT		= ((int)SCREENSPACE << 2) + 2,
 		SCREEN_SIZE_ORIENT		= ((int)SCREENSPACE << 2) + 3,
+		// Outside the mode/size/orientation space above: the shadow-map build does not
+		// vary with any of them (it requires both override arrays and always makes quads),
+		// so it selects itself rather than adding a fourth dimension to the table.
+		SUN_FACING_QUADS			= ((int)SCREENSPACE << 2) + 4,
 	};
 	LoopSelectionEnum loop_sel = (LoopSelectionEnum)(((int)PointMode << 2) +
 		(point_orientation ? 2 : 0) + (point_size ? 1 : 0));
+	if (sun_right != nullptr && sun_up != nullptr) {
+		WWASSERT(PointMode == QUADS && point_size && point_orientation);
+		loop_sel = SUN_FACING_QUADS;
+	}
 
 	vert = 0;
 	Vector3 *vertex_loc = &VertexLoc[0];
@@ -1269,6 +1374,41 @@ void PointGroupClass::Update_Arrays(
 						vertex_loc[vert + 3] = point_loc[i] +
 							_QuadVertexLocationOrientationTable[point_orientation[i]][3] * point_size[i];
 					}
+					vert += 4;
+				}
+			}
+			break;
+
+		// Sun-facing quads in world space, for the shadow-map depth pass.
+		//
+		// Every other quad case builds in camera view space and leaves the projection to
+		// finish the job. This one cannot, twice over. The depth pass runs a vertex
+		// shader whose only transform is the sun's, so what it wants handed to it is
+		// world space; and a sprite is a stand-in for something round, so which way it
+		// should face depends on who is looking -- here that is the sun, not the player.
+		// Spanning it from the camera's basis instead would give a puff of smoke a shadow
+		// that changed shape as the player orbited around it.
+		case SUN_FACING_QUADS:
+			{
+				// The offset table's entry for orientation o is the unrotated quad turned
+				// by o*2pi/256 within the billboard plane. Turning the plane's own axes by
+				// that angle and spanning the unrotated corners from them reaches the same
+				// four points -- and reaches them in the same order, which is what keeps
+				// them lined up with the UV table below. That table is indexed by corner
+				// and knows nothing of orientation, so a build that emitted the corners in
+				// a different order would texture every sprite wrong.
+				const float ANGLE_STEP = (WWMATH_PI * 2.0f) / 256.0f;
+				for (i = 0; i < active_points; i++) {
+					const float angle = (float)point_orientation[i] * ANGLE_STEP;
+					const float c = WWMath::Fast_Cos(angle);
+					const float s = WWMath::Fast_Sin(angle);
+					const float half = 0.5f * point_size[i];
+					const Vector3 r = (*sun_right * c + *sun_up * s) * half;
+					const Vector3 u = (*sun_up * c - *sun_right * s) * half;
+					vertex_loc[vert + 0] = point_loc[i] - r + u;
+					vertex_loc[vert + 1] = point_loc[i] - r - u;
+					vertex_loc[vert + 2] = point_loc[i] + r - u;
+					vertex_loc[vert + 3] = point_loc[i] + r + u;
 					vert += 4;
 				}
 			}

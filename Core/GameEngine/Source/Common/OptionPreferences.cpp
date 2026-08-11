@@ -150,6 +150,17 @@ Bool OptionPreferences::getShadowMappingEnabled() const
 	return parseIniBool(it->second.str(), TRUE);
 }
 
+Bool OptionPreferences::getParticleShadowsEnabled() const
+{
+	// Whether smoke, dust and the like cast into that shadow map. A second pass over the
+	// frame's particles, so it is the first thing to turn off on a machine that is
+	// struggling; separate from UseShadowMapping, which it depends on but does not imply.
+	OptionPreferences::const_iterator it = find("UseParticleShadows");
+	if (it == end())
+		return TRUE;
+	return parseIniBool(it->second.str(), TRUE);
+}
+
 Int OptionPreferences::getCampaignDifficulty()
 {
 	OptionPreferences::const_iterator it = find("CampaignDifficulty");

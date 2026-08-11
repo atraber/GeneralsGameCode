@@ -120,8 +120,22 @@ public:
 	void						Render(RenderInfoClass &rinfo);
 	void						RenderVolumeParticle(RenderInfoClass &rinfo, unsigned int depth);
 
+	// Submit the same points into the sun's shadow map, for systems classified as
+	// physical casters (see ParticleSystemInfo::castsShadows).
+	//
+	// A separate entry point rather than a mode on Render, because almost nothing the
+	// two do is shared: the points are spanned into world space rather than camera
+	// space, they face the sun rather than the viewer, the transform comes from a vertex
+	// shader rather than the fixed-function projection, and nothing is sorted because
+	// the depth pass writes depth and does not care what order it arrives in.
+	//
+	// Does nothing outside the depth pass, so a caller cannot draw particles into the
+	// visible frame by mistake.
+	void						Render_Sun_Depth();
+
 protected:
-	// Update arrays.
+	// Update arrays. sun_right/sun_up non-null spans the quads from that basis in world
+	// space instead of the camera's in view space -- see the SUN_FACING_QUADS case.
 	void						Update_Arrays(Vector3 *point_loc,
 									Vector4 *point_diffuse,
 									float *point_size,
@@ -130,7 +144,9 @@ protected:
 									int active_points,
 									int total_points,
 									int &vnum,
-									int &pnum);
+									int &pnum,
+									const Vector3 *sun_right = nullptr,
+									const Vector3 *sun_up = nullptr);
 
 	// These shared buffers are used for communication to the point group - to
 	// pass point locations, colors and enables. The location and color arrays

@@ -284,6 +284,20 @@ public:
 	}
 	m_particleType;
 
+	/// Whether this system's particles cast into the sun's shadow map.
+	enum ParticleShadowType
+	{
+		SHADOW_AUTO=0, SHADOW_NO, SHADOW_YES,
+		PARTICLE_SHADOW_TYPE_COUNT
+	}
+	m_shadowType;
+
+	/** Does this system cast a shadow? Resolves SHADOW_AUTO -- see the implementation for
+		what it reads and why. Client-side only: nothing about it reaches the logic, and it
+		is deliberately not xfered, so a saved game picks it up from the template it is
+		rebuilt from rather than from whatever was current when it was written. */
+	Bool castsShadows() const;
+
 	AsciiString m_particleTypeName;							///< if PARTICLE, texture filename, if DRAWABLE, Drawable name
 
 #if PARTICLE_USE_XY_ROTATION
@@ -474,6 +488,12 @@ static const char *const ParticleTypeNames[] =
 	"NONE", "PARTICLE", "DRAWABLE", "STREAK", "VOLUME_PARTICLE", "SMUDGE", nullptr
 };
 static_assert(ARRAY_SIZE(ParticleTypeNames) == ParticleSystemInfo::PARTICLE_TYPE_COUNT + 1, "Incorrect array size");
+
+static const char *const ParticleShadowTypeNames[] =
+{
+	"AUTO", "NO", "YES", nullptr
+};
+static_assert(ARRAY_SIZE(ParticleShadowTypeNames) == ParticleSystemInfo::PARTICLE_SHADOW_TYPE_COUNT + 1, "Incorrect array size");
 
 static const char *const EmissionVelocityTypeNames[] =
 {
@@ -802,6 +822,13 @@ public:
 	ParticleSystemList &getAllParticleSystems() { return m_allParticleSystemList; }
 
 	virtual void doParticles(RenderInfoClass &rinfo) = 0;
+
+	/** Submit the shadow-casting systems into the sun's shadow map. Called from the depth
+		pass, which runs before the visible one -- and deliberately not through the
+		queueParticleRender latch doParticles consumes, since consuming it here would leave
+		the visible pass with nothing to draw. */
+	virtual void doParticleShadows(RenderInfoClass &rinfo) {}
+
 	virtual void queueParticleRender() = 0;
 
 	virtual void preloadAssets( TimeOfDay timeOfDay );

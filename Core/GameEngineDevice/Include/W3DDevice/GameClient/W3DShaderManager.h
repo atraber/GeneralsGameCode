@@ -120,6 +120,10 @@ public:
 	static void startShadowMapRendering();	///<redirect rendering into the shadow map (sun-view depth pass).
 	static void endShadowMapRendering();	///<restore the back buffer after the shadow depth pass.
 	static Bool isShadowMappingActive();	///<true when the shadow map is enabled and usable; the legacy volume/decal shadows stand down.
+#ifdef RTS_DEBUG
+	///<save the shadow map to PNG mid-pass, so one draw's contribution to it can be isolated.
+	static void debugDumpShadowMap(const char *tag);
+#endif
 	// The orthographic box the shadow map is currently fitted to, in world space.
 	// Published by the view when it builds SunVP so that the depth pass can cull casters
 	// against the light instead of against the camera -- they are different volumes, and

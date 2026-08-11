@@ -54,6 +54,7 @@
 #include "W3DDevice/GameClient/W3DStatusCircle.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
+#include "W3DDevice/GameClient/W3DParticleSys.h"
 #include "W3DDevice/GameClient/W3DShroud.h"
 #include "WW3D2/camera.h"
 #include "WW3D2/dx8renderer.h"
@@ -75,6 +76,7 @@ extern void PrepareShadows();
 extern void DoTrees(RenderInfoClass & rinfo);
 extern void DoShadows(RenderInfoClass & rinfo, Bool stencilPass);
 extern void DoParticles(RenderInfoClass & rinfo);
+extern void DoParticleShadows(RenderInfoClass & rinfo);
 
 // No texturing, no zbuffer reading/writing, primary gradient, no
 // blending, no fogging - mostly for use in solid-colored opaque objects.
@@ -908,6 +910,11 @@ void RTS3DScene::Flush(RenderInfoClass & rinfo)
 		//don't draw transparent in this mode because they interfere with destination alpha
 		if (m_customPassMode == SCENE_PASS_DEFAULT && Get_Extra_Pass_Polygon_Mode() == EXTRA_PASS_DISABLE)
 			DoParticles(rinfo);	//queue up particles for rendering.
+		// Smoke and dust cast too, and they are the last thing into the map: they are
+		// drawn on top of the geometry they occlude, and the depth test decides the rest.
+		// Not the camera-depth pass -- see the note where the sprite shaders are bound.
+		else if (m_customPassMode == SCENE_PASS_SHADOW_MAP)
+			DoParticleShadows(rinfo);
 
 		SortingRendererClass::Flush();	//draw sorted translucent polygons like particles.
 	}

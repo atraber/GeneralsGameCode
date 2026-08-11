@@ -935,6 +935,17 @@ public:
 		MeshTechnique declared, MeshTechnique live, TextureBaseClass* tex0, unsigned fvf);
 	static void Debug_Report_Technique_Check();
 
+	// Particle shadow casting, counted at both ends of the path, because either end
+	// failing looks exactly like the other from the outside. The manager reports what it
+	// selected and submitted; the routing block reports what actually reached the sprite
+	// depth shaders. Mesh casters are counted alongside as the control: if both are zero
+	// the depth pass itself is not running, which is a different bug entirely.
+	static void Debug_Note_Particle_Shadow_Submit(unsigned systemsSeen, unsigned systemsCast,
+												  unsigned particles);
+	static void Debug_Note_Particle_Shadow_Sprite(float size, float alpha);
+	static void Debug_Note_Shadow_Caster_Draw(bool particleVariant);
+	static void Debug_Report_Particle_Shadows();
+
 #endif
 	// Directional shadow mapping. During the depth pass every mesh/terrain draw is
 	// re-routed to the shadow-depth shaders (which just pack sun-space depth); during
@@ -947,6 +958,13 @@ public:
 	enum { SHADOW_MAP_SIZE = 4096 };
 	static DWORD						m_dwShadowDepthVS;
 	static DWORD						m_dwShadowDepthPS;
+	// The same depth pass for particle sprites, which differ in two ways no constant can
+	// bridge: their opacity lives in the vertex colour rather than the texture (a puff
+	// fading out of existence would otherwise cast at full strength to the last frame),
+	// and they are translucent, which a one-depth-per-texel map cannot express at all --
+	// so this pair dithers the coverage instead. See shadowdepthparticle_ps.hlsl.
+	static DWORD						m_dwShadowDepthParticleVS;
+	static DWORD						m_dwShadowDepthParticlePS;
 	static IDirect3DBaseTexture8*		m_pShadowMap;       // depth-packed shadow map (bound for sampling)
 	static float						m_sunVP[16];
 	// x = depth-compare bias in sun-clip units, y = shadow strength (0 disables the
@@ -980,6 +998,18 @@ public:
 	// pass otherwise cannot tell from a ground decal. See Apply_Render_State_Changes.
 	static bool							m_bMeshCastsShadow;
 	static void Set_Mesh_Casts_Shadow(bool casts) { m_bMeshCastsShadow = casts; }
+	// The current draw is a blended effect its own renderer has declared a physical
+	// caster: smoke, dust, steam -- matter that happens to be drawn as sprites. It is the
+	// same tie-breaker m_bMeshCastsShadow is for rotor discs, for the callers that have no
+	// mesh flag to carry: nothing in a particle's render state distinguishes a dust cloud
+	// from a laser beam, and the difference is a property of the effect, not of the draw.
+	//
+	// Additive is still excluded above it, flag or no flag, so a system that declared
+	// itself a caster by mistake and is drawn additively cannot lay solid shadow. Raised
+	// by ShadowCastingEffectClass for the duration of one submission and cleared after.
+	static bool							m_bEffectCastsShadow;
+	static void Set_Effect_Casts_Shadow(bool casts) { m_bEffectCastsShadow = casts; }
+	static bool Is_Effect_Casting_Shadow() { return m_bEffectCastsShadow; }
 	// Set per draw when the mesh being drawn has at least one depth-writing pass, i.e.
 	// it is a surface rather than an effect. Soft-blended passes of a surface are routed
 	// (they are part of a mesh that is on the programmable path anyway, and must not be
@@ -1037,6 +1067,17 @@ public:
 	static void Clear_Sun_Cull_Box() { m_bSunCullBoxValid = false; }
 	static bool Has_Sun_Cull_Box() { return m_bSunCullBoxValid; }
 	static bool Cull_Sphere_By_Sun(const Vector3 &center, float radius);
+
+	// The sun view's world-space right and up axes. Built from the same forward direction
+	// and the same up hint D3DXMatrixLookAtLH used for the matrix behind m_sunVP, so a
+	// quad spanned by these two lands square-on in the shadow map.
+	//
+	// Sprites need them. A billboard is a stand-in for something round, and which way it
+	// should face depends on who is looking -- the camera in the visible pass, the sun in
+	// the depth pass. Building the depth-pass quad from the camera's basis instead would
+	// give a smoke puff a shadow that changes shape as the player orbits.
+	static const Vector3 & Get_Sun_Right() { return m_sunCullRight; }
+	static const Vector3 & Get_Sun_Up() { return m_sunCullUp; }
 
 	// Screen-space reflections. The camera-view depth SSR marches against is produced
 	// by re-running the shadow depth pass from the camera instead of the sun: same
@@ -1133,6 +1174,29 @@ public:
 private:
 	DeclaredTechniqueClass(const DeclaredTechniqueClass &);
 	DeclaredTechniqueClass & operator = (const DeclaredTechniqueClass &);
+};
+
+/*
+** ShadowCastingEffectClass -- declare the draws inside a scope physical casters.
+**
+** For blended effects that are matter rather than light: smoke, dust, steam. Without
+** it the depth pass masks them out, because nothing in a particle's render state tells
+** a dust cloud from a laser beam -- both are blended, alpha-tested nowhere and write no
+** depth. See m_bEffectCastsShadow.
+**
+** Scoped for the same reason DeclaredTechniqueClass is: the render functions that raise
+** it return early in several places, and a flag left standing would be inherited by
+** whatever draws next -- which in the depth pass means laying solid shadow under
+** something that should not cast at all.
+*/
+class ShadowCastingEffectClass
+{
+public:
+	ShadowCastingEffectClass() { DX8Wrapper::Set_Effect_Casts_Shadow(true); }
+	~ShadowCastingEffectClass() { DX8Wrapper::Set_Effect_Casts_Shadow(false); }
+private:
+	ShadowCastingEffectClass(const ShadowCastingEffectClass &);
+	ShadowCastingEffectClass & operator = (const ShadowCastingEffectClass &);
 };
 
 // shader system updates KJM v

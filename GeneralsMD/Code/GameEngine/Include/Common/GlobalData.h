@@ -150,6 +150,7 @@ public:
 	Bool m_useShadowVolumes;
 	Bool m_useShadowDecals;
 	Bool m_useShadowMapping;					///< directional shadow map; when it runs it replaces the volume/decal shadows
+	Bool m_useParticleShadows;				///< let physical particle systems (smoke, dust) cast into that shadow map
 	Int  m_textureReductionFactor;	//how much to cut texture resolution: 2 is half, 3 is quarter, etc.
 	Bool m_enableBehindBuildingMarkers;
 	Real m_waterPositionX;
