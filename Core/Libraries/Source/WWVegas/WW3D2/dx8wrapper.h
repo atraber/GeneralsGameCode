@@ -976,6 +976,10 @@ public:
 	static DWORD						m_dwShadowDepthParticleVS;
 	static DWORD						m_dwShadowDepthParticlePS;
 	static IDirect3DBaseTexture8*		m_pShadowMap;       // depth-packed shadow map (bound for sampling)
+	// The cloud shadow field, so meshes can be shaded by the same clouds the ground is.
+	// Republished by the terrain each frame rather than cached at creation, because a
+	// device reset rebuilds the texture and would leave a stale pointer here.
+	static IDirect3DBaseTexture8*		m_pCloudMap;
 	static float						m_sunVP[16];
 	// x = depth-compare bias in sun-clip units, y = shadow strength (0 disables the
 	// lookup without unbinding anything), z = one texel in UV. The bias has to track the
@@ -1147,6 +1151,7 @@ public:
 	{
 		m_terrainCloudEnable = cloud; m_terrainNoiseEnable = noise;
 	}
+	static void Set_Cloud_Map(IDirect3DBaseTexture8* tex) { m_pCloudMap = tex; }
 	static void Set_Cloud_Shadow(float ax, float ay, float bx, float by, float strength)
 	{
 		m_cloudScrollAX = ax; m_cloudScrollAY = ay;

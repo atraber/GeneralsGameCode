@@ -2043,6 +2043,14 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 			// a shader pass have bitten this renderer more than once.
 			DX8Wrapper::Set_Texture(1, m_map ? m_map->getTerrainClassMapTexture() : nullptr);
 			DX8Wrapper::Set_Texture(2, cloudOn ? m_stageTwoTexture : nullptr);
+			// Publish the field so meshes can be shaded by the same clouds. Republished
+			// per frame rather than cached when the texture is built, because a device
+			// reset rebuilds it and would leave a dangling pointer. Meshes draw after the
+			// ground, and the pointer only changes on map load, so a frame of lag here
+			// could not show even if the order ever changed.
+			DX8Wrapper::Set_Cloud_Map((cloudOn && m_stageTwoTexture != nullptr)
+									  ? m_stageTwoTexture->Peek_D3D_Base_Texture()
+									  : nullptr);
 			DX8Wrapper::Set_Texture(3, noiseOn ? m_stageThreeTexture : nullptr);
 			DX8Wrapper::Set_Texture(4, m_map ? m_map->getTerrainDetailTexture() : nullptr);
 			DX8Wrapper::Set_Terrain_Overlay(cloudOn, noiseOn);

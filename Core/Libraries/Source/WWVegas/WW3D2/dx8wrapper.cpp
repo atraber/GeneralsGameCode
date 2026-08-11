@@ -725,6 +725,7 @@ DWORD							DX8Wrapper::m_dwShadowDepthPS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthParticleVS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthParticlePS = 0;
 IDirect3DBaseTexture8*			DX8Wrapper::m_pShadowMap = nullptr;
+IDirect3DBaseTexture8*			DX8Wrapper::m_pCloudMap = nullptr;
 float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -833,16 +834,17 @@ void DX8Wrapper::Restore_Stage1_After_Pbr()
 					   : NULL);
 }
 
-// The same story one stage further out: the shared environment cubemap is bound to
-// stage 4 for a PBR draw, and the two screen-space reflection targets to 6 and 7 --
-// all three straight to the device like the ORM. Nothing in the applied-texture cache
-// knows to take them off, so the next fixed-function draw inherits textures on stages
-// it never asked for and renders through them.
+// The same story one stage further out: the cloud shadow field is bound to stage 2, the
+// shared environment cubemap to stage 4 for a PBR draw, and the two screen-space
+// reflection targets to 6 and 7 -- all four straight to the device like the ORM.
+// Nothing in the applied-texture cache knows to take them off, so the next
+// fixed-function draw inherits textures on stages it never asked for and renders
+// through them.
 //
 // Sorted translucent geometry -- rotor discs, glow cones -- is exactly the kind of
 // draw that shows this, because it never routes to the programmable path and so is
-// always the one inheriting. Stage 4 already had this restore; 6 and 7 arrived with
-// SSR and would have put those draws back in the same hole without it.
+// always the one inheriting. Stage 4 had this restore first; 6, 7 and now 2 each
+// arrived without it and would have put those draws back in the same hole.
 static bool s_pbrExtraStagesBound = false;
 
 void DX8Wrapper::Restore_Pbr_Extra_Stages()
@@ -850,8 +852,8 @@ void DX8Wrapper::Restore_Pbr_Extra_Stages()
 	if (!s_pbrExtraStagesBound)
 		return;
 	s_pbrExtraStagesBound = false;
-	const unsigned pbrExtraStages[3] = { 4, 6, 7 };
-	for (int i = 0; i < 3; ++i) {
+	const unsigned pbrExtraStages[4] = { 2, 4, 6, 7 };
+	for (int i = 0; i < 4; ++i) {
 		const unsigned stage = pbrExtraStages[i];
 		Set_DX8_Texture(stage, render_state.Textures[stage] != nullptr
 							   ? render_state.Textures[stage]->Peek_D3D_Base_Texture()
@@ -4587,6 +4589,44 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			//         (as the M3 shader wants) leaves position and camera in different
 			//         spaces, which makes every view-dependent term swing with the camera.
 			Set_Vertex_Shader_Constant(4, usePbr ? &world : &worldView, 4);
+
+			// Cloud shadow for meshes. The same field, drift and depth the ground gets --
+			// a shadow that sweeps the terrain has to sweep what is standing on it, and
+			// until now it stopped dead at the ground. The two shader families differ
+			// only in where the constants land and in how they reach world space.
+			if (m_pCloudMap != nullptr) {
+				Set_DX8_Texture(2, m_pCloudMap);
+				// Stage 2 is bound straight to the device here, so it joins the set that
+				// gets taken off again -- a texture left on a stage a later fixed-function
+				// draw never asked for is a bug this renderer has shipped twice.
+				s_pbrExtraStagesBound = true;
+				Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(2, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+				Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+			}
+			const D3DXVECTOR4 cloudScroll(m_cloudScrollAX, m_cloudScrollAY,
+										  m_cloudScrollBX, m_cloudScrollBY);
+			const D3DXVECTOR4 cloudCtl(
+				(m_terrainCloudEnable && m_pCloudMap != nullptr) ? 1.0f : 0.0f,
+				m_cloudStrength, 0.0f, 0.0f);
+			if (usePbr) {
+				// PBR already carries the world position it needs.
+				Set_Pixel_Shader_Constant(24, &cloudScroll, 1);
+				Set_Pixel_Shader_Constant(25, &cloudCtl, 1);
+			} else {
+				// The M3 path has no world matrix, and needs only where the vertex lands
+				// on the ground plane -- so it gets the two columns of world that give
+				// that, rather than a whole matrix it would use twice. Row-vector
+				// convention, so these are columns 0 and 1.
+				const D3DXVECTOR4 worldAxisX(world._11, world._21, world._31, world._41);
+				const D3DXVECTOR4 worldAxisY(world._12, world._22, world._32, world._42);
+				Set_Vertex_Shader_Constant(22, &worldAxisX, 1);
+				Set_Vertex_Shader_Constant(23, &worldAxisY, 1);
+				Set_Pixel_Shader_Constant(10, &cloudScroll, 1);
+				Set_Pixel_Shader_Constant(11, &cloudCtl, 1);
+			}
 
 			// Cast shadows for the M3 path. PBR reprojects per pixel from the world
 			// position it already carries; this shader has only object->camera, so the
