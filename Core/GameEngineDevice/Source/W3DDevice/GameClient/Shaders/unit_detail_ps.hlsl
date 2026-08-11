@@ -43,6 +43,37 @@ float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow stre
 // surface along its normal. See the note in unit_ps.
 float4 ShadowMeshParams : register(c9);
 
+// Cloud shadow, matching terrain_ps exactly -- deliberately, and this is the whole point
+// of the change: a shadow that sweeps the ground has to sweep whatever is standing on it.
+// Until now it stopped at the terrain, so a tank sat fully lit inside a shadow crossing
+// the field around it.
+//
+// The projection is straight down from the pixel's ground-plane position, the same as the
+// terrain's, which is what makes a unit and the ground under it agree. Tracing back along
+// the sun instead would be more correct for a tall wall and would put the unit out of step
+// with the ground it stands on, which reads far worse than the error it fixes.
+sampler CloudSampler : register(s2);
+float4 CloudScroll : register(c10);   // xy = layer A drift, zw = layer B (world units)
+float4 CloudCtl    : register(c11);   // x = cloud layer on, y = shade strength
+
+static const float CLOUD_PERIOD_A = 1800.0;
+static const float CLOUD_PERIOD_B = 2900.0;
+static const float3 CLOUD_SHADE_TINT = float3(0.60, 0.66, 0.79);
+
+float3 cloudShade(float3 cloudPos)
+{
+    float2 uvA = (cloudPos.xy + CloudScroll.xy) / CLOUD_PERIOD_A;
+    float2 uvB = (cloudPos.xy + CloudScroll.zw) / CLOUD_PERIOD_B;
+    // The field stores brightness so the fixed-function path can multiply by it directly;
+    // coverage is its complement.
+    float a = 1.0 - tex2D(CloudSampler, uvA).r;
+    float b = 1.0 - tex2D(CloudSampler, uvB).r;
+    float coverage = 1.0 - (1.0 - a) * (1.0 - b);
+    float lit = 1.0 - coverage * CloudCtl.y * CloudCtl.x * cloudPos.z;
+    return lerp(CLOUD_SHADE_TINT, float3(1.0, 1.0, 1.0), lit);
+}
+
+
 // Cast-shadow term, matching unit_ps / terrain_ps. Single tap here rather than 2x2:
 // the combine emulation above already fills most of the ps_2_0 budget.
 float unpackDepth(float4 rgba)
@@ -91,6 +122,7 @@ struct PS_INPUT
     float2 texcoord  : TEXCOORD0;   // stage 0 coordinates
     float2 texcoord1 : TEXCOORD1;   // stage 1 coordinates (may be generated)
     float4 lightPos  : TEXCOORD2;   // position in the sun's clip space
+    float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
 };
 
 float3 PickRGB(float4 sel, float3 tex, float3 cur, float3 dif)
@@ -134,6 +166,7 @@ float4 main(PS_INPUT input) : COLOR
 
     const float SHADOW_MIN = 0.35;
     rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(input.lightPos));
+    rgb *= cloudShade(input.cloudPos);
 
     return float4(saturate(rgb), saturate(a));
 }

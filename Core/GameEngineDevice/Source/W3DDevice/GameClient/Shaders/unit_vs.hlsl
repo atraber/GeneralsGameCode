@@ -38,6 +38,14 @@ row_major float4x4 TexMatrix1 : register(c28);
 // object -> sun clip space, for sampling the shadow map in the pixel shader. Combined
 // on the CPU because this path only has the object->camera matrix otherwise, and the
 // shadow lookup needs world space.
+
+// The cloud shadow is projected straight down, so all a vertex shader needs to hand on is
+// where this pixel sits on the ground plane. Only two columns of the object->world matrix
+// are required for that, which is why they arrive as a pair of vectors rather than a whole
+// matrix -- this path otherwise never needs world space.
+float4 WorldAxisX : register(c22);   // object -> world X
+float4 WorldAxisY : register(c23);   // object -> world Y
+
 row_major float4x4 WorldSunVP : register(c32);
 
 // x = how far to lift the shadow lookup off this surface along its normal, in world
@@ -59,6 +67,7 @@ struct VS_OUTPUT
     float2 texcoord  : TEXCOORD0;  // stage 0 coordinates
     float2 texcoord1 : TEXCOORD1;  // stage 1 coordinates
     float4 lightPos  : TEXCOORD2;  // position in the sun's clip space (cast shadows)
+    float3 cloudPos  : TEXCOORD3;  // xy = world position on the ground plane, z = receives sun
 };
 
 // Normalizing a zero-length vector yields NaN, and NaN survives everything downstream --
@@ -215,5 +224,12 @@ VS_OUTPUT main(VS_INPUT input)
     // receiving shadows.
     float4 sunClip = mul(float4(offsetPos, 1.0), WorldSunVP);
     output.lightPos = (shadowReceive > 0.5) ? sunClip : float4(2.0, 2.0, 2.0, 1.0);
+
+    // A cloud blocks the sun, so whatever receives the sun's shadow receives its clouds:
+    // gate both on the same decision rather than letting them disagree about which
+    // meshes the sun reaches.
+    output.cloudPos = float3(dot(float4(input.position, 1.0), WorldAxisX),
+                             dot(float4(input.position, 1.0), WorldAxisY),
+                             shadowReceive);
     return output;
 }

@@ -47,6 +47,36 @@ float4 EnvAverage    : register(c22);  // mean colour of the baked env cubemap
 // meshes -- see the note where they are computed in W3DView.
 float4 ShadowMeshParams : register(c23);
 
+// Cloud shadow, matching terrain_ps -- a shadow crossing the ground has to cross whatever
+// stands on it, which until now it did not: a tank sat fully lit inside a shadow sweeping
+// the field around it.
+//
+// Applied to the sRGB result rather than to the linear colour, unlike everything else
+// here. The tint is a look, picked against the terrain in the space the terrain works in;
+// multiplying linear by 0.66 is a very different darkening from multiplying sRGB by 0.66,
+// and matching the ground matters more than staying in linear for one final multiply.
+sampler2D   CloudSampler : register(s2);
+float4 CloudScroll : register(c24);  // xy = layer A drift, zw = layer B (world units)
+float4 CloudCtl    : register(c25);  // x = cloud layer on, y = shade strength
+
+static const float CLOUD_PERIOD_A = 1800.0;
+static const float CLOUD_PERIOD_B = 2900.0;
+static const float3 CLOUD_SHADE_TINT = float3(0.60, 0.66, 0.79);
+
+float3 cloudShade(float3 worldPos)
+{
+    float2 uvA = (worldPos.xy + CloudScroll.xy) / CLOUD_PERIOD_A;
+    float2 uvB = (worldPos.xy + CloudScroll.zw) / CLOUD_PERIOD_B;
+    // The field stores brightness so the fixed-function path can multiply by it directly;
+    // coverage is its complement.
+    float a = 1.0 - tex2D(CloudSampler, uvA).r;
+    float b = 1.0 - tex2D(CloudSampler, uvB).r;
+    float coverage = 1.0 - (1.0 - a) * (1.0 - b);
+    float lit = 1.0 - coverage * CloudCtl.y * CloudCtl.x;
+    return lerp(CLOUD_SHADE_TINT, float3(1.0, 1.0, 1.0), lit);
+}
+
+
 struct PS_INPUT
 {
     float4 position : POSITION;
@@ -645,6 +675,8 @@ float4 main(PS_INPUT input) : COLOR
     //
     // The cast shadow is a multiply of the encoded colour, which is exactly what
     // terrain_ps and unit_ps do -- see the note on SHADOW_MIN above for why the space
-    // matters as much as the constant.
-    return float4(LinearToSrgb(color) * shadowFill, albedoTex.a * diffAlpha);
+    // matters as much as the constant. The cloud shade rides along with it, for the
+    // same reason and in the same space as the ground it has to agree with.
+    return float4(LinearToSrgb(color) * shadowFill * cloudShade(input.worldPos),
+                  albedoTex.a * diffAlpha);
 }

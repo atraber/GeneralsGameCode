@@ -25,6 +25,14 @@ float4 TexGenCtl : register(c21);      // see unit_vs; modes 2 and 3 need a norm
                                        // never routed here
 row_major float4x4 TexMatrix0 : register(c24);
 row_major float4x4 TexMatrix1 : register(c28);
+
+// The cloud shadow is projected straight down, so all a vertex shader needs to hand on is
+// where this pixel sits on the ground plane. Only two columns of the object->world matrix
+// are required for that, which is why they arrive as a pair of vectors rather than a whole
+// matrix -- this path otherwise never needs world space.
+float4 WorldAxisX : register(c22);   // object -> world X
+float4 WorldAxisY : register(c23);   // object -> world Y
+
 row_major float4x4 WorldSunVP : register(c32);  // object -> sun clip space
 // c36 (ShadowMeshParams in unit_vs) is deliberately not read here. Its normal offset
 // needs a normal, which is the one thing this variant's geometry does not carry; the
@@ -45,6 +53,7 @@ struct VS_OUTPUT
     float2 texcoord  : TEXCOORD0;
     float2 texcoord1 : TEXCOORD1;
     float4 lightPos  : TEXCOORD2;  // position in the sun's clip space (cast shadows)
+    float3 cloudPos  : TEXCOORD3;  // xy = world position on the ground plane, z = receives sun
 };
 
 // Passthrough or camera-space position only -- the normal-based sources cannot be
@@ -84,5 +93,11 @@ VS_OUTPUT main(VS_INPUT input)
     // not receiving -- lerp still multiplies the far operand by zero, and 0 * inf is NaN.
     float4 sunClip = mul(float4(input.position, 1.0), WorldSunVP);
     output.lightPos = (textureOnly > 0.5) ? float4(2.0, 2.0, 2.0, 1.0) : sunClip;
+
+    // Same gate as the cast shadow above: a texture-only overlay is not lit by the sun,
+    // so no cloud may take that sun away from it.
+    output.cloudPos = float3(dot(float4(input.position, 1.0), WorldAxisX),
+                             dot(float4(input.position, 1.0), WorldAxisY),
+                             (textureOnly > 0.5) ? 0.0 : 1.0);
     return output;
 }
