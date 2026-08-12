@@ -982,6 +982,25 @@ public:
 	static void Set_Road_Shader_Pass(bool active) { m_bRoadShaderPass = active; }
 	static bool Has_Road_Shader() { return m_dwRoadVS != 0 && m_dwRoadPS != 0; }
 
+	// 2D interface. Declared by Render2DClass around its own draws, for the same reason the
+	// roads and the water are: it is not a mesh, so there is no technique to read off it.
+	//
+	// Deliberately not keyed on VIEW_IDENTITY, which is the flag the routing uses to *decline*
+	// 2D. An identity view means the vertices are already in camera space, which the interface
+	// is an instance of rather than a synonym for -- dazzle.cpp sets it too, and a
+	// camera-relative 3D pass would as well. Declining on it is safe because it only ever
+	// leaves a draw on the pipeline it already had; claiming on it would not be.
+	//
+	// m_uiGreyscale desaturates, replacing the two-stage DOT3 combine Render2DClass used to
+	// assemble by hand for disabled buttons.
+	static DWORD						m_dwUiVS;
+	static DWORD						m_dwUiPS;
+	static bool							m_bUiPass;        // current draws are 2D interface
+	static bool							m_uiGreyscale;
+	static void Set_Ui_Pass(bool active) { m_bUiPass = active; }
+	static void Set_Ui_Greyscale(bool on) { m_uiGreyscale = on; }
+	static bool Has_Ui_Shader() { return m_dwUiVS != 0 && m_dwUiPS != 0; }
+
 	// Water. Declared by WaterRenderObjClass around its own draws, the same way roads are:
 	// the water is not a mesh and carries nothing the routing could classify it by, and
 	// guessing from render state would put it in the same bucket as every other soft-blended

@@ -55,6 +55,9 @@ set(_rts_shaders
     water_ps
     unit_pbr_vs
     unit_pbr_ps
+    # 2D interface (control bar, command bar, text)
+    ui_vs
+    ui_ps
     # Bloom post-process (fullscreen pixel shaders; ps_2_0)
     bloom_bright_ps
     bloom_blur_ps

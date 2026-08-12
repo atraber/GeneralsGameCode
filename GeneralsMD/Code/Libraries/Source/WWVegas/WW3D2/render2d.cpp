@@ -661,41 +661,30 @@ void Render2DClass::Render()
 	DX8Wrapper::Set_Vertex_Buffer(vb);
 	DX8Wrapper::Set_Index_Buffer(ib,0);
 
+	// The interface declares itself, the way the roads and the water do: these vertices are
+	// already in clip space and there is no mesh here for the routing to classify.
+	DX8Wrapper::Set_Ui_Pass(true);
+	DX8Wrapper::Set_Ui_Greyscale(IsGrayScale);
+
 	if (IsGrayScale)
 	{	//special case added to draw grayscale non-alpha blended images.
+		// The desaturation itself is in ui_ps. It used to be assembled here out of two
+		// texture stages -- a MULTIPLYADD biasing the texture into signed range, then a
+		// DOTPRODUCT3 against a texture factor whose channels worked out to the Rec. 601
+		// luma weights -- with a second, dimmer spelling for cards without DOT3 and a
+		// ShaderClass::Invalidate() afterwards to undo the state it had reached behind
+		// ShaderClass's back. One `dot` replaces all of it.
 		DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);
-		DX8Wrapper::Apply_Render_State_Changes();	//force update of all regular W3D states.
-		if (DX8Wrapper::Get_Current_Caps()->Support_Dot3())
-		{	//Override W3D states with customizations for grayscale
-			DX8Wrapper::Set_DX8_Render_State(D3DRS_TEXTUREFACTOR, 0x80A5CA8E);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG0, D3DTA_TFACTOR | D3DTA_ALPHAREPLICATE);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG2, D3DTA_TFACTOR | D3DTA_ALPHAREPLICATE);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLOROP, D3DTOP_MULTIPLYADD);
-
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLORARG1, D3DTA_CURRENT);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLORARG2, D3DTA_TFACTOR);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLOROP, D3DTOP_DOTPRODUCT3);
-		}
-		else
-		{	//doesn't have DOT3 blend mode so fake it another way.
-			DX8Wrapper::Set_DX8_Render_State(D3DRS_TEXTUREFACTOR, 0x60606060);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG2, D3DTA_TFACTOR);
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-
-			// TheSuperHackers @bugfix Stubbjax 08/01/2026 Fix possible greyscale rendering issues on hardware without DOT3 support.
-			DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-		}
 	}
 	else
 		DX8Wrapper::Set_Shader(Shader);
 	DX8Wrapper::Draw_Triangles(0,Indices.Count()/3,0,Vertices.Count());
 
+	DX8Wrapper::Set_Ui_Greyscale(false);
+	DX8Wrapper::Set_Ui_Pass(false);
+
 	DX8Wrapper::Set_Transform(D3DTS_VIEW,view);
 	DX8Wrapper::Set_Transform(D3DTS_PROJECTION,proj);
-	if (IsGrayScale)
-		ShaderClass::Invalidate();	//force both stages to be reset.
 
 }
 

@@ -2179,6 +2179,15 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::m_dwUnitDetailPS == 0) {
 		LoadAndCreateD3DShader("shaders\\unit_detail_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUnitDetailPS);
 	}
+	// 2D interface. Its vertices arrive in clip space with a diffuse and one coordinate
+	// set, so the pair is a passthrough and a modulate; the greyscale combine the interface
+	// used to build out of two texture stages lives in the pixel shader.
+	if (DX8Wrapper::m_dwUiVS == 0) {
+		LoadAndCreateD3DShader("shaders\\ui_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwUiVS);
+	}
+	if (DX8Wrapper::m_dwUiPS == 0) {
+		LoadAndCreateD3DShader("shaders\\ui_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUiPS);
+	}
 	if (DX8Wrapper::m_dwTerrainVS == 0) {
 		LoadAndCreateD3DShader("shaders\\terrain_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwTerrainVS);
 	}
