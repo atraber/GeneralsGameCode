@@ -404,6 +404,12 @@ public:
 
 	static void Set_Transform(D3DTRANSFORMSTATETYPE transform,const Matrix4x4& m);
 	static void Set_Transform(D3DTRANSFORMSTATETYPE transform,const Matrix3D& m);
+	// Same, for a caller that already holds a D3DMATRIX -- deferred draws replay one they
+	// captured. The distinction from _Set_DX8_Transform is not the argument type: this
+	// updates the *tracked* world/view, which is where the programmable path reads the
+	// matrices it concatenates on the CPU, while _Set_DX8_Transform reaches past it to the
+	// device and so is visible only to the fixed-function pipeline.
+	static void Set_Transform(D3DTRANSFORMSTATETYPE transform,const D3DMATRIX& m);
 	static void Get_Transform(D3DTRANSFORMSTATETYPE transform, Matrix4x4& m);
 	static void Set_World_Identity();
 	static void Set_View_Identity();
@@ -1990,6 +1996,27 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 		D3DMATRIX dxm=To_D3DMATRIX(m);
 		Note_Texture_Transform_Write(transform);
 		DX8CALL(SetTransform(transform,&dxm));
+		break;
+	}
+}
+
+WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const D3DMATRIX& m)
+{
+	switch ((int)transform) {
+	case D3DTS_WORLD:
+		render_state.world=m;
+		render_state_changed|=(unsigned)WORLD_CHANGED;
+		render_state_changed&=~(unsigned)WORLD_IDENTITY;
+		break;
+	case D3DTS_VIEW:
+		render_state.view=m;
+		render_state_changed|=(unsigned)VIEW_CHANGED;
+		render_state_changed&=~(unsigned)VIEW_IDENTITY;
+		break;
+	default:
+		DX8_RECORD_MATRIX_CHANGE();
+		Note_Texture_Transform_Write(transform);
+		DX8CALL(SetTransform(transform,&m));
 		break;
 	}
 }
