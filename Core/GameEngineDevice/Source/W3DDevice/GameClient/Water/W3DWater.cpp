@@ -205,6 +205,249 @@ void doSkyBoxSet(Bool startDraw)
 
 static Bool wireframeForDebug = 0;
 
+// ---------------------------------------------------------------------------------------
+// Programmable water path.
+//
+// The tuning lives here rather than in an INI table for now: these are the first values
+// the surface has ever had for any of this, and they want to be found by looking at water
+// before they want to be per-map. Every one of them is a shader constant, so moving them
+// into WaterTransparencySetting later is a parse table and nothing else.
+// ---------------------------------------------------------------------------------------
+
+// How much of the old sparkle/noise layer to keep. The sun glint now does the job that
+// layer was standing in for, and at full strength the two read as two different water
+// surfaces drawn on top of each other.
+#define WATER_SPARKLE_STRENGTH	(0.35f)
+
+// The shore fade. TransparentWaterDepth is authored as a *vertical* depth (the shoreline
+// tiles ramp their destination alpha over it), while the shader measures the path along
+// the view ray, which at this camera's pitch is about 1.6 times longer. Converting here
+// keeps a map's existing value meaning what it always meant.
+#define WATER_DEPTH_TO_PATH		(1.6f)
+// Deep water takes its colour over a much longer run than it takes its opacity: how fast
+// the bottom disappears is turbidity, how fast the water goes green is absorption, and
+// they are not the same number.
+#define WATER_COLOUR_DEPTH		(45.0f)
+// Vertical depth at which the waves reach full height. A hand's breadth of water over a
+// sandbank is flat however obliquely it is being looked at.
+#define WATER_CALM_DEPTH		(7.0f)
+
+// Multiplier applied to the water's own colour once the column is fully absorbing. Slight,
+// and toward cyan: the point is that deep water and shallow water are not the same colour,
+// not that deep water is a different material.
+#define WATER_DEEP_TINT_R		(0.72f)
+#define WATER_DEEP_TINT_G		(0.92f)
+#define WATER_DEEP_TINT_B		(1.00f)
+
+#define WATER_REFLECTION_STRENGTH	(1.0f)
+#define WATER_FRESNEL_F0			(0.06f)
+#define WATER_FRESNEL_POWER			(3.0f)
+#define WATER_SHADOW_DARKEN			(0.35f)
+
+#define WATER_SPECULAR_STRENGTH		(2.2f)
+// Tighter than it was. With six octaves the normal now carries fine structure, and a
+// broad lobe averages that structure away into a wash -- the highlight has to be small
+// enough that the ripples break it into a moving sun path rather than a soft band.
+#define WATER_SPECULAR_EXPONENT		(120.0f)
+// Wave field. The steepness is a gradient, not a height -- the geometry stays flat and
+// none of this displaces anything. The frequency is in radians per world unit, so the
+// longest wave here is about 2*pi/0.045 ~ 140 units, a little over a tank length, and the
+// finest octave is about 8 units.
+#define WATER_WAVE_STEEPNESS		(0.16f)
+#define WATER_WAVE_FREQUENCY		(0.045f)
+// Angular rate of the base octave, in radians per unit of the water's animation phase.
+// That phase advances 0.002 per frame, so at 30 Hz this is a swell period of about six
+// seconds and a ripple period (octave five, 4x the rate) of about one and a half. Note the
+// shader's phase term is no longer multiplied by k -- the dispersion relation puts the
+// rate at sqrt(k), which is carried by the per-octave table instead, so this number is not
+// comparable to the one the four-octave version used.
+#define WATER_WAVE_SPEED			(16.0f)
+
+// Refraction. The offset is in world units at the surface, so it is independent of zoom;
+// it reaches full at REFRACT_DEPTH of water below and tapers to nothing at the waterline.
+#define WATER_REFRACT_OFFSET		(3.5f)
+#define WATER_REFRACT_DEPTH			(6.0f)
+// Per-channel extinction of the bottom, per world unit of path. Red goes first, which is
+// what turns a sandy bed green and then blue-grey as it deepens rather than merely
+// fading it out. Roughly an order of magnitude stronger than clear water so the effect
+// lands inside the few metres of depth an RTS map actually has.
+#define WATER_ABSORB_R				(0.055f)
+#define WATER_ABSORB_G				(0.021f)
+#define WATER_ABSORB_B				(0.014f)
+
+// Shoreline foam. The depth is vertical, in world units -- how far out from the waterline
+// foam can reach, measured downwards rather than sideways, so it follows a steep bank
+// closely and spreads out over a shallow shelf on its own.
+#define WATER_FOAM_DEPTH			(8.0f)
+#define WATER_FOAM_STRENGTH			(0.85f)
+#define WATER_FOAM_SCALE			(0.035f)
+#define WATER_FOAM_DRIFT			(0.35f)
+#define WATER_FOAM_COL_R			(0.92f)
+#define WATER_FOAM_COL_G			(0.96f)
+#define WATER_FOAM_COL_B			(0.98f)
+
+//-------------------------------------------------------------------------------------------------
+/** Publish the per-frame constants and the shroud projection the water shader reads.
+	* Called once from Render, before any water is drawn. */
+//-------------------------------------------------------------------------------------------------
+void WaterRenderObjClass::updateWaterShaderParams()
+{
+	// x is set per draw by beginWaterShaderPass; z is filled in by the routing block, which
+	// is the only place that knows whether the depth prepass produced anything.
+	DX8Wrapper::m_waterCtl.Set(0.0f, WATER_SPARKLE_STRENGTH, 0.0f, m_riverVOrigin);
+
+	// The opacity ramp, from nothing at the waterline to MinWaterOpacity once the column is
+	// deep. A rate of zero disables it and every pixel takes the deep value.
+	//
+	// MinWaterOpacity is the deep-water opacity, not a floor, despite the name: the
+	// fixed-function path clears the frame buffer's alpha to it and then blends the water
+	// by DESTALPHA, so it is what open water multiplied by, with the shoreline tiles
+	// overwriting that alpha only near the banks. Reading it as a floor made the ramp flat
+	// -- the shipped value is 1.0, and saturate(1 + 0*cover) is 1 everywhere, which is the
+	// whole depth feature silently doing nothing while every log line looked correct.
+	//
+	// The saturation point is the one the shoreline tiles used: their ramp reaches full
+	// opacity at TransparentWaterDepth * MinWaterOpacity of vertical depth, so the
+	// exponential is scaled to be 95% there (1 - e^-3). Matching where the old ramp topped
+	// out matters more than the shape of the curve -- pick the rate so the ramp merely
+	// *starts* at the right place and a river three units deep never reaches full opacity
+	// anywhere, which reads as the water having gone missing.
+	const Bool softEdge = TheGlobalData->m_showSoftWaterEdge &&
+						  TheWaterTransparency->m_transparentWaterDepth > 0.0f &&
+						  DX8Wrapper::getBackBufferFormat() == WW3D_FORMAT_A8R8G8B8;
+	const Real fadePath = softEdge
+		? (TheWaterTransparency->m_transparentWaterDepth *
+		   TheWaterTransparency->m_minWaterOpacity * WATER_DEPTH_TO_PATH)
+		: 0.0f;
+	DX8Wrapper::m_waterDepthCtl.Set(
+		fadePath > 0.0f ? 3.0f / fadePath : 0.0f,
+		TheWaterTransparency->m_minWaterOpacity,
+		1.0f / WATER_COLOUR_DEPTH,
+		WATER_CALM_DEPTH);
+	// Which alpha the fixed-function path would have blended with -- see BlendCtl in the
+	// shader. Destination alpha whenever the soft edge was active, source alpha otherwise.
+	DX8Wrapper::m_waterBlendCtl.Set(softEdge ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f);
+
+	DX8Wrapper::m_waterShallowTint.Set(1.0f, 1.0f, 1.0f, 1.0f);
+	DX8Wrapper::m_waterDeepTint.Set(WATER_DEEP_TINT_R, WATER_DEEP_TINT_G,
+									WATER_DEEP_TINT_B, 1.0f);
+	DX8Wrapper::m_waterReflCtl.Set(WATER_REFLECTION_STRENGTH, WATER_FRESNEL_F0,
+								   WATER_SHADOW_DARKEN, WATER_FRESNEL_POWER);
+
+	// The same sun the terrain lights itself with, taken from the same place and negated
+	// the same way (see HeightMapRenderObjClass::renderTerrainPass). Using anything else
+	// would put a highlight on the water from a direction nothing else in the scene is lit
+	// from, which reads as a bug even when it is prettier.
+	Vector3 towardSun(0.0f, 0.0f, 1.0f);
+	Vector3 sunColour(1.0f, 1.0f, 1.0f);
+	if (TheGlobalData->m_numGlobalLights > 0)
+	{
+		const Coord3D *sun = &TheGlobalData->m_terrainLightPos[0];
+		Vector3 dir(-sun->x, -sun->y, -sun->z);
+		if (dir.Length2() > 1e-8f)
+		{
+			dir.Normalize();
+			towardSun = dir;
+		}
+		sunColour.Set(TheGlobalData->m_terrainDiffuse[0].red,
+					  TheGlobalData->m_terrainDiffuse[0].green,
+					  TheGlobalData->m_terrainDiffuse[0].blue);
+	}
+	DX8Wrapper::m_waterSunDir.Set(towardSun.X, towardSun.Y, towardSun.Z, 0.0f);
+	DX8Wrapper::m_waterSunCol.Set(sunColour.X, sunColour.Y, sunColour.Z,
+								  WATER_SPECULAR_EXPONENT);
+	DX8Wrapper::m_waterWaveCtl.Set(WATER_SPECULAR_STRENGTH, WATER_WAVE_STEEPNESS,
+								   WATER_WAVE_FREQUENCY, WATER_WAVE_SPEED);
+
+	// Refraction and the absorption that rides on it. The y component is filled in by the
+	// routing block, which is where it is known whether the grab texture exists.
+	DX8Wrapper::m_waterRefractCtl.Set(WATER_REFRACT_OFFSET, 0.0f, WATER_REFRACT_DEPTH, 0.0f);
+	DX8Wrapper::m_waterAbsorb.Set(WATER_ABSORB_R, WATER_ABSORB_G, WATER_ABSORB_B, 0.0f);
+
+	DX8Wrapper::m_waterFoamCtl.Set(WATER_FOAM_DEPTH, WATER_FOAM_STRENGTH,
+								   WATER_FOAM_SCALE, WATER_FOAM_DRIFT);
+	DX8Wrapper::m_waterFoamCol.Set(WATER_FOAM_COL_R, WATER_FOAM_COL_G,
+								   WATER_FOAM_COL_B, 1.0f);
+
+	// The noise layer's projection, which the fixed-function path built as a camera-space
+	// texture generation through inverse(view) * scale * translate. Composed out, that is
+	// world XY scaled and offset -- so the shader reads it straight off the world position
+	// and the texture matrix, the generated coordinate set and the two extra stage states
+	// all go away. Same substitution the road shader made for the cloud projection.
+	DX8Wrapper::m_waterNoiseUV.Set(NOISE_REPEAT_FACTOR, m_riverVOrigin, 0.0f, 0.0f);
+
+	// The shroud, likewise: ShroudTextureShader::set builds inverse(view) * offset * scale,
+	// which is the same world-space affine map. Bound unconditionally, with a 1x1 white
+	// stand-in when the map has no shroud, because the shader samples it in straight-line
+	// code and D3D9 leaves a read from an unbound stage undefined.
+	W3DShroud *shroud = TheTerrainRenderObject ? TheTerrainRenderObject->getShroud() : nullptr;
+	TextureClass *shroudTex = shroud ? shroud->getShroudTexture() : nullptr;
+	if (shroudTex != nullptr)
+	{
+		if (!shroudTex->Is_Initialized())
+			shroudTex->Init();
+		const Real cellW = shroud->getCellWidth();
+		const Real cellH = shroud->getCellHeight();
+		const Real sx = 1.0f / (cellW * (Real)shroud->getTextureWidth());
+		const Real sy = 1.0f / (cellH * (Real)shroud->getTextureHeight());
+		// The origin is shifted by one cell to skip the unused border texels, exactly as
+		// the fixed-function path shifts it.
+		const Real ox = (-shroud->getDrawOriginX() + cellW) * sx;
+		const Real oy = (-shroud->getDrawOriginY() + cellH) * sy;
+		DX8Wrapper::Set_Water_Shroud(shroudTex->Peek_D3D_Base_Texture(), sx, sy, ox, oy);
+	}
+	else
+	{
+		if (!m_whiteTexture->Is_Initialized())
+			m_whiteTexture->Init();
+		DX8Wrapper::Set_Water_Shroud(m_whiteTexture->Peek_D3D_Base_Texture(),
+									 0.0f, 0.0f, 0.0f, 0.0f);
+	}
+
+#ifdef RTS_DEBUG
+	// Say what the path decided and, crucially, whether any draw reached it. Water that
+	// fell back to the fixed-function pipeline still renders a plausible frame, so the
+	// only thing that separates "the shader is running" from "the shader loaded and
+	// nothing routed to it" is this count. The depth flag is reported alongside because
+	// every depth-derived term stands down without it, which looks like a tuning problem
+	// and is not one.
+	{
+		static Int reportCounter = 0;
+		if ((reportCounter++ % 300) == 0)
+		{
+			DEBUG_LOG(("Water: shader path on -- %u routed draws since last report, "
+				"depth prepass %s, refraction grab %s, shroud %s, "
+				"fade path %.1f, deep opacity %.2f, "
+				"sun (%.2f %.2f %.2f) colour (%.2f %.2f %.2f)\n",
+				DX8Wrapper::s_waterRoutedDraws,
+				DX8Wrapper::Has_Ssr() ? "available" : "MISSING",
+				(DX8Wrapper::m_pRefraction != nullptr) ? "available" : "MISSING",
+				(shroudTex != nullptr) ? "bound" : "none (white)",
+				// The constant holds 3/fadePath (see the note where it is set), so undo
+				// that here rather than printing a third of the number under its own name.
+				DX8Wrapper::m_waterDepthCtl.X > 0.0f ? 3.0f / DX8Wrapper::m_waterDepthCtl.X : 0.0f,
+				DX8Wrapper::m_waterDepthCtl.Y,
+				DX8Wrapper::m_waterSunDir.X, DX8Wrapper::m_waterSunDir.Y, DX8Wrapper::m_waterSunDir.Z,
+				DX8Wrapper::m_waterSunCol.X, DX8Wrapper::m_waterSunCol.Y, DX8Wrapper::m_waterSunCol.Z));
+			DX8Wrapper::s_waterRoutedDraws = 0;
+		}
+	}
+#endif
+}
+
+//-------------------------------------------------------------------------------------------------
+void WaterRenderObjClass::beginWaterShaderPass(Bool river)
+{
+	DX8Wrapper::m_waterCtl.X = river ? 1.0f : 0.0f;
+	DX8Wrapper::Set_Water_Shader_Pass(true);
+}
+
+//-------------------------------------------------------------------------------------------------
+void WaterRenderObjClass::endWaterShaderPass()
+{
+	DX8Wrapper::Set_Water_Shader_Pass(false);
+}
+
 void WaterRenderObjClass::setupJbaWaterShader()
 {
 	if (!TheWaterTransparency->m_additiveBlend)
@@ -224,6 +467,35 @@ void WaterRenderObjClass::setupJbaWaterShader()
 
 
 	DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
+
+	if (m_useWaterShader)
+	{
+		// Same three stages as the trapezoid setup, except that stage 3 is what it was on
+		// this path all along -- the bank alpha ramp, sampled with the second coordinate
+		// set. The shroud is not bound here for the base colour: it is already folded into
+		// the vertex diffuse per vertex (a deliberate fix against double-darkening at the
+		// banks), and the shader keeps that. The stage 6 shroud is still bound by the
+		// routing block, and the shader uses it only for the terms that have no vertex
+		// colour to carry it -- the sky reflection and the sun glint, which must still go
+		// dark under fog of war.
+		if (!m_riverAlphaEdge->Is_Initialized())
+			m_riverAlphaEdge->Init();
+		if (!m_waterNoiseTexture->Is_Initialized())
+			m_waterNoiseTexture->Init();
+		DX8Wrapper::Set_DX8_Texture(2, m_waterNoiseTexture->Peek_D3D_Texture());
+		DX8Wrapper::Set_DX8_Texture(3, m_riverAlphaEdge->Peek_D3D_Texture());
+		const Int riverStages[3] = { 0, 2, 3 };
+		for (Int i = 0; i < 3; ++i)
+		{
+			const Int stage = riverStages[i];
+			DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+		}
+		return;
+	}
+
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ALPHAOP,   D3DTOP_ADD );
 	if (!m_riverAlphaEdge->Is_Initialized())
 		m_riverAlphaEdge->Init();
@@ -384,6 +656,7 @@ WaterRenderObjClass::WaterRenderObjClass()
 	m_waterSparklesTexture=nullptr;
 	m_riverXOffset=0;
 	m_riverYOffset=0;
+	m_useWaterShader=FALSE;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -1556,6 +1829,22 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
 	{
 		WW3D::Add_To_Static_Sort_List(this, sort_level);
 		return;
+	}
+
+	// Decide the path for this frame, and publish what it needs, before anything draws.
+	// Additive-blend maps are excluded: the shader resolves its terms through one
+	// SRCALPHA/INVSRCALPHA alpha, which is not a statement about an additive blend.
+	m_useWaterShader = DX8Wrapper::Has_Water_Shader() &&
+					   !TheWaterTransparency->m_additiveBlend;
+	if (m_useWaterShader)
+	{
+		updateWaterShaderParams();
+		// Grab the scene for refraction. This is the right moment and the only one: the
+		// opaque scene and everything sorted ahead of the water is down, the water itself
+		// is not, and the copy therefore holds exactly what the water's alpha blend is
+		// about to read. Note this runs on the static-sort flush, not on the earlier
+		// Render that only queues the object -- that call returns above.
+		W3DShaderManager::captureRefraction();
 	}
 
 	switch(m_waterType)
@@ -2905,6 +3194,8 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
 	DX8Wrapper::Set_Vertex_Buffer(vb_access);
 	DX8Wrapper::Set_Texture(0,m_riverTexture);	//set to blue
 
+	beginWaterShaderPass(TRUE);
+
 	setupJbaWaterShader();
 
 	//In additive blending we need to use the alpha at the edges of river to darken
@@ -2912,7 +3203,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
 	if (TheWaterTransparency->m_additiveBlend)
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA );
 
-	if (m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(m_riverWaterPixelShader);
+	if (!m_useWaterShader && m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(m_riverWaterPixelShader);
  	DWORD cull;
 	DX8Wrapper::_Get_D3D_Device8()->GetRenderState(D3DRS_CULLMODE, &cull);
 	DX8Wrapper::_Get_D3D_Device8()->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
@@ -2927,7 +3218,9 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
 		DX8Wrapper::_Get_D3D_Device8()->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID);
 	}
 
-	if (m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(0);
+	endWaterShaderPass();
+
+	if (!m_useWaterShader && m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(0);
 
 	//restore blend mode to what W3D expects.
 	if (TheWaterTransparency->m_additiveBlend)
@@ -2955,6 +3248,36 @@ void WaterRenderObjClass::setupFlatWaterShader()
 	m_riverTexture->Get_Filter().Set_Mip_Mapping(TextureFilterClass::FILTER_TYPE_BEST);
 
 	DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
+
+	if (m_useWaterShader)
+	{
+		// Stage 2 keeps the noise field; stage 3 is the river bank ramp, which standing
+		// water does not have, so it gets the white stand-in. The shroud has moved to
+		// stage 6 and stage 1 to the refraction grab, both bound by the routing block from
+		// what updateWaterShaderParams published -- so none of the texture-generation state
+		// below is set here: no generated coordinate set, no texture matrix, no combine
+		// ops. The shader derives both projections from the world position instead.
+		//
+		// Stage 1 is deliberately left alone. The routing block sets it to CLAMP, and the
+		// stage-state cache would swallow a later attempt to put it back if this touched
+		// it in between.
+		if (!m_waterNoiseTexture->Is_Initialized())
+			m_waterNoiseTexture->Init();
+		if (!m_whiteTexture->Is_Initialized())
+			m_whiteTexture->Init();
+		DX8Wrapper::Set_DX8_Texture(2, m_waterNoiseTexture->Peek_D3D_Texture());
+		DX8Wrapper::Set_DX8_Texture(3, m_whiteTexture->Peek_D3D_Texture());
+		const Int flatStages[3] = { 0, 2, 3 };
+		for (Int i = 0; i < 3; ++i)
+		{
+			const Int stage = flatStages[i];
+			DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+		}
+		return;
+	}
 
 	//Setup shroud to render in same pass as water
 	if (m_trapezoidWaterPixelShader)
@@ -3266,10 +3589,21 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
 	DX8Wrapper::Set_Index_Buffer(ib_access,0);
 	DX8Wrapper::Set_Vertex_Buffer(vb_access);
 
+	beginWaterShaderPass(FALSE);
+
 	setupFlatWaterShader();// lorenzen sez use the alpha shader
 
 	//If video card supports it and it's enabled, feather the water edge using destination alpha
-	if (DX8Wrapper::getBackBufferFormat() == WW3D_FORMAT_A8R8G8B8 && TheGlobalData->m_showSoftWaterEdge && TheWaterTransparency->m_transparentWaterDepth !=0)
+	//
+	// Not on the shader path. This substitutes the destination alpha the shoreline tiles
+	// wrote for the source alpha entirely, which would throw away the per-pixel opacity the
+	// shader just computed and replace it with a per-vertex ramp over precomputed tiles --
+	// the very thing the depth lookup exists to stop needing. The tiles themselves are left
+	// alone: they cost a pass that is now only feeding the water tracks, which still read
+	// destination alpha, and untangling that belongs with retiring the system rather than
+	// with introducing its replacement.
+	if (!m_useWaterShader &&
+		DX8Wrapper::getBackBufferFormat() == WW3D_FORMAT_A8R8G8B8 && TheGlobalData->m_showSoftWaterEdge && TheWaterTransparency->m_transparentWaterDepth !=0)
 	{		DX8Wrapper::Set_DX8_Render_State(D3DRS_SRCBLEND, D3DBLEND_DESTALPHA );
 			if (!TheWaterTransparency->m_additiveBlend)
 				DX8Wrapper::Set_DX8_Render_State(D3DRS_DESTBLEND, D3DBLEND_INVDESTALPHA );
@@ -3314,7 +3648,9 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
 		DX8Wrapper::_Get_D3D_Device8()->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID);
 	}
 
-	if (m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(0);
+	endWaterShaderPass();
+
+	if (!m_useWaterShader && m_riverWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(0);
 	//Restore alpha blend to default values since we may have changed them to feather edges.
 	if (!TheWaterTransparency->m_additiveBlend)
 	{	DX8Wrapper::Set_DX8_Render_State(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA );
@@ -3326,7 +3662,9 @@ void WaterRenderObjClass::drawTrapezoidWater(Vector3 points[4])
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_DESTBLEND, D3DBLEND_ONE );
 	}
 
-	if (TheTerrainRenderObject->getShroud())
+	// The shader path applied the shroud itself, from stage 6, so there is no fixed-function
+	// shroud pass to restore and no second pass to run.
+	if (!m_useWaterShader && TheTerrainRenderObject->getShroud())
 	{
 		if (m_trapezoidWaterPixelShader)
 		{	//shroud was applied in stage3 of main pass so just need to restore state here.

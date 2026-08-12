@@ -957,6 +957,61 @@ public:
 	static bool							m_bRoadShaderPass;    // current draws are road segments
 	static void Set_Road_Shader_Pass(bool active) { m_bRoadShaderPass = active; }
 	static bool Has_Road_Shader() { return m_dwRoadVS != 0 && m_dwRoadPS != 0; }
+
+	// Water. Declared by WaterRenderObjClass around its own draws, the same way roads are:
+	// the water is not a mesh and carries nothing the routing could classify it by, and
+	// guessing from render state would put it in the same bucket as every other soft-blended
+	// overlay in the scene.
+	//
+	// The flag must never be raised around a draw that could reach the depth pass. It
+	// cannot today -- water is soft-blended with no alpha test, which useShadowDepth
+	// rejects, so the camera depth target keeps the river bed and not the surface, which is
+	// precisely what the shader reads to find out how deep the water is. Anything that
+	// changes water's blend state has to be checked against that.
+	static DWORD						m_dwWaterVS;
+	static DWORD						m_dwWaterPS;
+	static bool							m_bWaterShaderPass;
+	static void Set_Water_Shader_Pass(bool active) { m_bWaterShaderPass = active; }
+	static bool Has_Water_Shader() { return m_dwWaterVS != 0 && m_dwWaterPS != 0; }
+	// Everything the water shader needs that only the water object knows. Published once
+	// per frame rather than per draw: a map with many water areas issues one draw per
+	// trapezoid, and none of this varies between them.
+	static Vector4						m_waterCtl;         // x = river, y = sparkle, z = depth available, w = phase
+	// y is the opacity of fully deep water, not a floor on the ramp -- it is the legacy
+	// MinWaterOpacity, which the fixed-function path put in the frame buffer's alpha and
+	// blended against. Reading it as a floor makes the ramp flat, since the shipped value
+	// is 1.0.
+	static Vector4						m_waterDepthCtl;    // x = opacity rate, y = deep opacity, z = colour rate, w = calm depth
+	static Vector4						m_waterShallowTint;
+	static Vector4						m_waterDeepTint;
+	static Vector4						m_waterReflCtl;     // x = reflection, y = F0, z = shadow darkening, w = Fresnel exponent
+	static Vector4						m_waterSunDir;      // xyz = toward the sun
+	static Vector4						m_waterSunCol;      // rgb = sun colour, w = specular exponent
+	static Vector4						m_waterWaveCtl;     // x = specular, y = steepness, z = frequency, w = speed
+	static Vector4						m_waterShroudUV;    // xy = world->UV scale, zw = offset
+	static Vector4						m_waterNoiseUV;     // x = scale, y = offset
+	static Vector4						m_waterBlendCtl;    // x = legacy source-alpha weight
+	static Vector4						m_waterFoamCtl;     // x = depth, y = strength, z = noise scale, w = drift
+	static Vector4						m_waterFoamCol;
+	static Vector4						m_waterRefractCtl;  // x = max offset, y = grab available, z = depth to full
+	static Vector4						m_waterAbsorb;      // rgb = per-channel extinction of the bottom
+	// The scene as it stood immediately before the water drew. Captured mid-frame by
+	// W3DShaderManager::captureRefraction, and bound on stage 1 -- see the note in the
+	// water routing branch about why the sparkle texture gave that stage up.
+	static IDirect3DBaseTexture8*		m_pRefraction;
+	static IDirect3DBaseTexture8*		m_pWaterShroud;     // fog-of-war projection, or null
+	static void Set_Water_Shroud(IDirect3DBaseTexture8* tex, float sx, float sy, float ox, float oy)
+	{
+		m_pWaterShroud = tex;
+		m_waterShroudUV.Set(sx, sy, ox, oy);
+	}
+#ifdef RTS_DEBUG
+	// Draws that actually reached the water shaders, counted where the binding happens.
+	// A water surface that silently fell back to the fixed-function pipeline renders a
+	// frame that looks broadly right, so "it looked fine" is not evidence the path ran --
+	// this is. Read and cleared by the water object every 300 frames.
+	static unsigned						s_waterRoutedDraws;
+#endif
 	// Directional shadow mapping. During the depth pass every mesh/terrain draw is
 	// re-routed to the shadow-depth shaders (which just pack sun-space depth); during
 	// the normal lit passes the shadow map is bound + SunVP is fed so the unit/terrain

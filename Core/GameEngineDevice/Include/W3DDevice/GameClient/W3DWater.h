@@ -253,6 +253,23 @@ protected:
 	void setupJbaWaterShader();
 	void cleanupJbaWaterShader();
 
+	/// Whether the programmable water path (water_vs/water_ps) draws this frame.
+	//
+	// Decided once per Render rather than per draw: it depends only on whether the shaders
+	// loaded and on the map's blend mode, and a map with many water areas issues one draw
+	// per trapezoid. Additive-blend maps stay on the legacy path -- the shader composites
+	// its body, reflection and highlight terms through a single SRCALPHA/INVSRCALPHA
+	// alpha, and that arithmetic says nothing about what an additive blend would do with
+	// the same numbers.
+	Bool m_useWaterShader;
+	Bool useWaterShader() const { return m_useWaterShader; }
+	/// Publish the per-frame constants + shroud projection the water shader reads.
+	void updateWaterShaderParams();
+	/// Raise the routing flag for the draws that follow, and say which of the two legacy
+	/// combines the shader should reproduce underneath the new terms.
+	void beginWaterShaderPass(Bool river);
+	void endWaterShaderPass();
+
 	//Methods used for GeForce3 specific water
 	HRESULT generateIndexBuffer(int sizeX, int sizeY);	///<Generate static index buufer
 	HRESULT generateVertexBuffer( Int sizeX, Int sizeY, Int vertexSize, Bool doFill);///<Generate static vertex buffer

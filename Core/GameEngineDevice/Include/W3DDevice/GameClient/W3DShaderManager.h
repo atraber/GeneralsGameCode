@@ -142,6 +142,12 @@ public:
 	}
 	static void initSsr();	///<create the camera-depth target and the scene-colour history texture.
 	static void shutdownSsr();	///<release the screen-space reflection resources.
+	static void initRefraction();	///<create the mid-frame scene grab the water refracts.
+	static void shutdownRefraction();	///<release it.
+	///Copy the scene as it stands right now into the grab. Called immediately before the
+	///water draws, which is the only moment the copy matches what the water's own alpha
+	///blend is about to read out of the frame buffer.
+	static void captureRefraction();
 	static Bool isSsrActive();	///<true when SSR is enabled and its resources exist.
 	static void startCameraDepthRendering();	///<redirect rendering into the camera-view depth target.
 	static void endCameraDepthRendering();	///<restore the back buffer after the camera depth pass.
@@ -218,6 +224,8 @@ protected:
 	static IDirect3DSurface8 *m_ssrDepthStencil;	///<the depth pass's own depth buffer
 	static IDirect3DTexture8 *m_sceneHistoryTexture;	///<previous frame's resolved scene colour
 	static IDirect3DSurface8 *m_sceneHistorySurface;	///<its surface, the StretchRect destination
+	static IDirect3DTexture8 *m_refractionTexture;	///<scene as it stood just before the water drew
+	static IDirect3DSurface8 *m_refractionSurface;	///<its surface, the StretchRect destination
 
 
 };
