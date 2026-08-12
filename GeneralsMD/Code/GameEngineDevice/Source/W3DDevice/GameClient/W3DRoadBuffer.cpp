@@ -3296,19 +3296,10 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 		}
 	}
 	Int stacking;
-	W3DShaderManager::ShaderTypes st=W3DShaderManager::ST_ROAD_BASE; //set default shader
-	if (cloudTexture) {
-		st=W3DShaderManager::ST_ROAD_BASE_NOISE1;
-		if (noiseTexture)
-			st=W3DShaderManager::ST_ROAD_BASE_NOISE12;
-	}
-	else
-	if (noiseTexture)
-		st=W3DShaderManager::ST_ROAD_BASE_NOISE2;
-
-	Int devicePasses = 1;	//assume regular rendering
- 	//Find number of passes required to render current shader
-	devicePasses=W3DShaderManager::getShaderPasses(st);
+	// One pass. The multi-pass count came from the legacy road shaders, which needed a pass
+	// per overlay they could not fit into the stages they had; road_vs/road_ps composite the
+	// road, the cloud, the noise and the cast shadow together. Wireframe draws once too.
+	const Int devicePasses = 1;
 
 	W3DShaderManager::setTexture(1,cloudTexture);	//cloud
 	W3DShaderManager::setTexture(2,noiseTexture);	//noise/lightmap
@@ -3323,7 +3314,6 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 	const Bool useRoadProg = !wireframe && DX8Wrapper::Has_Road_Shader();
 	if (useRoadProg)
 	{
-		devicePasses = 1;
 		// Cloud and noise where the road shader samples them (and where the terrain
 		// shader takes them), rather than the stages the fixed-function path projected
 		// through.
@@ -3377,8 +3367,6 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 					DX8Wrapper::Set_Texture(0, W3DShaderManager::getShaderTexture(0));
 					DX8Wrapper::Set_Road_Shader_Pass(true);
 				}
-				else if (!wireframe)
-		 			W3DShaderManager::setShader(st, pass);
 				//Draw all this road type.
 				DX8Wrapper::Draw_Triangles(	0, m_roadTypes[i].getNumIndices()/3, 0,	m_roadTypes[i].getNumVertices());
 #ifdef LOG_STATS
@@ -3386,8 +3374,6 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 #endif
 			}
 
-			if (!wireframe && !useRoadProg)	//shader was applied at least once?
- 				W3DShaderManager::resetShader(st);
 		}
 	}
 
