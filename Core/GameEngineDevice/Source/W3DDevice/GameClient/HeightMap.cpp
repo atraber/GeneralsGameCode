@@ -1876,8 +1876,18 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 	//USE_PERF_TIMER(Terrain_Render)
 
 	Int i,j,devicePasses;
-	W3DShaderManager::ShaderTypes st;
 	const Bool doCloud = useCloud();
+
+	// Which overlays this frame wants. These used to be encoded in a W3DShaderManager
+	// shader type (ST_TERRAIN_BASE_NOISE1/2/12), chosen so the fixed-function path could
+	// look up how many passes it would take to composite them. The programmable terrain
+	// does it in one pass and only ever read the type back to recover these two bits, so
+	// they are now what they always were: two booleans.
+	//
+	// The reflection pass draws the base texture alone, as it did before.
+	const Bool reflectionPass = ShaderClass::Is_Backface_Culling_Inverted();
+	const Bool cloudOn = !reflectionPass && doCloud;
+	const Bool noiseOn = !reflectionPass && (TheGlobalData->m_useLightMap != 0);
 
 	if (doCloud)
 	{
@@ -1979,41 +1989,10 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 		DX8Wrapper::Set_Material(m_vertexMaterialClass);
 		DX8Wrapper::Set_Shader(m_shaderClass);
 
- 		st=W3DShaderManager::ST_TERRAIN_BASE; //set default shader
-
- 		//set correct shader based on current settings
- 		if (!ShaderClass::Is_Backface_Culling_Inverted())
- 		{	//not reflection pass
- 			if (TheGlobalData->m_useLightMap && doCloud)
- 			{	st=W3DShaderManager::ST_TERRAIN_BASE_NOISE12;
- 			}
- 			else
- 			if (TheGlobalData->m_useLightMap)
- 			{	//lightmap only
- 				st=W3DShaderManager::ST_TERRAIN_BASE_NOISE2;
- 			}
- 			else
- 			if (doCloud)
- 			{	//cloudmap only
- 				st=W3DShaderManager::ST_TERRAIN_BASE_NOISE1;
- 			}
- 		}
- 		else
- 		{	//reflection pass, just do base texture
- 			st=W3DShaderManager::ST_TERRAIN_BASE;
- 		}
-
- 		//Find number of passes required to render current shader
- 		devicePasses=W3DShaderManager::getShaderPasses(st);
-
- 		if (m_disableTextures)
- 			devicePasses=1;	//force to 1 lighting-only pass
-
- 		//Specify all textures that this shader may need.
- 		W3DShaderManager::setTexture(0,m_stageZeroTexture);
- 		W3DShaderManager::setTexture(1,m_stageZeroTexture);
- 		W3DShaderManager::setTexture(2,m_stageTwoTexture);	//cloud
- 		W3DShaderManager::setTexture(3,m_stageThreeTexture);//noise
+		// One pass. The multi-pass count came from the fixed-function terrain shaders,
+		// which needed a pass per overlay they could not fit into the stages they had;
+		// terrain_vs/terrain_ps composite the base, the cloud and the noise together.
+		devicePasses=1;
 		//Disable writes to destination alpha channel (if there is one)
 		if (DX8Wrapper::getBackBufferFormat() == WW3D_FORMAT_A8R8G8B8)
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,D3DCOLORWRITEENABLE_BLUE|D3DCOLORWRITEENABLE_GREEN|D3DCOLORWRITEENABLE_RED);
@@ -2032,10 +2011,6 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 #endif
 		if (useTerrainProg)
 		{
-			Bool cloudOn = (st == W3DShaderManager::ST_TERRAIN_BASE_NOISE1 ||
-							st == W3DShaderManager::ST_TERRAIN_BASE_NOISE12);
-			Bool noiseOn = (st == W3DShaderManager::ST_TERRAIN_BASE_NOISE2 ||
-							st == W3DShaderManager::ST_TERRAIN_BASE_NOISE12);
 			DX8Wrapper::Set_Texture(0, m_stageZeroTexture);
 			// Stage 1 carries the class slot table for the stochastic tiling. Bound
 			// through Set_Texture rather than straight to the device so the ordinary
@@ -2107,14 +2082,10 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 #endif
 			DX8Wrapper::Set_Terrain_Shader_Pass(true);
 		}
-		else if (!doMultiPassWireFrame)	//multi-pass wireframe doesn't use regular shaders.
-		{
- 			if (m_disableTextures ) {
- 				DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaque2DShader);
- 				DX8Wrapper::Set_Texture(0,nullptr);
-   			} else {
- 				W3DShaderManager::setShader(st, pass);
-			}
+		else if (!doMultiPassWireFrame && m_disableTextures)
+		{	//multi-pass wireframe doesn't use regular shaders.
+ 			DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaque2DShader);
+ 			DX8Wrapper::Set_Texture(0,nullptr);
 		}
 
 		for (j=0; j<m_numVBTilesY; j++)
@@ -2147,14 +2118,19 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 
 	if (!doMultiPassWireFrame)
 	{
-		if (pass)	//shader was applied at least once?
- 			W3DShaderManager::resetShader(st);
-
 		if (useTerrainProg) {
-			// Take the class table and the detail layer back off: the passes that follow
+			// Take every stage this pass bound back off: the passes that follow
 			// (shorelines, extra blends, edging) are fixed-function and would otherwise
 			// inherit textures on stages they never asked for.
+			//
+			// Stages 2 and 3 are here because W3DShaderManager::resetShader used to clear
+			// them on the way out and no longer runs -- the terrain shader types it was
+			// resetting are gone. Only stages 1 and 4 were listed while that call was still
+			// standing behind this one, which made this look like the whole cleanup when it
+			// was half of it.
 			DX8Wrapper::Set_Texture(1, nullptr);
+			DX8Wrapper::Set_Texture(2, nullptr);
+			DX8Wrapper::Set_Texture(3, nullptr);
 			DX8Wrapper::Set_Texture(4, nullptr);
 			DX8Wrapper::Set_Terrain_Shader_Pass(false);
 		}
