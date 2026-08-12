@@ -720,6 +720,31 @@ void DX8Wrapper::Debug_Check_Mesh_Routing_Split()
 DWORD							DX8Wrapper::m_dwRoadVS = 0;
 DWORD							DX8Wrapper::m_dwRoadPS = 0;
 bool							DX8Wrapper::m_bRoadShaderPass = false;
+DWORD							DX8Wrapper::m_dwWaterVS = 0;
+DWORD							DX8Wrapper::m_dwWaterPS = 0;
+bool							DX8Wrapper::m_bWaterShaderPass = false;
+// Defaults chosen so that a water object which never publishes its parameters renders the
+// legacy combine and nothing else: no reflection, no glint, no depth ramp, flat surface.
+Vector4							DX8Wrapper::m_waterCtl(0.0f, 1.0f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterDepthCtl(0.0f, 1.0f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterShallowTint(1.0f, 1.0f, 1.0f, 1.0f);
+Vector4							DX8Wrapper::m_waterDeepTint(1.0f, 1.0f, 1.0f, 1.0f);
+Vector4							DX8Wrapper::m_waterReflCtl(0.0f, 0.02f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterSunDir(0.0f, 0.0f, 1.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterSunCol(1.0f, 1.0f, 1.0f, 64.0f);
+Vector4							DX8Wrapper::m_waterWaveCtl(0.0f, 0.0f, 0.05f, 1.0f);
+Vector4							DX8Wrapper::m_waterShroudUV(0.0f, 0.0f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterNoiseUV(1.0f / 16.0f, 0.0f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterBlendCtl(1.0f, 0.0f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterFoamCtl(1.0f, 0.0f, 0.02f, 0.0f);
+Vector4							DX8Wrapper::m_waterFoamCol(1.0f, 1.0f, 1.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterRefractCtl(0.0f, 0.0f, 1.0f, 0.0f);
+Vector4							DX8Wrapper::m_waterAbsorb(0.0f, 0.0f, 0.0f, 0.0f);
+IDirect3DBaseTexture8*			DX8Wrapper::m_pRefraction = nullptr;
+IDirect3DBaseTexture8*			DX8Wrapper::m_pWaterShroud = nullptr;
+#ifdef RTS_DEBUG
+unsigned						DX8Wrapper::s_waterRoutedDraws = 0;
+#endif
 DWORD							DX8Wrapper::m_dwShadowDepthVS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthPS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthParticleVS = 0;
@@ -3704,6 +3729,17 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			m_bRoadShaderPass && m_dwRoadVS != 0 && m_dwRoadPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY);
 
+		// The water surface, flagged by WaterRenderObjClass around its own draws. The
+		// depth-pass exclusion is belt and braces: water is soft-blended with no alpha
+		// test, so useShadowDepth already declines it and the branch below is unreachable
+		// during that pass -- but the whole feature depends on water staying out of the
+		// camera depth target, and that is worth stating where it can be read rather than
+		// leaving it to be inferred from a blend mode three hundred lines away.
+		const bool useWaterShader =
+			!m_bShadowDepthPass &&
+			m_bWaterShaderPass && m_dwWaterVS != 0 && m_dwWaterPS != 0 &&
+			!(render_state_changed & (unsigned)VIEW_IDENTITY);
+
 		// The frame-buffer blend is applied by hardware after the shader, so the shader's
 		// "texture * light" output composites exactly as the equivalent fixed-function
 		// single-texture pass did -- for opaque, standard SRCALPHA/INVSRCALPHA, additive
@@ -3987,6 +4023,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			!m_bShadowDepthPass &&
 			!m_bTerrainShaderPass &&
 			!m_bRoadShaderPass &&
+			!m_bWaterShaderPass &&
 			m_dwUnitVS != 0 && m_dwUnitPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY) &&
 			(curFVF & D3DFVF_XYZ) && (hasNormal || prelitNoNormal) &&
@@ -4385,6 +4422,145 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Set_DX8_Texture_Stage_State(3, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
 			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+		}
+		else if (useWaterShader) {
+			if (!m_bUnitShaderBound) {
+				s_dwOriginalPS = Pixel_Shader;
+				m_bUnitShaderBound = true;
+			}
+			Set_Vertex_Shader(m_dwWaterVS);
+			Set_Pixel_Shader(m_dwWaterPS);
+#ifdef RTS_DEBUG
+			++s_waterRoutedDraws;
+#endif
+
+			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+			D3DXMATRIX proj;
+			if (FAILED(_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj)))) {
+				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
+			}
+			D3DXMATRIX wvp;
+			D3DXMatrixMultiply(&wvp, &world, &view);
+			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			Set_Vertex_Shader_Constant(0, &wvp, 4);
+			// World on its own as well, because the pixel shader needs the world position:
+			// the depth lookup, the shroud and noise projections and the wave field are all
+			// functions of it. The water builds its vertices in world space with an identity
+			// world matrix, so this is identity today -- passed rather than assumed so the
+			// grid-mesh water, which does carry a transform, can be routed here unchanged.
+			Set_Vertex_Shader_Constant(4, &world, 4);
+
+			// Camera position, from the inverse view, the same way the PBR path derives it.
+			D3DXMATRIX viewInv;
+			D3DXMatrixInverse(&viewInv, nullptr, &view);
+			const D3DXVECTOR4 cameraPos(viewInv._41, viewInv._42, viewInv._43, 1.0f);
+
+			// Whether the depth prepass actually ran this frame. Without it stage 7 holds
+			// nothing meaningful and the shader has to fall back to treating the column as
+			// deep -- which is the old constant-opacity look, and the right thing to
+			// degrade to. Passed as part of the control vector rather than inferred from
+			// SsrParams.x, which is the SSR *strength* and is zeroed by the routing mask
+			// while the depth pass carries on running.
+			Vector4 waterCtl = m_waterCtl;
+			waterCtl.Z = (m_pSceneDepth != nullptr) ? 1.0f : 0.0f;
+
+			Set_Pixel_Shader_Constant(0,  &waterCtl, 1);
+			Set_Pixel_Shader_Constant(1,  &m_waterDepthCtl, 1);
+			Set_Pixel_Shader_Constant(2,  &m_waterShallowTint, 1);
+			Set_Pixel_Shader_Constant(3,  &m_waterDeepTint, 1);
+			Set_Pixel_Shader_Constant(4,  &m_waterReflCtl, 1);
+			Set_Pixel_Shader_Constant(5,  &m_waterSunDir, 1);
+			Set_Pixel_Shader_Constant(6,  &m_waterSunCol, 1);
+			Set_Pixel_Shader_Constant(7,  &m_waterWaveCtl, 1);
+			Set_Pixel_Shader_Constant(8,  &m_waterShroudUV, 1);
+			Set_Pixel_Shader_Constant(9,  &m_waterNoiseUV, 1);
+			Set_Pixel_Shader_Constant(10, &cameraPos, 1);
+			Set_Pixel_Shader_Constant(11, &m_waterBlendCtl, 1);
+			Set_Pixel_Shader_Constant(12, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			Set_Pixel_Shader_Constant(16, m_shadowParams, 1);
+			Set_Pixel_Shader_Constant(17, m_ssrParams, 1);
+			// The very matrix the depth prepass rendered with. The shader reprojects this
+			// pixel's world position through it to find its own screen UV, so any other
+			// copy -- even one that is merely close -- puts the depth lookup a fraction of
+			// a pixel out, and near a silhouette a fraction of a pixel is the difference
+			// between the river bed and the tank standing in it.
+			Set_Pixel_Shader_Constant(18,
+				reinterpret_cast<const D3DXMATRIX*>(m_depthVP), 4);   // c18-21
+			Set_Pixel_Shader_Constant(24, &m_waterFoamCtl, 1);
+			Set_Pixel_Shader_Constant(25, &m_waterFoamCol, 1);
+			// Refraction only claims to be available when the grab texture exists. The
+			// shader multiplies the whole term out rather than branching around a sample,
+			// so a missing grab has to say so here or it reads an unbound stage.
+			Vector4 refractCtl = m_waterRefractCtl;
+			refractCtl.Y = (m_pRefraction != nullptr) ? 1.0f : 0.0f;
+			Set_Pixel_Shader_Constant(26, &refractCtl, 1);
+			Set_Pixel_Shader_Constant(27, &m_waterAbsorb, 1);
+
+			// Stage 1 is the refraction grab. It used to be the sparkle texture, which is
+			// what paid for it: with a real sun glint and shoreline foam in the shader,
+			// that overlay was drawing a second, dimmer version of the effect the glint
+			// already produces, and the shader still derives an equivalent shimmer from the
+			// noise texture on stage 2. The wrapper's texture cache is eight stages deep
+			// (MAX_TEXTURE_STAGES), so a ninth would have to be written straight to the
+			// device with nothing tracking it back off -- which is exactly the kind of
+			// leaked binding the restore paths here exist to prevent.
+			if (m_pRefraction != nullptr) {
+				Set_DX8_Texture(1, m_pRefraction);
+				// Same flag the PBR path raises for its ORM map: it is what makes the next
+				// non-water draw put stage 1 back from the tracked texture state.
+				s_pbrOrmBound = true;
+				Set_DX8_Texture_Stage_State(1, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(1, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(1, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+				Set_DX8_Texture_Stage_State(1, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+				Set_DX8_Texture_Stage_State(1, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			}
+
+			// Stages 0, 2 and 3 (base, noise, edge ramp) are bound and filtered by the
+			// water object itself, as they were on the fixed-function path. What follows is
+			// only the stages the shader path adds.
+			if (m_envCubeMap != nullptr) {
+				Set_DX8_Texture(4, m_envCubeMap);
+				s_pbrExtraStagesBound = true;
+				Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(4, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+				Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			}
+			if (m_pShadowMap != nullptr) {
+				Set_DX8_Texture(5, m_pShadowMap);
+				s_shadowStage5Bound = true;
+				Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			}
+			// The shroud on 6, where the PBR path keeps the scene colour. Nothing samples
+			// both, and putting it here leaves 0-3 exactly as the old path arranged them.
+			// Bound whenever it exists, like the shadow map: the shader samples it in code
+			// the compiler cannot skip, so a null stage would be an undefined read rather
+			// than an unshrouded pixel. The water object binds a 1x1 white texture when the
+			// map has no shroud.
+			if (m_pWaterShroud != nullptr) {
+				Set_DX8_Texture(6, m_pWaterShroud);
+				s_pbrExtraStagesBound = true;
+				Set_DX8_Texture_Stage_State(6, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(6, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+				Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+				Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			}
+			if (m_pSceneDepth != nullptr) {
+				// Point, as everywhere else packed depth is read: the three channels are
+				// one number and interpolating them blends nonsense.
+				Set_DX8_Texture(7, m_pSceneDepth);
+				s_pbrExtraStagesBound = true;
+				Set_DX8_Texture_Stage_State(7, D3DTSS_MINFILTER, D3DTEXF_POINT);
+				Set_DX8_Texture_Stage_State(7, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+				Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+				Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			}
 		}
 		else if (useUnitShader) {
 			if (!m_bUnitShaderBound) {
@@ -4923,7 +5099,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// Watch the one-mesh-one-pipeline invariant. Only mesh draws take part: the
 		// shadow-depth pass, the terrain and now the roads are each drawn by a single
 		// pipeline by construction.
-		if (!m_bShadowDepthPass && !m_bTerrainShaderPass && !m_bRoadShaderPass) {
+		if (!m_bShadowDepthPass && !m_bTerrainShaderPass && !m_bRoadShaderPass &&
+			!m_bWaterShaderPass) {
 			unsigned ffReason = 0;
 			if (diagRouteBit == 1) {
 				if (effectGeometryExcluded)                      ffReason = 1;

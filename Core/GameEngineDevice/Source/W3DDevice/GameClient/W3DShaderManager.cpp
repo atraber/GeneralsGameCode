@@ -2200,6 +2200,16 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::m_dwRoadPS == 0) {
 		LoadAndCreateD3DShader("shaders\\road_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwRoadPS);
 	}
+	// Water: the two ps.1.1 combines the surface used, plus the depth, sky and sun terms
+	// that only became expressible once it was on the programmable path. Optional in the
+	// same sense the rest are -- if these fail to load, Has_Water_Shader() is false and the
+	// water object keeps its assembled shaders.
+	if (DX8Wrapper::m_dwWaterVS == 0) {
+		LoadAndCreateD3DShader("shaders\\water_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwWaterVS);
+	}
+	if (DX8Wrapper::m_dwWaterPS == 0) {
+		LoadAndCreateD3DShader("shaders\\water_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwWaterPS);
+	}
 	// PBR (Shader Model 3) variant of the unit shader, used for meshes that ship a
 	// <name>_orm map. Optional: if these fail to load, the plain unit shader is used.
 	if (DX8Wrapper::m_dwUnitPbrVS == 0) {
@@ -2233,6 +2243,9 @@ void W3DShaderManager::initUnitShaders()
 	// Screen-space reflections. After the shadow map, which owns the depth shaders
 	// this reuses -- initSsr checks they loaded and stands down if they did not.
 	initSsr();
+	// The water's refraction grab. Independent of SSR: it needs no depth shaders, only a
+	// render target the size of the screen.
+	initRefraction();
 
 	// The in-game debug visualizations.
 	initDebugVis();
@@ -2271,6 +2284,17 @@ void W3DShaderManager::shutdownUnitShaders()
 		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwRoadPS)->Release();
 		DX8Wrapper::m_dwRoadPS = 0;
 	}
+	if (DX8Wrapper::m_dwWaterVS != 0) {
+		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwWaterVS)->Release();
+		DX8Wrapper::m_dwWaterVS = 0;
+	}
+	if (DX8Wrapper::m_dwWaterPS != 0) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwWaterPS)->Release();
+		DX8Wrapper::m_dwWaterPS = 0;
+	}
+	// The water publishes its shroud pointer per frame; drop it so a device reset cannot
+	// leave a released texture bound on stage 6.
+	DX8Wrapper::Set_Water_Shroud(nullptr, 0.0f, 0.0f, 0.0f, 0.0f);
 	if (DX8Wrapper::m_dwUnitPbrVS != 0) {
 		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwUnitPbrVS)->Release();
 		DX8Wrapper::m_dwUnitPbrVS = 0;
@@ -2294,6 +2318,7 @@ void W3DShaderManager::shutdownUnitShaders()
 	shutdownShadowMap();
 	shutdownDebugVis();
 	shutdownSsr();
+	shutdownRefraction();
 	DX8Wrapper::m_bUnitShaderBound = false;
 }
 
@@ -3364,6 +3389,94 @@ void W3DShaderManager::initSsr()
 
 	DX8Wrapper::m_pSceneDepth = m_ssrDepthTexture;   // now Has_Ssr() is true
 	DX8Wrapper::m_pSceneColor = m_sceneHistoryTexture;
+}
+
+// ---------------------------------------------------------------------------
+// Refraction grab.
+//
+// A copy of the scene as it stood immediately before the water drew, so the water can
+// read what is behind it at a *displaced* pixel. It cannot use the SSR history for this:
+// that is the previous frame, which lags the camera and already contains last frame's
+// water, so the surface would refract itself.
+//
+// Separate from the SSR pair on purpose. This one is captured mid-frame, at the moment
+// the water flushes, and it is the only one of the three that is guaranteed to match what
+// the hardware blend is about to read out of the frame buffer -- which is what makes the
+// difference trick in water_ps legitimate.
+// ---------------------------------------------------------------------------
+
+IDirect3DTexture8 *W3DShaderManager::m_refractionTexture = nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_refractionSurface = nullptr;
+
+void W3DShaderManager::initRefraction()
+{
+	if (m_refractionTexture != nullptr)
+		return;
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	IDirect3DSurface8 *rt = nullptr;
+	if (FAILED(dev->GetRenderTarget(0, &rt)) || rt == nullptr)
+		return;
+	D3DSURFACE_DESC desc;
+	rt->GetDesc(&desc);
+	rt->Release();
+
+	// Screen-sized: the shader reprojects world positions straight into screen UV, the
+	// same as the depth lookup, and a different size would need a scale factor nothing
+	// else knows about. Non-multisampled -- StretchRect resolves on the way in.
+	if (FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
+				D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_refractionTexture)) ||
+		FAILED(m_refractionTexture->GetSurfaceLevel(0, &m_refractionSurface)))
+	{
+		DEBUG_LOG(("Water refraction: disabled -- could not create the %dx%d target\n",
+			desc.Width, desc.Height));
+		shutdownRefraction();
+		return;
+	}
+
+	// Clear before anything can sample it. A render target's contents are undefined until
+	// written, and undefined is not black -- the water would refract whatever was last in
+	// that memory, which is the failure mode the SSR history hit.
+	IDirect3DSurface8 *savedRT = nullptr;
+	IDirect3DSurface8 *savedDS = nullptr;
+	dev->GetRenderTarget(0, &savedRT);
+	dev->GetDepthStencilSurface(&savedDS);
+	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_refractionSurface, nullptr)))
+		DX8Wrapper::Clear(true, false, Vector3(0.0f, 0.0f, 0.0f), 1.0f, 1.0f);
+	DX8Wrapper::Set_DX8_Render_Target(savedRT, savedDS);
+	SAFE_RELEASE(savedRT);
+	SAFE_RELEASE(savedDS);
+
+	DEBUG_LOG(("Water refraction: active, %dx%d grab target\n", desc.Width, desc.Height));
+	DX8Wrapper::m_pRefraction = m_refractionTexture;
+}
+
+void W3DShaderManager::shutdownRefraction()
+{
+	DX8Wrapper::m_pRefraction = nullptr;
+	SAFE_RELEASE(m_refractionSurface);
+	SAFE_RELEASE(m_refractionTexture);
+}
+
+void W3DShaderManager::captureRefraction()
+{
+	if (m_refractionSurface == nullptr)
+		return;
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	// Whatever is the render target right now -- the back buffer normally, the filter
+	// chain's texture when bloom is running. Both are correct: it is the surface the
+	// water's own blend is about to read.
+	IDirect3DSurface8 *src = nullptr;
+	if (SUCCEEDED(dev->GetRenderTarget(0, &src)) && src != nullptr)
+	{
+		dev->StretchRect(src, nullptr, m_refractionSurface, nullptr, D3DTEXF_NONE);
+		src->Release();
+	}
 }
 
 void W3DShaderManager::shutdownSsr()

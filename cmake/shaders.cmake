@@ -51,6 +51,8 @@ set(_rts_shaders
     terrain_ps
     road_vs
     road_ps
+    water_vs
+    water_ps
     unit_pbr_vs
     unit_pbr_ps
     # Bloom post-process (fullscreen pixel shaders; ps_2_0)
