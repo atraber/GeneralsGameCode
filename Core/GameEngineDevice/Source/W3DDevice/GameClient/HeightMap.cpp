@@ -2462,7 +2462,12 @@ void HeightMapRenderObjClass::renderExtraBlendTiles()
 		VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
 		DX8Wrapper::Set_Material(vmat);
 		REF_PTR_RELEASE(vmat);
-		ShaderClass shader=ShaderClass::_PresetOpaqueShader;
+		// Alpha, where this used to ask for opaque. Not a change of appearance: the legacy
+		// road shader these tiles borrowed forced ALPHABLENDENABLE with SRCALPHA/INVSRCALPHA
+		// straight onto the device in its set(), behind ShaderClass's back, so the opaque
+		// preset named here was never what the hardware ended up blending with. Saying it
+		// through the ShaderClass is what lets the draw route.
+		ShaderClass shader=ShaderClass::_PresetAlphaShader;
 		shader.Set_Depth_Mask(ShaderClass::DEPTH_WRITE_DISABLE);	//disable writes to z
 		DX8Wrapper::Set_Shader(shader);
 
@@ -2479,38 +2484,38 @@ void HeightMapRenderObjClass::renderExtraBlendTiles()
 		}
 		else
 		{
-			W3DShaderManager::setTexture(0,m_stageOneTexture);
-			W3DShaderManager::setTexture(1,m_stageTwoTexture);	//cloud
-			W3DShaderManager::setTexture(2,m_stageThreeTexture);	//noise/lightmap
-
-			W3DShaderManager::ShaderTypes st = W3DShaderManager::ST_ROAD_BASE;
-
+			// These tiles are road geometry as far as a shader is concerned: world-space,
+			// pre-lit, one UV set, alpha-blended onto the ground, wanting the same drifting
+			// cloud layer and static noise the ground gets. That is why they borrowed the
+			// road shader when both were fixed function, and it is why they can declare the
+			// road pass now. road_vs derives the cloud and noise projections from the world
+			// position, so the camera-space texture generations the legacy path set up have
+			// nothing to replace them with -- and need none.
 			const Bool doCloud = useCloud();
+			TextureClass *cloudTexture = doCloud ? m_stageTwoTexture : nullptr;
+			TextureClass *noiseTexture = TheGlobalData->m_useLightMap ? m_stageThreeTexture : nullptr;
+			DX8Wrapper::Set_Texture(0, m_stageOneTexture);
+			DX8Wrapper::Set_Texture(2, cloudTexture);
+			DX8Wrapper::Set_Texture(3, noiseTexture);
+			DX8Wrapper::Set_Terrain_Overlay(cloudTexture != nullptr, noiseTexture != nullptr);
+			// Stated here rather than inherited from the terrain pass that ran a moment ago,
+			// for the reason the road buffer states it: a decal on the ground must never
+			// disagree with the ground about where the cloud shadows are.
+			float cax = 0.0f, cay = 0.0f, cbx = 0.0f, cby = 0.0f;
+			W3DShaderManager::getCloudScroll(cax, cay, cbx, cby);
+			DX8Wrapper::Set_Cloud_Shadow(cax, cay, cbx, cby,
+										 TheGlobalData->m_cloudShadowStrength);
+			DX8Wrapper::Set_Road_Shader_Pass(true);
 
-			if (TheGlobalData->m_useLightMap && doCloud)
- 			{
-				st = W3DShaderManager::ST_ROAD_BASE_NOISE12;
- 			}
- 			else if (TheGlobalData->m_useLightMap)
- 			{	//lightmap only
- 				st = W3DShaderManager::ST_ROAD_BASE_NOISE2;
- 			}
- 			else if (doCloud)
- 			{	//cloudmap only
- 				st = W3DShaderManager::ST_ROAD_BASE_NOISE1;
- 			}
-
-			Int devicePasses=W3DShaderManager::getShaderPasses(st);
-
-			for (Int pass=0; pass < devicePasses; pass++)
-			{
-				W3DShaderManager::setShader(st, pass);
-				if (Is_Hidden() == 0) {
-					DX8Wrapper::Draw_Triangles(	0,indexCount/3, 0,	vertexCount);	//draw a quad, 2 triangles, 4 verts
-					m_numVisibleExtraBlendTiles += indexCount/6;
-				}
+			if (Is_Hidden() == 0) {
+				DX8Wrapper::Draw_Triangles(	0,indexCount/3, 0,	vertexCount);	//draw a quad, 2 triangles, 4 verts
+				m_numVisibleExtraBlendTiles += indexCount/6;
 			}
-			W3DShaderManager::resetShader(st);
+
+			//hand the pipeline back, and take the overlays off the stages they were bound to.
+			DX8Wrapper::Set_Road_Shader_Pass(false);
+			DX8Wrapper::Set_Texture(2, nullptr);
+			DX8Wrapper::Set_Texture(3, nullptr);
 		}
   }
 }
