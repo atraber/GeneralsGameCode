@@ -683,7 +683,15 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	// texture, so the declaration covered real building geometry and called it an
 	// effect. The technique check caught it -- 19412 draws a window reporting
 	// "declared effect, live surface" on atroofparts01.tga, a roof.
-	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "flushDecals");
+	// FIXED_FUNCTION rather than EFFECT, which is what this used to say. These decals are
+	// blended marks and EFFECT described them accurately -- but a technique is not a
+	// description, it is an instruction to the routing, and the routing cannot route this
+	// draw. It goes out through m_pDev->DrawIndexedPrimitive below, not through
+	// DX8Wrapper::Draw(), so the render state the routing inspects belongs to whatever
+	// drew last. Once EFFECT began reaching the programmable path, that stale state
+	// started binding unit_ps over a decal drawn with a fixed-function vertex stream, and
+	// mines, radius cursors and targeting reticles disappeared.
+	DeclaredTechniqueClass declareFixedFunction(MESH_TECHNIQUE_FIXED_FUNCTION, "flushDecals");
 	static	Matrix4x4 mWorld(true);	//initialize to identity matrix
 
 	if (nShadowDecalVertsInBatch == 0 && nShadowDecalPolysInBatch == 0)
@@ -739,6 +747,11 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 
 	m_pDev->SetStreamSource(0,shadowDecalVertexBufferD3D,sizeof(SHADOW_DECAL_VERTEX));
 	m_pDev->SetVertexShader(SHADOW_DECAL_FVF);
+	// The declaration above stops a shader being chosen for this draw; this takes down one
+	// chosen for an earlier draw, which Apply_Render_State_Changes leaves standing when it
+	// returns early because no render state changed. Two consecutive decal batches sharing
+	// a texture, material and shader do exactly that.
+	DX8Wrapper::Force_Fixed_Function_Pipeline();
 
 //Hard Shadows using stencil
 /*	m_pDev->SetRenderState( D3DRS_SRCBLEND,  D3DBLEND_ZERO);
@@ -755,6 +768,22 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	m_pDev->SetRenderState( D3DRS_STENCILPASS,  D3DSTENCILOP_INCR );
 */
 //m_pDev->SetRenderState( D3DRS_ALPHABLENDENABLE, FALSE );	//useful to see bounds
+
+#ifdef RTS_DEBUG
+	// Is anything programmable still bound at the moment this draw goes out? It draws
+	// straight on the device, so whatever Apply_Render_State_Changes left standing is
+	// what rasterises it -- and SetVertexShader above drops the vertex shader without
+	// touching the pixel shader.
+	{
+		static int reported = 0;
+		if (reported < 8) {
+			++reported;
+			WWDEBUG_SAY(("DECAL DRAW: vs=%08x ps=%08x (fvf=%08x) -- ps must be 0",
+				DX8Wrapper::Get_Vertex_Shader(), DX8Wrapper::Get_Pixel_Shader(),
+				(unsigned)(SHADOW_DECAL_FVF)));
+		}
+	}
+#endif
 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{

@@ -352,6 +352,187 @@ void DX8Wrapper::Debug_Report_Unclassified_Draws()
 }
 
 //-----------------------------------------------------------------------------
+// Fixed-function attribution.
+//
+// The routing census says how much of the frame is still drawn by the fixed-function
+// pipeline -- around 40% of all draws. It does not say what that 40% *is*: the
+// fixed-function row's example names are empty, because a name is only attached to
+// mesh-renderer draws and almost nothing left on fixed function is one.
+//
+// So attribute every one of them. A draw's identity is whichever of these it has:
+// the technique declaration scope it was made inside, its mesh name, or -- for the
+// callers that have neither -- the frame pass it belongs to, which at least separates
+// terrain from water from the 2D interface. Texture and vertex format go alongside,
+// because for an undeclared caller those two together are usually enough to recognise
+// it (excloud01.tga at FVF 0x252 is the cloud layer, and nothing else is).
+//
+// Temporary, in service of removing fixed function entirely: it exists to put the
+// remaining work in order of what it actually costs, and comes out when the last
+// caller is converted.
+//-----------------------------------------------------------------------------
+// Grouped by *who*, with textures kept only as examples. The first attempt keyed on the
+// texture as well, and the interface filled all 40 rows before the map had finished
+// loading: the 2D path draws through a font cache whose textures are procedural, so each
+// one is a distinct short-lived name and every row was a different glyph page. 497891 of
+// 524578 draws went uncounted behind them. Who drew it is the question anyway -- the
+// texture is a hint for recognising an undeclared caller, not an identity.
+namespace {
+	enum { FF_SAMPLES = 3 };
+	struct FFGroup {
+		const char* who;        // declaration site, mesh name, or frame pass
+		unsigned fvf;
+		unsigned count;
+		unsigned identityView;  // drawn with an identity view, i.e. 2D
+		unsigned reasons;       // bitmask of the ffReason codes seen
+		const char* samples[FF_SAMPLES];
+		int sampleCount;
+	};
+	enum { MAX_FF_GROUPS = 48 };
+	FFGroup s_ffGroups[MAX_FF_GROUPS];
+	int s_ffGroupCount = 0;
+	unsigned s_ffTotal = 0;
+	unsigned s_ffDropped = 0;   // draws that did not fit the table, so the total stays honest
+	int s_ffFrames = 0;
+	// The control. A fixed-function count means nothing on its own: zero reads the same
+	// whether the last caller was converted or the instrument stopped being reached.
+	// Reported as a share of the two, so the number that matters is visible directly.
+	unsigned s_ffRouted = 0;
+	// Depth-pass draws dropped before submission because they could write neither colour
+	// nor depth. Counted apart from both: they are not fixed-function draws, and they are
+	// not programmable ones either -- they are not draws. Folding them into either side
+	// would misstate it, and folding them into the fixed-function side is exactly what
+	// made the suppression look like it had done nothing.
+	unsigned s_ffSuppressed = 0;
+
+	// Texture names are only ever used as examples, so a name that is not printable ASCII
+	// is dropped rather than written to the log. Some of them are not names at all: the
+	// 2D path hands out procedural textures whose name field holds uninitialised bytes,
+	// which arrive in the log as mojibake and, worse, as a plausible-looking row.
+	const char* FFSafeName(const char* n)
+	{
+		if (n == nullptr || *n == '\0') return nullptr;
+		for (const char* p = n; *p; ++p) {
+			if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7e) return nullptr;
+		}
+		return n;
+	}
+}
+
+void DX8Wrapper::Debug_Note_Routed_Draw()
+{
+	++s_ffRouted;
+}
+
+void DX8Wrapper::Debug_Note_Suppressed_Draw()
+{
+	++s_ffSuppressed;
+}
+
+void DX8Wrapper::Debug_Note_FF_Draw(TextureBaseClass* tex0, unsigned fvf,
+									bool viewIdentity, unsigned ffReason)
+{
+	++s_ffTotal;
+
+	// Identity, most specific first. Every value is a literal or a declaration-site
+	// literal, so a group key stays a stable pointer and the comparison below is valid.
+	//
+	// Deliberately *not* the mesh name, though one is usually available. Keying on it
+	// put one row per model in the table and filled all 48 with supply-depot crates
+	// while leaving 586115 draws uncounted -- and the answer it was hiding is that a
+	// mesh name says nothing about which subsystem to go and convert. The pass does.
+	// Mesh names still come through as examples below.
+	const char* who = s_declarationSite;
+	if (who == nullptr) {
+		if (m_bShadowDepthPass)          who = "(shadow depth pass)";
+		else if (m_bTerrainShaderPass)   who = "(terrain pass)";
+		else if (m_bRoadShaderPass)      who = "(road pass)";
+		else if (m_bWaterShaderPass)     who = "(water pass)";
+		else if (viewIdentity)           who = "(2D / identity view)";
+		else if (s_debugMeshName != nullptr) who = "(mesh renderer)";
+		else                             who = "(undeclared 3D)";
+	}
+	// The mesh name is the more useful example where there is one -- "which model is
+	// this" is answerable from it, and a shared texture name does not narrow much.
+	const char* name = FFSafeName(s_debugMeshName);
+	if (name == nullptr && tex0 != nullptr) name = FFSafeName(tex0->Get_Texture_Name().str());
+
+	FFGroup* found = nullptr;
+	for (int i = 0; i < s_ffGroupCount; ++i) {
+		if (s_ffGroups[i].who == who && s_ffGroups[i].fvf == fvf) {
+			found = &s_ffGroups[i];
+			break;
+		}
+	}
+	if (found == nullptr) {
+		if (s_ffGroupCount >= MAX_FF_GROUPS) { ++s_ffDropped; return; }
+		found = &s_ffGroups[s_ffGroupCount++];
+		found->who = who;
+		found->fvf = fvf;
+		found->count = 0;
+		found->identityView = 0;
+		found->reasons = 0;
+		found->sampleCount = 0;
+	}
+	++found->count;
+	if (viewIdentity) ++found->identityView;
+	found->reasons |= (1u << (ffReason & 31u));
+	if (name != nullptr && found->sampleCount < FF_SAMPLES) {
+		for (int i = 0; i < found->sampleCount; ++i) {
+			if (found->samples[i] == name) return;
+		}
+		found->samples[found->sampleCount++] = name;
+	}
+}
+
+void DX8Wrapper::Debug_Report_FF_Draws()
+{
+	// Same 600-frame window as the routing census, so the share and its attribution can
+	// be read as one thing.
+	if (++s_ffFrames < 600) return;
+	s_ffFrames = 0;
+
+	const unsigned all = s_ffTotal + s_ffRouted;
+	WWDEBUG_SAY(("FIXED-FUNCTION DRAWS: %u of %u draws (%u%%) over 600 frames, "
+				 "%d groups (caller x vertex format)%s "
+				 "[+%u depth-pass draws suppressed, not submitted at all]",
+		s_ffTotal, all, all ? (unsigned)((unsigned __int64)s_ffTotal * 100 / all) : 0,
+		s_ffGroupCount,
+		s_ffDropped ? " -- TABLE FULL, some draws uncounted" : "",
+		s_ffSuppressed));
+	// reasons is a bitmask of which gate sent the draw here, one bit per code. Bit 0 is
+	// left over for a draw no gate claims, and should not appear.
+	WWDEBUG_SAY(("  reason bits: 2=effects-held-back 3=no-position/normal 4=foreign-vs "
+				 "5=untextured 6=blend 7=multitexture 8=texgen | 9=depth-pass "
+				 "10=terrain 11=road 12=water 13=2D 14=declared-fixed-fn 15=routing-off"));
+	// Descending by count: the top of this list is the order the conversion work goes in.
+	for (int rank = 0; rank < s_ffGroupCount; ++rank) {
+		int best = -1;
+		unsigned bestCount = 0;
+		for (int i = 0; i < s_ffGroupCount; ++i) {
+			if (s_ffGroups[i].count > bestCount) { bestCount = s_ffGroups[i].count; best = i; }
+		}
+		if (best < 0) break;
+		const FFGroup& g = s_ffGroups[best];
+		WWDEBUG_SAY(("  %-24s fvf=%08x x%-7u %s reasons=%04x  e.g. %s %s %s",
+			g.who, g.fvf, g.count,
+			g.identityView == g.count ? "2D " : (g.identityView ? "2D?" : "3D "),
+			g.reasons,
+			g.sampleCount > 0 ? g.samples[0] : "-",
+			g.sampleCount > 1 ? g.samples[1] : "",
+			g.sampleCount > 2 ? g.samples[2] : ""));
+		s_ffGroups[best].count = 0;   // consumed; the table is cleared below anyway
+	}
+	if (s_ffDropped)
+		WWDEBUG_SAY(("  (%u further draws did not fit the table)", s_ffDropped));
+
+	s_ffGroupCount = 0;
+	s_ffTotal = 0;
+	s_ffDropped = 0;
+	s_ffRouted = 0;
+	s_ffSuppressed = 0;
+}
+
+//-----------------------------------------------------------------------------
 // Frame timing.
 //
 // Reported over the same window as the census so the two line up: what the
@@ -632,6 +813,7 @@ void DX8Wrapper::Debug_Report_Particle_Shadows()
 	s_partShadowFramesWithAny = 0;
 }
 
+
 void DX8Wrapper::Debug_Report_Routing_Census()
 {
 	++s_censusFrames;
@@ -754,6 +936,7 @@ IDirect3DBaseTexture8*			DX8Wrapper::m_pCloudMap = nullptr;
 float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+bool							DX8Wrapper::m_bSuppressDraw = false;
 bool							DX8Wrapper::m_bShadowDepthPass = false;
 bool							DX8Wrapper::m_bMeshCastsShadow = false;
 bool							DX8Wrapper::m_bEffectCastsShadow = false;
@@ -904,6 +1087,39 @@ void DX8Wrapper::Restore_Stage5_After_Shadow()
 					   : NULL);
 	Set_DX8_Texture_Stage_State(5, D3DTSS_COLOROP, D3DTOP_DISABLE);
 	Set_DX8_Texture_Stage_State(5, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+}
+
+/*
+** Guarantee the fixed-function pipeline for a caller that is about to draw on the device
+** itself, rather than through Draw().
+**
+** Apply_Render_State_Changes binds a vertex and pixel shader for the draw *it* is
+** describing -- the one that will come back through Draw() with the render state it just
+** applied. A caller that calls it to flush transforms and then issues its own
+** DrawPrimitive is not that draw, and inherits whatever was bound for the previous one.
+**
+** Setting an FVF is not enough, and that is the trap. SetVertexShader(fvf) replaces the
+** vertex shader, so the geometry transforms correctly and everything looks handled -- but
+** nothing in D3D9 unbinds the *pixel* shader, so fixed-function vertex output is fed to a
+** shader that declares inputs the FVF never supplied. The projected-shadow decals are
+** what found this: mines, radius cursors and special-power targeting reticles all draw
+** through W3DProjectedShadowManager::flushDecals at FVF 0x142 (position, diffuse, one
+** texture coordinate set) into unit_ps, which reads COLOR0 and TEXCOORD0-3. Measured, six
+** of eight sampled decal draws had a live pixel shader bound. They rendered as nothing.
+**
+** Callers in this position should declare MESH_TECHNIQUE_FIXED_FUNCTION *and* call this.
+** The declaration stops the routing choosing a shader; this undoes one already chosen,
+** including in the case the declaration cannot reach -- Apply_Render_State_Changes
+** returns early when no render state changed, so a shader bound for an earlier draw is
+** still bound and no branch of the routing runs to take it down.
+*/
+void DX8Wrapper::Force_Fixed_Function_Pipeline()
+{
+	Restore_Stage1_After_Pbr();
+	Restore_Stage5_After_Shadow();
+	Restore_Pbr_Extra_Stages();
+	Set_Pixel_Shader(s_dwOriginalPS);
+	m_bUnitShaderBound = false;
 }
 
 bool								_DX8SingleThreaded										= false;
@@ -2592,7 +2808,7 @@ void DX8Wrapper::Set_Debug_Vis_Mode(DebugVisMode mode)
 // itself on a given draw it leaves that draw alone rather than approximating, so what is
 // on screen is never a guess.
 void DX8Wrapper::Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal,
-										   bool onMeshPath)
+										   unsigned routeBit)
 {
 	switch (m_debugVisMode) {
 
@@ -2652,7 +2868,8 @@ void DX8Wrapper::Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal,
 			// have routed to the mesh shaders -- because it substitutes for unit_vs and
 			// reads the matrices unit_vs was handed, which mean something else entirely
 			// in the terrain pass. Everything else is flat grey, and the legend says so.
-			if (m_dwDebugNormalVS != 0 && m_dwDebugNormalPS != 0 && hasNormal && onMeshPath) {
+			if (m_dwDebugNormalVS != 0 && m_dwDebugNormalPS != 0 &&
+				hasNormal && (routeBit & (2u | 4u | 8u)) != 0) {
 				// Upload the object -> camera matrix rather than inheriting whatever the draw
 				// left in c4. debugnormal_vs substitutes for unit_vs and reads unit_vs's
 				// registers, but c4 is the one register whose meaning depends on the route: a
@@ -2736,6 +2953,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Frame_Timing();
 	Debug_Check_Mesh_Routing_Split();
 	Debug_Report_Routing_Census();
+	Debug_Report_FF_Draws();
 	Debug_Report_Unclassified_Draws();
 	Debug_Report_Technique_Check();
 	Debug_Report_Particle_Shadows();
@@ -3104,6 +3322,20 @@ void DX8Wrapper::Draw(
 	// Debug feature to disable triangle drawing...
 	if (!_Is_Triangle_Draw_Enabled()) return;
 
+	// A depth-pass draw that the depth shaders did not claim cannot affect the shadow
+	// map: Apply_Render_State_Changes has masked off both colour and depth writes for
+	// it, and those are the only two things this render target records. Submitting it
+	// spends a draw call, a state validation and a pass over its triangles to produce
+	// nothing. So do not.
+	//
+	// Set by the branch that writes those masks, so the flag and the masks cannot
+	// disagree about which draws they describe. The first attempt asked instead whether
+	// the depth vertex shader was bound, on the reasoning that the device cannot lie --
+	// but nothing *unbinds* it for a declined draw, so it was still bound from the
+	// previous caster and the test came out false for exactly the draws it was meant to
+	// catch. It suppressed 21048 of the 46444 it should have.
+	if (m_bSuppressDraw) return;
+
 #ifdef MESH_RENDER_SNAPSHOT_ENABLED
 	if (WW3D::Is_Snapshot_Activated()) {
 		unsigned long passes=0;
@@ -3345,6 +3577,12 @@ void DX8Wrapper::Apply_Render_State_Changes()
 {
 	SNAPSHOT_SAY(("DX8Wrapper::Apply_Render_State_Changes()"));
 
+	// Cleared before the early return, not after it. A draw whose state is unchanged since
+	// the last one does not re-run the decision below, so the honest value for it is "do
+	// not suppress" -- submitting a masked draw wastes a draw call, suppressing one that
+	// should have rendered loses geometry, and only one of those two is recoverable.
+	m_bSuppressDraw = false;
+
 	if (!render_state_changed) return;
 	if (render_state_changed&SHADER_CHANGED) {
 		SNAPSHOT_SAY(("DX8 - apply shader"));
@@ -3487,16 +3725,33 @@ void DX8Wrapper::Apply_Render_State_Changes()
 	// transform & lighting. The mesh's FVF doubles as the vertex declaration, so a
 	// single shader handles every vertex format.
 	//
-	// The decision reads the *current* draw's vertex buffer directly, and only for
-	// real DX8/dynamic-DX8 buffers. Sorting buffers and 2D/UI draws have no FVF
-	// here, so they are never mistaken for a 3D mesh and keep the fixed-function
-	// pipeline (this is what was corrupting the 2D menu textures).
+	// The decision reads the *current* draw's vertex buffer directly.
+	//
+	// Sorting buffers used to be excluded here, reported as having no FVF so they could
+	// never be mistaken for a 3D mesh -- a conservative choice from when 2D menu textures
+	// were being corrupted, and one that stopped being true of the code it described. A
+	// SortingVertexBufferClass is built with dynamic_fvf_type and Draw_Sorting_IB_VB
+	// copies it into a dynamic DX8 buffer of that same format before drawing it, so the
+	// vertex format at the moment the triangles are rasterised is known exactly. Reporting
+	// zero here did not make those draws safe, it made them invisible to the routing: 35k
+	// draws a window -- sorted glows, beam segments, building light fixtures -- declined
+	// on a position test for a position they demonstrably have.
+	//
+	// 2D is still excluded, by the identity-view test below, which is what was actually
+	// keeping the menus intact.
 	{
 		DWORD curFVF = 0;
-		if (render_state.vertex_buffers[0] != nullptr &&
-			(render_state.vertex_buffer_types[0] == BUFFER_TYPE_DX8 ||
-			 render_state.vertex_buffer_types[0] == BUFFER_TYPE_DYNAMIC_DX8)) {
-			curFVF = render_state.vertex_buffers[0]->FVF_Info().Get_FVF();
+		if (render_state.vertex_buffers[0] != nullptr) {
+			switch (render_state.vertex_buffer_types[0]) {
+			case BUFFER_TYPE_DX8:
+			case BUFFER_TYPE_DYNAMIC_DX8:
+			case BUFFER_TYPE_SORTING:
+			case BUFFER_TYPE_DYNAMIC_SORTING:
+				curFVF = render_state.vertex_buffers[0]->FVF_Info().Get_FVF();
+				break;
+			default:
+				break;
+			}
 		}
 
 		// The dynamic vertex format used for 2D UI (Render2DClass) also carries a
@@ -3923,15 +4178,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		const bool routeEverything = (m_shaderRoutingMask & SHADER_ROUTE_EVERYTHING) != 0;
 		const bool routingDisabled = (m_shaderRoutingMask & SHADER_ROUTE_OFF) != 0;
 
-		// Effect geometry is kept on the fixed-function pipeline (see below); this routes
-		// it here anyway so the two can be compared in game.
+		// Effect geometry now takes the shader by default, so this bit is the escape
+		// hatch rather than the opt-in: setting it puts rotor discs, glows, beams, smoke
+		// and tracks back on fixed function so the two can still be compared in game.
 		//
-		// The flag used to mean "additive passes too", from when additive was excluded by
-		// itself. Since that became one mesh-level rule with the soft-blend test, the
-		// thing it opts in is the whole EFFECT technique -- rotor discs, light shafts,
-		// glows -- which is the same set it always described, now named for what it is.
-		const bool routeEffects = (m_shaderRoutingMask & SHADER_ROUTE_ADDITIVE) != 0;
-		const bool routeAdditive = routeEffects;   // unclassified draws, see below
+		// The bit is the same one and keeps its name in options.ini. What changed is its
+		// sense, which is worth saying plainly because a saved configuration carrying it
+		// now means the opposite of what it used to.
+		const bool keepEffectsOnFF = (m_shaderRoutingMask & SHADER_ROUTE_ADDITIVE) != 0;
 
 		// A normal is only wanted for two things: the lit equation, and the texgen sources
 		// derived from it. Geometry that has neither -- roads and tank tracks are pre-lit
@@ -3975,46 +4229,58 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// coming through the mesh renderer, and they stay where they were.
 		const bool effectGeometryExcluded = softBlendedOverlay && !m_bMeshHasSolidPass;
 
-		// The same reasoning, applied to additive passes, which it had never been.
+		// The same reasoning, applied to additive passes: a blend that carries no coverage
+		// on geometry that writes depth in no pass.
 		//
-		// Additive was excluded outright, and being a per-pass test it did to additive
-		// exactly what the blend test used to do to soft-blended overlays: a building
-		// carrying an additive glow had that pass on fixed function and the rest of it on
-		// the shader, the two computed different depth, and the coincident passes
-		// z-fought. That was the last remaining split -- 9 meshes on chinooks.rep, every
-		// one reported by the watchdog as "because: additive-blend", among them
-		// CBNRIVERHO_N.RIVERHOUSE and ABPWRPLANT_N.CYLINDER01.
-		//
-		// So ask the mesh here too. The classifier already does: a mesh that writes depth
-		// somewhere is a SURFACE and its additive passes are layers on it, while a rotor
-		// disc or a light shaft writes depth nowhere, classifies EFFECT, and keeps every
-		// pass on fixed function as before. The frame-buffer blend is applied by hardware
-		// after the pixel shader, so an additive pass composites identically either way.
-		//
-		// Draws with no declared technique keep the old blanket exclusion: nothing that
-		// skips the mesh renderer has a mesh to ask.
-		const bool additiveExcluded = additiveBlend && !routeAdditive &&
+		// Both of these used to *exclude* a draw from the programmable path. Neither does
+		// any more -- they identify effect geometry rather than banish it, and what they
+		// now decide is whether the sun and the clouds reach it. The names are kept
+		// because what they describe has not changed, only what follows from it.
+		const bool additiveExcluded = additiveBlend &&
 			m_meshTechnique != MESH_TECHNIQUE_SURFACE;
 
 		// What kind of thing is this?
 		//
 		// A declared technique answers it outright, which is the point of having one: the
-		// asset was classified once, from its own material description, and the three
-		// tests below no longer have to be re-derived from render state on every draw.
-		// EFFECT and FIXED_FUNCTION are the two that stay on the fixed-function pipeline;
-		// SURFACE and PRELIT both belong on the programmable one, differing in which
-		// shader they get rather than in whether they get one.
+		// asset was classified once, from its own material description, and the tests
+		// below no longer have to be re-derived from render state on every draw.
 		//
-		// A draw with no technique never came through the mesh renderer -- terrain,
-		// roads, water, the shroud, decals, particles -- and there is no asset to ask, so
-		// those keep the inference. That is the remaining half of this to remove, and it
-		// goes when those callers declare techniques of their own.
+		// **Effect geometry now takes the shader too.** It was the largest single body of
+		// fixed-function drawing left -- rotor discs, glows, light shafts, lasers, smoke,
+		// tank tracks, decals -- and measured across a replay it is a third of every
+		// remaining fixed-function draw on its own.
+		//
+		// It was excluded for a reason that no longer exists. The exclusion was written
+		// when a helicopter rotor disc drew as nothing at all through this path, and the
+		// cause of *that* turned out to be `unit_vs` forcing `output.color.a = 1` and
+		// throwing away the vertex alpha in which a rotor's entire fade lives (fixed in
+		// d1f008b27). Nothing else about an effect is beyond these shaders: the
+		// frame-buffer blend is applied by hardware after the pixel shader, so an additive
+		// or soft-blended pass composites identically whichever pipeline produced the
+		// colour. What an effect must *not* get is the sun and the clouds, and that is one
+		// constant (LightingParams.z), not a shader of its own.
+		//
+		// FIXED_FUNCTION remains the one technique that stays behind. It exists precisely
+		// to name geometry that has to.
+		//
+		// A draw with no technique never came through the mesh renderer -- terrain, water,
+		// the shroud, particles -- and there is no asset to ask, so those keep the
+		// inference, minus the two exclusions this change removes. `reproducibleBlend`
+		// stays: an unrecognised blend mode is a capability question, not a kind.
 		const bool classifiedDraw = m_meshTechnique != MESH_TECHNIQUE_UNCLASSIFIED;
 		const bool kindAllowsProgrammable = classifiedDraw
-			? (m_meshTechnique == MESH_TECHNIQUE_SURFACE ||
-			   m_meshTechnique == MESH_TECHNIQUE_PRELIT ||
-			   routeEffects)
-			: (!effectGeometryExcluded && !additiveExcluded && reproducibleBlend);
+			? (m_meshTechnique != MESH_TECHNIQUE_FIXED_FUNCTION &&
+			   !(keepEffectsOnFF && m_meshTechnique == MESH_TECHNIQUE_EFFECT))
+			: (reproducibleBlend && !(keepEffectsOnFF &&
+									  (effectGeometryExcluded || additiveExcluded)));
+
+		// Is this draw an effect? Asked of the mesh where one said so, and inferred the
+		// old way where nothing did -- a blend carrying no coverage on geometry that
+		// writes depth in no pass. Read by the shader constants below, not by routing:
+		// an effect is routed like anything else, it is just not lit by the sun.
+		const bool effectDraw = classifiedDraw
+			? (m_meshTechnique == MESH_TECHNIQUE_EFFECT)
+			: (effectGeometryExcluded || additiveExcluded);
 
 		const bool useUnitShader =
 			// Context: which pass of the frame this is, and whether the path is usable
@@ -4052,13 +4318,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// comparison rather than counted as disagreements.
 		//
 		// Draws with no position bit are the same kind of exclusion and are skipped for
-		// the same reason. Sorting buffers deliberately arrive with curFVF == 0 (see the
-		// note where it is read), so the live block sees no normal on them and would read
-		// as pre-lit, while the classifier -- looking at the container's real vertex
-		// format -- correctly calls a sorted glow mesh a surface. Dispatch declines those
-		// draws on the position test long before the technique matters, so comparing them
-		// measures nothing but the instrument. Measured, that was every one of the 6264
-		// disagreements in the first run: three sorted building light fixtures.
+		// the same reason.
+		//
+		// Sorting buffers used to land here too: they arrived with curFVF == 0, so the
+		// live block saw no normal and read them as pre-lit while the classifier, looking
+		// at the container's real vertex format, correctly called a sorted glow mesh a
+		// surface -- every one of the 6264 disagreements in the first run. They now report
+		// the format they are actually drawn with, which is the format the classifier was
+		// reading all along, so the two agree by construction rather than by exemption.
 		if (m_meshTechnique != MESH_TECHNIQUE_UNCLASSIFIED && (curFVF & D3DFVF_XYZ)) {
 			// Mirrors the classifier's single mesh-level rule: a blend that carries no
 			// coverage -- additive, or soft with no alpha test -- on a mesh that writes
@@ -4094,6 +4361,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 
 		// Which pipeline ends up drawing this pass: 1 = fixed function unless a branch
 		// below claims it. Read by the split-pipeline watchdog in debug builds.
+		//
+		// Every programmable branch must claim it, including the ones the watchdog does
+		// not look at (shadow depth 16, terrain 32, road 64, water 128). They did not,
+		// which was harmless while only the watchdog read this -- it skips those passes
+		// anyway -- and stopped being harmless the moment the fixed-function attribution
+		// started reading it too: 551056 shader-drawn depth-pass draws per window were
+		// reported as fixed function, 78% of a total whose whole purpose is to be a list
+		// of work remaining.
 		unsigned diagRouteBit = 1;
 		// The same thing as a census bucket rather than a bit, split one level finer:
 		// the two PBR paths are one pipeline but not one piece of evidence.
@@ -4213,6 +4488,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 #ifdef RTS_DEBUG
 			if (!m_bDepthPrepass)
 				Debug_Note_Shadow_Caster_Draw(particleCaster);
+			diagRouteBit = 16u;
 #endif
 			if (m_bDepthPrepass) {
 				// Build the camera view-projection from the state the pipeline is
@@ -4264,10 +4540,20 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// D3DFVF_XYZRHW, which does not set the D3DFVF_XYZ bit the routing requires.
 			// One full-screen quad was covering the top 1440 rows of the map (the screen
 			// height) with a constant, burying the real terrain depth underneath it.
-			// Masking colour and z leaves the draw harmless without disturbing the
-			// scene's own state, which the normal passes still depend on.
+			//
+			// Masking colour and z made such a draw harmless. Suppressing it makes it
+			// free, which is the same thing done properly: a draw that may write neither
+			// colour nor depth has no effect a render target can record, so submitting it
+			// only spends the pipeline on producing nothing. Measured on chinooks.rep,
+			// that was 78934 draws per 600 frames -- a third of everything still reaching
+			// the fixed-function pipeline, and none of it drawing anything.
+			//
+			// The masks are still written. They cost two cached state changes and they are
+			// what keeps this safe if the suppression is ever bypassed -- Draw_Sorting_IB_VB
+			// has its own path to the device, and a future one might too.
 			Set_DX8_Render_State(D3DRS_COLORWRITEENABLE, 0);
 			Set_DX8_Render_State(D3DRS_ZWRITEENABLE, FALSE);
+			m_bSuppressDraw = true;
 		}
 		else if (useTerrainShader) {
 			if (!m_bUnitShaderBound) {
@@ -4276,6 +4562,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			}
 			Set_Vertex_Shader(m_dwTerrainVS);
 			Set_Pixel_Shader(m_dwTerrainPS);
+#ifdef RTS_DEBUG
+			diagRouteBit = 32u;
+#endif
 
 			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
@@ -4368,6 +4657,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			}
 			Set_Vertex_Shader(m_dwRoadVS);
 			Set_Pixel_Shader(m_dwRoadPS);
+#ifdef RTS_DEBUG
+			diagRouteBit = 64u;
+#endif
 
 			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
@@ -4430,6 +4722,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			}
 			Set_Vertex_Shader(m_dwWaterVS);
 			Set_Pixel_Shader(m_dwWaterPS);
+#ifdef RTS_DEBUG
+			diagRouteBit = 128u;
+#endif
 #ifdef RTS_DEBUG
 			++s_waterRoutedDraws;
 #endif
@@ -4664,6 +4959,19 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// any kind, and widening it to every mesh must not widen it to geometry that
 			// was never a surface.
 			//
+			// Helicopter rotor discs are the case that exposed this: blended, no alpha
+			// test, carrying an authored ORM map, so the gate claimed them -- and they
+			// vanished completely. Measured on the actual draw: fvf 0x252, blend on,
+			// SRCALPHA/INVSRCALPHA, alpha test off. Forcing the shader to output alpha 1
+			// did not bring them back, so this is not the alpha or the blend maths; the
+			// geometry is not surviving the programmable path at all. Whatever the vertex
+			// stage does to it, an effect disc should never have been in there.
+			//
+			// PBR had no blend check of any kind. These conditions gate the default map
+			// exactly as they gated the authored one -- widening PBR to every mesh must
+			// not widen it to geometry that was never a surface. This matters more now
+			// that effects reach the programmable path at all: the plain unit shader
+			// used to decline them on the way in, and no longer does.
 			// A base texture is required, because this shader has no way to do without one.
 			//
 			// unit_ps is told whether stage 0 is bound (TexCtl.x) and folds the sample to
@@ -4702,7 +5010,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				render_state.Textures[0] != nullptr &&
 				singleTexture && !texgenActive &&
 				(curFVF & D3DFVF_NORMAL) != 0 &&
-				!additiveBlend &&
+				!additiveBlend && !softBlendedOverlay &&
 				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0;
 
 			// The resolver caches a nullptr for meshes without a map, so asking costs a hash
@@ -4999,7 +5307,12 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// from the material unless the material says to use the vertex colour.
 				const float ambientFromVertex =
 					RenderStates[D3DRS_AMBIENTMATERIALSOURCE] == D3DMCS_COLOR1 ? 1.0f : 0.0f;
-				D3DXVECTOR4 lightingParams(lightMode, ambientFromVertex, 0.0f, 0.0f);
+				// z: effect geometry, which emits rather than reflects and so is shaded by
+				// neither the sun nor the clouds. Both vertex shaders take it out through
+				// the same shadowReceive gate the texture-only case already used, so a
+				// laser is not dimmed by the shadow of the building it passes.
+				D3DXVECTOR4 lightingParams(lightMode, ambientFromVertex,
+										   effectDraw ? 1.0f : 0.0f, 0.0f);
 				Set_Vertex_Shader_Constant(17, &lightingParams, 1);
 				Set_Vertex_Shader_Constant(18, &matAmbient, 1);
 				Set_Vertex_Shader_Constant(19, &matEmissive, 1);
@@ -5096,22 +5409,70 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		}
 
 #ifdef RTS_DEBUG
+		// Why this draw stayed on fixed function, if it did. Hoisted out of the block
+		// below because the fixed-function attribution wants it for every pass of the
+		// frame, not just the ones the split watchdog looks at.
+		// A depth-pass draw the depth shaders declined is about to be dropped by Draw()
+		// rather than submitted, so it is not a fixed-function draw and must not be
+		// counted as one -- it is not a draw at all. Exactly the test Draw() makes, for
+		// the same reason: the bound shader is the only thing that cannot disagree with
+		// what the device is going to do.
+		//
+		// Counting these was worth 58984 of the 106067 in the first window after the
+		// suppression landed, which read as the change having done nothing.
+		const bool suppressedDraw = m_bSuppressDraw;
+
+		unsigned ffReason = 0;
+		if (diagRouteBit == 1 && !suppressedDraw) {
+			// Effect and additive are deliberately absent. They used to head this chain,
+			// and they were the first thing it tested, so once they stopped excluding
+			// anything every draw that failed a later gate still reported as "effect" --
+			// 7514 sorted light fixtures declined for having no vertex format at all were
+			// filed under a reason that no longer exists.
+			if (!(curFVF & D3DFVF_XYZ) || !(hasNormal || prelitNoNormal)) ffReason = 3;
+			else if (foreignVertexShader)                    ffReason = 4;
+			else if (!(render_state.Textures[0] != nullptr || untexturedDiffuseOnly)) ffReason = 5;
+			else if (!reproducibleBlend)                     ffReason = 6;
+			else if (!(singleTexture || detailCombineSupported)) ffReason = 7;
+			else if (texgenActive && !(texgenRoutingOn && texGenSupported)) ffReason = 8;
+			// The context gates, which the split watchdog does not care about but this
+			// does: they are the difference between "this draw needs a shader written
+			// for it" and "this draw is in a pass that has no programmable path yet".
+			// Without them everything that failed a context test reported as reason 0
+			// and the largest groups in the table said nothing at all.
+			else if (m_bShadowDepthPass)   ffReason = 9;
+			else if (m_bTerrainShaderPass) ffReason = 10;
+			else if (m_bRoadShaderPass)    ffReason = 11;
+			else if (m_bWaterShaderPass)   ffReason = 12;
+			else if (render_state_changed & (unsigned)VIEW_IDENTITY) ffReason = 13;
+			else if (m_meshTechnique == MESH_TECHNIQUE_FIXED_FUNCTION) ffReason = 14;
+			else if (keepEffectsOnFF)      ffReason = 2;    // held back on purpose
+			else if (routingDisabled || m_dwUnitVS == 0 || m_dwUnitPS == 0) ffReason = 15;
+
+			// Attributed across the whole frame, including the terrain, road, water and
+			// shadow passes the watchdog excludes -- those passes route *some* of their
+			// draws and leave the rest behind (shorelines, extra blend tiles, the water
+			// types the shader does not cover), and that remainder is exactly the work
+			// this is meant to size.
+			Debug_Note_FF_Draw(render_state.Textures[0], curFVF,
+				(render_state_changed & (unsigned)VIEW_IDENTITY) != 0, ffReason);
+		}
+		else if (suppressedDraw) {
+			Debug_Note_Suppressed_Draw();
+		}
+		else {
+			Debug_Note_Routed_Draw();
+		}
+
+		// Name-substring watch. Every draw whose mesh matches, with everything that
+		// decides its fate -- the recipe that has worked before, because deduplicating
+		// by name hides passes and a per-session cap fills up before the thing you are
+		// looking for is ever built.
 		// Watch the one-mesh-one-pipeline invariant. Only mesh draws take part: the
 		// shadow-depth pass, the terrain and now the roads are each drawn by a single
 		// pipeline by construction.
 		if (!m_bShadowDepthPass && !m_bTerrainShaderPass && !m_bRoadShaderPass &&
 			!m_bWaterShaderPass) {
-			unsigned ffReason = 0;
-			if (diagRouteBit == 1) {
-				if (effectGeometryExcluded)                      ffReason = 1;
-				else if (additiveExcluded)                       ffReason = 2;
-				else if (!(curFVF & D3DFVF_XYZ) || !(hasNormal || prelitNoNormal)) ffReason = 3;
-				else if (foreignVertexShader)                    ffReason = 4;
-				else if (!(render_state.Textures[0] != nullptr || untexturedDiffuseOnly)) ffReason = 5;
-				else if (!reproducibleBlend)                     ffReason = 6;
-				else if (!(singleTexture || detailCombineSupported)) ffReason = 7;
-				else if (texgenActive && !(texgenRoutingOn && texGenSupported)) ffReason = 8;
-			}
 			Debug_Note_Mesh_Routing(diagRouteBit, ffReason);
 			Debug_Note_Routing_Census(diagCensusCat);
 			if (!classifiedDraw && (curFVF & D3DFVF_XYZ) &&
@@ -5143,9 +5504,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_DX8_Render_State(D3DRS_FILLMODE,
 					transformedPass ? D3DFILL_SOLID : D3DFILL_WIREFRAME);
 			if (!transformedPass) {
-				const bool onMeshPath = useUnitShader;
-				Apply_Debug_Draw_Override(!useUnitShader && !useTerrainShader,
-					(curFVF & D3DFVF_NORMAL) != 0, onMeshPath);
+				Apply_Debug_Draw_Override(diagRouteBit == 1u,
+					(curFVF & D3DFVF_NORMAL) != 0, diagRouteBit);
 			}
 		}
 #endif

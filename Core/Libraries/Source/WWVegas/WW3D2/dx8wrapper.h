@@ -355,7 +355,8 @@ public:
 	// `fixedFunction` is the routing's own verdict for this draw; `hasNormal` and
 	// `onMeshPath` are what DEBUG_VIS_NORMALS needs to decide whether it can say
 	// anything about this draw at all.
-	static void Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal, bool onMeshPath);
+	static void Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal,
+										  unsigned routeBit);
 	// Make one draw come out a single flat colour on whichever pipeline is drawing it.
 	// 0xAARRGGBB; the alpha reaches the shader and is left to the draw's own blend.
 	static void Debug_Flat_Shade(unsigned color, bool fixedFunction);
@@ -619,6 +620,13 @@ public:
 
 	static void Set_Vertex_Shader(DWORD vertex_shader);
 	static void Set_Pixel_Shader(DWORD pixel_shader);
+	// What is bound right now. For the callers that draw straight on the device after
+	// Apply_Render_State_Changes: whatever it left standing is what rasterises them.
+	static DWORD Get_Vertex_Shader() { return Vertex_Shader; }
+	static DWORD Get_Pixel_Shader()  { return Pixel_Shader; }
+	// Call immediately before drawing on the device yourself. Setting your own FVF does
+	// not unbind the pixel shader; this does. See the definition for what it cost.
+	static void Force_Fixed_Function_Pipeline();
 
 	static void Set_Vertex_Shader_Constant(int reg, const void* data, int count);
 	static void Set_Pixel_Shader_Constant(int reg, const void* data, int count);
@@ -925,6 +933,16 @@ public:
 	static void Debug_Note_Unclassified_Draw(
 		TextureBaseClass* tex0, unsigned fvf, bool wentToShader, bool blended, bool softOverlay);
 	static void Debug_Report_Unclassified_Draws();
+	// Every draw that still leaves Apply_Render_State_Changes on the fixed-function
+	// pipeline, attributed to whatever identity it has -- declaration site, mesh name,
+	// or failing both, the frame pass it was drawn in plus its texture and vertex
+	// format. The routing census says how much fixed function is left; this says who
+	// it belongs to, which is what an order of work has to be built from.
+	static void Debug_Note_FF_Draw(TextureBaseClass* tex0, unsigned fvf,
+								   bool viewIdentity, unsigned ffReason);
+	static void Debug_Note_Routed_Draw();   // the control: a draw a shader claimed
+	static void Debug_Note_Suppressed_Draw();   // a draw dropped before submission
+	static void Debug_Report_FF_Draws();
 	// Frame time over the census window: mean, median, p95 and worst, so a cost can be
 	// judged on its distribution rather than its average.
 	static void Debug_Report_Frame_Timing();
@@ -1053,6 +1071,12 @@ public:
 	// in world units, and y = the depth-compare bias left over once it is. Terrain and
 	// roads carry no vertex normal and stay on m_shadowParams[0]'s blanket bias.
 	static float						m_shadowMeshParams[4];
+	// Raised by Apply_Render_State_Changes for a draw it has masked off colour and depth
+	// writes for, i.e. one that cannot affect any render target. Draw() drops those
+	// rather than submitting them. Cleared at the top of every Apply_Render_State_Changes,
+	// before its early return, so a stale value can only ever cost a wasted draw call and
+	// can never swallow one that should have rendered.
+	static bool							m_bSuppressDraw;
 	static bool							m_bShadowDepthPass; // current draws render into the shadow map
 	static void Set_Shadow_Depth_Pass(bool active) { m_bShadowDepthPass = active; }
 	static bool Is_Shadow_Depth_Pass() { return m_bShadowDepthPass; }
@@ -1093,6 +1117,7 @@ public:
 	// conservative behaviour. See the note at useUnitShader.
 	static bool							m_bMeshHasSolidPass;
 	static void Set_Mesh_Has_Solid_Pass(bool solid) { m_bMeshHasSolidPass = solid; }
+	static bool Get_Mesh_Has_Solid_Pass() { return m_bMeshHasSolidPass; }
 	// Whether render_state.shader describes the draw about to happen.
 	//
 	// It does for anything that arrived through Set_Shader -- the mesh renderer, which is
@@ -1111,12 +1136,14 @@ public:
 	// declare, the way terrain and roads already declare theirs.
 	static bool							m_bMeshRendererDraw;
 	static void Set_Mesh_Renderer_Draw(bool active) { m_bMeshRendererDraw = active; }
+	static bool Get_Mesh_Renderer_Draw() { return m_bMeshRendererDraw; }
 	// What the asset says this batch is, decided when the mesh type was registered
 	// (see meshtechnique.h) rather than inferred here from render state. Set by the
 	// mesh renderer per draw and cleared after it, like the flags above;
 	// MESH_TECHNIQUE_UNCLASSIFIED for everything that does not come through it.
 	static MeshTechnique				m_meshTechnique;
 	static void Set_Mesh_Technique(MeshTechnique t) { m_meshTechnique = t; }
+	static MeshTechnique Get_Mesh_Technique() { return m_meshTechnique; }
 #ifdef RTS_DEBUG
 	// Which DeclaredTechniqueClass scope, if any, a draw is inside. Names the source
 	// of a declaration so a wrong one can be found from its report.
