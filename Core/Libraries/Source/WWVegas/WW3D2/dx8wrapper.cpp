@@ -902,6 +902,10 @@ void DX8Wrapper::Debug_Check_Mesh_Routing_Split()
 DWORD							DX8Wrapper::m_dwRoadVS = 0;
 DWORD							DX8Wrapper::m_dwRoadPS = 0;
 bool							DX8Wrapper::m_bRoadShaderPass = false;
+DWORD							DX8Wrapper::m_dwUiVS = 0;
+DWORD							DX8Wrapper::m_dwUiPS = 0;
+bool							DX8Wrapper::m_bUiPass = false;
+bool							DX8Wrapper::m_uiGreyscale = false;
 DWORD							DX8Wrapper::m_dwWaterVS = 0;
 DWORD							DX8Wrapper::m_dwWaterPS = 0;
 bool							DX8Wrapper::m_bWaterShaderPass = false;
@@ -3984,6 +3988,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			m_bRoadShaderPass && m_dwRoadVS != 0 && m_dwRoadPS != 0 &&
 			!(render_state_changed & (unsigned)VIEW_IDENTITY);
 
+		// The 2D interface, flagged by Render2DClass around its own draws. This is the one
+		// path that *wants* the identity view every other branch declines on -- but it is
+		// claimed by the declaration, not by the view, so a camera-relative 3D pass or a
+		// dazzle cannot fall in here by looking similar.
+		const bool useUiShader =
+			!m_bShadowDepthPass &&
+			m_bUiPass && m_dwUiVS != 0 && m_dwUiPS != 0;
+
 		// The water surface, flagged by WaterRenderObjClass around its own draws. The
 		// depth-pass exclusion is belt and braces: water is soft-blended with no alpha
 		// test, so useShadowDepth already declines it and the branch below is unreachable
@@ -4649,6 +4661,63 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Set_DX8_Texture_Stage_State(3, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
 			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+		}
+		else if (useUiShader) {
+			if (!m_bUnitShaderBound) {
+				s_dwOriginalPS = Pixel_Shader;
+				m_bUnitShaderBound = true;
+			}
+			Set_Vertex_Shader(m_dwUiVS);
+			Set_Pixel_Shader(m_dwUiPS);
+#ifdef RTS_DEBUG
+			diagRouteBit = 256u;
+#endif
+			// Identity in practice -- Render2DClass nulls all three matrices and builds its
+			// vertices in clip space -- but concatenated and passed rather than assumed, so
+			// that a 2D drawer which does set up a projection routes here unchanged.
+			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+			D3DXMATRIX proj;
+			if (FAILED(_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj)))) {
+				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
+			}
+			D3DXMATRIX wvp;
+			D3DXMatrixMultiply(&wvp, &world, &view);
+			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			Set_Vertex_Shader_Constant(0, &wvp, 4);
+
+			// Whether stage 0 actually samples, asked of the combine rather than of the
+			// binding. "Is a texture bound" is the wrong question: the 2D renderer leaves
+			// the last texture bound on the device and turns *texturing* off in the
+			// ShaderClass instead, so a line or a solid rectangle reaches here with a
+			// perfectly valid texture attached that the fixed-function stage was ignoring.
+			// Reading the binding drew the radar's camera box in whatever colour happened
+			// to sit at its UV in the leftover atlas, which was black.
+			const DWORD s0COp   = TextureStageStates[0][D3DTSS_COLOROP];
+			const DWORD s0CArg1 = TextureStageStates[0][D3DTSS_COLORARG1] & D3DTA_SELECTMASK;
+			const DWORD s0CArg2 = TextureStageStates[0][D3DTSS_COLORARG2] & D3DTA_SELECTMASK;
+			bool colourUsesTexture;
+			if (s0COp == D3DTOP_DISABLE)           colourUsesTexture = false;
+			else if (s0COp == D3DTOP_SELECTARG1)   colourUsesTexture = (s0CArg1 == D3DTA_TEXTURE);
+			else if (s0COp == D3DTOP_SELECTARG2)   colourUsesTexture = (s0CArg2 == D3DTA_TEXTURE);
+			else colourUsesTexture = (s0CArg1 == D3DTA_TEXTURE || s0CArg2 == D3DTA_TEXTURE);
+
+			const DWORD s0AOp   = TextureStageStates[0][D3DTSS_ALPHAOP];
+			const DWORD s0AArg1 = TextureStageStates[0][D3DTSS_ALPHAARG1] & D3DTA_SELECTMASK;
+			const DWORD s0AArg2 = TextureStageStates[0][D3DTSS_ALPHAARG2] & D3DTA_SELECTMASK;
+			bool alphaUsesTexture;
+			if (s0AOp == D3DTOP_DISABLE)           alphaUsesTexture = false;
+			else if (s0AOp == D3DTOP_SELECTARG1)   alphaUsesTexture = (s0AArg1 == D3DTA_TEXTURE);
+			else if (s0AOp == D3DTOP_SELECTARG2)   alphaUsesTexture = (s0AArg2 == D3DTA_TEXTURE);
+			else alphaUsesTexture = (s0AArg1 == D3DTA_TEXTURE || s0AArg2 == D3DTA_TEXTURE);
+
+			const bool haveTexture = render_state.Textures[0] != nullptr;
+			// x gates the texture colour, z the texture alpha, y desaturates.
+			const D3DXVECTOR4 uiCtl(
+				(haveTexture && colourUsesTexture) ? 1.0f : 0.0f,
+				m_uiGreyscale ? 1.0f : 0.0f,
+				(haveTexture && alphaUsesTexture) ? 1.0f : 0.0f, 0.0f);
+			Set_Pixel_Shader_Constant(0, &uiCtl, 1);
 		}
 		else if (useRoadShader) {
 			if (!m_bUnitShaderBound) {
@@ -5499,14 +5568,28 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// build for a mode it can never enter.
 #ifdef RTS_DEBUG
 		if (m_debugVisMode != DEBUG_VIS_OFF) {
-			const bool transformedPass = (curFVF & D3DFVF_XYZRHW) == D3DFVF_XYZRHW;
+			// The excluded passes used to be identified by D3DFVF_XYZRHW, which was only
+			// ever a proxy for "the interface" -- and it stops being one here, now that the
+			// interface is drawn by a vertex shader from untransformed positions. Ask the
+			// pass flags instead, which say what the draw is rather than what format it
+			// happens to arrive in.
+			//
+			// The shadow-depth pass is excluded because its output is read back as data
+			// rather than looked at: flat-shading it would write a constant colour where
+			// packed depth belongs, and every shadow in the scene would move to wherever
+			// that constant decodes to. The 2D pass is excluded for a plainer reason -- it
+			// draws the control bar, the cursor and the banner naming the mode, and tinting
+			// the interface flat would take away the legend for the colours.
+			const bool excludedPass = m_bShadowDepthPass || m_bUiPass;
+			// The fill mode is device state, not per-draw state, so an excluded pass does
+			// not merely miss the override -- it *inherits* whatever the last scene draw
+			// left. Stated for both cases rather than only the one that turns it on.
 			if (m_debugVisMode == DEBUG_VIS_WIREFRAME)
 				Set_DX8_Render_State(D3DRS_FILLMODE,
-					transformedPass ? D3DFILL_SOLID : D3DFILL_WIREFRAME);
-			if (!transformedPass) {
+					excludedPass ? D3DFILL_SOLID : D3DFILL_WIREFRAME);
+			if (!excludedPass)
 				Apply_Debug_Draw_Override(diagRouteBit == 1u,
 					(curFVF & D3DFVF_NORMAL) != 0, diagRouteBit);
-			}
 		}
 #endif
 	}
