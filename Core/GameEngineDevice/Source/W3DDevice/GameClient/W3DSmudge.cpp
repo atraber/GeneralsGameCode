@@ -268,6 +268,9 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		//not worth bothering with index/vertex buffers.
 		DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
+		// Drawn on the device, so it inherits whatever the wrapper last bound. See
+		// Force_Fixed_Function_Pipeline.
+		DX8Wrapper::Force_Fixed_Function_Pipeline();
 		pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 		DWORD refData[BLOCK_SIZE*BLOCK_SIZE];
@@ -289,6 +292,9 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		v[2].color = 0xffffffff;
 		v[3].color = 0xffffffff;
 
+		// Drawn on the device, so it inherits whatever the wrapper last bound. See
+		// Force_Fixed_Function_Pipeline.
+		DX8Wrapper::Force_Fixed_Function_Pipeline();
 		pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 		bufSize=copyRect((unsigned char *)testData,sizeof(testData),0,0,BLOCK_SIZE,BLOCK_SIZE);
 

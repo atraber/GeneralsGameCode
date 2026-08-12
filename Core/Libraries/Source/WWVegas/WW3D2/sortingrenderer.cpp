@@ -158,6 +158,19 @@ class SortingNodeStruct
 public:
 	RenderStateStruct sorting_state;
 
+	// What the draw was, captured where it was queued.
+	//
+	// Sorted geometry is submitted at one point in the frame and drawn at another, so
+	// none of the wrapper's per-draw routing state is still standing at flush time --
+	// which is why Flush() has to clear the declaration rather than let the flush site's
+	// own scope be inherited by everything in the queue. Carrying the three values on
+	// the node is what lets a sorted draw be described by what queued it instead of by
+	// nothing at all: without them every sorted effect fell to fixed function, 75994
+	// draws a window on chinooks.rep and the single largest group left.
+	MeshTechnique technique;
+	bool mesh_has_solid_pass;
+	bool mesh_renderer_draw;
+
 	Vector3 transformed_center;
 	unsigned short start_index;			// First index used in the ib
 	unsigned short polygon_count;			// Polygon count to process (3 indices = one polygon)
@@ -239,6 +252,13 @@ void SortingRendererClass::Insert_Triangles(
 	state->polygon_count=polygon_count;
 	state->min_vertex_index=min_vertex_index;
 	state->vertex_count=vertex_count;
+
+	// Captured here, restored in Apply_Render_State at flush time -- see the note on the
+	// members. Whatever is standing now is what describes this draw; whatever is standing
+	// when it is finally drawn describes something else entirely.
+	state->technique = DX8Wrapper::Get_Mesh_Technique();
+	state->mesh_has_solid_pass = DX8Wrapper::Get_Mesh_Has_Solid_Pass();
+	state->mesh_renderer_draw = DX8Wrapper::Get_Mesh_Renderer_Draw();
 
 	if (bounding_sphere.Is_Valid())
 	{
@@ -362,8 +382,18 @@ void SortingRendererClass::Insert_To_Sorting_Pool(SortingNodeStruct* state)
 // ----------------------------------------------------------------------------
 //static unsigned prevLight = 0xffffffff;
 
-static void Apply_Render_State(RenderStateStruct& render_state)
+static void Apply_Render_State(SortingNodeStruct* node)
 {
+	RenderStateStruct& render_state = node->sorting_state;
+
+	// Put back what described this draw when it was queued. The wrapper's routing reads
+	// all three, and at flush time they otherwise hold whatever the caller that happened
+	// to trigger the flush left behind -- which is a different draw, in a different part
+	// of the frame, and frequently not a mesh at all.
+	DX8Wrapper::Set_Mesh_Technique(node->technique);
+	DX8Wrapper::Set_Mesh_Has_Solid_Pass(node->mesh_has_solid_pass);
+	DX8Wrapper::Set_Mesh_Renderer_Draw(node->mesh_renderer_draw);
+
 	DX8Wrapper::Set_Shader(render_state.shader);
 
 	DX8Wrapper::Set_Material(render_state.material);
@@ -552,7 +582,7 @@ void SortingRendererClass::Flush_Sorting_Pool()
 		for (unsigned i=chunkOffset + 1;i<chunkEnd;++i) {
 			if (node_id!=tis[i].idx) {
 				SortingNodeStruct* state=overlapping_nodes[node_id];
-				Apply_Render_State(state->sorting_state);
+				Apply_Render_State(state);
 
 				DX8Wrapper::Draw_Triangles(
 					start_index*3,
@@ -570,7 +600,7 @@ void SortingRendererClass::Flush_Sorting_Pool()
 		// Render any remaining polygons...
 		if (count_to_render) {
 			SortingNodeStruct* state=overlapping_nodes[node_id];
-			Apply_Render_State(state->sorting_state);
+			Apply_Render_State(state);
 
 			DX8Wrapper::Draw_Triangles(
 				start_index*3,
@@ -611,9 +641,10 @@ void SortingRendererClass::Flush()
 	// on chinooks.rep: 19412 draws a window of sorted building roof parts inheriting the
 	// smudge pass's "effect" declaration.
 	//
-	// The queued draws have no declaration of their own -- that is the long-standing
-	// limitation that a per-draw flag does not survive deferral -- so the honest value
-	// here is none, and the routing infers them as it always has.
+	// This scope is now the *floor* rather than the answer: each node restores what it
+	// captured when it was queued (see Apply_Render_State), and this guarantees a node
+	// that carried nothing gets nothing rather than the flush site's own state, and that
+	// the last node's values do not outlive the flush.
 	DeclaredTechniqueClass declareNothing(MESH_TECHNIQUE_UNCLASSIFIED, "sorting-flush");
 	Matrix4x4 old_view;
 	Matrix4x4 old_world;
@@ -637,9 +668,19 @@ void SortingRendererClass::Flush()
 			Insert_To_Sorting_Pool(state);
 		}
 		else {
+			// The other deferred path -- a node whose buffers are not sorting buffers is
+			// drawn straight through rather than merged into the pool. Same deferral, so
+			// the same restore: without it these draws inherit the flush site's state
+			// exactly as the pooled ones did.
+			DX8Wrapper::Set_Mesh_Technique(state->technique);
+			DX8Wrapper::Set_Mesh_Has_Solid_Pass(state->mesh_has_solid_pass);
+			DX8Wrapper::Set_Mesh_Renderer_Draw(state->mesh_renderer_draw);
 			DX8Wrapper::Set_Render_State(state->sorting_state);
 			DX8Wrapper::Draw_Triangles(state->start_index,state->polygon_count,state->min_vertex_index,state->vertex_count);
 			DX8Wrapper::Release_Render_State();
+			DX8Wrapper::Set_Mesh_Technique(MESH_TECHNIQUE_UNCLASSIFIED);
+			DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
+			DX8Wrapper::Set_Mesh_Renderer_Draw(false);
 			Release_Refs(state);
 			clean_list.push_front(state);
 		}

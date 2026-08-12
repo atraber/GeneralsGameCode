@@ -675,6 +675,12 @@ void TestBlendRender(RenderInfoClass & rinfo)
 
 void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowType type)
 {
+	// Decals are drawn on the device by hand, below, after asking for a render state apply
+	// but without going through DX8Wrapper::Draw(), so the render state the routing inspects
+	// belongs to whatever drew last. Declaring the technique is what stops it being claimed;
+	// Force_Fixed_Function_Pipeline further down is what unbinds a shader already standing.
+	// Both are needed, and the Zero Hour copy of this function had only had the second.
+	DeclaredTechniqueClass declareFixedFunction(MESH_TECHNIQUE_FIXED_FUNCTION, "flushDecals");
 	static	Matrix4x4 mWorld(true);	//initialize to identity matrix
 
 	if (nShadowDecalVertsInBatch == 0 && nShadowDecalPolysInBatch == 0)
@@ -730,6 +736,11 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 
 	m_pDev->SetStreamSource(0,shadowDecalVertexBufferD3D,sizeof(SHADOW_DECAL_VERTEX));
 	m_pDev->SetVertexShader(SHADOW_DECAL_FVF);
+	// This draw goes out on the device, so it inherits whatever Apply_Render_State_Changes
+	// bound for the draw before it. Setting the FVF above replaces the vertex shader and
+	// not the pixel shader. See Force_Fixed_Function_Pipeline -- the Zero Hour copy of
+	// this function is where the missing mines and targeting reticles were traced to.
+	DX8Wrapper::Force_Fixed_Function_Pipeline();
 
 //Hard Shadows using stencil
 /*	m_pDev->SetRenderState( D3DRS_SRCBLEND,  D3DBLEND_ZERO);

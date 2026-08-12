@@ -132,10 +132,18 @@ float4 main(PS_INPUT input) : COLOR
             + Stage1AOp.z * a1
             + Stage1AOp.w * a2;
 
+    const float SHADOW_MIN = 0.35;
+    // Skipped for geometry the sun does not light -- see the same branch in unit_ps for
+    // why the eighteen fetches are worth branching around rather than multiplying by a
+    // result that is already 1, and for why the plane fit has to sit outside the branch.
     float3 shNdc  = shadowNdc(input.lightPos);
     float2 shUv   = shadowUv(shNdc);
     float2 shGrad = shadowReceiverGradient(shUv, shNdc.z);
-    rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(shNdc, shUv, shGrad));
+
+    [branch] if (input.cloudPos.z > 0.5)
+    {
+        rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(shNdc, shUv, shGrad));
+    }
     rgb *= cloudShade(input.cloudPos);
 
     return float4(saturate(rgb), saturate(a));

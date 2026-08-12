@@ -104,10 +104,40 @@ float4 main(PS_INPUT input) : COLOR
     // reads, so a unit and its own cast shadow on the ground sit at the same brightness.
     float3 rgb = baseColor.rgb * input.color.rgb;
 
+    // Skipped outright for geometry the sun does not light: effect geometry, and
+    // texture-only overlay passes. Both already fed cloudPos.z = 0, so both terms
+    // already resolved to "no change" -- but resolving to no change still costs the
+    // eighteen texture fetches it takes to get there (sixteen for the PCF kernel, two
+    // for the cloud layers), and effects are the most overdrawn thing in the frame.
+    //
+    // Measured on chinooks.rep when effect geometry first moved onto this shader:
+    // median frame time went from 33.3 ms -- the replay's 30 Hz cap, i.e. the renderer
+    // finishing early and waiting -- to 40.3, which is the renderer no longer keeping
+    // up. Smoke and beam sprites cover the screen many times over, and they were paying
+    // a shadow lookup per pixel per layer for a result fixed at 1.
+    //
+    // [branch] rather than letting the compiler flatten it: the condition is constant
+    // across a whole draw call, so the branch is coherent and predicts perfectly, which
+    // is the case dynamic flow control in ps_3_0 exists for.
+    //
+    // Only the cast shadow is branched around. The cloud is two taps against the sixteen
+    // here, and it samples a mipped texture -- inside dynamic flow control it would need
+    // an explicit level too, and unlike the shadow map, forcing one on the cloud would be
+    // a real change to how it filters. Not worth it for an eighth of the saving; it
+    // already multiplies out to 1 through cloudPos.z.
+    // The projection and the receiver-plane fit sit outside the branch and are therefore
+    // paid by every pixel, shadowed or not: the fit needs ddx/ddy, which dynamic flow
+    // control makes unavailable. That is about a dozen ALU against the sixteen texture
+    // fetches the branch still skips, so it costs a small fraction of what the branch was
+    // put here to save.
     float3 shNdc  = shadowNdc(input.lightPos);
     float2 shUv   = shadowUv(shNdc);
     float2 shGrad = shadowReceiverGradient(shUv, shNdc.z);
-    rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(shNdc, shUv, shGrad));
+
+    [branch] if (input.cloudPos.z > 0.5)
+    {
+        rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(shNdc, shUv, shGrad));
+    }
     rgb *= cloudShade(input.cloudPos);
     return float4(rgb, texAlpha * diffAlpha);
 }

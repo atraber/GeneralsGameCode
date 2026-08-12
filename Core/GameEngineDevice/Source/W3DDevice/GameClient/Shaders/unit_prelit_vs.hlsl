@@ -19,6 +19,7 @@ row_major float4x4 WorldView     : register(c4);  // object -> camera (view) spa
 float4 SceneAmbient  : register(c16);  // D3DRS_AMBIENT equivalent
 float4 LightingParams : register(c17); // x: 2 = texture-only, 1 = lit, 0 = pre-lit
                                        // y: 1 when the ambient source is the vertex colour
+                                       // z: 1 for effect geometry -- see unit_vs
 float4 MatAmbient    : register(c18);
 float4 MatEmissive   : register(c19);
 float4 TexGenCtl : register(c21);      // see unit_vs; modes 2 and 3 need a normal and are
@@ -82,6 +83,12 @@ VS_OUTPUT main(VS_INPUT input)
     float textureOnly = (LightingParams.x > 1.5) ? 1.0 : 0.0;
     output.color = lerp(input.color, float4(1.0, 1.0, 1.0, 1.0), textureOnly);
 
+    // Effect geometry receives neither, for the same reason a texture-only overlay does
+    // not: it is not lit by the sun, so nothing that blocks the sun may darken it. Tank
+    // tracks and scorch marks arrive here -- normal-less, pre-lit, blended -- and a track
+    // is a mark *on* ground that is already shadowed, so shading it again doubles it.
+    float noSun = max(textureOnly, (LightingParams.z > 0.5) ? 1.0 : 0.0);
+
     float3 viewPos = mul(float4(input.position, 1.0), WorldView).xyz;
     float4 gen0 = Select_TexGen_Source(TexGenCtl.x, input.texcoord, viewPos);
     float4 gen1 = Select_TexGen_Source(TexGenCtl.y, input.texcoord, viewPos);
@@ -92,12 +99,12 @@ VS_OUTPUT main(VS_INPUT input)
     // Selected rather than lerped, so a degenerate sun matrix cannot reach a draw that is
     // not receiving -- lerp still multiplies the far operand by zero, and 0 * inf is NaN.
     float4 sunClip = mul(float4(input.position, 1.0), WorldSunVP);
-    output.lightPos = (textureOnly > 0.5) ? float4(2.0, 2.0, 2.0, 1.0) : sunClip;
+    output.lightPos = (noSun > 0.5) ? float4(2.0, 2.0, 2.0, 1.0) : sunClip;
 
-    // Same gate as the cast shadow above: a texture-only overlay is not lit by the sun,
-    // so no cloud may take that sun away from it.
+    // Same gate as the cast shadow above: whatever the sun does not light, no cloud may
+    // take the sun away from.
     output.cloudPos = float3(dot(float4(input.position, 1.0), WorldAxisX),
                              dot(float4(input.position, 1.0), WorldAxisY),
-                             (textureOnly > 0.5) ? 0.0 : 1.0);
+                             (noSun > 0.5) ? 0.0 : 1.0);
     return output;
 }

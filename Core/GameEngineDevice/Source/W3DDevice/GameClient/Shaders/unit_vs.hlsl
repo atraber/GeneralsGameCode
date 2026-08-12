@@ -19,7 +19,14 @@ float4 LightDiffuse2 : register(c13);
 float4 LightDir3     : register(c14);
 float4 LightDiffuse3 : register(c15);
 float4 SceneAmbient  : register(c16);  // equivalent scene ambient (D3DRS_AMBIENT)
-float4 LightingParams : register(c17); // x > 0.5 => fixed-function lighting enabled
+// x: 0 = pre-lit, 1 = lit, 2 = texture-only (see the branches in main).
+// y: ambient comes from the vertex colour rather than the material (no-normal path).
+// z: this draw is effect geometry -- a rotor disc, a glow, a light shaft, a laser, a
+//    puff of smoke. Light, not matter. It is not shaded by the sun and not shaded by
+//    the clouds, whatever its lighting mode says, because it is not lit by them in the
+//    first place: it emits. Setting it forces shadowReceive to 0, which takes out both
+//    terms at once (see where lightPos and cloudPos are written).
+float4 LightingParams : register(c17);
 float4 MatAmbient    : register(c18);  // material ambient colour (house-colour tint)
 float4 MatEmissive   : register(c19);  // material emissive colour
 float4 MatDiffuse    : register(c20);  // material diffuse colour (house-colour tint)
@@ -185,6 +192,13 @@ VS_OUTPUT main(VS_INPUT input)
         // Pre-lit meshes pass the vertex colour and alpha straight through.
         output.color = input.color;
     }
+
+    // Effect geometry emits rather than reflects, so nothing that blocks the sun dims
+    // it: a laser crossing a building's shadow is the same laser. The lit branch above
+    // has already claimed the sun for anything with lighting enabled, and some effect
+    // meshes are lit ones -- a rotor disc carries a normal and no vertex colour -- so
+    // this has to override that decision rather than sit inside it.
+    shadowReceive *= (LightingParams.z > 0.5) ? 0.0 : 1.0;
 
     // Texture coordinates. Camera-space generation needs the vertex in view space and,
     // for the reflection vector, the view-space normal -- the same WorldView matrix the
