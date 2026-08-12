@@ -403,8 +403,24 @@ static void Apply_Render_State(SortingNodeStruct* node)
 		DX8Wrapper::Set_Texture(i,render_state.Textures[i]);
 	}
 
-	DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD,render_state.world);
-	DX8Wrapper::_Set_DX8_Transform(D3DTS_VIEW,render_state.view);
+	// Through the tracked setter, not _Set_DX8_Transform. That one writes the device and
+	// the wrapper's shadow of the device, and nothing else -- which is the whole of what
+	// the fixed-function pipeline reads, so this was correct for as long as sorted
+	// geometry only ever went there. The programmable path does not read the device: it
+	// concatenates world*view*projection on the CPU out of the *tracked* render state, and
+	// that was still holding whatever draw last set it through the normal path -- a
+	// different object, elsewhere in the frame. So a sorted draw that routed to a shader
+	// was transformed by another mesh's matrix and landed wherever that put it.
+	//
+	// It cost the rotor discs and the sorted light fixtures outright, and it is also what
+	// took the mines: a mine renders normally until it cloaks, and cloaking makes it
+	// translucent, which gives it a sort level and sends it through here -- so it vanished
+	// a couple of seconds after being laid and looked for all the world like a stealth
+	// bug. Nothing about the pixels was ever wrong. Forcing the shader to emit opaque
+	// magenta produced no rotor either, which is what ruled out the blend and the alpha
+	// and pointed here.
+	DX8Wrapper::Set_Transform(D3DTS_WORLD,render_state.world);
+	DX8Wrapper::Set_Transform(D3DTS_VIEW,render_state.view);
 
 
 	if (!render_state.material->Get_Lighting())
