@@ -92,12 +92,10 @@
 #include "W3DDevice/GameClient/BaseHeightMap.h"
 
 #include "W3DDevice/GameClient/HeightMap.h"
-#include "W3DDevice/GameClient/FlatHeightMap.h"
 #include "W3DDevice/GameClient/W3DSmudge.h"
 #include "W3DDevice/GameClient/W3DSnow.h"
 
 
-extern FlatHeightMapRenderObjClass *TheFlatHeightMap;
 extern HeightMapRenderObjClass *TheHeightMap;
 
 //-----------------------------------------------------------------------------
@@ -339,17 +337,16 @@ void BaseHeightMapRenderObjClass::adjustTerrainLOD(Int adj)
 	if (m_shroud)
 		m_shroud->reset();	//need reset here since initHeightData will load new shroud.
 
-	BaseHeightMapRenderObjClass *newROBJ = nullptr;
-	if (TheGlobalData->m_terrainLOD == TERRAIN_LOD_MAX) {
-		newROBJ = TheHeightMap;
-		if (newROBJ==nullptr) {
-			newROBJ = NEW_REF( HeightMapRenderObjClass, () );
-		}
-	}	else {
-		newROBJ = TheFlatHeightMap;
-		if (newROBJ==nullptr) {
-			newROBJ = NEW_REF( FlatHeightMapRenderObjClass, () );
-		}
+	// One renderer. The other arm of this used to build a FlatHeightMapRenderObjClass for
+	// anything below TERRAIN_LOD_MAX, and could never be taken: this function is only
+	// reached from W3DDisplay::calculateTerrainLOD, which runs on the first draw -- the
+	// shell, before a map exists -- where the m_map guard above returns, and its gate is
+	// closed for the rest of the session. Measured at zero calls over a full replay with
+	// the LOD forced to AUTOMATIC. The flat renderer and its fixed-function shaders are
+	// gone; the LOD value still selects water and clouds, just not a second renderer.
+	BaseHeightMapRenderObjClass *newROBJ = TheHeightMap;
+	if (newROBJ==nullptr) {
+		newROBJ = NEW_REF( HeightMapRenderObjClass, () );
 	}
 
 	RTS3DScene *pMyScene = (RTS3DScene *)Scene;

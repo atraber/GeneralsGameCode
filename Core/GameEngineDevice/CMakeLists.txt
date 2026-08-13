@@ -8,7 +8,6 @@ set(GAMEENGINEDEVICE_SRC
 #    Include/W3DDevice/Common/W3DThingFactory.h
     Include/W3DDevice/GameClient/BaseHeightMap.h
 #    Include/W3DDevice/GameClient/camerashakesystem.h
-    Include/W3DDevice/GameClient/FlatHeightMap.h
     Include/W3DDevice/GameClient/HeightMap.h
     Include/W3DDevice/GameClient/Module/W3DDebrisDraw.h
     Include/W3DDevice/GameClient/Module/W3DDefaultDraw.h
@@ -67,7 +66,6 @@ set(GAMEENGINEDEVICE_SRC
     Include/W3DDevice/GameClient/W3DSmudge.h
     Include/W3DDevice/GameClient/W3DSnow.h
 #    Include/W3DDevice/GameClient/W3DStatusCircle.h
-    Include/W3DDevice/GameClient/W3DTerrainBackground.h
     Include/W3DDevice/GameClient/W3DTerrainTracks.h
     Include/W3DDevice/GameClient/W3DTerrainVisual.h
     Include/W3DDevice/GameClient/W3DTreeBuffer.h
@@ -119,7 +117,6 @@ set(GAMEENGINEDEVICE_SRC
     Source/W3DDevice/GameClient/Drawable/Draw/W3DTracerDraw.cpp
     Source/W3DDevice/GameClient/Drawable/Draw/W3DTreeDraw.cpp
     Source/W3DDevice/GameClient/Drawable/Draw/W3DTruckDraw.cpp
-    Source/W3DDevice/GameClient/FlatHeightMap.cpp
     Source/W3DDevice/GameClient/GUI/Gadget/W3DCheckBox.cpp
     Source/W3DDevice/GameClient/GUI/Gadget/W3DComboBox.cpp
     Source/W3DDevice/GameClient/GUI/Gadget/W3DHorizontalSlider.cpp
@@ -170,7 +167,6 @@ set(GAMEENGINEDEVICE_SRC
     Source/W3DDevice/GameClient/W3DSmudge.cpp
     Source/W3DDevice/GameClient/W3DSnow.cpp
 #    Source/W3DDevice/GameClient/W3DStatusCircle.cpp
-    Source/W3DDevice/GameClient/W3DTerrainBackground.cpp
     Source/W3DDevice/GameClient/W3DTerrainTracks.cpp
     Source/W3DDevice/GameClient/W3DTerrainVisual.cpp
     Source/W3DDevice/GameClient/W3DTreeBuffer.cpp
