@@ -1001,6 +1001,25 @@ public:
 	static void Set_Ui_Greyscale(bool on) { m_uiGreyscale = on; }
 	static bool Has_Ui_Shader() { return m_dwUiVS != 0 && m_dwUiPS != 0; }
 
+	// The projected alpha mask, declared by W3DMaskMaterialPassClass. Unlike every other
+	// declared pass this one is not a *kind of geometry* -- it is the whole scene, drawn a
+	// second time with colour writes off, so that each pixel leaves the mask's alpha behind
+	// for the cross-fade or the wireframe preview to composite against. Which is exactly why
+	// it has to be declared rather than inferred: the draws are ordinary meshes and terrain,
+	// indistinguishable from their real pass by anything the routing block can see.
+	//
+	// m_maskProj carries the world-XY -> mask-uv map as scale in xy and bias in zw. The
+	// fixed-function path rebuilt an equivalent 4x4 texture matrix per pass; an affine map of
+	// the world position is all it ever amounted to.
+	static DWORD						m_dwMaskVS;
+	static DWORD						m_dwMaskPS;
+	static bool							m_bMaskPass;      // current draws are the alpha-mask pass
+	static Vector4						m_maskProj;
+	static void Set_Mask_Pass(bool active) { m_bMaskPass = active; }
+	static void Set_Mask_Projection(float scaleX, float scaleY, float biasX, float biasY)
+		{ m_maskProj.X = scaleX; m_maskProj.Y = scaleY; m_maskProj.Z = biasX; m_maskProj.W = biasY; }
+	static bool Has_Mask_Shader() { return m_dwMaskVS != 0 && m_dwMaskPS != 0; }
+
 	// Water. Declared by WaterRenderObjClass around its own draws, the same way roads are:
 	// the water is not a mesh and carries nothing the routing could classify it by, and
 	// guessing from render state would put it in the same bucket as every other soft-blended

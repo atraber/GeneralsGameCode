@@ -503,7 +503,8 @@ void DX8Wrapper::Debug_Report_FF_Draws()
 	// left over for a draw no gate claims, and should not appear.
 	WWDEBUG_SAY(("  reason bits: 2=effects-held-back 3=no-position/normal 4=foreign-vs "
 				 "5=untextured 6=blend 7=multitexture 8=texgen | 9=depth-pass "
-				 "10=terrain 11=road 12=water 13=2D 14=declared-fixed-fn 15=routing-off"));
+				 "10=terrain 11=road 12=water 13=2D 14=declared-fixed-fn 15=routing-off "
+				 "16=alpha-mask"));
 	// Descending by count: the top of this list is the order the conversion work goes in.
 	for (int rank = 0; rank < s_ffGroupCount; ++rank) {
 		int best = -1;
@@ -906,6 +907,10 @@ DWORD							DX8Wrapper::m_dwUiVS = 0;
 DWORD							DX8Wrapper::m_dwUiPS = 0;
 bool							DX8Wrapper::m_bUiPass = false;
 bool							DX8Wrapper::m_uiGreyscale = false;
+DWORD							DX8Wrapper::m_dwMaskVS = 0;
+DWORD							DX8Wrapper::m_dwMaskPS = 0;
+bool							DX8Wrapper::m_bMaskPass = false;
+Vector4							DX8Wrapper::m_maskProj(0.0f, 0.0f, 0.0f, 0.0f);
 DWORD							DX8Wrapper::m_dwWaterVS = 0;
 DWORD							DX8Wrapper::m_dwWaterPS = 0;
 bool							DX8Wrapper::m_bWaterShaderPass = false;
@@ -3996,6 +4001,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			!m_bShadowDepthPass &&
 			m_bUiPass && m_dwUiVS != 0 && m_dwUiPS != 0;
 
+		// The projected alpha mask, flagged by W3DMaskMaterialPassClass around the whole
+		// scene. It claims meshes *and* the terrain, so it has to be tested before the
+		// terrain branch below or the terrain would draw itself normally into a pass whose
+		// entire purpose is to replace what everything draws.
+		const bool useMaskShader =
+			!m_bShadowDepthPass &&
+			m_bMaskPass && m_dwMaskVS != 0 && m_dwMaskPS != 0 &&
+			!(render_state_changed & (unsigned)VIEW_IDENTITY);
+
 		// The water surface, flagged by WaterRenderObjClass around its own draws. The
 		// depth-pass exclusion is belt and braces: water is soft-blended with no alpha
 		// test, so useShadowDepth already declines it and the branch below is unreachable
@@ -4566,6 +4580,45 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Set_DX8_Render_State(D3DRS_COLORWRITEENABLE, 0);
 			Set_DX8_Render_State(D3DRS_ZWRITEENABLE, FALSE);
 			m_bSuppressDraw = true;
+		}
+		else if (useMaskShader) {
+			if (!m_bUnitShaderBound) {
+				s_dwOriginalPS = Pixel_Shader;
+				m_bUnitShaderBound = true;
+			}
+			Set_Vertex_Shader(m_dwMaskVS);
+			Set_Pixel_Shader(m_dwMaskPS);
+#ifdef RTS_DEBUG
+			diagRouteBit = 512u;
+#endif
+
+			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
+			D3DXMATRIX proj;
+			if (FAILED(_Get_D3D_Device8()->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj)))) {
+				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
+			}
+			D3DXMATRIX wvp;
+			D3DXMatrixMultiply(&wvp, &world, &view);
+			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			Set_Vertex_Shader_Constant(0, &wvp, 4);
+
+			// The two object->world rows the projection needs, in the same layout unit_vs
+			// takes them: a column of the world matrix per constant, dotted against the
+			// object-space position.
+			const D3DXVECTOR4 worldAxisX(world._11, world._21, world._31, world._41);
+			const D3DXVECTOR4 worldAxisY(world._12, world._22, world._32, world._42);
+			Set_Vertex_Shader_Constant(4, &worldAxisX, 1);
+			Set_Vertex_Shader_Constant(5, &worldAxisY, 1);
+			Set_Vertex_Shader_Constant(6, &m_maskProj, 1);
+
+			// The fixed-function path left stage 0's filter and addressing to whatever the
+			// previous caller happened to leave on the device. State them: linear on a
+			// smooth radial mask, and wrap, which is the D3D default it was inheriting.
+			Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
 		}
 		else if (useTerrainShader) {
 			if (!m_bUnitShaderBound) {
@@ -5513,6 +5566,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			else if (m_bTerrainShaderPass) ffReason = 10;
 			else if (m_bRoadShaderPass)    ffReason = 11;
 			else if (m_bWaterShaderPass)   ffReason = 12;
+			else if (m_bMaskPass)          ffReason = 16;
 			else if (render_state_changed & (unsigned)VIEW_IDENTITY) ffReason = 13;
 			else if (m_meshTechnique == MESH_TECHNIQUE_FIXED_FUNCTION) ffReason = 14;
 			else if (keepEffectsOnFF)      ffReason = 2;    // held back on purpose
@@ -5540,8 +5594,12 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// Watch the one-mesh-one-pipeline invariant. Only mesh draws take part: the
 		// shadow-depth pass, the terrain and now the roads are each drawn by a single
 		// pipeline by construction.
+		// The mask pass joins them: it redraws the entire scene through one shader by
+		// construction, so every mesh in it legitimately routes somewhere other than where
+		// the same mesh went a moment earlier in the real pass. Counting that as a split
+		// would report the feature working as the invariant breaking.
 		if (!m_bShadowDepthPass && !m_bTerrainShaderPass && !m_bRoadShaderPass &&
-			!m_bWaterShaderPass) {
+			!m_bWaterShaderPass && !m_bMaskPass) {
 			Debug_Note_Mesh_Routing(diagRouteBit, ffReason);
 			Debug_Note_Routing_Census(diagCensusCat);
 			if (!classifiedDraw && (curFVF & D3DFVF_XYZ) &&

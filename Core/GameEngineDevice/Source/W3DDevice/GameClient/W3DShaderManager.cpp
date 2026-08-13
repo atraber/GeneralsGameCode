@@ -1594,112 +1594,6 @@ void ShroudTextureShader::reset()
 //#define SHROUD_STRETCH_FACTOR	(1.0f/MAP_XY_FACTOR)	//1 texel per heightmap cell width
 
 
-///Mask layer rendering shader
-class MaskTextureShader : public W3DShaderInterface
-{
-	virtual Int set(Int pass) override;		///<setup shader for the specified rendering pass.
-	virtual Int init() override;			///<perform any one time initialization and validation
-	virtual void reset() override;		///<do any custom resetting necessary to bring W3D in sync.
-} maskTextureShader;
-
-///List of different shroud shader implementations in order of preference
-W3DShaderInterface *MaskShaderList[]=
-{
-	&maskTextureShader,
-	nullptr
-};
-
-Int MaskTextureShader::init()
-{
-	W3DShaders[W3DShaderManager::ST_MASK_TEXTURE]=&maskTextureShader;
-	W3DShadersPassCount[W3DShaderManager::ST_MASK_TEXTURE]=1;
-
-	return TRUE;
-}
-
-Int MaskTextureShader::set(Int pass)
-{
-	Real fadeLevel=ScreenCrossFadeFilter::getCurrentFadeValue();
-
-	//Use the current fade level to scale the mask texture
-	Real radius = (1.0f-fadeLevel)*2.0f;
-	if (radius <= 0)
-		radius = 0.01f;
-	radius = 0.5f/radius;
-
-	//force WW3D2 system to set it's states so it won't later overwrite our custom settings.
-	VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
-	DX8Wrapper::Set_Material(vmat);
-	REF_PTR_RELEASE(vmat);	//no need to keep a reference since it's a preset.
-
-	//For now we're always going to project the texture coming from the crossfade effect
-	DX8Wrapper::Set_Texture(0, ScreenCrossFadeFilter::getCurrentMaskTexture());
-	ShaderClass shader=ShaderClass::_PresetOpaqueShader;
-	shader.Set_Primary_Gradient(ShaderClass::GRADIENT_DISABLE);
-	DX8Wrapper::Set_Shader(shader);
-	DX8Wrapper::Apply_Render_State_Changes();
-
-	D3DXMATRIX curView;
-	DX8Wrapper::_Get_DX8_Transform(D3DTS_VIEW, curView);
-
-	DX8Wrapper::Set_DX8_Texture_Stage_State(0,  D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_CAMERASPACEPOSITION);
-	DX8Wrapper::Set_DX8_Texture_Stage_State(0,  D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
-
-	D3DXMATRIX inv;
-	float det;
-
-	//Get inverse view matrix so we can transform camera space points back to world space
-	D3DXMatrixInverse(&inv, &det, &curView);
-
-	D3DXMATRIX scale,offset,offsetTextureCenter;
-	Coord3D centerPos;
-	centerPos.zero();
-
-	//Find center of projection (this should be returned from some other filter, etc. but
-	//for now assume terrain location at center of screen.
-	if (TheTacticalView)
-	{	Int xpos,ypos;
-
-		TheTacticalView->getOrigin(&xpos,&ypos);
-
-		ICoord2D screenPos;
-		screenPos.x=(Real)TheTacticalView->getWidth()*0.5f;
-		screenPos.y=(Real)TheTacticalView->getHeight()*0.5f;
-		TheTacticalView->screenToTerrain(&screenPos,&centerPos);
-	}
-
-	D3DXMatrixTranslation(&offset, -centerPos.x, -centerPos.y,0);
-
-	D3DXMatrixTranslation(&offsetTextureCenter, 0.5f, 0.5f, 0);	//shift coordinates so center of projection falls at uv 0.5,0.5
-
-	Real worldTexelWidth=(1.0f-fadeLevel)*25.0f;	//9 worked well for circle but weird shape requires more stretch to cover.
-	Real worldTexelHeight=(1.0f-fadeLevel)*25.0f;
-
-	///@todo: Fix this to work with non 128x128 textures.
-	if (worldTexelWidth != 0 && worldTexelHeight != 0)
-	{
-		Real widthScale = 1.0f/(worldTexelWidth*128.0f);
-		Real heightScale = 1.0f/(worldTexelHeight*128.0f);
-		D3DXMatrixScaling(&scale, widthScale, heightScale, 1);
-		curView = ((inv * offset) * scale)*offsetTextureCenter;
-	}
-	else
-	{
-		D3DXMatrixScaling(&scale, 0, 0, 1);	//scaling by 0 will set uv coordinates to 0,0
-		curView = ((inv * offset) * scale);
-	}
-
-	DX8Wrapper::_Set_DX8_Transform(D3DTS_TEXTURE0, curView);
-
-	return TRUE;
-}
-
-void MaskTextureShader::reset()
-{
-	DX8Wrapper::Set_Texture(0,nullptr);
-	DX8Wrapper::Set_DX8_Texture_Stage_State(0,  D3DTSS_TEXCOORDINDEX, 0);
-	DX8Wrapper::Set_DX8_Texture_Stage_State(0,  D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
-}
 
 /*===========================================================================================*/
 /*=========      Terrain Shaders	=========================================================*/
@@ -1995,7 +1889,6 @@ W3DShaderInterface **MasterShaderList[]=
 {
 	TerrainShaderList,
 	ShroudShaderList,
-	MaskShaderList,
 	nullptr
 };
 
@@ -2187,6 +2080,14 @@ void W3DShaderManager::initUnitShaders()
 	}
 	if (DX8Wrapper::m_dwUiPS == 0) {
 		LoadAndCreateD3DShader("shaders\\ui_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUiPS);
+	}
+	// Projected alpha mask: the whole scene redrawn with colour writes off, depositing the
+	// cross-fade mask's alpha for the wipe (and the wireframe preview) to composite against.
+	if (DX8Wrapper::m_dwMaskVS == 0) {
+		LoadAndCreateD3DShader("shaders\\mask_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwMaskVS);
+	}
+	if (DX8Wrapper::m_dwMaskPS == 0) {
+		LoadAndCreateD3DShader("shaders\\mask_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwMaskPS);
 	}
 	if (DX8Wrapper::m_dwTerrainVS == 0) {
 		LoadAndCreateD3DShader("shaders\\terrain_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwTerrainVS);
