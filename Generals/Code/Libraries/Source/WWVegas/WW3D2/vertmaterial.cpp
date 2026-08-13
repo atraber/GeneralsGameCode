@@ -898,6 +898,7 @@ WW3DErrorType VertexMaterialClass::Save_W3D(ChunkSaveClass & csave)
 
 void VertexMaterialClass::Apply() const
 {
+	FF_SITE("VertexMaterialClass::Apply");
 	int i;
 
 	DX8Wrapper::Set_DX8_Material(Material);
@@ -923,6 +924,7 @@ void VertexMaterialClass::Apply() const
 
 void VertexMaterialClass::Apply_Null()
 {
+	FF_SITE("VertexMaterialClass::Apply_Null");
 	int i;
 	static D3DMATERIAL8 default_settings =
 	{

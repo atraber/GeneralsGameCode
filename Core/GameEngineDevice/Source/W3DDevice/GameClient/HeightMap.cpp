@@ -1873,6 +1873,7 @@ void HeightMapRenderObjClass::updateCenter(CameraClass *camera, const Vector3 *c
 
 void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 {
+	FF_SITE("HeightMapRenderObjClass::Render");
 	//USE_PERF_TIMER(Terrain_Render)
 
 	Int i,j,devicePasses;

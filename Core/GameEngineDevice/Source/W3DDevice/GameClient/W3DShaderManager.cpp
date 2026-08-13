@@ -243,9 +243,7 @@ Bool ScreenDefaultFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -329,9 +327,7 @@ HRESULT W3DShaderManager::drawScreenQuad(LPDIRECT3DDEVICE8 dev,
 	// anything but solid, so this belongs here rather than in every caller.
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_FILLMODE, D3DFILL_SOLID);
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX2);
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	return dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
 }
 
@@ -637,9 +633,7 @@ Bool ScreenBWFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doE
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -785,6 +779,7 @@ Bool ScreenBWFilterDOT3::preRender(Bool &skipRender, CustomScenePassModes &scene
 
 Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doExtraRender)
 {
+	FF_SITE("ScreenBWFilterDOT3::postRender");
 	IDirect3DTexture8 * tex =	W3DShaderManager::endRenderToTexture();
 	DEBUG_ASSERTCRASH(tex, ("Require rendered texture."));
 	if (!tex) return false;
@@ -851,9 +846,7 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 
 	DX8Wrapper::Set_DX8_Texture(0,tex);	//previously rendered frame inside this texture
 
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	//Draw normal view blended by current fade level
@@ -865,9 +858,7 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 	//replace texture alpha with vertex alpha
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
 
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -1123,9 +1114,7 @@ Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bo
 //		m_pDev->SetTextureStageState(0,D3DTSS_MAGFILTER,D3DTEXF_POINT);
 //		m_pDev->SetTextureStageState(0,D3DTSS_MINFILTER,D3DTEXF_POINT);
 
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -1134,6 +1123,7 @@ Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bo
 
 Int ScreenCrossFadeFilter::set(FilterModes mode)
 {
+	FF_SITE("ScreenCrossFadeFilter::set");
 	if (mode > FM_NULL_MODE)
 	{	//rendering a quad with redirected rendering surface
 		VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
@@ -1171,6 +1161,7 @@ Int ScreenCrossFadeFilter::set(FilterModes mode)
 
 void ScreenCrossFadeFilter::reset()
 {
+	FF_SITE("ScreenCrossFadeFilter::reset");
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLOROP,   D3DTOP_DISABLE );
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_ALPHAOP,   D3DTOP_DISABLE );
 	DX8Wrapper::Set_DX8_Texture(0,nullptr);	//previously rendered frame inside this texture
@@ -1225,6 +1216,7 @@ Bool ScreenMotionBlurFilter::preRender(Bool &skipRender, CustomScenePassModes &s
 
 Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doExtraRender)
 {
+	FF_SITE("ScreenMotionBlurFilter::postRender");
 	IDirect3DTexture8 * tex =	W3DShaderManager::endRenderToTexture();
 	DEBUG_ASSERTCRASH(tex, ("Require rendered texture."));
 	if (!tex) return false;
@@ -1343,9 +1335,7 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 	pDev->SetTextureStageState(0,D3DTSS_ALPHAARG1, D3DTA_CURRENT);
 	pDev->SetTextureStageState(0,D3DTSS_ALPHAARG2, D3DTA_TEXTURE);
 	pDev->SetTextureStageState(0,D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE,true);
 
@@ -1374,9 +1364,7 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 					v[i].v = ((v[i].v-center.y)*factor) + center.y;
 				}
 			}
-#ifdef RTS_DEBUG
-			DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+			DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 			pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 		}
@@ -1491,6 +1479,7 @@ Int ShroudTextureShader::init()
 //Setup a texture projection in the given stage that applies our shroud.
 Int ShroudTextureShader::set(Int stage)
 {
+	FF_SITE("ShroudTextureShader::set");
 	//force WW3D2 system to set it's states so it won't later overwrite our custom settings.
 	VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
 	DX8Wrapper::Set_Material(vmat);
@@ -1605,6 +1594,7 @@ Int ShroudTextureShader::set(Int stage)
 
 void ShroudTextureShader::reset()
 {
+	FF_SITE("ShroudTextureShader::reset");
 	DX8Wrapper::Set_Texture(m_stageOfSet,nullptr);
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);
 	// Take the co-planar bias back off; nothing after this pass wants it.
@@ -1694,6 +1684,7 @@ Int TerrainShader2Stage::init()
 
 void TerrainShader2Stage::reset()
 {
+	FF_SITE("TerrainShader2Stage::reset");
 	ShaderClass::Invalidate();
 
 	//Free references to textures
@@ -1759,6 +1750,7 @@ void TerrainShader2Stage::updateNoise2(D3DXMATRIX *destMatrix,D3DXMATRIX *curVie
 
 Int TerrainShader2Stage::set(Int pass)
 {
+	FF_SITE("TerrainShader2Stage::set");
 	//force WW3D2 system to set it's states so it won't later overwrite our custom settings.
 	DX8Wrapper::Apply_Render_State_Changes();
 
@@ -3813,9 +3805,7 @@ void W3DShaderManager::drawViewport(Int color)
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 }
 
@@ -4216,6 +4206,7 @@ Real W3DShaderManager::GetCPUBenchTime()
 //=============================================================================
 Int W3DShaderManager::setShroudTex(Int stage)
 {
+	FF_SITE("W3DShaderManager::setShroudTex");
 	//We need to scale so shroud texel stretches over one full terrain cell.  Each texel
 	//is 1/128 the size of full texture. (assuming 128x128 vid-mem texture).
 	W3DShroud *shroud;

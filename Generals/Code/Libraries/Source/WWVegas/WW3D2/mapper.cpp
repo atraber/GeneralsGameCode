@@ -96,6 +96,7 @@ LinearOffsetTextureMapperClass::LinearOffsetTextureMapperClass(const LinearOffse
 
 void LinearOffsetTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("LinearOffsetTextureMapperClass::Apply");
 	unsigned int delta = WW3D::Get_Sync_Time() - LastUsedSyncTime;
 	float del = (float)delta;
 	float offset_u = CurrentUVOffset.X + UVOffsetDeltaPerMS.X * del;
@@ -157,6 +158,7 @@ ScaleTextureMapperClass::ScaleTextureMapperClass(const ScaleTextureMapperClass &
 
 void ScaleTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("ScaleTextureMapperClass::Apply");
 	// Set up the scale matrix
 	Matrix3D m(true);
 
@@ -202,6 +204,7 @@ GridTextureMapperClass::GridTextureMapperClass(const GridTextureMapperClass & sr
 
 void GridTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("GridTextureMapperClass::Apply");
 	update_temporal_state();
 
 	float u_offset, v_offset;
@@ -316,6 +319,7 @@ RotateTextureMapperClass::RotateTextureMapperClass(const RotateTextureMapperClas
 
 void RotateTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("RotateTextureMapperClass::Apply");
 	unsigned int now = WW3D::Get_Sync_Time();
 	unsigned int delta =  now - LastUsedSyncTime;
 	LastUsedSyncTime=now;
@@ -382,6 +386,7 @@ SineLinearOffsetTextureMapperClass::SineLinearOffsetTextureMapperClass(const Sin
 
 void SineLinearOffsetTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("SineLinearOffsetTextureMapperClass::Apply");
 	unsigned int now = WW3D::Get_Sync_Time();
 	unsigned int delta =  now - LastUsedSyncTime;
 	LastUsedSyncTime=now;
@@ -444,6 +449,7 @@ StepLinearOffsetTextureMapperClass::StepLinearOffsetTextureMapperClass(const Ste
 
 void StepLinearOffsetTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("StepLinearOffsetTextureMapperClass::Apply");
 	unsigned int now = WW3D::Get_Sync_Time();
 	unsigned int delta =  now - LastUsedSyncTime;
 	float ms_per_step=1000.0f / StepsPerSec;
@@ -510,6 +516,7 @@ ZigZagLinearOffsetTextureMapperClass::ZigZagLinearOffsetTextureMapperClass(const
 
 void ZigZagLinearOffsetTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("ZigZagLinearOffsetTextureMapperClass::Apply");
 	unsigned int now = WW3D::Get_Sync_Time();
 	unsigned int delta =  now - LastUsedSyncTime;
 	float time=delta/1000.0f;
@@ -567,6 +574,7 @@ void ZigZagLinearOffsetTextureMapperClass::Reset()
 
 void ClassicEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("ClassicEnvironmentMapperClass::Apply");
 	// The canonical environment map
 	// scale the normal by (.5,.5) and add (.5,.5) to move it to (0,1) range
 	// and ignore the Z component
@@ -586,6 +594,7 @@ void ClassicEnvironmentMapperClass::Apply(int uv_array_index)
 
 void EnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("EnvironmentMapperClass::Apply");
 	// The canonical environment map
 	// scale the normal by (.25,.25) and add (.5,.5) to move it to (0,1) range
 	// the additional half is to fudge the 1+z normalization factor
@@ -636,6 +645,7 @@ EdgeMapperClass::EdgeMapperClass(const EdgeMapperClass & src):
 
 void EdgeMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("EdgeMapperClass::Apply");
 	unsigned int now=WW3D::Get_Sync_Time();
 
 	float delta=(now-LastUsedSyncTime)*0.001f;
@@ -671,6 +681,7 @@ void EdgeMapperClass::Reset()
 
 void WSClassicEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("WSClassicEnvironmentMapperClass::Apply");
 	// The canonical environment map
 	// scale the normal by (.5,.5) and add (.5,.5) to move it to (0,1) range
 	// and ignore the Z component
@@ -702,6 +713,7 @@ void WSClassicEnvironmentMapperClass::Apply(int uv_array_index)
 
 void WSEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("WSEnvironmentMapperClass::Apply");
 	// The canonical environment map
 	// scale the normal by (.25,.25) and add (.5,.5) to move it to (0,1) range
 	// the additional half is to fudge the 1+z normalization factor
@@ -734,6 +746,7 @@ void WSEnvironmentMapperClass::Apply(int uv_array_index)
 
 void ScreenMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("ScreenMapperClass::Apply");
 	unsigned int delta = WW3D::Get_Sync_Time() - LastUsedSyncTime;
 	float del = (float)delta;
 	float offset_u = CurrentUVOffset.X + UVOffsetDeltaPerMS.X * del;
@@ -773,6 +786,7 @@ void ScreenMapperClass::Apply(int uv_array_index)
 
 void GridClassicEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("GridClassicEnvironmentMapperClass::Apply");
 	update_temporal_state();
 
 	float u_offset, v_offset;
@@ -795,6 +809,7 @@ void GridClassicEnvironmentMapperClass::Apply(int uv_array_index)
 
 void GridEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("GridEnvironmentMapperClass::Apply");
 	update_temporal_state();
 
 	float u_offset, v_offset;
@@ -860,6 +875,7 @@ RandomTextureMapperClass::RandomTextureMapperClass(const RandomTextureMapperClas
 
 void RandomTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("RandomTextureMapperClass::Apply");
 	// Set up the random matrix
 	Matrix3D m(true);
 
@@ -927,6 +943,7 @@ BumpEnvTextureMapperClass::BumpEnvTextureMapperClass(const BumpEnvTextureMapperC
 
 void BumpEnvTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("BumpEnvTextureMapperClass::Apply");
 	LinearOffsetTextureMapperClass::Apply(uv_array_index);
 
 	unsigned int now = WW3D::Get_Sync_Time();

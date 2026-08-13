@@ -342,6 +342,7 @@ void W3DCustomEdging::clearAllEdging()
 void W3DCustomEdging::drawEdging(WorldHeightMap *pMap, Int minX, Int maxX, Int minY, Int maxY,
 		TextureClass * terrainTexture, TextureClass * cloudTexture, TextureClass * noiseTexture)
 {
+	FF_SITE("W3DCustomEdging::drawEdging");
 	// Name only -- UNCLASSIFIED is the default technique, so this changes no routing.
 	// It puts a caller name on these draws in the fixed-function census, which would
 	// otherwise file them as an anonymous "(undeclared 3D)" group.

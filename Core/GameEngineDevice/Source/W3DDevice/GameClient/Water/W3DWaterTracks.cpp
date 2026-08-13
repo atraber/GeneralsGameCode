@@ -848,6 +848,7 @@ void setFPMode();
 //=============================================================================
 void WaterTracksRenderSystem::flush(RenderInfoClass & rinfo)
 {
+	FF_SITE("WaterTracksRenderSystem::flush");
 	// Wake and shore marks on the water: blended decals.
 	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "waterTracks");
 /** @todo: Optimize system by drawing tracks as triangle strips and use dynamic vertex buffer access.

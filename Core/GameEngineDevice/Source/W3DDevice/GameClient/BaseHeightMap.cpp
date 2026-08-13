@@ -2444,6 +2444,7 @@ water plane.  Applying a custom render to these polygons allows for a smoother l
 transition*/
 void BaseHeightMapRenderObjClass::renderShoreLines(CameraClass *pCamera)
 {
+	FF_SITE("BaseHeightMap::renderShoreLines");
 	// Name only -- UNCLASSIFIED is the default technique, so this changes no routing.
 	// It puts a caller name on these draws in the fixed-function census, which would
 	// otherwise file them as an anonymous "(undeclared 3D)" group.
@@ -2616,6 +2617,7 @@ transition.  This version is exactly like the one above but optimized for the ca
 are assumed to be sorted.  Not used by World Builder. */
 void BaseHeightMapRenderObjClass::renderShoreLinesSorted(CameraClass *pCamera)
 {
+	FF_SITE("BaseHeightMap::renderShoreLinesSorted");
 	m_numVisibleShoreLineTiles=0;
 
 	if (!TheGlobalData->m_showSoftWaterEdge || TheWaterTransparency->m_transparentWaterDepth==0 || m_numShoreLineTiles == 0)

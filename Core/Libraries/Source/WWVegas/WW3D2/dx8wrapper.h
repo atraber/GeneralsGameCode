@@ -662,6 +662,52 @@ public:
 	static const char* Get_DX8_Texture_Stage_State_Name(D3DTEXTURESTAGESTATETYPE state);
 	static unsigned Get_DX8_Render_State(D3DRENDERSTATETYPE state) { return RenderStates[state]; }
 
+	// Fixed-function state that has been tracked but not sent.
+	//
+	// Nothing in this renderer draws with the fixed-function pipeline any more -- the
+	// census says 0 of 612237 draws over a window -- but a great deal of code still
+	// *describes* itself through fixed-function state, and the routing block reads that
+	// description back to decide which shader a draw wants. So the writes cannot simply be
+	// deleted: TextureStageStates is the intermediate representation, and a combine that
+	// never reaches D3D still tells the router this pass wanted a detail blend.
+	//
+	// What can go is the D3D call. Colour and alpha ops, texgen, lighting, the material --
+	// none of it has any effect while a vertex and pixel shader are bound, so it is written
+	// to the tracked arrays and stops there.
+	//
+	// Correct rather than merely fast, because the deferral is lazy and not a suppression:
+	// any draw that really does go out on fixed function flushes the pending words first,
+	// so a pass that has no programmable path yet still renders from the state its caller
+	// asked for. Flushed from two places, which between them cover every way to draw:
+	// Draw(), for everything that goes through the wrapper, and Prepare_Direct_Draw for the
+	// handful of subsystems that talk to the device themselves.
+	static bool Has_Pending_Fixed_Function_State() { return FFStatePending || FFMaterialPending; }
+	static void Flush_Fixed_Function_State();
+	static bool Is_Deferred_FF_Stage_State(unsigned state);
+	static bool Is_Deferred_FF_Render_State(unsigned state);
+	// Declare a draw the wrapper will not see. Flushes any deferred fixed-function state,
+	// because a direct-device drawer binds nothing and may well be running fixed function
+	// -- and in a debug build, counts it, since nothing else can.
+	static void Prepare_Direct_Draw(const char * site);
+
+	// Put the 2D interface shader on an untextured screen-space quad drawn straight at the
+	// device, and build the pixels-to-clip matrix it needs.
+	//
+	// For the direct-device drawers, which never reach the routing block and so cannot be
+	// given a shader by it. Without this they are the last genuinely fixed-function draws
+	// in the frame -- and one fixed-function draw is enough to make every deferred state
+	// word real again, because the pipeline it renders from has to be reassembled from
+	// whatever the tracked state has accumulated since the previous one. Six such draws a
+	// frame were holding roughly 740 state words a frame at the device.
+	//
+	// Takes screen pixel coordinates because that is what these callers already compute;
+	// it replaces D3DFVF_XYZRHW, which said the same thing to the fixed-function pipeline.
+	// Returns false if the shader is unavailable, in which case the caller must keep its
+	// fixed-function path -- so this can be adopted one drawer at a time.
+	static bool Bind_Screen_Space_Shader();
+	// The material as last set, without asking the device for it.
+	static const D3DMATERIAL8 & Get_DX8_Material() { return CurrentMaterial; }
+
 	// Names of the specific values of render states and texture stage states
 	static void Get_DX8_Texture_Stage_State_Value_Name(StringClass& name, D3DTEXTURESTAGESTATETYPE state, unsigned value);
 	static void Get_DX8_Render_State_Value_Name(StringClass& name, D3DRENDERSTATETYPE state, unsigned value);
@@ -686,11 +732,6 @@ public:
 	static const char* Get_DX8_Blend_Op_Name(unsigned value);
 
 	static void Invalidate_Cached_Render_States();
-	// Read the texture stage states the draw-routing predicate consults back from the
-	// device into the cache. Invalidation fills that cache with a sentinel so no needed
-	// write is skipped, which is right for writing but wrong for reading -- and the
-	// predicate reads it. Call after invalidating mid-frame.
-	static void Resync_Texture_Stage_State_Cache();
 
 	static void Set_Draw_Polygon_Low_Bound_Limit(unsigned n) { DrawPolygonLowBoundLimit=n; }
 
@@ -795,6 +836,29 @@ protected:
 	static unsigned						RenderStates[256];
 	static unsigned						TextureStageStates[MAX_TEXTURE_STAGES][32];
 	static IDirect3DBaseTexture8 *	Textures[MAX_TEXTURE_STAGES];
+
+	// Deferred fixed-function state. See Flush_Fixed_Function_State in dx8wrapper.cpp for
+	// why these words stop at the arrays above instead of going on to the device.
+	//
+	// One bit per pending state word: stage states are all below 32, and the fixed-function
+	// render states this defers top out at D3DRS_EMISSIVEMATERIALSOURCE (148).
+	static unsigned						FFStagePending[MAX_TEXTURE_STAGES];
+	static unsigned						FFRenderPending[8];
+	static bool								FFStatePending;
+	// What the device was actually last told, so a flush writes only the words that would
+	// change something. Without it the flush is not incremental and the deferral trades a
+	// steady trickle of writes for a periodic flood: invalidation marks every deferred word
+	// pending, and each of the frame's direct draws would then re-push the lot. Measured at
+	// 420744 words a window that way, against 336289 asked for -- worse than not deferring.
+	static unsigned						FFDeviceStage[MAX_TEXTURE_STAGES][32];
+	static unsigned						FFDeviceRender[256];
+	// The material is tracked rather than bit-flagged because there is no array behind it
+	// to defer into -- this copy *is* the tracked state. The routing block reads it to
+	// recover the house-colour tint and the stealth opacity, which it used to fetch back
+	// out of the device with GetMaterial once per draw.
+	static D3DMATERIAL8					CurrentMaterial;
+	static D3DMATERIAL8					FFDeviceMaterial;   // as last sent
+	static bool								FFMaterialPending;
 
 	// These fog settings are constant for all objects in a given scene,
 	// unlike the matching renderstates which vary based on shader settings.
@@ -976,6 +1040,28 @@ public:
 	static void Debug_Note_Particle_Shadow_Sprite(float size, float alpha);
 	static void Debug_Note_Shadow_Caster_Draw(bool particleVariant);
 	static void Debug_Report_Particle_Shadows();
+
+	// Fixed-function *call sites*, as opposed to fixed-function draws.
+	//
+	// Debug_Report_FF_Draws says nobody still draws with fixed function. It does not say
+	// nobody still writes it: a caller can set a whole colour/alpha combine and then have
+	// its draw claimed by a pixel shader that ignores every word of it. Those writes are
+	// what is left to delete, and the count of them is not the count of draws.
+	//
+	// Each emitting function names itself with FFSiteScope. Two numbers per site: how often
+	// the function ran, and how many fixed-function-only state words it actually pushed to
+	// the device from there. A site with calls but no writes is asking for state that was
+	// already set -- redundant, and safe to delete on its own. A site with writes is live
+	// churn, and needs its subsystem routed onto a shader before the block can go.
+	//
+	// Counted at the device, past the redundancy check, and deliberately so: the tracked
+	// TextureStageStates array is *not* dead even where the device state is, because the
+	// routing block reads texgen intent back out of it. The array is the intermediate
+	// representation of what the caller wanted; only the D3D call is waste.
+	static void Debug_Set_FF_Site(const char* site);
+	static const char* Debug_Get_FF_Site();
+	static void Debug_Note_FF_State_Write(unsigned isTextureStage, unsigned state);
+	static void Debug_Report_FF_Sites();
 
 #endif
 	// Programmable road path. Roads are decals on the terrain and want the terrain's
@@ -1394,6 +1480,39 @@ private:
 	ShadowCastingEffectClass & operator = (const ShadowCastingEffectClass &);
 };
 
+/*
+** FFSiteScope -- name the function whose fixed-function writes these are.
+**
+** One at the head of every function that still sets a colour/alpha combine, a texgen, a
+** light or a material. The wrapper attributes each fixed-function-only state word it
+** pushes to the innermost enclosing site, so the census reads as a work order: which
+** subsystem, how often, and whether the writes change anything.
+**
+** Restores the enclosing site rather than clearing it, because these nest -- a drawer
+** sets up its own combine and then calls ShaderClass::Apply, which sets more. Clearing
+** would credit the rest of the drawer's writes to nobody.
+**
+** Compiles to nothing outside a debug build.
+*/
+#ifdef RTS_DEBUG
+class FFSiteScope
+{
+public:
+	explicit FFSiteScope(const char * site) : Previous(DX8Wrapper::Debug_Get_FF_Site())
+	{
+		DX8Wrapper::Debug_Set_FF_Site(site);
+	}
+	~FFSiteScope() { DX8Wrapper::Debug_Set_FF_Site(Previous); }
+private:
+	const char * Previous;
+	FFSiteScope(const FFSiteScope &);
+	FFSiteScope & operator = (const FFSiteScope &);
+};
+#define FF_SITE(name) FFSiteScope _ff_site_scope(name)
+#else
+#define FF_SITE(name) ((void)0)
+#endif
+
 // shader system updates KJM v
 WWINLINE void DX8Wrapper::Set_Vertex_Shader(DWORD vertex_shader)
 {
@@ -1539,7 +1658,15 @@ WWINLINE void DX8Wrapper::Set_DX8_Material(const D3DMATERIAL8* mat)
 	DX8_RECORD_MATERIAL_CHANGE();
 	WWASSERT(mat);
 	SNAPSHOT_SAY(("DX8 - SetMaterial"));
-	DX8CALL(SetMaterial(mat));
+	// Tracked, not sent -- a material is fixed-function vertex lighting and nothing else.
+	// The copy is what the routing block reads; the device only learns about it if some
+	// draw actually goes out on fixed function. Unlike the state words above there is no
+	// redundancy check in front of this, so every call counts as a write.
+	CurrentMaterial = *mat;
+	FFMaterialPending = true;
+#ifdef RTS_DEBUG
+	Debug_Note_FF_State_Write(0, (unsigned)D3DRS_DIFFUSEMATERIALSOURCE);
+#endif
 }
 
 WWINLINE void DX8Wrapper::Set_DX8_Light(int index, D3DLIGHT8* light)
@@ -1575,6 +1702,15 @@ WWINLINE void DX8Wrapper::Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigne
 #endif
 
 	RenderStates[state]=value;
+	if (DX8Wrapper::Is_Deferred_FF_Render_State((unsigned)state)) {
+		FFRenderPending[(unsigned)state >> 5] |= (1u << ((unsigned)state & 31u));
+		FFStatePending = true;
+#ifdef RTS_DEBUG
+		Debug_Note_FF_State_Write(0, (unsigned)state);
+#endif
+		DX8_RECORD_RENDER_STATE_CHANGE();
+		return;
+	}
 	if (state == D3DRS_SOFTWAREVERTEXPROCESSING) {
 		DX8CALL(SetSoftwareVertexProcessing(value));
 	} else if (state == D3DRS_ZBIAS) {
@@ -1639,6 +1775,15 @@ WWINLINE void DX8Wrapper::Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURE
 	// constants chosen before the texgen existed. See TEXGEN_STATE_CHANGED.
 	if (state == D3DTSS_TEXCOORDINDEX || state == D3DTSS_TEXTURETRANSFORMFLAGS) {
 		render_state_changed |= (unsigned)TEXGEN_STATE_CHANGED;
+	}
+	if (DX8Wrapper::Is_Deferred_FF_Stage_State((unsigned)state)) {
+		FFStagePending[stage] |= (1u << ((unsigned)state & 31u));
+		FFStatePending = true;
+#ifdef RTS_DEBUG
+		Debug_Note_FF_State_Write(1, (unsigned)state);
+#endif
+		DX8_RECORD_TEXTURE_STAGE_STATE_CHANGE();
+		return;
 	}
 	bool is_sampler_state = false;
 	D3DSAMPLERSTATETYPE sampler_state;

@@ -1380,9 +1380,7 @@ void W3DVolumetricShadow::RenderMeshVolume(Int meshIndex, Int lightIndex, const 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(numPolys,numVerts,ShaderClass::_PresetOpaqueShader);
-#ifdef RTS_DEBUG
-		DX8Wrapper::Debug_Note_Direct_Draw("volumetricShadow");
-#endif
+		DX8Wrapper::Prepare_Direct_Draw("volumetricShadow");
 		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,ibSlot->m_start,numPolys);
 	}
 
@@ -1483,9 +1481,7 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(numPolys,numVerts,ShaderClass::_PresetOpaqueShader);
-#ifdef RTS_DEBUG
-		DX8Wrapper::Debug_Note_Direct_Draw("volumetricShadow");
-#endif
+		DX8Wrapper::Prepare_Direct_Draw("volumetricShadow");
 		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,nShadowStartBatchIndex,numPolys);
 	}
 
@@ -1636,9 +1632,7 @@ void W3DVolumetricShadow::RenderMeshVolumeBounds(Int meshIndex, Int lightIndex, 
 	m_pDev->SetStreamSource(0,shadowVertexBufferD3D,sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX));
 	m_pDev->SetVertexShader(SHADOW_DYNAMIC_VOLUME_FVF);
 
-#ifdef RTS_DEBUG
-	DX8Wrapper::Debug_Note_Direct_Draw("volumetricShadow");
-#endif
+	DX8Wrapper::Prepare_Direct_Draw("volumetricShadow");
 	m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,nShadowStartBatchIndex,numPolys);
 
 	nShadowVertsInBuf += numVerts;
@@ -3345,6 +3339,7 @@ void W3DVolumetricShadow::resetSilhouette( Int meshIndex )
 // ============================================================================
 void W3DVolumetricShadowManager::renderStencilShadows()
 {
+	FF_SITE("W3DVolumetricShadow::renderStencilShadows");
 	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	if (!m_pDev)
@@ -3401,9 +3396,7 @@ void W3DVolumetricShadowManager::renderStencilShadows()
 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
-#ifdef RTS_DEBUG
-		DX8Wrapper::Debug_Note_Direct_Draw("volumetricShadow");
-#endif
+		DX8Wrapper::Prepare_Direct_Draw("volumetricShadow");
 		m_pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANSLITVERTEX));
 	}
 
@@ -3416,6 +3409,7 @@ void W3DVolumetricShadowManager::renderStencilShadows()
 
 void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 {
+	FF_SITE("W3DVolumetricShadow::renderShadows");
 	W3DVolumetricShadow *shadow;
 	Int numRenderedShadows = 0;
 

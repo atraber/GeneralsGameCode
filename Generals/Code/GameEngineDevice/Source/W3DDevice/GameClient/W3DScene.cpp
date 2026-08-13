@@ -1212,9 +1212,18 @@ Int playerIndexToColorIndex(Int playerIndex)
 stencil mask*/
 void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool clear=FALSE)
 {
-	struct _TRANSLITVERTEX {
-	    Vector4 p;
+	// Untransformed rather than D3DFVF_XYZRHW, because a vertex shader cannot consume a
+	// transformed position -- D3D9 reserves POSITIONT for the fixed-function pipeline. The
+	// pixel coordinates below are unchanged; Bind_Screen_Space_Shader carries the mapping
+	// to clip space that XYZRHW used to imply, and the shader does the multiply.
+	//
+	// The texture coordinate is present only to satisfy the declaration: the interface
+	// shader reads one, and this quad is a flat colour with nothing to sample. Its value is
+	// discarded there by UiCtl, not multiplied by zero, so it never has to be meaningful.
+	struct _SCREENVERTEX {
+		float x, y, z;
 		DWORD color;   // diffuse color
+		float u, v;
 	} v[4];
 
 	Int xpos, ypos, width, height;
@@ -1223,14 +1232,16 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 	width=TheTacticalView->getWidth();
 	height=TheTacticalView->getHeight();
 
-    v[0].p.Set(xpos+width, ypos+height, 0.0f, 1.0f );
-    v[1].p.Set(xpos+width, 0, 0.0f, 1.0f );
-    v[2].p.Set(xpos, ypos+height, 0.0f, 1.0f );
-    v[3].p.Set(xpos,  0, 0.0f, 1.0f );
-    v[0].color = color;
-    v[1].color = color;
-    v[2].color = color;
-    v[3].color = color;
+	for (Int i = 0; i < 4; ++i) {
+		v[i].z = 0.0f;
+		v[i].color = color;
+		v[i].u = 0.0f;
+		v[i].v = 0.0f;
+	}
+	v[0].x = (float)(xpos+width); v[0].y = (float)(ypos+height);
+	v[1].x = (float)(xpos+width); v[1].y = 0.0f;
+	v[2].x = (float)xpos;         v[2].y = (float)(ypos+height);
+	v[3].x = (float)xpos;         v[3].y = 0.0f;
 
 	DX8Wrapper::Set_Shader(PlayerColorShader);
 	VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
@@ -1245,13 +1256,22 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 
 	//draw polygons like this is very inefficient but for only 2 triangles, it's
 	//not worth bothering with index/vertex buffers.
-	m_pDev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
-	// XYZRHW puts these vertices past the vertex pipeline, but it says nothing about the
-	// pixel one -- so this quad was drawn with whichever pixel shader the previous draw
-	// happened to leave bound. Measured at two of every three of these per frame running a
-	// shader this code never chose. The wrapper cannot decide it either, because the draw
-	// goes straight to the device and never reaches the routing block. State it here.
-	DX8Wrapper::Set_Pixel_Shader(0);
+	// The FVF is still set, and still matters -- it is the vertex declaration the shader
+	// reads through. Set it first, because Set_Vertex_Shader clears the bound shader when
+	// handed an FVF, and binding the real one has to come after that.
+	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+	// This quad used to be the last thing in the frame drawing on the fixed-function
+	// pipeline, along with the shadow decal flush -- and one such draw is enough to make
+	// every deferred fixed-function state word real again, because the pipeline it renders
+	// from has to be rebuilt out of whatever the tracked state has accumulated since the
+	// previous one. It is a flat colour over a stencil test, which the interface shader
+	// already expresses exactly.
+	//
+	// Before that it was worse than fixed function: XYZRHW puts these vertices past the
+	// vertex pipeline but says nothing about the pixel one, so the quad ran under whichever
+	// pixel shader the previous draw left bound -- two of every three per frame.
+	if (!DX8Wrapper::Bind_Screen_Space_Shader())
+		return;   // no interface shader means no interface either; nothing to fall back to
 
 	// Set stencil states
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_STENCILENABLE, TRUE );
@@ -1301,7 +1321,10 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 	}
 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
-		m_pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANSLITVERTEX));
+	{
+		DX8Wrapper::Prepare_Direct_Draw("sceneOverlayQuad");
+		m_pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREENVERTEX));
+	}
 
 	// turn off the stencil buffer
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_STENCILENABLE, FALSE );
