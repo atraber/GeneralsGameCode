@@ -243,6 +243,9 @@ Bool ScreenDefaultFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -326,6 +329,9 @@ HRESULT W3DShaderManager::drawScreenQuad(LPDIRECT3DDEVICE8 dev,
 	// anything but solid, so this belongs here rather than in every caller.
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_FILLMODE, D3DFILL_SOLID);
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX2);
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 	return dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
 }
 
@@ -631,6 +637,9 @@ Bool ScreenBWFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doE
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -842,6 +851,9 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 
 	DX8Wrapper::Set_DX8_Texture(0,tex);	//previously rendered frame inside this texture
 
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	//Draw normal view blended by current fade level
@@ -853,6 +865,9 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 	//replace texture alpha with vertex alpha
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
 
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -1108,6 +1123,9 @@ Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bo
 //		m_pDev->SetTextureStageState(0,D3DTSS_MAGFILTER,D3DTEXF_POINT);
 //		m_pDev->SetTextureStageState(0,D3DTSS_MINFILTER,D3DTEXF_POINT);
 
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -1325,6 +1343,9 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 	pDev->SetTextureStageState(0,D3DTSS_ALPHAARG1, D3DTA_CURRENT);
 	pDev->SetTextureStageState(0,D3DTSS_ALPHAARG2, D3DTA_TEXTURE);
 	pDev->SetTextureStageState(0,D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE,true);
 
@@ -1353,6 +1374,9 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 					v[i].v = ((v[i].v-center.y)*factor) + center.y;
 				}
 			}
+#ifdef RTS_DEBUG
+			DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 			pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 		}
@@ -3789,6 +3813,9 @@ void W3DShaderManager::drawViewport(Int color)
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("screenFilter");
+#endif
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 }
 

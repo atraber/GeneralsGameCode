@@ -1380,6 +1380,9 @@ void W3DVolumetricShadow::RenderMeshVolume(Int meshIndex, Int lightIndex, const 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(numPolys,numVerts,ShaderClass::_PresetOpaqueShader);
+#ifdef RTS_DEBUG
+		DX8Wrapper::Debug_Note_Direct_Draw("volumetricShadow");
+#endif
 		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,ibSlot->m_start,numPolys);
 	}
 
@@ -1480,6 +1483,9 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(numPolys,numVerts,ShaderClass::_PresetOpaqueShader);
+#ifdef RTS_DEBUG
+		DX8Wrapper::Debug_Note_Direct_Draw("volumetricShadow");
+#endif
 		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,nShadowStartBatchIndex,numPolys);
 	}
 
@@ -1630,6 +1636,9 @@ void W3DVolumetricShadow::RenderMeshVolumeBounds(Int meshIndex, Int lightIndex, 
 	m_pDev->SetStreamSource(0,shadowVertexBufferD3D,sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX));
 	m_pDev->SetVertexShader(SHADOW_DYNAMIC_VOLUME_FVF);
 
+#ifdef RTS_DEBUG
+	DX8Wrapper::Debug_Note_Direct_Draw("volumetricShadow");
+#endif
 	m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,nShadowStartBatchIndex,numPolys);
 
 	nShadowVertsInBuf += numVerts;
@@ -3391,7 +3400,12 @@ void W3DVolumetricShadowManager::renderStencilShadows()
 	m_pDev->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_FLAT);
 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
+	{
+#ifdef RTS_DEBUG
+		DX8Wrapper::Debug_Note_Direct_Draw("volumetricShadow");
+#endif
 		m_pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANSLITVERTEX));
+	}
 
 	m_pDev->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);
 	m_pDev->SetRenderState( D3DRS_ALPHABLENDENABLE, FALSE );

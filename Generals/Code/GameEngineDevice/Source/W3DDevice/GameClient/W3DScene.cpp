@@ -1246,6 +1246,12 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 	//draw polygons like this is very inefficient but for only 2 triangles, it's
 	//not worth bothering with index/vertex buffers.
 	m_pDev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+	// XYZRHW puts these vertices past the vertex pipeline, but it says nothing about the
+	// pixel one -- so this quad was drawn with whichever pixel shader the previous draw
+	// happened to leave bound. Measured at two of every three of these per frame running a
+	// shader this code never chose. The wrapper cannot decide it either, because the draw
+	// goes straight to the device and never reaches the routing block. State it here.
+	DX8Wrapper::Set_Pixel_Shader(0);
 
 	// Set stencil states
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_STENCILENABLE, TRUE );

@@ -209,6 +209,62 @@ namespace {
 
 static bool s_applyIsDraw = false;
 
+//-----------------------------------------------------------------------------
+// Direct-device draws: the callers that bypass DX8Wrapper::Draw entirely.
+//
+// Each records whether a pixel shader was bound at the moment it drew. A zero there
+// means the draw went out on the fixed-function pipeline; it also means the draw took
+// whatever the *previous* draw left bound, since nothing on this path binds anything,
+// which is how the same geometry can land on different pipelines from frame to frame.
+//-----------------------------------------------------------------------------
+struct DirectDrawGroup
+{
+	const char * site;
+	unsigned     total;
+	unsigned     fixedFunction;   // pixel shader was 0
+};
+static DirectDrawGroup s_directDraws[16];
+static int      s_directDrawCount = 0;
+static unsigned s_directDrawFrames = 0;
+
+void DX8Wrapper::Debug_Note_Direct_Draw(const char * site)
+{
+	if (site == nullptr) site = "?";
+	const bool ff = (Pixel_Shader == 0);
+	for (int i = 0; i < s_directDrawCount; ++i) {
+		if (s_directDraws[i].site == site) {
+			++s_directDraws[i].total;
+			if (ff) ++s_directDraws[i].fixedFunction;
+			return;
+		}
+	}
+	if (s_directDrawCount >= 16) return;
+	DirectDrawGroup & g = s_directDraws[s_directDrawCount++];
+	g.site = site;
+	g.total = 1;
+	g.fixedFunction = ff ? 1 : 0;
+}
+
+void DX8Wrapper::Debug_Report_Direct_Draws()
+{
+	if (++s_directDrawFrames < 600) return;
+	s_directDrawFrames = 0;
+	if (s_directDrawCount == 0) {
+		WWDEBUG_SAY(("DIRECT-DEVICE DRAWS: none this window"));
+		return;
+	}
+	WWDEBUG_SAY(("DIRECT-DEVICE DRAWS over 600 frames (these bypass DX8Wrapper::Draw and "
+				 "are not in the census above):"));
+	for (int i = 0; i < s_directDrawCount; ++i) {
+		const DirectDrawGroup & g = s_directDraws[i];
+		WWDEBUG_SAY(("  %-24s x%-7u  fixed function %u (%u%%)",
+			g.site, g.total, g.fixedFunction,
+			g.total ? (unsigned)((unsigned __int64)g.fixedFunction * 100 / g.total) : 0));
+	}
+	s_directDrawCount = 0;
+}
+
+
 void DX8Wrapper::Debug_Note_Mesh_Routing(unsigned pipelineBit, unsigned ffReason)
 {
 	if (s_debugMeshName == nullptr) return;
@@ -2967,6 +3023,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Routing_Census();
 	Debug_Report_FF_Draws();
 	Debug_Report_Unclassified_Draws();
+	Debug_Report_Direct_Draws();
 	Debug_Report_Technique_Check();
 	Debug_Report_Particle_Shadows();
 	Mesh_Technique_Report_Registrations();
