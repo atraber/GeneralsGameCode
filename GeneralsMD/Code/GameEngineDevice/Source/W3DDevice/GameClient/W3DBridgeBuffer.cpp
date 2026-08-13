@@ -1187,6 +1187,10 @@ void W3DBridgeBuffer::drawBridges(CameraClass * camera, Bool wireframe)
 	//Render shroud pass over all the bridges
 	if (!wireframe && TheTerrainRenderObject->getShroud())
 	{
+	// Name only -- UNCLASSIFIED is the default technique, so this changes no routing.
+	// It puts a caller name on these draws in the fixed-function census, which would
+	// otherwise file them as an anonymous "(undeclared 3D)" group.
+	DeclaredTechniqueClass labelDraws(MESH_TECHNIQUE_UNCLASSIFIED, "bridgeShroudPass");
 		//Reset to a known shader.
 		DX8Wrapper::Invalidate_Cached_Render_States();
 		DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);

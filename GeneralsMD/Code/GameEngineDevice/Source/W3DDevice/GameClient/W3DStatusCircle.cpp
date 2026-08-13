@@ -300,6 +300,10 @@ Int W3DStatusCircle::updateScreenVB(Int diffuse)
 
 void W3DStatusCircle::Render(RenderInfoClass & rinfo)
 {
+	// Name only. UNCLASSIFIED is the default technique, so this changes no routing --
+	// it just puts a caller name on these draws in the fixed-function census, which
+	// otherwise files them as an anonymous "(undeclared 3D)" group.
+	DeclaredTechniqueClass labelDraws(MESH_TECHNIQUE_UNCLASSIFIED, "statusCircle");
 	if (!TheGameLogic->isInGame() || TheGameLogic->getGameMode() == GAME_SHELL)
 		return;
 

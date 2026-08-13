@@ -207,6 +207,8 @@ namespace {
 	}
 }
 
+static bool s_applyIsDraw = false;
+
 void DX8Wrapper::Debug_Note_Mesh_Routing(unsigned pipelineBit, unsigned ffReason)
 {
 	if (s_debugMeshName == nullptr) return;
@@ -492,7 +494,8 @@ void DX8Wrapper::Debug_Report_FF_Draws()
 	s_ffFrames = 0;
 
 	const unsigned all = s_ffTotal + s_ffRouted;
-	WWDEBUG_SAY(("FIXED-FUNCTION DRAWS: %u of %u draws (%u%%) over 600 frames, "
+	WWDEBUG_SAY(("FIXED-FUNCTION DRAWS (via DX8Wrapper::Draw; direct-device drawers not counted): "
+				 "%u of %u draws (%u%%) over 600 frames, "
 				 "%d groups (caller x vertex format)%s "
 				 "[+%u depth-pass draws suppressed, not submitted at all]",
 		s_ffTotal, all, all ? (unsigned)((unsigned __int64)s_ffTotal * 100 / all) : 0,
@@ -3326,7 +3329,26 @@ void DX8Wrapper::Draw(
 	DX8_THREAD_ASSERT();
 	SNAPSHOT_SAY(("DX8 - draw"));
 
+#ifdef RTS_DEBUG
+	// Tell the attribution below that this application of state is actually about to draw
+	// something. Apply_Render_State_Changes is public and called from about thirty places
+	// that are only tidying up -- unbinding textures, restoring a shader -- and counting
+	// those as fixed-function draws inflated the remaining work with entries that render
+	// nothing. Every "group" of exactly 559 per 600-frame window was one renderer's
+	// end-of-frame cleanup, which is why naming their draw functions never moved them.
+	//
+	// The bias this leaves, stated because the number is meaningless without it: callers
+	// that apply state and then issue DrawIndexedPrimitive/DrawPrimitiveUP against the
+	// device themselves are real draws and are no longer counted, because their Apply does
+	// not come through here. That is the volumetric shadows, the scene overlay quad, the
+	// water grid mesh, the screen filters and the smudge pass. This census now reads
+	// "fixed-function draws submitted through DX8Wrapper::Draw", not "all of them".
+	s_applyIsDraw = true;
+#endif
 	Apply_Render_State_Changes();
+#ifdef RTS_DEBUG
+	s_applyIsDraw = false;
+#endif
 
 	// Debug feature to disable triangle drawing...
 	if (!_Is_Triangle_Draw_Enabled()) return;
@@ -5544,6 +5566,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// suppression landed, which read as the change having done nothing.
 		const bool suppressedDraw = m_bSuppressDraw;
 
+		// Everything below counts draws, so none of it runs for an application of state
+		// that is not one. See the note in Draw() for what that excludes and why.
+		if (s_applyIsDraw) {
 		unsigned ffReason = 0;
 		if (diagRouteBit == 1 && !suppressedDraw) {
 			// Effect and additive are deliberately absent. They used to head this chain,
@@ -5607,6 +5632,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Debug_Note_Unclassified_Draw(render_state.Textures[0], curFVF,
 					diagRouteBit != 1u, alphaBlendOn, softBlendedOverlay);
 		}
+		}
 #endif
 		// Debug visualization overrides, last of all: everything above has finished
 		// deciding and binding, so what this recolours a draw by is what the device is
@@ -5625,7 +5651,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// Debug builds only: there is no reason to carry a per-draw branch into a release
 		// build for a mode it can never enter.
 #ifdef RTS_DEBUG
-		if (m_debugVisMode != DEBUG_VIS_OFF) {
+		// s_applyIsDraw and the suppression flag, for the same reason the census carries
+		// them: most calls here are not draws, and recolouring state that no draw is
+		// about to use paints nothing while still leaving the fill mode behind it.
+		if (m_debugVisMode != DEBUG_VIS_OFF && s_applyIsDraw && !m_bSuppressDraw) {
 			// The excluded passes used to be identified by D3DFVF_XYZRHW, which was only
 			// ever a proxy for "the interface" -- and it stops being one here, now that the
 			// interface is drawn by a vertex shader from untransformed positions. Ask the
@@ -5638,7 +5667,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// that constant decodes to. The 2D pass is excluded for a plainer reason -- it
 			// draws the control bar, the cursor and the banner naming the mode, and tinting
 			// the interface flat would take away the legend for the colours.
-			const bool excludedPass = m_bShadowDepthPass || m_bUiPass;
+			// The mask pass joins the list: it redraws the whole scene through one shader
+			// by construction, so tinting it says nothing about routing and would paint
+			// over the mode's own answer.
+			const bool excludedPass = m_bShadowDepthPass || m_bMaskPass || m_bUiPass;
 			// The fill mode is device state, not per-draw state, so an excluded pass does
 			// not merely miss the override -- it *inherits* whatever the last scene draw
 			// left. Stated for both cases rather than only the one that turns it on.

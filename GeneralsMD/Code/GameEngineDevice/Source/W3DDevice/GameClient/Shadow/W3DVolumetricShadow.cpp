@@ -1325,6 +1325,10 @@ void W3DVolumetricShadow::RenderVolume(Int meshIndex, Int lightIndex)
 
 void W3DVolumetricShadow::RenderMeshVolume(Int meshIndex, Int lightIndex, const Matrix3D *meshXform)
 {
+	// Name only -- UNCLASSIFIED is the default technique, so this changes no routing.
+	// It puts a caller name on these draws in the fixed-function census, which would
+	// otherwise file them as an anonymous "(undeclared 3D)" group.
+	DeclaredTechniqueClass labelDraws(MESH_TECHNIQUE_UNCLASSIFIED, "volumetricShadow");
 	Geometry *geometry;
 	Int numVerts, numPolys, numIndex;
 
