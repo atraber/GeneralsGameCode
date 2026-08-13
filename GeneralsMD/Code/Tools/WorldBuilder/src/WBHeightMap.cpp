@@ -304,11 +304,7 @@ void WBHeightMap::Render(RenderInfoClass & rinfo)
 	if (m_flattenHeights) {
 		flattenHeights();
 	}
-#ifdef USE_FLAT_HEIGHT_MAP
-	FlatHeightMapRenderObjClass::Render(rinfo);
-#else
 	HeightMapRenderObjClass::Render(rinfo);
-#endif
 }
 
 
