@@ -949,6 +949,13 @@ public:
 	static void Debug_Note_Routed_Draw();   // the control: a draw a shader claimed
 	static void Debug_Note_Suppressed_Draw();   // a draw dropped before submission
 	static void Debug_Report_FF_Draws();
+	// The blind spot in the census above, made visible. A caller that applies state and
+	// then issues DrawIndexedPrimitive/DrawPrimitiveUP against the device itself never
+	// reaches DX8Wrapper::Draw, so nothing attributes it and nothing binds a shader for
+	// it either -- it renders with whatever the previous draw happened to leave bound.
+	// These are the last drawers not accounted for, so each one names itself here.
+	static void Debug_Note_Direct_Draw(const char * site);
+	static void Debug_Report_Direct_Draws();
 	// Frame time over the census window: mean, median, p95 and worst, so a cost can be
 	// judged on its distribution rather than its average.
 	static void Debug_Report_Frame_Timing();
