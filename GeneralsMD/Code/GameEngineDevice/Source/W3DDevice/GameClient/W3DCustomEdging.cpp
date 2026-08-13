@@ -342,6 +342,10 @@ void W3DCustomEdging::clearAllEdging()
 void W3DCustomEdging::drawEdging(WorldHeightMap *pMap, Int minX, Int maxX, Int minY, Int maxY,
 		TextureClass * terrainTexture, TextureClass * cloudTexture, TextureClass * noiseTexture)
 {
+	// Name only -- UNCLASSIFIED is the default technique, so this changes no routing.
+	// It puts a caller name on these draws in the fixed-function census, which would
+	// otherwise file them as an anonymous "(undeclared 3D)" group.
+	DeclaredTechniqueClass labelDraws(MESH_TECHNIQUE_UNCLASSIFIED, "customEdging");
 	static Bool foo = false;
 	if (foo) {
 		return;

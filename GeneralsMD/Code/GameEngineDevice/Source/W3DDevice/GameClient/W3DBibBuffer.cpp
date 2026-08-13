@@ -417,6 +417,10 @@ void W3DBibBuffer::removeBibDrawable(DrawableID id)
 //=============================================================================
 void W3DBibBuffer::renderBibs()
 {
+	// Name only -- UNCLASSIFIED is the default technique, so this changes no routing.
+	// It puts a caller name on these draws in the fixed-function census, which would
+	// otherwise file them as an anonymous "(undeclared 3D)" group.
+	DeclaredTechniqueClass labelDraws(MESH_TECHNIQUE_UNCLASSIFIED, "bibBuffer");
 
 	loadBibsInVertexAndIndexBuffers();
 

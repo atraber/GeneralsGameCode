@@ -169,6 +169,10 @@ Int BaseHeightMapRenderObjClass::freeMapResources()
 //=============================================================================
 void BaseHeightMapRenderObjClass::drawScorches()
 {
+	// Name only -- UNCLASSIFIED is the default technique, so this changes no routing.
+	// It puts a caller name on these draws in the fixed-function census, which would
+	// otherwise file them as an anonymous "(undeclared 3D)" group.
+	DeclaredTechniqueClass labelDraws(MESH_TECHNIQUE_UNCLASSIFIED, "scorches");
 
 	updateScorches();
 	if (m_curNumScorchIndices == 0) {
@@ -2440,6 +2444,10 @@ water plane.  Applying a custom render to these polygons allows for a smoother l
 transition*/
 void BaseHeightMapRenderObjClass::renderShoreLines(CameraClass *pCamera)
 {
+	// Name only -- UNCLASSIFIED is the default technique, so this changes no routing.
+	// It puts a caller name on these draws in the fixed-function census, which would
+	// otherwise file them as an anonymous "(undeclared 3D)" group.
+	DeclaredTechniqueClass labelDraws(MESH_TECHNIQUE_UNCLASSIFIED, "shoreLines");
 	if (!TheGlobalData->m_isWorldBuilder)	//use faster version optimized for game and not world builder?
 	{	renderShoreLinesSorted(pCamera);
 		return;
