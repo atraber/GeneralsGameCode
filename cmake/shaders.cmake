@@ -58,6 +58,9 @@ set(_rts_shaders
     # 2D interface (control bar, command bar, text)
     ui_vs
     ui_ps
+    # Projected alpha mask (screen cross-fade wipe, wireframe preview)
+    mask_vs
+    mask_ps
     # Bloom post-process (fullscreen pixel shaders; ps_2_0)
     bloom_bright_ps
     bloom_blur_ps

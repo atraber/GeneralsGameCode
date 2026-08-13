@@ -802,7 +802,53 @@ void W3DShroudMaterialPassClass::UnInstall_Materials() const
 ///Set render states required to draw shroud pass.
 void W3DMaskMaterialPassClass::Install_Materials() const
 {
-	W3DShaderManager::setShader(W3DShaderManager::ST_MASK_TEXTURE, 0);
+	// The projection the fixed-function shader used to build as a 4x4 texture matrix,
+	// reduced to what it actually was: an affine map from world XY to mask UV. The old
+	// chain was inv(view) * translate(-centre) * scale * translate(0.5,0.5), applied to the
+	// camera-space position -- so the inverse view merely undid the camera-space source and
+	// the rest is a scale about the point the wipe radiates from.
+	const Real fadeLevel = ScreenCrossFadeFilter::getCurrentFadeValue();
+
+	//Find the centre of projection (this should be returned from some other filter, etc.
+	//but for now assume the terrain location at the centre of the screen.
+	Coord3D centerPos;
+	centerPos.zero();
+	if (TheTacticalView)
+	{
+		ICoord2D screenPos;
+		screenPos.x=(Real)TheTacticalView->getWidth()*0.5f;
+		screenPos.y=(Real)TheTacticalView->getHeight()*0.5f;
+		TheTacticalView->screenToTerrain(&screenPos,&centerPos);
+	}
+
+	///@todo: Fix this to work with non 128x128 textures.
+	const Real worldTexelWidth=(1.0f-fadeLevel)*25.0f;	//9 worked well for circle but weird shape requires more stretch to cover.
+	const Real worldTexelHeight=(1.0f-fadeLevel)*25.0f;
+
+	if (worldTexelWidth != 0 && worldTexelHeight != 0)
+	{
+		const Real scaleX = 1.0f/(worldTexelWidth*128.0f);
+		const Real scaleY = 1.0f/(worldTexelHeight*128.0f);
+		DX8Wrapper::Set_Mask_Projection(scaleX, scaleY,
+			-centerPos.x*scaleX + 0.5f, -centerPos.y*scaleY + 0.5f);
+	}
+	else
+	{	//fully faded: a zero scale pinned every coordinate to 0,0, and still does.
+		DX8Wrapper::Set_Mask_Projection(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+
+	//force WW3D2 system to set it's states so it won't later overwrite our custom settings.
+	VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
+	DX8Wrapper::Set_Material(vmat);
+	REF_PTR_RELEASE(vmat);	//no need to keep a reference since it's a preset.
+
+	//For now we're always going to project the texture coming from the crossfade effect
+	DX8Wrapper::Set_Texture(0, ScreenCrossFadeFilter::getCurrentMaskTexture());
+	ShaderClass shader=ShaderClass::_PresetOpaqueShader;
+	shader.Set_Primary_Gradient(ShaderClass::GRADIENT_DISABLE);
+	DX8Wrapper::Set_Shader(shader);
+
+	DX8Wrapper::Set_Mask_Pass(true);
 }
 
 //-----------------------------------------------------------------------------
@@ -810,5 +856,8 @@ void W3DMaskMaterialPassClass::Install_Materials() const
 void W3DMaskMaterialPassClass::UnInstall_Materials() const
 {
 	if (m_allowUninstall)
-		W3DShaderManager::resetShader(W3DShaderManager::ST_MASK_TEXTURE);
+	{
+		DX8Wrapper::Set_Mask_Pass(false);
+		DX8Wrapper::Set_Texture(0, nullptr);
+	}
 }

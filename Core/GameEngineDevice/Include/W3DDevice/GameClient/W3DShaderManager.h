@@ -61,7 +61,6 @@ public:
 		ST_TERRAIN_BASE_NOISE2,	//shader to apply base texture and cloud/noise 2.
 		ST_TERRAIN_BASE_NOISE12,//shader to apply base texture and both cloud/noise
 		ST_SHROUD_TEXTURE,		//shader to apply shroud texture projection.
-		ST_MASK_TEXTURE,		//shader to apply alpha mask texture projection.
 		ST_MAX
 	};
 
