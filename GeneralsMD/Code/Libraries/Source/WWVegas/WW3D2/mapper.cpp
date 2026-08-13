@@ -87,6 +87,7 @@ ScaleTextureMapperClass::ScaleTextureMapperClass(const ScaleTextureMapperClass &
 
 void ScaleTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("ScaleTextureMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -225,6 +226,7 @@ GridTextureMapperClass::GridTextureMapperClass(const GridTextureMapperClass & sr
 
 void GridTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("GridTextureMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -620,6 +622,7 @@ void ZigZagLinearOffsetTextureMapperClass::Calculate_Texture_Matrix(Matrix4x4 &t
 
 void ClassicEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("ClassicEnvironmentMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -646,6 +649,7 @@ void ClassicEnvironmentMapperClass::Calculate_Texture_Matrix(Matrix4x4 &tex_matr
 
 void EnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("EnvironmentMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -702,6 +706,7 @@ EdgeMapperClass::EdgeMapperClass(const EdgeMapperClass & src):
 
 void EdgeMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("EdgeMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -804,6 +809,7 @@ void WSEnvMapperClass::Calculate_Texture_Matrix(Matrix4x4 &tex_matrix)
 
 void WSClassicEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("WSClassicEnvironmentMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -819,6 +825,7 @@ void WSClassicEnvironmentMapperClass::Apply(int uv_array_index)
 
 void WSEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("WSEnvironmentMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -834,6 +841,7 @@ void WSEnvironmentMapperClass::Apply(int uv_array_index)
 
 void GridClassicEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("GridClassicEnvironmentMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -863,6 +871,7 @@ void GridClassicEnvironmentMapperClass::Calculate_Texture_Matrix(Matrix4x4 &tex_
 
 void GridEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("GridEnvironmentMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -892,6 +901,7 @@ void GridEnvironmentMapperClass::Calculate_Texture_Matrix(Matrix4x4 &tex_matrix)
 
 void ScreenMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("ScreenMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -1060,6 +1070,7 @@ BumpEnvTextureMapperClass::BumpEnvTextureMapperClass(const BumpEnvTextureMapperC
 
 void BumpEnvTextureMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("BumpEnvTextureMapperClass::Apply");
 	LinearOffsetTextureMapperClass::Apply(uv_array_index);
 
 	unsigned int now = WW3D::Get_Sync_Time();
@@ -1228,6 +1239,7 @@ GridWSClassicEnvironmentMapperClass::GridWSClassicEnvironmentMapperClass(const G
 
 void GridWSClassicEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("GridWSClassicEnvironmentMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);
@@ -1272,6 +1284,7 @@ GridWSEnvironmentMapperClass::GridWSEnvironmentMapperClass(const GridWSEnvMapper
 
 void GridWSEnvironmentMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("GridWSEnvironmentMapperClass::Apply");
 	// Set up the texture matrix
 	Matrix4x4 m;
 	Calculate_Texture_Matrix(m);

@@ -460,6 +460,7 @@ bool ShaderClass::Is_Multiply_Blend() const
  *=============================================================================================*/
 void ShaderClass::Apply()
 {
+	FF_SITE("ShaderClass::Apply");
 	unsigned long diff;
 
 	unsigned int TextureOpCaps=DX8Wrapper::Get_Current_Caps()->Get_DX8_Caps().TextureOpCaps;

@@ -139,6 +139,22 @@ Vector3							DX8Wrapper::Ambient_Color;
 bool								DX8Wrapper::world_identity;
 unsigned							DX8Wrapper::RenderStates[256];
 unsigned							DX8Wrapper::TextureStageStates[MAX_TEXTURE_STAGES][32];
+unsigned							DX8Wrapper::FFStagePending[MAX_TEXTURE_STAGES] = { 0 };
+unsigned							DX8Wrapper::FFRenderPending[8] = { 0 };
+bool								DX8Wrapper::FFStatePending = false;
+unsigned							DX8Wrapper::FFDeviceStage[MAX_TEXTURE_STAGES][32];
+unsigned							DX8Wrapper::FFDeviceRender[256];
+D3DMATERIAL8						DX8Wrapper::CurrentMaterial = { { 1.0f, 1.0f, 1.0f, 1.0f },
+																	{ 1.0f, 1.0f, 1.0f, 1.0f },
+																	{ 0.0f, 0.0f, 0.0f, 0.0f },
+																	{ 0.0f, 0.0f, 0.0f, 0.0f },
+																	1.0f };
+D3DMATERIAL8						DX8Wrapper::FFDeviceMaterial = { { 0.0f, 0.0f, 0.0f, 0.0f },
+																{ 0.0f, 0.0f, 0.0f, 0.0f },
+																{ 0.0f, 0.0f, 0.0f, 0.0f },
+																{ 0.0f, 0.0f, 0.0f, 0.0f },
+																0.0f };
+bool								DX8Wrapper::FFMaterialPending = false;
 IDirect3DBaseTexture8 *		DX8Wrapper::Textures[MAX_TEXTURE_STAGES];
 RenderStateStruct				DX8Wrapper::render_state;
 unsigned							DX8Wrapper::render_state_changed;
@@ -185,6 +201,140 @@ float							DX8Wrapper::m_envAverage[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
 DX8Wrapper::OrmResolverFunc		DX8Wrapper::s_ormResolver = nullptr;
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
 DWORD							DX8Wrapper::m_dwTerrainPS = 0;
+#ifdef RTS_DEBUG
+// The control for the whole exercise. The site census below counts what callers *asked*
+// for; this counts what the device was actually told, which after the deferral is only
+// the words some genuinely fixed-function draw needed. The difference between the two is
+// the fixed-function traffic that no longer happens, and a zero here is the claim being
+// made -- a zero in the census would instead mean the instrument stopped being reached.
+static unsigned s_ffFlushedWrites = 0;
+#endif
+
+//-----------------------------------------------------------------------------
+// Deferred fixed-function state.
+//
+// Which state words stop at the tracked arrays, and which go straight on to D3D.
+//
+// The test is not "did fixed function use this" but "can anything other than fixed
+// function be affected by it", and the two are not the same. Three that look like they
+// belong here and do not:
+//
+//   D3DRS_SPECULARENABLE -- still live with a vertex shader bound. It is what decides
+//     whether the rasteriser adds oD1 to oD0, and a vertex shader writes oD1.
+//   D3DRS_FOG* -- the fog blend is a stage of its own, downstream of the pixel shader,
+//     and D3D9 applies it to programmable output as readily as to fixed-function output.
+//     Deferring it would unfog the scene wherever the scene asked to be fogged.
+//   The sampler states that arrive here wearing D3DTSS_ names -- filtering and address
+//     modes govern every fetch, programmable or not. Those are remapped above this and
+//     never reach the predicate.
+//
+// Everything below is genuinely inert while a vertex and pixel shader are bound: the
+// texture combine, the texgen, fixed-function vertex lighting, the material sources and
+// the texture factor, which nothing but a fixed-function combine can read.
+//-----------------------------------------------------------------------------
+bool DX8Wrapper::Is_Deferred_FF_Stage_State(unsigned state)
+{
+	switch (state) {
+		case D3DTSS_COLOROP:   case D3DTSS_COLORARG0: case D3DTSS_COLORARG1:
+		case D3DTSS_COLORARG2: case D3DTSS_ALPHAOP:   case D3DTSS_ALPHAARG0:
+		case D3DTSS_ALPHAARG1: case D3DTSS_ALPHAARG2: case D3DTSS_RESULTARG:
+		case D3DTSS_TEXCOORDINDEX: case D3DTSS_TEXTURETRANSFORMFLAGS:
+		case D3DTSS_BUMPENVMAT00: case D3DTSS_BUMPENVMAT01:
+		case D3DTSS_BUMPENVMAT10: case D3DTSS_BUMPENVMAT11:
+		case D3DTSS_BUMPENVLSCALE: case D3DTSS_BUMPENVLOFFSET:
+			return true;
+		default:
+			return false;
+	}
+}
+
+bool DX8Wrapper::Is_Deferred_FF_Render_State(unsigned state)
+{
+	switch (state) {
+		case D3DRS_LIGHTING: case D3DRS_AMBIENT:
+		case D3DRS_COLORVERTEX: case D3DRS_NORMALIZENORMALS: case D3DRS_LOCALVIEWER:
+		case D3DRS_DIFFUSEMATERIALSOURCE: case D3DRS_SPECULARMATERIALSOURCE:
+		case D3DRS_AMBIENTMATERIALSOURCE: case D3DRS_EMISSIVEMATERIALSOURCE:
+		case D3DRS_TEXTUREFACTOR:
+			return true;
+		default:
+			return false;
+	}
+}
+
+void DX8Wrapper::Flush_Fixed_Function_State()
+{
+	if (FFMaterialPending) {
+		FFMaterialPending = false;
+		// Compared rather than sent, for the same reason as the state words: the mesh
+		// renderer sets a material per pass, so most flushes would be re-sending one the
+		// device already has.
+		if (memcmp(&FFDeviceMaterial, &CurrentMaterial, sizeof(D3DMATERIAL8)) != 0) {
+			FFDeviceMaterial = CurrentMaterial;
+			DX8CALL(SetMaterial(&CurrentMaterial));
+#ifdef RTS_DEBUG
+			++s_ffFlushedWrites;
+#endif
+		}
+	}
+	if (!FFStatePending) return;
+	FFStatePending = false;
+
+	for (unsigned stage = 0; stage < MAX_TEXTURE_STAGES; ++stage) {
+		unsigned pending = FFStagePending[stage];
+		FFStagePending[stage] = 0;
+		while (pending) {
+			// Lowest set bit first; the order state words are applied in does not matter,
+			// only that every one of them lands before the draw.
+			unsigned long bit;
+			_BitScanForward(&bit, pending);
+			pending &= pending - 1;
+			const unsigned value = TextureStageStates[stage][bit];
+			if (FFDeviceStage[stage][bit] == value) continue;   // device already has it
+			FFDeviceStage[stage][bit] = value;
+			DX8CALL(SetTextureStageState(stage, (D3DTEXTURESTAGESTATETYPE)bit, value));
+#ifdef RTS_DEBUG
+			++s_ffFlushedWrites;
+#endif
+		}
+	}
+	for (unsigned word = 0; word < 8; ++word) {
+		unsigned pending = FFRenderPending[word];
+		FFRenderPending[word] = 0;
+		while (pending) {
+			unsigned long bit;
+			_BitScanForward(&bit, pending);
+			pending &= pending - 1;
+			const unsigned state = (word << 5) | bit;
+			const unsigned value = RenderStates[state];
+			if (FFDeviceRender[state] == value) continue;
+			FFDeviceRender[state] = value;
+			DX8CALL(SetRenderState((D3DRENDERSTATETYPE)state, value));
+#ifdef RTS_DEBUG
+			++s_ffFlushedWrites;
+#endif
+		}
+	}
+}
+
+void DX8Wrapper::Prepare_Direct_Draw(const char * site)
+{
+	// A drawer that goes to the device itself binds nothing, so it inherits whatever
+	// shaders the previous draw left -- including none at all, which is fixed function.
+	// Which it is can still be read off the device's bindings, and that is the same test
+	// Draw() makes: no pixel shader, or a vertex "shader" below 0x10000 that is really an
+	// FVF. A direct drawer that did bind a pixel shader needs none of this state.
+	if (Pixel_Shader == 0 || Vertex_Shader < 0x10000) {
+		Flush_Fixed_Function_State();
+	}
+#ifdef RTS_DEBUG
+	Debug_Note_Direct_Draw(site);
+#else
+	(void)site;
+#endif
+}
+
+
 #ifdef RTS_DEBUG
 // Split-pipeline watchdog -- see the note in dx8wrapper.h. Records which pipeline drew
 // each pass of each mesh over a frame, and names any mesh that was drawn by more than
@@ -474,6 +624,123 @@ namespace {
 		}
 		return n;
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Fixed-function call sites.
+//
+// The census above says no draw still uses fixed function. This one says who still
+// writes it. Those are different questions with different answers: a caller can build a
+// whole two-stage combine and then have its draw claimed by a pixel shader that reads
+// none of it, and the combine is still a dozen D3D calls per draw.
+//
+// See the note on Debug_Set_FF_Site in dx8wrapper.h for why writes are counted at the
+// device rather than at the tracked-state array.
+//-----------------------------------------------------------------------------
+namespace {
+	struct FFSiteGroup {
+		const char* site;
+		unsigned    calls;        // times the emitting function ran
+		unsigned    stageWrites;  // SetTextureStageState calls it caused
+		unsigned    renderWrites; // SetRenderState/SetMaterial calls it caused
+	};
+	enum { MAX_FF_SITES = 64 };
+	FFSiteGroup s_ffSites[MAX_FF_SITES];
+	int      s_ffSiteCount = 0;
+	int      s_ffSiteFrames = 0;
+	unsigned s_ffSiteDropped = 0;
+	const char* s_ffSite = nullptr;
+
+	FFSiteGroup* FindOrAddFFSite(const char* site)
+	{
+		for (int i = 0; i < s_ffSiteCount; ++i) {
+			if (s_ffSites[i].site == site) return &s_ffSites[i];
+		}
+		if (s_ffSiteCount >= MAX_FF_SITES) return nullptr;
+		FFSiteGroup& g = s_ffSites[s_ffSiteCount++];
+		g.site = site;
+		g.calls = 0;
+		g.stageWrites = 0;
+		g.renderWrites = 0;
+		return &g;
+	}
+}
+
+const char* DX8Wrapper::Debug_Get_FF_Site()
+{
+	return s_ffSite;
+}
+
+void DX8Wrapper::Debug_Set_FF_Site(const char* site)
+{
+	s_ffSite = site;
+	// Counted on entry, not on the first write, so a site that runs constantly and writes
+	// nothing is distinguishable from one that never runs at all. Those want opposite
+	// treatment -- the first is redundant state to delete outright, the second is dead
+	// code -- and a writes-only census cannot tell them apart.
+	if (site == nullptr) return;
+	FFSiteGroup* g = FindOrAddFFSite(site);
+	if (g == nullptr) { ++s_ffSiteDropped; return; }
+	++g->calls;
+}
+
+void DX8Wrapper::Debug_Note_FF_State_Write(unsigned isTextureStage, unsigned state)
+{
+	(void)isTextureStage; (void)state;   // both callers have already tested the predicate
+	// An unattributed write is the interesting failure here, so it gets a row of its own
+	// rather than being dropped: it means some emitting function has no FF_SITE on it.
+	FFSiteGroup* g = FindOrAddFFSite(s_ffSite != nullptr ? s_ffSite : "(unattributed)");
+	if (g == nullptr) { ++s_ffSiteDropped; return; }
+	if (isTextureStage) ++g->stageWrites; else ++g->renderWrites;
+}
+
+void DX8Wrapper::Debug_Report_FF_Sites()
+{
+	if (++s_ffSiteFrames < 600) return;
+	s_ffSiteFrames = 0;
+
+	unsigned totalWrites = 0;
+	for (int i = 0; i < s_ffSiteCount; ++i)
+		totalWrites += s_ffSites[i].stageWrites + s_ffSites[i].renderWrites;
+
+	if (s_ffSiteCount == 0) {
+		WWDEBUG_SAY(("FIXED-FUNCTION CALL SITES: none reached this window"));
+		return;
+	}
+	WWDEBUG_SAY(("FIXED-FUNCTION CALL SITES over 600 frames: %u state words asked for from "
+				 "%d sites%s -- of which %u actually reached the device",
+		totalWrites, s_ffSiteCount,
+		s_ffSiteDropped ? "  -- TABLE FULL, some writes uncounted" : "",
+		s_ffFlushedWrites));
+	WWDEBUG_SAY(("  the rest stopped at the tracked state the routing block reads, which is "
+				 "where the work that is left is: a site still here still describes its "
+				 "draws in fixed function, and needs a declared technique to stop."));
+	WWDEBUG_SAY(("  a site with calls and no writes is asking for state that already held "
+				 "*on this replay* -- that is not on its own a licence to delete it, since "
+				 "another draw order could leave a different value in the same word."));
+	s_ffFlushedWrites = 0;
+	// Descending by writes, then by calls, so the top of the list is where the work goes.
+	for (int rank = 0; rank < s_ffSiteCount; ++rank) {
+		int best = -1;
+		unsigned bestWrites = 0, bestCalls = 0;
+		for (int i = 0; i < s_ffSiteCount; ++i) {
+			const unsigned w = s_ffSites[i].stageWrites + s_ffSites[i].renderWrites;
+			if (s_ffSites[i].calls == 0 && w == 0) continue;   // already printed
+			if (w > bestWrites || (w == bestWrites && s_ffSites[i].calls > bestCalls)) {
+				bestWrites = w; bestCalls = s_ffSites[i].calls; best = i;
+			}
+		}
+		if (best < 0) break;
+		const FFSiteGroup& g = s_ffSites[best];
+		WWDEBUG_SAY(("  %-44s calls x%-7u writes: %u stage + %u render",
+			g.site, g.calls, g.stageWrites, g.renderWrites));
+		s_ffSites[best].calls = 0;
+		s_ffSites[best].stageWrites = 0;
+		s_ffSites[best].renderWrites = 0;
+	}
+
+	s_ffSiteCount = 0;
+	s_ffSiteDropped = 0;
 }
 
 void DX8Wrapper::Debug_Note_Routed_Draw()
@@ -1190,6 +1457,82 @@ void DX8Wrapper::Force_Fixed_Function_Pipeline()
 	m_bUnitShaderBound = false;
 }
 
+bool DX8Wrapper::Bind_Screen_Space_Shader()
+{
+	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
+
+	// The viewport, not the back buffer: these quads are sized against a view that need
+	// not fill the window, and the mapping has to agree with whatever the rasteriser is
+	// clipping to. D3DFVF_XYZRHW was defined against the viewport too, so this reproduces
+	// it rather than approximating it.
+	D3DVIEWPORT9 vp;
+	if (FAILED(_Get_D3D_Device8()->GetViewport(&vp)) || vp.Width == 0 || vp.Height == 0)
+		return false;
+
+	Set_Vertex_Shader(m_dwUiVS);
+	Set_Pixel_Shader(m_dwUiPS);
+
+	// Pixels to clip. x: [0,W] -> [-1,1]. y: [0,H] -> [1,-1], because screen y grows
+	// downward and clip y grows up. No half-pixel offset: that correction is for making
+	// texels land on pixel centres, and these quads are untextured.
+	//
+	// Row-major, to match the shader's row_major float4x4 and the mul() order in it.
+	const float sx =  2.0f / (float)vp.Width;
+	const float sy = -2.0f / (float)vp.Height;
+	D3DXMATRIX m(  sx, 0.0f, 0.0f, 0.0f,
+				 0.0f,   sy, 0.0f, 0.0f,
+				 0.0f, 0.0f, 1.0f, 0.0f,
+				-1.0f, 1.0f, 0.0f, 1.0f);
+	Set_Vertex_Shader_Constant(0, &m, 4);
+
+#ifdef RTS_DEBUG
+	// The matrix is the whole of what replaced D3DFVF_XYZRHW, and a sign error in it puts
+	// the quad upside down or off screen -- which on a stencil-masked tint reads as "the
+	// feature stopped working", not as "the matrix is wrong". So state the mapping once
+	// rather than going looking for it in a screenshot: the viewport's own corners, run
+	// through the matrix the shader will use, must come out as the clip-space corners.
+	// Reported per distinct viewport rather than once, because "once" answered the wrong
+	// question: the first call came while the 4096x4096 shadow map was still the target,
+	// and one sample cannot tell a wrong basis from an unusual first frame.
+	{
+		static unsigned seen[4] = { 0, 0, 0, 0 };
+		static int seenCount = 0;
+		const unsigned key = (vp.Width << 16) | vp.Height;
+		bool isNew = true;
+		for (int i = 0; i < seenCount; ++i) if (seen[i] == key) { isNew = false; break; }
+		if (isNew && seenCount < 4) {
+			seen[seenCount++] = key;
+			D3DXVECTOR4 tl, br;
+			D3DXVECTOR4 tlIn(0.0f, 0.0f, 0.0f, 1.0f);
+			D3DXVECTOR4 brIn((float)vp.Width, (float)vp.Height, 0.0f, 1.0f);
+			D3DXVec4Transform(&tl, &tlIn, &m);
+			D3DXVec4Transform(&br, &brIn, &m);
+			WWDEBUG_SAY(("SCREEN-SPACE SHADER: viewport %ux%u -> top-left (%.3f, %.3f) "
+						 "bottom-right (%.3f, %.3f)  [expect (-1, 1) and (1, -1)]",
+				vp.Width, vp.Height, tl.x, tl.y, br.x, br.y));
+		}
+	}
+#endif
+
+	// Untextured, not desaturated: colour and alpha both come from the vertex diffuse.
+	const D3DXVECTOR4 uiCtl(0.0f, 0.0f, 0.0f, 0.0f);
+	Set_Pixel_Shader_Constant(0, &uiCtl, 1);
+
+	// Say what the fixed-function baseline is, or the next caller will get this shader
+	// back when it asks for fixed function. Force_Fixed_Function_Pipeline restores
+	// s_dwOriginalPS rather than binding nothing, and s_dwOriginalPS is captured from
+	// whatever was bound the first time the routing block claimed a draw -- so a shader
+	// bound *here*, outside that block, would be captured as the thing to go back to.
+	//
+	// Measured: leaving it alone put the interface pixel shader on 45% of the shadow
+	// decals, which are declared fixed function precisely because the routing cannot see
+	// them. Zero is the truthful answer -- fixed function is what preceded this draw and
+	// what should follow it.
+	s_dwOriginalPS = 0;
+	m_bUnitShaderBound = true;
+	return true;
+}
+
 bool								_DX8SingleThreaded										= false;
 
 INT g_D3D9_BaseVertexIndex = 0;
@@ -1424,12 +1767,41 @@ void DX8Wrapper::Invalidate_Cached_Render_States()
 
 	int a;
 	for (a=0;a<sizeof(RenderStates)/sizeof(unsigned);++a) {
+		// Same as the stage states below: a deferred word keeps its value, and it is the
+		// shadow of what the *device* holds that is poisoned instead. That is the one this
+		// invalidation is actually about -- somebody wrote the device behind the wrapper's
+		// back -- while the tracked value is still a true statement of what the caller
+		// asked for, and is read as such by the routing block.
+		if (Is_Deferred_FF_Render_State((unsigned)a)) {
+			FFRenderPending[a >> 5] |= (1u << (a & 31));
+			FFDeviceRender[a] = 0x12345678;
+			FFStatePending = true;
+			continue;
+		}
 		RenderStates[a]=0x12345678;
 	}
+	// The device has been reset or taken over, so it no longer holds the material either.
+	// Power is not a colour and is never negative, so this cannot match a real material
+	// and the next flush is guaranteed to resend.
+	FFMaterialPending = true;
+	FFDeviceMaterial.Power = -1.0f;
 	for (a=0;a<MAX_TEXTURE_STAGES;++a)
 	{
 		for (int b=0; b<32;b++)
 		{
+			// Deferred fixed-function words keep their value; the device shadow is
+			// poisoned in their place. The sentinel's job is to force the next write
+			// through, and doing that to the shadow achieves it without destroying the
+			// value -- which matters because the routing predicate reads these same
+			// entries to decide what a draw wants, and 0x12345678 is not a texture op.
+			// That used to be repaired afterwards by asking the device what it held; it
+			// no longer holds them, so the repair has to be not breaking them at all.
+			if (Is_Deferred_FF_Stage_State((unsigned)b)) {
+				FFStagePending[a] |= (1u << b);
+				FFDeviceStage[a][b] = 0x12345678;
+				FFStatePending = true;
+				continue;
+			}
 			TextureStageStates[a][b]=0x12345678;
 		}
 		//Need to explicitly set texture to null, otherwise app will not be able to
@@ -1479,39 +1851,6 @@ void DX8Wrapper::Invalidate_Cached_Render_States()
 	// shadow depth pass does, at the end of every frame's pass.
 	render_state_changed |= (unsigned)SHADER_CHANGED;
 
-	// Put the texture stage states the routing predicate reads back to what the
-	// device actually holds. Poisoning is right for the states this cache exists to
-	// guard -- it stops a needed write being skipped -- but these particular entries
-	// are also READ, to decide whether a draw's coordinate sources can be reproduced,
-	// and a sentinel reads as nonsense: 0x12345678 is not a valid transform-flags
-	// value, so an ordinary untransformed stage looks unsupported and the draw is
-	// declined over state it does not have. Resyncing makes the cache truthful, which
-	// also keeps the redundancy check correct rather than merely conservative.
-	Resync_Texture_Stage_State_Cache();
-}
-
-void DX8Wrapper::Resync_Texture_Stage_State_Cache()
-{
-	// Only the states Apply_Render_State_Changes reads when deciding whether a draw can be
-	// reproduced. Left at the invalidation sentinel they read as nonsense -- 0x12345678's
-	// high half is not a valid D3DTSS_TCI_* value, so a perfectly ordinary pass-through
-	// coordinate set looks like an unsupported generated one and the draw is declined over
-	// state it does not have. The device still holds the truth, so ask it.
-	IDirect3DDevice9 *dev = _Get_D3D_Device8();
-	if (dev == nullptr)
-		return;
-	static const D3DTEXTURESTAGESTATETYPE routingStates[] = {
-		D3DTSS_TEXCOORDINDEX, D3DTSS_TEXTURETRANSFORMFLAGS,
-		D3DTSS_COLOROP, D3DTSS_COLORARG1, D3DTSS_COLORARG2,
-		D3DTSS_ALPHAOP, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2,
-	};
-	for (unsigned stage = 0; stage < 2; ++stage) {
-		for (unsigned i = 0; i < sizeof(routingStates) / sizeof(routingStates[0]); ++i) {
-			DWORD value = 0;
-			if (SUCCEEDED(dev->GetTextureStageState(stage, routingStates[i], &value)))
-				TextureStageStates[stage][(unsigned)routingStates[i]] = value;
-		}
-	}
 }
 
 void DX8Wrapper::Do_Onetime_Device_Dependent_Shutdowns()
@@ -3022,6 +3361,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Check_Mesh_Routing_Split();
 	Debug_Report_Routing_Census();
 	Debug_Report_FF_Draws();
+	Debug_Report_FF_Sites();
 	Debug_Report_Unclassified_Draws();
 	Debug_Report_Direct_Draws();
 	Debug_Report_Technique_Check();
@@ -3423,6 +3763,29 @@ void DX8Wrapper::Draw(
 	// previous caster and the test came out false for exactly the draws it was meant to
 	// catch. It suppressed 21048 of the 46444 it should have.
 	if (m_bSuppressDraw) return;
+
+	// The one place fixed-function state still has to reach the device: a draw with no
+	// pixel shader on it is a fixed-function draw, and it renders from the combine, the
+	// texgen, the lighting and the material its caller asked for -- all of which have
+	// been accumulating in the tracked arrays without being sent. Send them now.
+	//
+	// Tested on the bound shaders rather than on the routing block's own verdict, because
+	// they are what the device will actually use and cannot disagree with themselves.
+	// The same reasoning corrected m_bSuppressDraw above, in the other direction: there
+	// the bound shader was the wrong question because nothing unbinds it. Here it is the
+	// right one, because binding is exactly what did or did not happen.
+	//
+	// Both halves of the pipeline are asked, and they fail differently. No pixel shader
+	// means the combine decides the colour. A vertex shader below 0x10000 is not a shader
+	// at all but an FVF -- Set_Vertex_Shader overloads the word -- so vertex processing is
+	// fixed function, and the lighting, the material and the texgen all still matter even
+	// though a pixel shader may be bound over the top of it.
+	//
+	// Costs a predictable branch per draw on the path where nothing is pending, which is
+	// every draw in a frame that has no fixed-function geometry left in it.
+	if ((Pixel_Shader == 0 || Vertex_Shader < 0x10000) && Has_Pending_Fixed_Function_State()) {
+		Flush_Fixed_Function_State();
+	}
 
 #ifdef MESH_RENDER_SNAPSHOT_ENABLED
 	if (WW3D::Is_Snapshot_Activated()) {
@@ -5071,13 +5434,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			D3DXVECTOR4 matDiffuse(1.0f, 1.0f, 1.0f, 1.0f);
 			D3DXVECTOR4 matEmissive(0.0f, 0.0f, 0.0f, 0.0f);
 			float matOpacity = 1.0f;
-			D3DMATERIAL8 mtl;
-			if (SUCCEEDED(_Get_D3D_Device8()->GetMaterial(&mtl))) {
-				matAmbient  = D3DXVECTOR4(mtl.Ambient.r,  mtl.Ambient.g,  mtl.Ambient.b,  1.0f);
-				matDiffuse  = D3DXVECTOR4(mtl.Diffuse.r,  mtl.Diffuse.g,  mtl.Diffuse.b,  1.0f);
-				matEmissive = D3DXVECTOR4(mtl.Emissive.r, mtl.Emissive.g, mtl.Emissive.b, 0.0f);
-				matOpacity  = mtl.Diffuse.a; // stealth/translucency rides in the material alpha
-			}
+			// Read from the wrapper's own copy rather than with GetMaterial. The device no
+			// longer has it -- a material is fixed-function vertex lighting and is not sent
+			// unless a draw actually needs it -- and asking for it back was a round trip per
+			// draw for a value we set ourselves.
+			const D3DMATERIAL8 & mtl = CurrentMaterial;
+			matAmbient  = D3DXVECTOR4(mtl.Ambient.r,  mtl.Ambient.g,  mtl.Ambient.b,  1.0f);
+			matDiffuse  = D3DXVECTOR4(mtl.Diffuse.r,  mtl.Diffuse.g,  mtl.Diffuse.b,  1.0f);
+			matEmissive = D3DXVECTOR4(mtl.Emissive.r, mtl.Emissive.g, mtl.Emissive.b, 0.0f);
+			matOpacity  = mtl.Diffuse.a; // stealth/translucency rides in the material alpha
 
 			// Diffuse (stealth) opacity handling. The fixed-function pipeline sourced the
 			// vertex diffuse -- including the alpha that stealth translucency sets via the

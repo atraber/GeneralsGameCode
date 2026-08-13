@@ -450,6 +450,7 @@ void WaterRenderObjClass::endWaterShaderPass()
 
 void WaterRenderObjClass::setupJbaWaterShader()
 {
+	FF_SITE("WaterRenderObjClass::setupJbaWaterShader");
 	if (!TheWaterTransparency->m_additiveBlend)
 		DX8Wrapper::Set_Shader(ShaderClass::_PresetAlphaShader);
 	else
@@ -1790,6 +1791,7 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
 //DECLARE_PERF_TIMER(Water)
 void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
 {
+	FF_SITE("WaterRenderObjClass::Render");
 	//USE_PERF_TIMER(Water)
 	if (TheTerrainRenderObject && !TheTerrainRenderObject->getMap())
 		return;	//no map has been loaded yet.
@@ -2073,6 +2075,7 @@ Bool WaterRenderObjClass::getClippedWaterPlane(CameraClass *cam, AABoxClass *box
 //-------------------------------------------------------------------------------------------------
 void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
 {
+	FF_SITE("WaterRenderObjClass::drawSea");
 	AABoxClass	seaBox;
 
 	if (!getClippedWaterPlane(&rinfo.Camera,&seaBox))
@@ -2230,9 +2233,7 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
 			D3DXMatrixTranspose(&matWorldViewProj, &matWorldViewProj);
 			DX8Wrapper::Set_Vertex_Shader_Constant(CV_WORLDVIEWPROJ_0, &matWorldViewProj, 4);	//pass transform matrix into shader
 
-#ifdef RTS_DEBUG
-			DX8Wrapper::Debug_Note_Direct_Draw("waterDirect");
-#endif
+			DX8Wrapper::Prepare_Direct_Draw("waterDirect");
 			m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLESTRIP,0,m_numVertices,0,m_numIndices);
 		}
 	}
@@ -2288,9 +2289,7 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
 
 				DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD, matTemp);
 
-#ifdef RTS_DEBUG
-				DX8Wrapper::Debug_Note_Direct_Draw("waterDirect");
-#endif
+				DX8Wrapper::Prepare_Direct_Draw("waterDirect");
 				m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLESTRIP,0,m_numVertices,0,m_numIndices);
 			}
 		}
@@ -2548,6 +2547,7 @@ void WaterRenderObjClass::renderSkyBody(Matrix3D *mat)
 //-------------------------------------------------------------------------------------------------
 void WaterRenderObjClass::renderWaterMesh()
 {
+	FF_SITE("WaterRenderObjClass::renderWaterMesh");
 
 	if (!m_doWaterGrid)
 		return;	//the water grid is disabled.
@@ -2735,18 +2735,14 @@ void WaterRenderObjClass::renderWaterMesh()
 		//Shroud shader uses z-compare of EQUAL which wouldn't work on water because it doesn't
 		//write to the zbuffer.  Change to LESSEQUAL.
 		DX8Wrapper::_Get_D3D_Device8()->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-#ifdef RTS_DEBUG
-		DX8Wrapper::Debug_Note_Direct_Draw("waterDirect");
-#endif
+		DX8Wrapper::Prepare_Direct_Draw("waterDirect");
 		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLESTRIP,0,mx*my,0,m_numIndices-2);
 		DX8Wrapper::_Get_D3D_Device8()->SetRenderState(D3DRS_ZFUNC, D3DCMP_EQUAL);
 		W3DShaderManager::resetShader(W3DShaderManager::ST_SHROUD_TEXTURE);
 	}
 	else
 	{
-#ifdef RTS_DEBUG
-		DX8Wrapper::Debug_Note_Direct_Draw("waterDirect");
-#endif
+		DX8Wrapper::Prepare_Direct_Draw("waterDirect");
 		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLESTRIP,0,mx*my,0,m_numIndices-2);
 	}
 
@@ -3253,6 +3249,7 @@ void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
 
 void WaterRenderObjClass::setupFlatWaterShader()
 {
+	FF_SITE("WaterRenderObjClass::setupFlatWaterShader");
 
 	DX8Wrapper::Set_Texture(0,m_riverTexture);
 	if (!TheWaterTransparency->m_additiveBlend)

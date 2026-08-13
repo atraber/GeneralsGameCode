@@ -225,6 +225,7 @@ void MatrixMapperClass::Compute_Texture_Coordinate(const Vector3 & point,Vector3
  *=============================================================================================*/
 void MatrixMapperClass::Apply(int uv_array_index)
 {
+	FF_SITE("MatrixMapperClass::Apply");
 	Matrix4x4 m;
 
 	switch (Type)

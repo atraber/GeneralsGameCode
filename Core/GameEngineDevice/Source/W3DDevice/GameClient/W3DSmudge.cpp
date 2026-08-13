@@ -271,9 +271,7 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		// Drawn on the device, so it inherits whatever the wrapper last bound. See
 		// Force_Fixed_Function_Pipeline.
 		DX8Wrapper::Force_Fixed_Function_Pipeline();
-#ifdef RTS_DEBUG
-		DX8Wrapper::Debug_Note_Direct_Draw("smudge");
-#endif
+		DX8Wrapper::Prepare_Direct_Draw("smudge");
 		pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 		DWORD refData[BLOCK_SIZE*BLOCK_SIZE];
@@ -298,9 +296,7 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		// Drawn on the device, so it inherits whatever the wrapper last bound. See
 		// Force_Fixed_Function_Pipeline.
 		DX8Wrapper::Force_Fixed_Function_Pipeline();
-#ifdef RTS_DEBUG
-		DX8Wrapper::Debug_Note_Direct_Draw("smudge");
-#endif
+		DX8Wrapper::Prepare_Direct_Draw("smudge");
 		pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 		bufSize=copyRect((unsigned char *)testData,sizeof(testData),0,0,BLOCK_SIZE,BLOCK_SIZE);
 
@@ -324,6 +320,7 @@ Bool W3DSmudgeManager::testHardwareSupport()
 
 void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 {
+	FF_SITE("W3DSmudgeManager::render");
 	// Heat-haze smudges: a screen distortion, never a surface.
 	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "smudge");
 	//Verify that the card supports the effect.

@@ -316,6 +316,7 @@ flush_particles:
 			// Drawn on the device, so it inherits whatever the wrapper last bound. See
 			// Force_Fixed_Function_Pipeline.
 			DX8Wrapper::Force_Fixed_Function_Pipeline();
+			DX8Wrapper::Prepare_Direct_Draw("snow");
 			DX8Wrapper::_Get_D3D_Device8()->DrawPrimitive( D3DPT_POINTLIST, m_dwBase, numberInBatch);
 			totalPart -= numberInBatch;
 			m_dwBase += numberInBatch;
