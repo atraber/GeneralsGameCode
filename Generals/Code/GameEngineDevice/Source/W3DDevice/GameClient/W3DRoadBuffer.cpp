@@ -3231,22 +3231,41 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 		}
 	}
 	Int stacking;
-	W3DShaderManager::ShaderTypes st=W3DShaderManager::ST_ROAD_BASE; //set default shader
-	if (cloudTexture)
-	{	st=W3DShaderManager::ST_ROAD_BASE_NOISE1;
-		if (noiseTexture)
-			st=W3DShaderManager::ST_ROAD_BASE_NOISE12;
-	}
-	else
-	if (noiseTexture)
-		st=W3DShaderManager::ST_ROAD_BASE_NOISE2;
-
-	Int devicePasses = 1;	//assume regular rendering
- 	//Find number of passes required to render current shader
-	devicePasses=W3DShaderManager::getShaderPasses(st);
+	// One pass. The multi-pass count came from the legacy road shaders, which needed a pass
+	// per overlay they could not fit into the stages they had; road_vs/road_ps composite the
+	// road, the cloud, the noise and the cast shadow together. Wireframe draws once too.
+	const Int devicePasses = 1;
 
 	W3DShaderManager::setTexture(1,cloudTexture);	//cloud
 	W3DShaderManager::setTexture(2,noiseTexture);	//noise/lightmap
+
+	// Programmable road path: collapse the fixed-function stack of projected stages into
+	// a single pass on the road VS/PS. The point of it is the shadow map: the legacy path
+	// shades a road with its own pixel shader (or a two-stage fixed-function combine) and
+	// neither can sample the shadow map, so a road stayed at full brightness while the
+	// ground it lies on went dark -- most obvious where a road runs out from under a cliff
+	// or a building. The shader reproduces the cloud and noise projections from the world
+	// position, so the stages those needed are no longer set up at all.
+	const Bool useRoadProg = !wireframe && DX8Wrapper::Has_Road_Shader();
+	if (useRoadProg)
+	{
+		// Cloud and noise where the road shader samples them (and where the terrain
+		// shader takes them), rather than the stages the fixed-function path projected
+		// through.
+		DX8Wrapper::Set_Texture(2, cloudTexture);
+		DX8Wrapper::Set_Texture(3, noiseTexture);
+		DX8Wrapper::Set_Terrain_Overlay(cloudTexture != nullptr, noiseTexture != nullptr);
+		// Same cloud shadow the ground gets. Set here rather than relying on the terrain
+		// pass having run first: a road must never disagree with the ground it lies on.
+		float cax = 0.0f, cay = 0.0f, cbx = 0.0f, cby = 0.0f;
+		W3DShaderManager::getCloudScroll(cax, cay, cbx, cby);
+		DX8Wrapper::Set_Cloud_Shadow(cax, cay, cbx, cby,
+									 TheGlobalData->m_cloudShadowStrength);
+		// Blend, depth test and depth write for a road decal: over the terrain, tested
+		// but not written. The shader replaces only the vertex/pixel stages; this still
+		// comes from W3D, as it does for every other routed draw.
+		DX8Wrapper::Set_Shader(detailAlphaShader);
+	}
 
 	for (stacking=0; stacking <= maxStacking; stacking++) {
 		for (i=0; i<m_maxRoadTypes; i++) {
@@ -3269,15 +3288,23 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 	#endif
 			for (Int pass=0; pass < devicePasses; pass++)
 			{
-				if (!wireframe)
-		 			W3DShaderManager::setShader(st, pass);
+				if (useRoadProg) {
+					// applyTexture only records the road atlas with the shader manager --
+					// the legacy shaders bind it in their set(). Bind it here instead.
+					DX8Wrapper::Set_Texture(0, W3DShaderManager::getShaderTexture(0));
+					DX8Wrapper::Set_Road_Shader_Pass(true);
+				}
 				//Draw all this road type.
 				DX8Wrapper::Draw_Triangles(	0, m_roadTypes[i].getNumIndices()/3, 0,	m_roadTypes[i].getNumVertices());
 			}
-
-			if (!wireframe)	//shader was applied at least once?
- 				W3DShaderManager::resetShader(st);
 		}
+	}
+
+	if (useRoadProg)
+	{	//hand the pipeline back: the next draw restores the fixed function it expects.
+		DX8Wrapper::Set_Road_Shader_Pass(false);
+		DX8Wrapper::Set_Texture(2, nullptr);
+		DX8Wrapper::Set_Texture(3, nullptr);
 	}
 
 #if 0
