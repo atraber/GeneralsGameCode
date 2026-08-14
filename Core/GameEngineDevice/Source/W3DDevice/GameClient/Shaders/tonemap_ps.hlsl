@@ -7,19 +7,19 @@
 // is the one place the range is brought back down, and it runs at the end of
 // render-to-texture so that everything after it sees exactly the 8-bit scene it always saw.
 //
-// Right now the curve is the identity, and deliberately so. This stage exists to move the
-// scene onto a floating-point target and prove the plumbing without changing a pixel: every
-// shader in the frame still clamps its own output at 1.0, so there is no range here to
-// compress yet, and a curve applied to an image that never exceeds 1.0 would darken the
-// whole game for no reason. The curve arrives with the sources that can actually exceed 1.0.
+// Note what this pass does NOT feed: when the bloom filter is running it is the composite,
+// not this, that writes the visible frame -- it has to be, because the bloom has to be
+// added while the scene is still in range and the curve applied to the sum. This pass then
+// serves the *other* consumers, which want the scene without the glow. Both apply the same
+// curve out of tonemap.hlsli, which is why the curve lives there.
+
+#include "tonemap.hlsli"
 
 sampler2D SceneSampler : register(s0);
 
-// Scene colour -> displayable colour. Identity until something emits above 1.0; see above.
-float3 toneMap(float3 c)
-{
-    return c;
-}
+// x = exposure applied before the curve. y is unused here (the composite uses it to switch
+// the curve off when the scene reaching it is already 8-bit).
+float4 ToneMapCtl : register(c0);
 
 float4 main(float2 uv : TEXCOORD0) : COLOR
 {
@@ -28,5 +28,5 @@ float4 main(float2 uv : TEXCOORD0) : COLOR
     // Alpha is carried through untouched. It is not brightness and must not be curved: the
     // soft water edge writes the frame buffer's destination alpha during the scene, and the
     // cross-fade's framebuffer-mask mode reads it back afterwards.
-    return float4(toneMap(scene.rgb), scene.a);
+    return float4(ToneMapScene(scene.rgb, ToneMapCtl.x), scene.a);
 }

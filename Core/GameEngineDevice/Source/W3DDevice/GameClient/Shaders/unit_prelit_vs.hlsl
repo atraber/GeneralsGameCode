@@ -20,6 +20,7 @@ float4 SceneAmbient  : register(c16);  // D3DRS_AMBIENT equivalent
 float4 LightingParams : register(c17); // x: 2 = texture-only, 1 = lit, 0 = pre-lit
                                        // y: 1 when the ambient source is the vertex colour
                                        // z: 1 for effect geometry -- see unit_vs
+                                       // w: emissive gain for additive effects -- see unit_vs
 float4 MatAmbient    : register(c18);
 float4 MatEmissive   : register(c19);
 float4 TexGenCtl : register(c21);      // see unit_vs; modes 2 and 3 need a normal and are
@@ -50,7 +51,10 @@ struct VS_INPUT
 struct VS_OUTPUT
 {
     float4 position  : POSITION;
-    float4 color     : COLOR0;
+    // TEXCOORD, not COLOR0 -- ps_3_0 clamps COLOR interpolators to [0,1] and this colour
+    // may now exceed it. See the note on the same field in unit_vs; both feed the same
+    // pixel shaders, so the two signatures have to agree.
+    float4 color     : TEXCOORD4;
     float2 texcoord  : TEXCOORD0;
     float2 texcoord1 : TEXCOORD1;
     float4 lightPos  : TEXCOORD2;  // position in the sun's clip space (cast shadows)
@@ -92,6 +96,11 @@ VS_OUTPUT main(VS_INPUT input)
     // tracks and scorch marks arrive here -- normal-less, pre-lit, blended -- and a track
     // is a mark *on* ground that is already shadowed, so shading it again doubles it.
     float noSun = max(textureOnly, (LightingParams.z > 0.5) ? 1.0 : 0.0);
+
+    // Emissive gain for additive effect draws -- see the long note in unit_vs. Ground
+    // decals reach this shader alongside the effects, and they are alpha-blended rather
+    // than additive, so the wrapper leaves them at 1.
+    output.color.rgb *= max(LightingParams.w, 1.0);
 
     float3 viewPos = mul(float4(input.position, 1.0), WorldView).xyz;
     float4 gen0 = Select_TexGen_Source(TexGenCtl.x, input.texcoord, viewPos);

@@ -88,7 +88,13 @@ struct PS_INPUT
 static const float PI = 3.14159265;
 
 float3 SrgbToLinear(float3 c) { return pow(saturate(c), 2.2); }
-float3 LinearToSrgb(float3 c) { return pow(saturate(c), 1.0 / 2.2); }
+// max() rather than saturate() on the way out: this is the encode that writes the scene, and
+// on a floating-point target a specular highlight brighter than display white is the thing
+// the tone curve downstream is there to roll off. Clamping here would throw that away before
+// anything could see it. pow() of a negative is NaN, hence max and not a bare pow -- the
+// lower bound still has to be enforced, it is only the ceiling that is being removed.
+// SrgbToLinear keeps its saturate: it decodes 8-bit texture samples, which cannot exceed 1.
+float3 LinearToSrgb(float3 c) { return pow(max(c, 0.0), 1.0 / 2.2); }
 
 // GGX / Trowbridge-Reitz normal distribution.
 float D_GGX(float NdotH, float rough)

@@ -102,7 +102,9 @@ float softParticleFade(float4 screenPos)
 struct PS_INPUT
 {
     float4 position  : POSITION;
-    float4 color     : COLOR0;
+    // TEXCOORD4, not COLOR0: a ps_3_0 COLOR interpolator clamps to [0,1] and the lit colour
+    // may exceed it now that the scene target is floating point. See unit_vs.
+    float4 color     : TEXCOORD4;
     float2 texcoord  : TEXCOORD0;
     float2 texcoord1 : TEXCOORD1;   // unused here; keeps the signature matching the VS
     float4 lightPos  : TEXCOORD2;   // position in the sun's clip space
