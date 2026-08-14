@@ -7307,6 +7307,22 @@ SurfaceClass * DX8Wrapper::_Get_DX8_Back_Buffer(unsigned int num)
 	return surf;
 }
 
+SurfaceClass * DX8Wrapper::_Get_DX8_Render_Target()
+{
+	DX8_THREAD_ASSERT();
+
+	IDirect3DSurface8 * rt=nullptr;
+	SurfaceClass *surf=nullptr;
+	DX8CALL(GetRenderTarget(0,&rt));
+	if (rt)
+	{
+		surf=NEW_REF(SurfaceClass,(rt));
+		rt->Release();	//SurfaceClass took its own reference
+	}
+
+	return surf;
+}
+
 
 TextureClass *
 DX8Wrapper::Create_Render_Target (int width, int height, WW3DFormat format)

@@ -30,7 +30,6 @@
 #include "Lib/BaseType.h"
 #include "WWLib/always.h"
 #include "W3DDevice/GameClient/W3DSmudge.h"
-#include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "Common/GameMemory.h"
 #include "GameClient/View.h"
 #include "GameClient/Display.h"
@@ -202,22 +201,31 @@ error:
 #define UNIQUE_COLOR	(0x12345678)
 #define BLOCK_SIZE	(8)
 
+/*
+** Can the heat-haze effect run on this device?
+**
+** What the effect needs is one thing: the scene drawn so far, readable as a texture while
+** we carry on drawing into that same scene. render() gets it by copying the colour target
+** into m_backgroundTexture and sampling the copy, so that copy-then-sample is what this
+** tests, against a colour it just drew and can recognise.
+**
+** The test this replaces asked a different question, and one with no right answer. It drew
+** a known colour, bound W3DShaderManager's render texture -- the surface the scene was
+** being drawn into at that moment -- as the source for a second draw, and compared the two
+** readbacks. That is sampling a texture while it is the active render target, which D3D9
+** does not permit: the runtime drops the binding, the second draw samples black, and the
+** comparison cannot match. So the first frame that reached this recorded SMUDGE_SUPPORT_NO,
+** which is cached for the run and also gates whether the particle system bothers to collect
+** smudges at all -- no heat haze anywhere, microwave tank included. The render path never
+** did this; it has always sampled a copy. Only the test did.
+*/
 Bool W3DSmudgeManager::testHardwareSupport()
 {
 	if (m_hardwareSupportStatus == SMUDGE_SUPPORT_UNKNOWN)
 	{	//we have not done the test yet.
 
-		IDirect3DTexture8 *backTexture=W3DShaderManager::getRenderTexture();
-		if (!backTexture || !W3DShaderManager::isRenderingToTexture())
+		if (!m_backgroundTexture)
 		{
-			// TheSuperHackers @bugfix When Render-To-Texture is disabled globally, we fallback
-			// to copying the backbuffer to a texture.
-			if (m_backgroundTexture)
-			{
-				m_hardwareSupportStatus = SMUDGE_SUPPORT_YES;
-				return TRUE;
-			}
-
 			m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
 			return FALSE;
 		}
@@ -279,11 +287,40 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		Int bufSize=copyRect((unsigned char *)refData,sizeof(refData),0,0,BLOCK_SIZE,BLOCK_SIZE);	//copy area we just rendered using solid color
 		if (!bufSize)
 		{
+			DEBUG_LOG(("SMUDGE: unsupported -- cannot read back off the render target\n"));
 			m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
 			return FALSE;
 		}
 
-		DX8Wrapper::Set_DX8_Texture(0,backTexture);
+		// Take the copy render() takes, off whatever surface the scene is going to.
+		SurfaceClass *sceneSurface=DX8Wrapper::_Get_DX8_Render_Target();
+		SurfaceClass *background=m_backgroundTexture->Get_Surface_Level();
+
+		if (!sceneSurface || !background)
+		{
+			REF_PTR_RELEASE(sceneSurface);
+			REF_PTR_RELEASE(background);
+			m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
+			return FALSE;
+		}
+
+		SurfaceClass::SurfaceDescription sceneDesc;
+		sceneSurface->Get_Description(sceneDesc);
+		background->Copy(0,0,0,0,sceneDesc.Width,sceneDesc.Height,sceneSurface);
+
+		REF_PTR_RELEASE(sceneSurface);
+		REF_PTR_RELEASE(background);
+
+		// ...and sample it, which is legal precisely because it is a copy and not the
+		// surface being drawn into.
+		DX8Wrapper::Set_DX8_Texture(0,m_backgroundTexture->Peek_D3D_Texture());
+		// Point sampling and clamp: the comparison below is exact, so nothing may filter
+		// the neighbouring texels of the 8x8 block into it.
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_MINFILTER,D3DTEXF_POINT);
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_MAGFILTER,D3DTEXF_POINT);
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_MIPFILTER,D3DTEXF_NONE);
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ADDRESSU,D3DTADDRESS_CLAMP);
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ADDRESSV,D3DTADDRESS_CLAMP);
 
 		DWORD testData[BLOCK_SIZE*BLOCK_SIZE];
 		memset(testData,0xff,sizeof(testData));
@@ -300,18 +337,37 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 		bufSize=copyRect((unsigned char *)testData,sizeof(testData),0,0,BLOCK_SIZE,BLOCK_SIZE);
 
+		DX8Wrapper::Set_DX8_Texture(0,nullptr);
+
 		if (!bufSize)
 		{
 			m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
 			return FALSE;
 		}
 
-		//compare the 2 buffers to see if they match.
-		if (memcmp(testData,refData,bufSize) == 0)
+		// Compare colour only. Alpha is not ours to predict: render-to-texture masks alpha
+		// writes off for the soft water edge, so the alpha byte here is whatever the clear
+		// left behind rather than anything either draw wrote.
+		Bool matches = TRUE;
+		for (Int i=0; i<(Int)(bufSize/sizeof(DWORD)); i++)
 		{
+			if ((testData[i] & 0x00ffffff) != (refData[i] & 0x00ffffff))
+			{
+				matches = FALSE;
+				break;
+			}
+		}
+
+		// Logged either way, once per run: a silent no here switches heat haze off for the
+		// whole session, and that is not something to have to infer from its absence.
+		if (matches)
+		{
+			DEBUG_LOG(("SMUDGE: supported -- scene copy reads back intact\n"));
 			m_hardwareSupportStatus = SMUDGE_SUPPORT_YES;
 			return TRUE;
 		}
+		DEBUG_LOG(("SMUDGE: unsupported -- scene copy read back wrong (ref=%08X test=%08X)\n",
+			refData[0], testData[0]));
 		m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
 	}
 
@@ -327,21 +383,31 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	if (!testHardwareSupport())
 		return;
 
-	SurfaceClass *backBuffer = DX8Wrapper::_Get_DX8_Back_Buffer();
+	// The surface the scene is being drawn into, which is not the back buffer whenever a
+	// screen filter has redirected the frame -- with bloom on, the scene goes to the
+	// filter's render texture and the back buffer still holds the *previous* frame,
+	// composited and with the interface drawn over it. Sourcing the distortion from there
+	// is what broke the microwave tank: the haze showed last frame plus the command bar,
+	// smeared, and slid across the screen whenever the camera moved.
+	//
+	// testHardwareSupport has always read GetRenderTarget(0) for its verification copy, so
+	// the test and the thing it was meant to be testing disagreed; this is the side that
+	// was wrong.
+	SurfaceClass *sceneSurface = DX8Wrapper::_Get_DX8_Render_Target();
 
-	if (!backBuffer)
+	if (!sceneSurface)
 		return;
 
 	SurfaceClass *background=m_backgroundTexture ? m_backgroundTexture->Get_Surface_Level() : nullptr;
 
 	if (!background)
 	{
-		REF_PTR_RELEASE(backBuffer);
+		REF_PTR_RELEASE(sceneSurface);
 		return;
 	}
 
 	SurfaceClass::SurfaceDescription surface_desc;
-	backBuffer->Get_Description(surface_desc);
+	sceneSurface->Get_Description(surface_desc);
 
 	CameraClass &camera=rinfo.Camera;
 	Vector3 vsVert;
@@ -442,15 +508,15 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	if (!count)
 	{
 		REF_PTR_RELEASE(background);
-		REF_PTR_RELEASE(backBuffer);
+		REF_PTR_RELEASE(sceneSurface);
 		return;	//nothing to render.
 	}
 
-	//Copy the area of backbuffer occupied by smudges into an alternate buffer.
-	background->Copy(0,0,0,0,surface_desc.Width,surface_desc.Height,backBuffer);
+	//Copy the area of the scene occupied by smudges into an alternate buffer.
+	background->Copy(0,0,0,0,surface_desc.Width,surface_desc.Height,sceneSurface);
 
 	REF_PTR_RELEASE(background);
-	REF_PTR_RELEASE(backBuffer);
+	REF_PTR_RELEASE(sceneSurface);
 
 	Matrix4x4 identity(true);
 	DX8Wrapper::Set_Transform(D3DTS_WORLD,identity);

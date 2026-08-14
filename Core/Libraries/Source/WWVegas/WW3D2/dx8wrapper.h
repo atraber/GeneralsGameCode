@@ -519,6 +519,10 @@ public:
 	static IDirect3DSurface8 * _Create_DX8_Surface(const char *filename);
 	static IDirect3DSurface8 * _Get_DX8_Front_Buffer();
 	static SurfaceClass * _Get_DX8_Back_Buffer(unsigned int num=0);
+	// The colour surface being drawn into right now, which is the back buffer only when
+	// nothing has redirected the scene. Anything reading back what the frame has drawn so
+	// far wants this and not the back buffer -- see W3DSmudgeManager::render.
+	static SurfaceClass * _Get_DX8_Render_Target();
 
 	static HRESULT _Copy_DX8_Rects(
 			IDirect3DSurface8* pSourceSurface,
