@@ -6,6 +6,13 @@
 // viewport), so it carries its own texcoord set (TEXCOORD0); the bloom target is a
 // full 0..1 texture on TEXCOORD1.
 
+// Note on ordering, for when the tone curve stops being the identity: the scene arriving
+// here has already been tone mapped, while the bloom has not -- it is selected and blurred
+// in the scene's own range, which under HDR runs above 1.0. Adding the two and letting the
+// 8-bit target clamp is right only while toneMap() is the identity. The moment it is a real
+// curve, the bloom has to go through it too, which means this add belongs inside tonemap_ps
+// rather than after it.
+
 sampler2D SceneSampler : register(s0);
 sampler2D BloomSampler : register(s1);
 

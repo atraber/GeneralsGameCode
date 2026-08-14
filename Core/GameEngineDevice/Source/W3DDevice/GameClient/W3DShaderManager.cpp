@@ -404,18 +404,21 @@ Int ScreenBloomFilter::init()
 		return FALSE;
 	}
 
-	// Quarter-resolution ping/pong bloom targets, in the scene texture's format.
+	// Quarter-resolution ping/pong bloom targets, in the scene's own colour format -- which
+	// under HDR is floating point, so that what the bright pass selects above 1.0 survives
+	// the two blur passes instead of being clipped on the way into them.
 	D3DSURFACE_DESC sd;
 	if (FAILED(sceneTex->GetLevelDesc(0, &sd)))
 	{
 		shutdown();
 		return FALSE;
 	}
+	const D3DFORMAT bloomFormat = W3DShaderManager::getSceneColorFormat();
 	m_w = (Int)sd.Width  / 4;  if (m_w < 1) m_w = 1;
 	m_h = (Int)sd.Height / 4;  if (m_h < 1) m_h = 1;
 
-	if (FAILED(dev->CreateTexture(m_w, m_h, 1, D3DUSAGE_RENDERTARGET, sd.Format, D3DPOOL_DEFAULT, &m_texA)) ||
-	    FAILED(dev->CreateTexture(m_w, m_h, 1, D3DUSAGE_RENDERTARGET, sd.Format, D3DPOOL_DEFAULT, &m_texB)) ||
+	if (FAILED(dev->CreateTexture(m_w, m_h, 1, D3DUSAGE_RENDERTARGET, bloomFormat, D3DPOOL_DEFAULT, &m_texA)) ||
+	    FAILED(dev->CreateTexture(m_w, m_h, 1, D3DUSAGE_RENDERTARGET, bloomFormat, D3DPOOL_DEFAULT, &m_texB)) ||
 	    FAILED(m_texA->GetSurfaceLevel(0, &m_surfA)) ||
 	    FAILED(m_texB->GetSurfaceLevel(0, &m_surfB)))
 	{
@@ -484,11 +487,24 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE, FALSE);
 	DX8Wrapper::Apply_Render_State_Changes();
 
-	// Pass 1: bright-pass. scene(sub-rect) -> texA (quarter-res). Threshold/knee are
-	// baked into bloom_bright_ps.hlsl.
+	// Pass 1: bright-pass. scene(sub-rect) -> texA (quarter-res).
+	//
+	// With HDR the source is the floating-point scene rather than the tone mapped copy of
+	// it, because that is the only place a pixel brighter than the display still exists --
+	// by the time it reaches sceneTex it has been brought down to 8 bits and everything
+	// above 1.0 has become 1.0. The threshold moves with the source for the same reason:
+	// there is no point asking an 8-bit image for pixels above 1.0.
+	IDirect3DTexture8 *brightSrc = sceneTex;
+	D3DXVECTOR4 threshold(0.65f, 0.30f, 0.0f, 0.0f);   // 8-bit scene: light rather than bright
+	if (W3DShaderManager::isHdrActive() && W3DShaderManager::getHdrTexture() != nullptr)
+	{
+		brightSrc = W3DShaderManager::getHdrTexture();
+		threshold = D3DXVECTOR4(1.0f, 0.5f, 0.0f, 0.0f);   // above what the display can show
+	}
 	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
 	DX8Wrapper::Set_Pixel_Shader(m_brightPS);
-	DX8Wrapper::Set_DX8_Texture(0, sceneTex);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, threshold, 1);
+	DX8Wrapper::Set_DX8_Texture(0, brightSrc);
 	W3DShaderManager::setLinearClampSampler(0);
 	W3DShaderManager::drawScreenQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, su0, sv0, su1, sv1, 0, 0, 1, 1);
 	// Copy it before the blurs run, for DEBUG_VIS_BLOOM. Does nothing unless that mode
