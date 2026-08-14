@@ -30,6 +30,7 @@
 #include "Lib/BaseType.h"
 #include "WWLib/always.h"
 #include "W3DDevice/GameClient/W3DSmudge.h"
+#include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "Common/GameMemory.h"
 #include "GameClient/View.h"
 #include "GameClient/Display.h"
@@ -226,6 +227,19 @@ Bool W3DSmudgeManager::testHardwareSupport()
 
 		if (!m_backgroundTexture)
 		{
+			m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
+			return FALSE;
+		}
+
+		// Not yet compatible with the floating-point scene target. The copy below is a
+		// same-format surface copy off the scene, and m_backgroundTexture is a TextureClass,
+		// whose WW3DFormat has no floating-point member -- so under HDR the copy would be a
+		// format conversion D3D declines to make, and the haze would distort a stale frame.
+		// Turned off rather than left to do that quietly. Giving the smudge a shader of its
+		// own is what fixes this, and takes one of the last fixed-function drawers with it.
+		if (W3DShaderManager::isHdrActive())
+		{
+			DEBUG_LOG(("SMUDGE: unsupported -- the scene target is floating point and the background copy cannot follow it yet\n"));
 			m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
 			return FALSE;
 		}

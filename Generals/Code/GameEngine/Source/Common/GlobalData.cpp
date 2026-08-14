@@ -957,6 +957,7 @@ GlobalData::GlobalData()
 	m_textureFilteringMode = TextureFilterClass::TextureFilterMode::TEXTURE_FILTER_BILINEAR;
 	m_textureAnisotropyLevel = TextureFilterClass::AnisotropicFilterMode::TEXTURE_FILTER_ANISOTROPIC_2X;
 	m_useBloom = TRUE;
+	m_useHdr = FALSE;
 
 //	m_languageFilterPref = false;
 	m_languageFilterPref = true;
@@ -1262,6 +1263,7 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	TheWritableGlobalData->m_textureFilteringMode = optionPref.getTextureFilterMode();
 	TheWritableGlobalData->m_textureAnisotropyLevel = optionPref.getTextureAnisotropyLevel();
 	TheWritableGlobalData->m_useBloom = optionPref.getBloomEnabled();
+	TheWritableGlobalData->m_useHdr = optionPref.getHdrEnabled();
 	TheWritableGlobalData->m_useShadowMapping = optionPref.getShadowMappingEnabled();
 	TheWritableGlobalData->m_useParticleShadows = optionPref.getParticleShadowsEnabled();
 	TheWritableGlobalData->m_terrainTileVariation = optionPref.getTerrainTileVariationEnabled();

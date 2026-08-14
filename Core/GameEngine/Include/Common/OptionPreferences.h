@@ -63,6 +63,7 @@ public:
 	TextureFilterClass::TextureFilterMode getTextureFilterMode() const;
 	TextureFilterClass::AnisotropicFilterMode getTextureAnisotropyLevel() const;
 	Bool getBloomEnabled() const;
+	Bool getHdrEnabled() const;
 	Bool getShadowMappingEnabled() const;
 	Bool getParticleShadowsEnabled() const;
 	Bool getTerrainTileVariationEnabled() const;

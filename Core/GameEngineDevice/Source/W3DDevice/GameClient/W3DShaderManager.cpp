@@ -2048,6 +2048,15 @@ void W3DShaderManager::init()
 				m_oldDepthSurface = nullptr;
 			}
 		}
+
+		// Both of these need the render-to-texture surfaces above, which is why they are
+		// here and not with the rest of the setup in initUnitShaders.
+		//
+		// The floating-point scene target goes first: the refraction grab is a same-format
+		// copy taken off the live scene, so it has to be created in whatever format the
+		// scene has by then turned out to be.
+		initHdr();
+		initRefraction();
 	}
 
 	W3DShaderInterface **shaders;
@@ -2195,9 +2204,9 @@ void W3DShaderManager::initUnitShaders()
 	// Screen-space reflections. After the shadow map, which owns the depth shaders
 	// this reuses -- initSsr checks they loaded and stands down if they did not.
 	initSsr();
-	// The water's refraction grab. Independent of SSR: it needs no depth shaders, only a
-	// render target the size of the screen.
-	initRefraction();
+	// The floating-point scene target and the water's refraction grab are not set up here.
+	// Both depend on the render-to-texture surfaces, and this runs before init() creates
+	// them; see the end of W3DShaderManager::init.
 
 	// The in-game debug visualizations.
 	initDebugVis();
@@ -2271,6 +2280,7 @@ void W3DShaderManager::shutdownUnitShaders()
 	shutdownDebugVis();
 	shutdownSsr();
 	shutdownRefraction();
+	shutdownHdr();
 	DX8Wrapper::m_bUnitShaderBound = false;
 }
 
@@ -3383,8 +3393,15 @@ void W3DShaderManager::initRefraction()
 	// Screen-sized: the shader reprojects world positions straight into screen UV, the
 	// same as the depth lookup, and a different size would need a scale factor nothing
 	// else knows about. Non-multisampled -- StretchRect resolves on the way in.
+	//
+	// In the scene's own colour format, which under HDR is floating point. This grab is
+	// taken mid-scene with a StretchRect off the live render target, and StretchRect will
+	// not convert between a floating-point surface and an 8-bit one -- so a fixed format
+	// here would simply stop copying the moment HDR came on, and the water would refract
+	// whatever was last in the target. The water samples it from a shader, which reads
+	// either format without caring.
 	if (FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
-				D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_refractionTexture)) ||
+				getSceneColorFormat(), D3DPOOL_DEFAULT, &m_refractionTexture)) ||
 		FAILED(m_refractionTexture->GetSurfaceLevel(0, &m_refractionSurface)))
 	{
 		DEBUG_LOG(("Water refraction: disabled -- could not create the %dx%d target\n",
@@ -3415,6 +3432,248 @@ void W3DShaderManager::shutdownRefraction()
 	DX8Wrapper::m_pRefraction = nullptr;
 	SAFE_RELEASE(m_refractionSurface);
 	SAFE_RELEASE(m_refractionTexture);
+}
+
+// ---------------------------------------------------------------------------
+// High dynamic range scene target
+// ---------------------------------------------------------------------------
+
+Bool W3DShaderManager::m_hdrActive = false;
+IDirect3DTexture8 *W3DShaderManager::m_hdrTexture = nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_hdrRenderSurface = nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_hdrResolveSurface = nullptr;
+DWORD W3DShaderManager::m_toneMapPS = 0;
+
+// Sixteen bits of floating point per channel. The alternatives do not work here:
+// A2R10G10B10 has no range above 1.0 at all, which is the entire point, and the packed
+// encodings (RGBM, RGBE) cannot be alpha blended -- and this scene blends constantly, in
+// every effect, the water and every translucent pass.
+#define HDR_SCENE_FORMAT D3DFMT_A16B16G16R16F
+
+D3DFORMAT W3DShaderManager::getSceneColorFormat()
+{
+	if (m_hdrActive)
+		return HDR_SCENE_FORMAT;
+	if (m_renderTexture != nullptr)
+	{
+		D3DSURFACE_DESC sd;
+		if (SUCCEEDED(m_renderTexture->GetLevelDesc(0, &sd)))
+			return sd.Format;
+	}
+	return D3DFMT_A8R8G8B8;
+}
+
+void W3DShaderManager::initHdr()
+{
+	if (m_hdrTexture != nullptr)
+		return;
+	if (TheGlobalData == nullptr || !TheGlobalData->m_useHdr)
+		return;
+
+	// HDR only means anything on the render-to-texture path. The scene has to go somewhere
+	// that is not the back buffer -- the back buffer cannot be floating point -- and the
+	// tone map needs the 8-bit texture to write its result into.
+	if (m_renderTexture == nullptr || m_newRenderSurface == nullptr)
+	{
+		DEBUG_LOG(("HDR: off -- no render-to-texture path to hang it on\n"));
+		return;
+	}
+
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	IDirect3D8 *d3d = DX8Wrapper::_Get_D3D8();
+	if (dev == nullptr || d3d == nullptr)
+		return;
+
+	// Off the colour surface, not off m_renderTexture. A texture is never multisampled, so
+	// its level description reports D3DMULTISAMPLE_NONE whatever the device is actually
+	// doing -- and a scene target built on that answer gets bound against the multisampled
+	// depth buffer the back buffer came with, which D3D9 rejects at draw time rather than
+	// at bind time. The whole tactical view renders black and every call still returns S_OK.
+	D3DSURFACE_DESC sceneDesc;
+	if (m_oldRenderSurface == nullptr || FAILED(m_oldRenderSurface->GetDesc(&sceneDesc)))
+		return;
+
+	// Three capabilities, each load-bearing on its own:
+	//  - a render target in this format, or there is nowhere to draw the scene;
+	//  - blending into it, or every translucent pass in the game renders nonsense;
+	//  - filtering it, because the bloom bright pass downsamples with a bilinear fetch.
+	// They are genuinely separate bits and hardware has historically shipped with some and
+	// not others, so each is asked for by name and reported by name when it is missing.
+	// Adapter and display format come from the device itself rather than from a cached copy
+	// of what it was asked for, so the query is against what actually got created.
+	D3DDEVICE_CREATION_PARAMETERS params;
+	D3DDISPLAYMODE mode;
+	if (FAILED(dev->GetCreationParameters(&params)) ||
+		FAILED(dev->GetDisplayMode(0, &mode)))
+		return;
+
+	const UnsignedInt adapter = params.AdapterOrdinal;
+	const D3DDEVTYPE devType = params.DeviceType;
+	const D3DFORMAT display = mode.Format;
+	static const struct { DWORD usage; const char *name; } checks[] = {
+		{ D3DUSAGE_RENDERTARGET,                                             "render targets" },
+		{ D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING,   "blending" },
+		{ D3DUSAGE_QUERY_FILTER,                                             "filtering" },
+	};
+	for (Int i = 0; i < (Int)(sizeof(checks)/sizeof(checks[0])); i++)
+	{
+		if (FAILED(d3d->CheckDeviceFormat(adapter, devType, display,
+				checks[i].usage, D3DRTYPE_TEXTURE, HDR_SCENE_FORMAT)))
+		{
+			DEBUG_LOG(("HDR: off -- no A16B16G16R16F %s on this device\n", checks[i].name));
+			return;
+		}
+	}
+
+	// Multisampling is asked separately because floating-point multisampling arrived a
+	// hardware generation after floating-point targets; a device can have one without the
+	// other, and the scene target has to match whatever the depth buffer already is.
+	if (sceneDesc.MultiSampleType != D3DMULTISAMPLE_NONE &&
+		FAILED(d3d->CheckDeviceMultiSampleType(adapter, devType, HDR_SCENE_FORMAT,
+			FALSE, sceneDesc.MultiSampleType, nullptr)))
+	{
+		DEBUG_LOG(("HDR: off -- no %dx A16B16G16R16F multisampling, and the depth buffer is multisampled\n",
+			(Int)sceneDesc.MultiSampleType));
+		return;
+	}
+
+	if (FAILED(LoadAndCreateD3DShader("shaders\\tonemap_ps.pso", nullptr, 0, false, &m_toneMapPS)))
+	{
+		DEBUG_LOG(("HDR: off -- tonemap_ps.pso would not load\n"));
+		shutdownHdr();
+		return;
+	}
+
+	// Same arrangement as the 8-bit path it sits in front of: with MSAA, draw into a
+	// multisampled colour surface and resolve into the texture; without, draw into the
+	// texture's own surface and skip the resolve.
+	HRESULT hr = dev->CreateTexture(sceneDesc.Width, sceneDesc.Height, 1, D3DUSAGE_RENDERTARGET,
+		HDR_SCENE_FORMAT, D3DPOOL_DEFAULT, &m_hdrTexture);
+	if (SUCCEEDED(hr))
+	{
+		if (sceneDesc.MultiSampleType == D3DMULTISAMPLE_NONE)
+		{
+			hr = m_hdrTexture->GetSurfaceLevel(0, &m_hdrRenderSurface);
+			m_hdrResolveSurface = nullptr;
+		}
+		else
+		{
+			hr = dev->CreateRenderTarget(sceneDesc.Width, sceneDesc.Height, HDR_SCENE_FORMAT,
+				sceneDesc.MultiSampleType, FALSE, &m_hdrRenderSurface);
+			if (SUCCEEDED(hr))
+				hr = m_hdrTexture->GetSurfaceLevel(0, &m_hdrResolveSurface);
+		}
+	}
+
+	if (FAILED(hr))
+	{
+		DEBUG_LOG(("HDR: off -- could not create the %dx%d floating-point scene target\n",
+			sceneDesc.Width, sceneDesc.Height));
+		shutdownHdr();
+		return;
+	}
+
+	m_hdrActive = true;
+	DEBUG_LOG(("HDR: active, %dx%d A16B16G16R16F scene target (multisample %d)\n",
+		sceneDesc.Width, sceneDesc.Height, (Int)sceneDesc.MultiSampleType));
+}
+
+void W3DShaderManager::toneMapSceneToRenderTexture()
+{
+	if (!m_hdrActive || m_hdrTexture == nullptr || m_toneMapPS == 0 || m_renderTexture == nullptr)
+		return;
+
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	// The 8-bit destination. Without MSAA that is m_newRenderSurface (which is the texture's
+	// own surface); with it, m_resolveSurface is. Either way it is the surface belonging to
+	// m_renderTexture, which the scene did not draw into this frame -- the floating-point
+	// target did -- so nothing is being sampled and written at once.
+	IDirect3DSurface8 *dst = (m_resolveSurface != nullptr) ? m_resolveSurface : m_newRenderSurface;
+	if (dst == nullptr)
+		return;
+
+	D3DSURFACE_DESC sd;
+	if (FAILED(m_renderTexture->GetLevelDesc(0, &sd)))
+		return;
+
+	IDirect3DSurface8 *savedRT = nullptr;
+	IDirect3DSurface8 *savedDS = nullptr;
+	dev->GetRenderTarget(0, &savedRT);
+	dev->GetDepthStencilSurface(&savedDS);
+
+	// No depth buffer: this is a full-surface blit and depth would only constrain it. Setting
+	// the target also resets the viewport to the whole surface, which is what the quad below
+	// is sized against.
+	HRESULT rtHr = DX8Wrapper::Set_DX8_Render_Target(dst, nullptr);
+	HRESULT drawHr = E_FAIL;
+	if (SUCCEEDED(rtHr))
+	{
+		VertexMaterialClass *vmat = VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
+		DX8Wrapper::Set_Material(vmat);
+		REF_PTR_RELEASE(vmat);
+		DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);
+		DX8Wrapper::Set_Texture(0, nullptr);
+		// Alpha travels through the tone map untouched, so it has to be writable: the soft
+		// water edge put the frame's destination alpha in the floating-point target and the
+		// cross-fade's framebuffer-mask mode expects to find it here afterwards.
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,
+			D3DCOLORWRITEENABLE_RED|D3DCOLORWRITEENABLE_GREEN|D3DCOLORWRITEENABLE_BLUE|D3DCOLORWRITEENABLE_ALPHA);
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC, D3DCMP_ALWAYS);
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_ZWRITEENABLE, FALSE);
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE, FALSE);
+		DX8Wrapper::Apply_Render_State_Changes();
+
+		DX8Wrapper::Set_Pixel_Shader(m_toneMapPS);
+		DX8Wrapper::Set_DX8_Texture(0, m_hdrTexture);
+		// Point sampling: source and destination are the same size, so this is a copy, and a
+		// bilinear tap would soften the whole scene by half a texel for nothing.
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_POINT);
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+		DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+
+		drawHr = drawScreenQuad(dev, 0.0f, 0.0f, (float)sd.Width, (float)sd.Height,
+			0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
+
+		DX8Wrapper::Set_Pixel_Shader(0);
+		DX8Wrapper::Set_DX8_Texture(0, nullptr);
+		DX8Wrapper::Invalidate_Cached_Render_States();
+	}
+
+	// Said once if it ever stops working. A tone map that fails leaves m_renderTexture
+	// holding whatever was in it, and since the scene no longer draws there directly, that
+	// is a black tactical view with every call still returning S_OK somewhere upstream.
+	if (FAILED(rtHr) || FAILED(drawHr))
+	{
+		static Bool s_reported = FALSE;
+		if (!s_reported)
+		{
+			DEBUG_LOG(("HDR: tone map failed -- setRenderTarget=0x%08X draw=0x%08X\n",
+				(unsigned)rtHr, (unsigned)drawHr));
+			s_reported = TRUE;
+		}
+	}
+
+	DX8Wrapper::Set_DX8_Render_Target(savedRT, savedDS);
+	SAFE_RELEASE(savedRT);
+	SAFE_RELEASE(savedDS);
+}
+
+void W3DShaderManager::shutdownHdr()
+{
+	m_hdrActive = false;
+	SAFE_RELEASE(m_hdrResolveSurface);
+	SAFE_RELEASE(m_hdrRenderSurface);
+	SAFE_RELEASE(m_hdrTexture);
+	if (m_toneMapPS)
+	{
+		reinterpret_cast<IDirect3DPixelShader9*>(m_toneMapPS)->Release();
+		m_toneMapPS = 0;
+	}
 }
 
 void W3DShaderManager::captureRefraction()
@@ -3868,7 +4127,23 @@ void W3DShaderManager::startRenderToTexture()
 	DEBUG_ASSERTCRASH(!m_renderingToTexture, ("Already rendering to texture - cannot nest calls."));
 
 	if (m_renderingToTexture || m_newRenderSurface==nullptr || m_oldDepthSurface==nullptr) return;
-	HRESULT hr = DX8Wrapper::Set_DX8_Render_Target(m_newRenderSurface, m_oldDepthSurface);
+
+	// With HDR the scene goes into the floating-point target instead, and is tone mapped
+	// back into m_renderTexture at the end of this bracket. Everything downstream therefore
+	// still finds the 8-bit scene texture it has always read; the only code that sees the
+	// wider range is what deliberately asks for getHdrTexture().
+	IDirect3DSurface8 *sceneTarget = m_hdrActive ? m_hdrRenderSurface : m_newRenderSurface;
+	HRESULT hr = DX8Wrapper::Set_DX8_Render_Target(sceneTarget, m_oldDepthSurface);
+
+	// If it was the floating-point target that would not bind -- a depth buffer mismatch the
+	// format checks could not predict, most likely -- give up HDR rather than the whole
+	// render-to-texture path, and take the 8-bit target for this frame and every frame after.
+	if (hr != S_OK && m_hdrActive)
+	{
+		DEBUG_LOG(("HDR: off -- the floating-point target would not bind against this depth buffer\n"));
+		shutdownHdr();
+		hr = DX8Wrapper::Set_DX8_Render_Target(m_newRenderSurface, m_oldDepthSurface);
+	}
 
 	// TheSuperHackers @bugfix If SetRenderTarget fails (e.g. due to MSAA forced by driver
 	// profile causing a depth buffer mismatch that D3DSURFACE_DESC doesn't report), permanently
@@ -3925,7 +4200,16 @@ IDirect3DTexture8 *W3DShaderManager::endRenderToTexture()
 		// non-multisampled surface of the same size performs the resolve) so the
 		// post-process can sample it. Done after the back buffer is restored so the
 		// multisampled surface is no longer the active render target.
-		if (m_resolveSurface != nullptr)
+		if (m_hdrActive)
+		{
+			// The floating-point scene resolves into its own texture, and is then tone
+			// mapped down into m_renderTexture -- which is what every consumer past this
+			// point reads, and which none of them can read in floating point.
+			if (m_hdrResolveSurface != nullptr)
+				DX8Wrapper::_Get_D3D_Device8()->StretchRect(m_hdrRenderSurface, nullptr, m_hdrResolveSurface, nullptr, D3DTEXF_NONE);
+			toneMapSceneToRenderTexture();
+		}
+		else if (m_resolveSurface != nullptr)
 			DX8Wrapper::_Get_D3D_Device8()->StretchRect(m_newRenderSurface, nullptr, m_resolveSurface, nullptr, D3DTEXF_NONE);
 
 		//assume render target texture will be in stage 0.  Most hardware has "conditional" support for
