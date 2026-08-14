@@ -1192,26 +1192,37 @@ void W3DTreeBuffer::allocateTreeBuffers()
 		m_curNumTreeIndices[i]=0;
 	}
 
-		//shader decleration
-	// DX8_FVF_XYZNDUV1
-	DWORD Declaration[] =
-	{
-		D3DVSD_STREAM( 0 ),
-		D3DVSD_REG( 0, D3DVSDT_FLOAT3 ),  // Position
-		D3DVSD_REG( 1, D3DVSDT_FLOAT3 ),  // Normal
-		D3DVSD_REG( 2, D3DVSDT_D3DCOLOR), // Diffuse color
-		D3DVSD_REG( 7, D3DVSDT_FLOAT2 ),  // Tex coord
-		D3DVSD_END()
-	};
-
+	// No vertex declaration is passed. The old code built a D3DVSD_ array here describing
+	// DX8_FVF_XYZNDUV1, which the D3D9 compatibility layer discards -- CreateVertexShader
+	// takes only the bytecode now, and the layout comes from the FVF the draw sets. It was
+	// dead weight that read like the authority on the vertex format while having no effect
+	// on anything; the format is documented in tree_vs.hlsl instead, where it is real.
+	//
+	// Both shaders are required. Trees used to run a vs_1_1 vertex shader into the
+	// fixed-function pixel pipeline, and D3D9 does not allow vs_3_0 to be paired that way,
+	// so the pixel side had to become a real shader for the vertex side to move up.
 	HRESULT hr;
-	hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\Trees.vso", &Declaration[0], 0, true, &m_dwTreeVertexShader);
+	hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\tree_vs.vso", nullptr, 0, true, &m_dwTreeVertexShader);
 	if (FAILED(hr))
+	{
+		DEBUG_LOG(("TREES: tree_vs.vso failed to load (0x%08X) -- fixed function, no wind\n", (unsigned)hr));
 		return;
+	}
 
-	hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\Trees.pso", &Declaration[0], 0, false, &m_dwTreePixelShader);
+	hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\tree_ps.pso", nullptr, 0, false, &m_dwTreePixelShader);
 	if (FAILED(hr))
+	{
+		DEBUG_LOG(("TREES: tree_ps.pso failed to load (0x%08X) -- fixed function, no wind\n", (unsigned)hr));
+		// Without the pixel shader the vertex shader cannot legally run, and a vs_3_0 shader
+		// bound against fixed-function pixel processing fails at draw time rather than at
+		// bind time -- every tree would silently vanish. Drop back to the fixed-function
+		// path for both, which costs the wind but draws.
+		DX8Wrapper::_Get_D3D_Device8()->DeleteVertexShader(m_dwTreeVertexShader);
+		m_dwTreeVertexShader = 0;
 		return;
+	}
+
+	DEBUG_LOG(("TREES: tree_vs + tree_ps loaded (Shader Model 3)\n"));
 }
 
 //=============================================================================
@@ -1722,19 +1733,45 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 		}
 
 		DX8Wrapper::Set_Vertex_Shader(m_dwTreeVertexShader);
-#if 0
 		DX8Wrapper::Set_Pixel_Shader(m_dwTreePixelShader);
-		// a.c. 6/16 - allow switching between normal and 2X mode for terrain
-		Real mulTwoX = 0.5f;
-		if(TheGlobalData && TheGlobalData->m_useOverbright)
-			mulTwoX = 1.0f;
-		DX8Wrapper::Set_Pixel_Shader_Constant(1, D3DXVECTOR4(mulTwoX, mulTwoX, mulTwoX, mulTwoX), 1);
-#endif
+		// Whether stage 1 actually has a shroud texture in it. The shader cannot work this
+		// out for itself: on a map with no fog of war the stage is left empty, and sampling
+		// an unbound sampler is undefined rather than white.
+		DX8Wrapper::Set_Pixel_Shader_Constant(0,
+			D3DXVECTOR4(shroud != nullptr ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f), 1);
 
 	} else {
 		DX8Wrapper::Set_Vertex_Shader(DX8_FVF_XYZNDUV1);
 	}
 
+
+	// How much foliage is actually reaching the screen, said once per run. Without it an
+	// A/B of this draw path proves nothing: a map with no trees in view produces identical
+	// images whichever pipeline is running, and reads as a pass.
+	{
+		static Bool s_reported = FALSE;
+		if (!s_reported && m_curNumTreeIndices[0] > 0) {
+			Int totalTris = 0, totalVerts = 0;
+			for (Int r=0; r<MAX_BUFFERS; r++) {
+				totalTris += m_curNumTreeIndices[r]/3;
+				totalVerts += m_curNumTreeVertices[r];
+			}
+			// The largest wind offset being uploaded this frame. Sway is the one thing the
+			// fixed-function fallback cannot do, so an A/B against it can never confirm the
+			// wind works -- and a broken sway index would simply freeze every tree, which
+			// looks like nothing at all going wrong. If this reads zero the map is calm and
+			// the question is still open; if it reads non-zero the constants are live.
+			Real maxSway = 0.0f;
+			for (Int s=0; s<MAX_SWAY_TYPES; s++) {
+				Real mag = swayFactor[s].Length();
+				if (mag > maxSway) maxSway = mag;
+			}
+			DEBUG_LOG(("TREES: drawing %d triangles / %d vertices via %s, max sway %.4f\n",
+				totalTris, totalVerts,
+				m_dwTreeVertexShader ? "tree_vs+tree_ps (SM3)" : "fixed function", maxSway));
+			s_reported = TRUE;
+		}
+	}
 
 	Int bNdx;
 	for (bNdx=0;bNdx<MAX_BUFFERS; bNdx++) {
@@ -1745,11 +1782,18 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 		DX8Wrapper::Set_Vertex_Buffer(m_vertexTree[bNdx]);
 		// Render the waving grass
 		DX8Wrapper::Apply_Render_State_Changes();
+		// Apply_Render_State_Changes above sets the FVF, and the wrapper clears the vertex
+		// shader whenever it does, so both shaders have to be put back before every draw.
+		//
+		// The three texture stage states that used to be re-set here are gone with them.
+		// They existed to undo what setShroudTex had done to stage 1 -- it aims the shroud
+		// at a camera-space-generated coordinate with a texture transform, and the tree
+		// vertex shader computes that coordinate itself into TEXCOORD1, so the fixed-function
+		// generation had to be switched back off. A pixel shader ignores all of it: the
+		// coordinates it reads are the ones the vertex shader wrote, whatever the stage says.
 		if (m_dwTreeVertexShader) {
 			DX8Wrapper::Set_Vertex_Shader(m_dwTreeVertexShader);
-			DX8Wrapper::_Get_D3D_Device8()->SetTextureStageState(0,  D3DTSS_TEXCOORDINDEX, 0);
-			DX8Wrapper::_Get_D3D_Device8()->SetTextureStageState(1,  D3DTSS_TEXCOORDINDEX, 1);
-			DX8Wrapper::_Get_D3D_Device8()->SetTextureStageState(1,  D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+			DX8Wrapper::Set_Pixel_Shader(m_dwTreePixelShader);
 		}
 		DX8Wrapper::Draw_Triangles(	0, m_curNumTreeIndices[bNdx]/3, 0,	m_curNumTreeVertices[bNdx]);
 	}
