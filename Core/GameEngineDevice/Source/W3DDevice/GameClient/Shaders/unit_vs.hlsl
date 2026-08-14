@@ -70,7 +70,13 @@ struct VS_INPUT
 struct VS_OUTPUT
 {
     float4 position  : POSITION;
-    float4 color     : COLOR0;
+    // The lit colour travels in a TEXCOORD and not in COLOR0, which is where it belongs by
+    // name and where it lived until HDR. A ps_3_0 COLOR interpolator is defined to clamp to
+    // [0,1]: a vertex colour of 4.0 arrives at the pixel shader as 1.0, silently, and no
+    // amount of unclamping either end recovers it. TEXCOORD interpolators carry the full
+    // float range, so anything that has to stay bright between the two stages goes through
+    // one. Every consumer (unit_ps, unit_detail_ps) declares the same semantic.
+    float4 color     : TEXCOORD4;
     float2 texcoord  : TEXCOORD0;  // stage 0 coordinates
     float2 texcoord1 : TEXCOORD1;  // stage 1 coordinates
     float4 lightPos  : TEXCOORD2;  // position in the sun's clip space (cast shadows)
@@ -188,7 +194,12 @@ VS_OUTPUT main(VS_INPUT input)
         // ordinary blended passes on buildings and split those meshes across two pipelines.
         // Stage 0 alpha combines that do not source the diffuse at all are unaffected: the
         // wrapper folds this factor to 1 for them.
-        output.color = float4(saturate(lit), input.color.a);
+        // Not saturated. It was, and had to be, while this colour travelled in COLOR0 to an
+        // 8-bit target -- both would have clamped it anyway, so the saturate only made the
+        // clamp explicit. On a floating-point target it is the one thing standing between a
+        // strongly lit surface and the range the tone curve exists to compress, and the
+        // colour now travels in a TEXCOORD precisely so that it survives the trip.
+        output.color = float4(lit, input.color.a);
         shadowReceive = 1.0;
     }
     else
@@ -203,6 +214,26 @@ VS_OUTPUT main(VS_INPUT input)
     // meshes are lit ones -- a rotor disc carries a normal and no vertex colour -- so
     // this has to override that decision rather than sit inside it.
     shadowReceive *= (LightingParams.z > 0.5) ? 0.0 : 1.0;
+
+    // Emissive gain: what actually makes this scene high dynamic range.
+    //
+    // Everything above is bounded by its sources -- textures are 8-bit, the light
+    // environment is normalised, vertex colours are D3DCOLOR -- so unclamping the lit path
+    // by itself produces a scene that still never exceeds 1.0 and a tone curve with nothing
+    // to compress. A muzzle flash has to be told it is brighter than white, because nothing
+    // in the asset says so: the art was authored for a pipeline where 1.0 was the ceiling
+    // and the flash was drawn at the ceiling.
+    //
+    // The wrapper sets this above 1 only for *additive* effect draws, and that restriction
+    // is the whole design. Additive geometry is light being added to the frame -- flashes,
+    // tracers, beams, explosions -- and multiplying it is meaningful. Alpha-blended effect
+    // geometry is smoke and dust, which occlude rather than emit; scaling those would make
+    // a dust cloud glow. Both are MESH_TECHNIQUE_EFFECT, so the technique alone cannot tell
+    // them apart and the blend mode has to.
+    //
+    // Alpha is untouched. On a SRCALPHA/ONE pass alpha is coverage, and scaling it would
+    // change how much of the flash is there rather than how bright it is.
+    output.color.rgb *= max(LightingParams.w, 1.0);
 
     // Texture coordinates. Camera-space generation needs the vertex in view space and,
     // for the reflection vector, the view-space normal -- the same WorldView matrix the

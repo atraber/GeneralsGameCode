@@ -1287,6 +1287,17 @@ public:
 	static bool							m_bShadowDepthPass; // current draws render into the shadow map
 	static void Set_Shadow_Depth_Pass(bool active) { m_bShadowDepthPass = active; }
 	static bool Is_Shadow_Depth_Pass() { return m_bShadowDepthPass; }
+	// How much brighter than display white an additive effect is allowed to emit. 1 means
+	// "no brighter", which is what an 8-bit target can hold and therefore the default; the
+	// HDR path raises it once the scene is drawn somewhere a value above 1 survives.
+	//
+	// It is set from W3DShaderManager, a layer above this one, rather than read from there:
+	// the wrapper cannot ask the game whether HDR is on without inverting the dependency, so
+	// the answer is pushed down when it changes. Applied by the unit vertex shaders, and
+	// only to additive effect draws -- see the note where lightingParams is assembled.
+	static float						m_hdrEffectGain;
+	static void Set_Hdr_Effect_Gain(float gain) { m_hdrEffectGain = gain; }
+	static float Get_Hdr_Effect_Gain() { return m_hdrEffectGain; }
 	// Backing store for the sun cull box declared below.
 	static bool							m_bSunCullBoxValid;
 	static Vector3						m_sunCullEye;

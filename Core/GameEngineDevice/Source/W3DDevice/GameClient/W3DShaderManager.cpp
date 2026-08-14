@@ -272,6 +272,35 @@ void ScreenDefaultFilter::reset()
 	DX8Wrapper::Invalidate_Cached_Render_States();
 }
 
+/// Exposure fed to the tone curve, applied to the linear scene before it. Fixed rather
+/// than measured from the frame: auto-exposure would need a downsample chain and temporal
+/// smoothing, and it makes the image brighten and darken as the view moves -- wrong for a
+/// game whose camera height barely varies and whose palette is fixed by the art.
+///
+/// This is the dial for "the game is darker/brighter than it used to be" after the curve
+/// went in. The curve itself decides the shape of the highlights; this decides where the
+/// midtones sit under it. Both tone map sites must be given the same value, which is why it
+/// is here and not written out twice.
+static const float HDR_EXPOSURE = 1.0f;
+
+/// How much brighter than display white an additive effect may emit. See the note where the
+/// wrapper applies it: this is the one thing in the frame that actually produces high
+/// dynamic range content, because every other source is bounded by an 8-bit asset.
+///
+/// 2.0, measured on usa_lightsout.rep f5300-5500 (a burning vehicle, muzzle flashes and
+/// building lights) against a sweep of 1.0/1.5/2.0/2.5/3.0. The number that decides it is
+/// what the tone curve can still resolve: ACES maps linear 2.0 to 245/255, 3.0 to 250 and
+/// 4.0 to 252, so everything driven past ~2.5 lands in the top four code values and an
+/// emitter's core stops having a shape. At the old 3.0 the frame's p99.9 pre-curve value
+/// was 5.74 -- more than two stops past where the curve stops answering -- and 12% of the
+/// fire's core sat at 252 or above. At 2.0 that core plateau is 4.3%, p99.9 is 2.57, and
+/// the glow still covers 77% of the area 3.0 lit, so the effect is not lost.
+///
+/// This is not a brightness dial: across the whole sweep the frame's mean luminance moves
+/// 117.9 to 119.7. It only decides how far the few hundred emitter pixels are pushed.
+/// Retune it against the curve, not by eye -- if TONEMAP_CURVE changes, this changes.
+static const float HDR_EFFECT_GAIN = 2.0f;
+
 /*=========  ScreenBloomFilter  =========================================================*/
 ///Screen-space bloom: extract bright pixels, blur them, and add the glow back over the
 ///scene. Installed as the view's default filter when render-to-texture is available;
@@ -529,9 +558,28 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 
 	// Pass 4: composite scene + bloom -> back buffer (over the tactical rect).
 	// Bloom intensity is baked into bloom_composite_ps.hlsl.
+	//
+	// Under HDR the scene read here is the floating-point one, and this pass -- not
+	// toneMapSceneToRenderTexture -- is what tone maps the frame the player sees. The glow
+	// has to be added while the scene is still above 1.0 and the curve applied to the sum;
+	// adding an untone-mapped glow onto an already-compressed scene puts it straight into
+	// the 8-bit ceiling, which is the flat clipped highlight HDR exists to avoid.
+	//
+	// The tone map into m_renderTexture still runs, and is still needed: the reflection
+	// history, the black-and-white filter, the cross-fade and motion blur all read that
+	// texture and all want a displayable image. They get the scene without the glow, which
+	// is the right answer for a reflection and an acceptable one for the rest.
+	IDirect3DTexture8 *compositeSrc = sceneTex;
+	D3DXVECTOR4 toneMapCtl(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f);
+	if (W3DShaderManager::isHdrActive() && W3DShaderManager::getHdrTexture() != nullptr)
+	{
+		compositeSrc = W3DShaderManager::getHdrTexture();
+		toneMapCtl.y = 1.0f;   // this pass owns the curve
+	}
 	DX8Wrapper::Set_DX8_Render_Target(backBuf, backDepth);
 	DX8Wrapper::Set_Pixel_Shader(m_compositePS);
-	DX8Wrapper::Set_DX8_Texture(0, sceneTex);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, toneMapCtl, 1);
+	DX8Wrapper::Set_DX8_Texture(0, compositeSrc);
 	DX8Wrapper::Set_DX8_Texture(1, m_texA);
 	W3DShaderManager::setLinearClampSampler(0);
 	W3DShaderManager::setLinearClampSampler(1);
@@ -3590,8 +3638,13 @@ void W3DShaderManager::initHdr()
 	}
 
 	m_hdrActive = true;
-	DEBUG_LOG(("HDR: active, %dx%d A16B16G16R16F scene target (multisample %d)\n",
-		sceneDesc.Width, sceneDesc.Height, (Int)sceneDesc.MultiSampleType));
+	// Additive effects may now emit past display white. This is what gives the tone curve
+	// something to compress: without it the whole frame still tops out at 1.0 and the curve
+	// only darkens the game for nothing. Pushed down into the wrapper because the wrapper
+	// cannot ask this layer -- see Set_Hdr_Effect_Gain.
+	DX8Wrapper::Set_Hdr_Effect_Gain(HDR_EFFECT_GAIN);
+	DEBUG_LOG(("HDR: active, %dx%d A16B16G16R16F scene target (multisample %d), effect gain %.2f\n",
+		sceneDesc.Width, sceneDesc.Height, (Int)sceneDesc.MultiSampleType, HDR_EFFECT_GAIN));
 }
 
 void W3DShaderManager::toneMapSceneToRenderTexture()
@@ -3643,6 +3696,9 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 		DX8Wrapper::Apply_Render_State_Changes();
 
 		DX8Wrapper::Set_Pixel_Shader(m_toneMapPS);
+		// y = 0: this site never adds bloom, it only curves. See the composite for the pass
+		// that does both and why it has to be the one the player actually sees.
+		DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f), 1);
 		DX8Wrapper::Set_DX8_Texture(0, m_hdrTexture);
 		// Point sampling: source and destination are the same size, so this is a copy, and a
 		// bilinear tap would soften the whole scene by half a texel for nothing.
@@ -3682,6 +3738,11 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 void W3DShaderManager::shutdownHdr()
 {
 	m_hdrActive = false;
+	// Back to "no brighter than white". This runs on the fallback path too -- initHdr calls
+	// it and retries the 8-bit target -- so leaving the gain raised would send effects at
+	// several times display white into a target that clamps them, turning every muzzle
+	// flash into a flat white blob.
+	DX8Wrapper::Set_Hdr_Effect_Gain(1.0f);
 	SAFE_RELEASE(m_hdrResolveSurface);
 	SAFE_RELEASE(m_hdrRenderSurface);
 	SAFE_RELEASE(m_hdrTexture);

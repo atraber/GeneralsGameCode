@@ -612,6 +612,9 @@ namespace {
 	const char* s_censusSamples[CENSUS_CATS][CENSUS_NAMES] = { { nullptr } };
 	int s_censusSampleCount[CENSUS_CATS] = { 0 };
 	int s_censusFrames = 0;
+	// Draws that were handed an emissive gain above 1, i.e. told they may exceed display
+	// white. Counted over the same window as the census and reported beside it.
+	unsigned s_censusHdrEmissiveDraws = 0;
 
 	void CensusNote(unsigned cat, const char* name)
 	{
@@ -1356,6 +1359,13 @@ void DX8Wrapper::Debug_Report_Routing_Census()
 		m_shadowParams[0], m_shadowParams[1], m_shadowParams[2],
 		m_shadowMeshParams[0], m_shadowMeshParams[1],
 		m_pShadowMap != nullptr ? "bound" : "NULL"));
+	// How much of the frame is actually being allowed above display white. Without this the
+	// HDR path cannot be told apart from a tone curve applied to a scene that never exceeds
+	// 1.0 -- which looks like a restyle and is one, and is the failure mode to catch. Zero
+	// here with HDR on means the gain is reaching no draws and stage 4 did nothing.
+	WWDEBUG_SAY(("HDR EMISSIVE: gain=%.2f applied to %u draws over %d frames",
+		m_hdrEffectGain, s_censusHdrEmissiveDraws, s_censusFrames));
+	s_censusHdrEmissiveDraws = 0;
 	WWDEBUG_SAY(("ROUTING CENSUS over %d frames, %u mesh passes:", s_censusFrames, total));
 	for (int c = 0; c < CENSUS_CATS; ++c) {
 		WWDEBUG_SAY(("  %-30s %8u (%2u%%)  e.g. %s %s %s %s",
@@ -1464,6 +1474,7 @@ float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 bool							DX8Wrapper::m_bSuppressDraw = false;
 bool							DX8Wrapper::m_bForeignDeviceBindings = false;
 bool							DX8Wrapper::m_bShadowDepthPass = false;
+float							DX8Wrapper::m_hdrEffectGain = 1.0f;
 bool							DX8Wrapper::m_bMeshCastsShadow = false;
 bool							DX8Wrapper::m_bEffectCastsShadow = false;
 bool							DX8Wrapper::m_bMeshHasSolidPass = false;
@@ -6281,8 +6292,28 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// neither the sun nor the clouds. Both vertex shaders take it out through
 				// the same shadowReceive gate the texture-only case already used, so a
 				// laser is not dimmed by the shadow of the building it passes.
+				// w: how much brighter than display white this draw may emit. Above 1 only
+				// for additive effect geometry, and the two conditions are both load
+				// bearing. "Effect" alone is too broad: smoke and dust are effects too, and
+				// they occlude rather than emit, so a gain would make a dust cloud glow.
+				// "Additive" alone is too broad the other way: an additive detail pass on a
+				// building is a surface treatment, not a light source. Together they name
+				// the thing that is actually light being added to the frame -- muzzle
+				// flashes, tracers, beams, explosions -- which was authored at the ceiling
+				// of a pipeline whose ceiling was 1.0, and has to be told it may go past it
+				// because no asset says so.
+				//
+				// Left at 1 unless HDR is running. On an 8-bit target the hardware clamps
+				// the result anyway, so a gain there would only crush the flash flat and
+				// lose whatever gradient it had.
+				const float effectGain =
+					(effectDraw && additiveBlend) ? m_hdrEffectGain : 1.0f;
+#ifdef RTS_DEBUG
+				if (effectGain > 1.0f)
+					++s_censusHdrEmissiveDraws;
+#endif
 				D3DXVECTOR4 lightingParams(lightMode, ambientFromVertex,
-										   effectDraw ? 1.0f : 0.0f, 0.0f);
+										   effectDraw ? 1.0f : 0.0f, effectGain);
 				Set_Vertex_Shader_Constant(17, &lightingParams, 1);
 				Set_Vertex_Shader_Constant(18, &matAmbient, 1);
 				Set_Vertex_Shader_Constant(19, &matEmissive, 1);

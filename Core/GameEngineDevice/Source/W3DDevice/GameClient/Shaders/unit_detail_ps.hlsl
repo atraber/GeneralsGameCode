@@ -131,7 +131,9 @@ float softParticleFade(float4 screenPos)
 struct PS_INPUT
 {
     float4 position  : POSITION;
-    float4 color     : COLOR0;
+    // TEXCOORD4, not COLOR0: a ps_3_0 COLOR interpolator clamps to [0,1] and the lit colour
+    // may exceed it now that the scene target is floating point. See unit_vs.
+    float4 color     : TEXCOORD4;
     float2 texcoord  : TEXCOORD0;   // stage 0 coordinates
     float2 texcoord1 : TEXCOORD1;   // stage 1 coordinates (may be generated)
     float4 lightPos  : TEXCOORD2;   // position in the sun's clip space
@@ -192,8 +194,14 @@ float4 main(PS_INPUT input) : COLOR
     }
     rgb *= cloudShade(input.cloudPos);
 
+    // Colour is left unclamped: on a floating-point scene target this saturate was the last
+    // thing pinning a two-stage combine to display white, and an additive detail pass over a
+    // bright base is exactly the kind of draw that should be allowed past it. Alpha keeps
+    // its saturate -- it is coverage, not brightness, and a blend factor above 1 is
+    // meaningless whatever the target can hold.
+    //
     // See the note in unit_ps: both colour and alpha are scaled so the fade reaches
     // additive draws as well as blended ones.
     float soft = softParticleFade(input.screenPos);
-    return float4(saturate(rgb) * soft, saturate(a) * soft);
+    return float4(max(rgb, 0.0) * soft, saturate(a) * soft);
 }
