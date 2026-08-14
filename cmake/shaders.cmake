@@ -62,6 +62,10 @@ set(_rts_shaders
     # Trees, grass and bushes (wind sway + shroud)
     tree_vs
     tree_ps
+    # Open-sea water (WaterType = 2), and the black-and-white screen filter
+    wave_vs
+    wave_ps
+    bwfilter_ps
     # Shadow-map depth pass
     shadowdepth_vs
     shadowdepth_ps
