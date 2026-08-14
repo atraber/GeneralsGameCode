@@ -63,7 +63,7 @@ set(_rts_shaders
     # Projected alpha mask (screen cross-fade wipe, wireframe preview)
     mask_vs
     mask_ps
-    # Bloom post-process (fullscreen pixel shaders; ps_2_0)
+    # Bloom post-process (fullscreen pixel shaders)
     bloom_bright_ps
     bloom_blur_ps
     bloom_composite_ps
@@ -74,6 +74,8 @@ set(_rts_shaders
     wave_vs
     wave_ps
     bwfilter_ps
+    # HDR scene -> 8-bit scene texture, at the end of render-to-texture
+    tonemap_ps
     # Shadow-map depth pass
     shadowdepth_vs
     shadowdepth_ps

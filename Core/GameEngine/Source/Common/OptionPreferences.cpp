@@ -140,6 +140,16 @@ Bool OptionPreferences::getBloomEnabled() const
 	return parseIniBool(it->second.str(), TRUE);
 }
 
+Bool OptionPreferences::getHdrEnabled() const
+{
+	// High dynamic range scene target. Defaults to off: it is opt-in until the sources
+	// that can actually exceed 1.0 and the tone curve that brings them back are in.
+	OptionPreferences::const_iterator it = find("UseHDR");
+	if (it == end())
+		return FALSE;
+	return parseIniBool(it->second.str(), FALSE);
+}
+
 Bool OptionPreferences::getTerrainTileVariationEnabled() const
 {
 	// Per-cell orientation variation of the base terrain tile. Defaults to on when the

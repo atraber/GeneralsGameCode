@@ -186,6 +186,23 @@ public:
 	static void startRenderToTexture(); ///< Sets render target to texture.
 	static IDirect3DTexture8 * endRenderToTexture(); ///< Ends render to texture, & returns texture.
 	static IDirect3DTexture8 * getRenderTexture();	///< returns last used render target texture
+	///Create the floating-point scene target and the tone map that brings it back to 8 bits.
+	///Safe to call when the option is off or the device cannot do it; HDR simply stays off.
+	static void initHdr();
+	static void shutdownHdr();	///<release the HDR resources.
+	///True when the scene is being drawn into the floating-point target this frame. Anything
+	///taking a mid-scene copy of the scene has to match its format -- see initRefraction.
+	static Bool isHdrActive() { return m_hdrActive; }
+	///The floating-point scene, valid between startRenderToTexture and the tone map at the
+	///end of endRenderToTexture. This is what a post-process wanting the range reads.
+	static IDirect3DTexture8 * getHdrTexture() { return m_hdrTexture; }
+	///Format any mid-scene grab of the scene colour must be created in, so its copy is a
+	///same-format one. Follows the scene target: floating point under HDR, else the back
+	///buffer's own format.
+	static D3DFORMAT getSceneColorFormat();
+	///Draw the floating-point scene into m_renderTexture through the tone map. Called at the
+	///end of the render-to-texture bracket, so nothing downstream ever meets the wide range.
+	static void toneMapSceneToRenderTexture();
 	static Bool isBloomFilterActive();	///< true when the bloom filter initialised (render-to-texture available)
 	static Bool isRenderingToTexture() {return m_renderingToTexture; }
 	static void drawViewport(Int color);	///<draws 2 triangles covering the current tactical viewport
@@ -225,6 +242,14 @@ protected:
 	static IDirect3DSurface8 *m_sceneHistorySurface;	///<its surface, the StretchRect destination
 	static IDirect3DTexture8 *m_refractionTexture;	///<scene as it stood just before the water drew
 	static IDirect3DSurface8 *m_refractionSurface;	///<its surface, the StretchRect destination
+	// High dynamic range scene target. The scene is drawn here instead of straight into
+	// m_renderTexture, and tone mapped down into it at the end of render-to-texture, so
+	// everything downstream still finds the 8-bit scene texture it has always read.
+	static Bool m_hdrActive;						///<HDR wanted, supported, and its resources exist
+	static IDirect3DTexture8 *m_hdrTexture;			///<floating-point scene colour (A16B16G16R16F)
+	static IDirect3DSurface8 *m_hdrRenderSurface;	///<what the scene draws into: the texture's surface, or an MSAA surface
+	static IDirect3DSurface8 *m_hdrResolveSurface;	///<when MSAA: the texture's surface, the resolve destination; null otherwise
+	static DWORD m_toneMapPS;						///<tonemap_ps: HDR scene -> the 8-bit scene texture
 
 
 };
