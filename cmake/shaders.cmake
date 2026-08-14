@@ -59,6 +59,9 @@ set(_rts_shaders
     bloom_bright_ps
     bloom_blur_ps
     bloom_composite_ps
+    # Trees, grass and bushes (wind sway + shroud)
+    tree_vs
+    tree_ps
     # Shadow-map depth pass
     shadowdepth_vs
     shadowdepth_ps

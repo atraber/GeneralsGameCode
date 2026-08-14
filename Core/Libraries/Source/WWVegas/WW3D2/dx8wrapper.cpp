@@ -3895,7 +3895,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		}
 
 		// Some geometry is drawn with a programmable vertex shader the engine supplies
-		// itself -- tree billboards bind Trees.vso and upload its constants straight to
+		// itself -- tree billboards bind tree_vs and upload its constants straight to
 		// the device. Those draws must keep the shader the engine chose; binding the unit
 		// shader over the top renders them with the wrong transform and inputs (this is
 		// what turned foliage black once multi-texture passes became routable, since the
