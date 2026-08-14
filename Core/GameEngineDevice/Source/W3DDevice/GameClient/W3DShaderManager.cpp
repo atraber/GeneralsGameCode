@@ -563,19 +563,12 @@ Int ScreenBWFilter::init()
 	{
 		if (res >= DC_GENERIC_PIXEL_SHADER_1_1)
 		{
-			//this shader needs some assets that need to be loaded
-			//shader decleration
-			DWORD Declaration[]=
-			{
-				(D3DVSD_STREAM(0)),
-				(D3DVSD_REG(0, D3DVSDT_FLOAT3)), // Position
-				(D3DVSD_REG(1, D3DVSDT_D3DCOLOR)), // Diffuse
-				(D3DVSD_REG(2, D3DVSDT_FLOAT2)), //  Texture Coordinates
-				(D3DVSD_END())
-			};
-
-			//Monochrome pixel shader.
-			hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\monochrome.pso", &Declaration[0], 0, false, &m_dwBWPixelShader);
+			// No vertex declaration: this is a pixel shader, and the D3D9 compatibility
+			// layer discards the argument for those anyway. The quad below is drawn with an
+			// XYZRHW FVF through fixed-function vertex processing, which a ps_3_0 shader is
+			// allowed to pair with -- the bloom passes have done exactly this since they
+			// were written.
+			hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\bwfilter_ps.pso", nullptr, 0, false, &m_dwBWPixelShader);
 			if (FAILED(hr))
 				return FALSE;
 

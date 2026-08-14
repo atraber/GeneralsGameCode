@@ -650,7 +650,6 @@ WaterRenderObjClass::WaterRenderObjClass()
 	m_whiteTexture=nullptr;
 	m_waterNoiseTexture=nullptr;
 	m_riverAlphaEdge=nullptr;
-	m_waterPixelShader=0;		///<D3D handle to pixel shader.
 	m_riverWaterPixelShader=0;		///<D3D handle to pixel shader.
 	m_trapezoidWaterPixelShader=0;		///<D3D handle to pixel shader.
 	m_waterSparklesTexture=nullptr;
@@ -1102,9 +1101,6 @@ void WaterRenderObjClass::ReleaseResources()
 	if (m_dwWaveVertexShader)
 		m_pDev->DeleteVertexShader(m_dwWaveVertexShader);
 
-	if (m_waterPixelShader)
-		m_pDev->DeletePixelShader(m_waterPixelShader);
-
 	if (m_trapezoidWaterPixelShader)
 		m_pDev->DeletePixelShader(m_trapezoidWaterPixelShader);
 
@@ -1113,7 +1109,6 @@ void WaterRenderObjClass::ReleaseResources()
 
 	m_dwWavePixelShader=0;
 	m_dwWaveVertexShader=0;
-	m_waterPixelShader = 0;
 	m_trapezoidWaterPixelShader=0;
 	m_riverWaterPixelShader=0;
 }
@@ -1165,23 +1160,25 @@ void WaterRenderObjClass::ReAcquireResources()
 		if (FAILED(hr=generateVertexBuffer(PATCH_SIZE,PATCH_SIZE,sizeof(SEA_PATCH_VERTEX),true)))
 			return;
 
-		//shader decleration
-		DWORD Declaration[]=
+		// No vertex declaration is passed: the D3D9 compatibility layer discards it, and the
+		// layout now comes from the FVF drawSea sets before binding the shader. The array
+		// that used to be here described SEA_PATCH_VERTEX and had no effect on anything --
+		// see the note in drawSea about what that cost.
+		hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\wave_ps.pso", nullptr, 0, false, &m_dwWavePixelShader);
+		if (FAILED(hr))
 		{
-			(D3DVSD_STREAM(0)),
-			(D3DVSD_REG(0, D3DVSDT_FLOAT3)), // Position
-			(D3DVSD_REG(1, D3DVSDT_D3DCOLOR)), // Diffuse
-			(D3DVSD_REG(2, D3DVSDT_FLOAT2)), // Bump map texture
-			(D3DVSD_END())
-		};
-
-		hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\wave.pso", &Declaration[0], 0, false, &m_dwWavePixelShader);
-		if (FAILED(hr))
+			DEBUG_LOG(("SEA: wave_ps.pso failed to load (0x%08X) -- WaterType 2 will not draw\n", (unsigned)hr));
 			return;
+		}
 
-		hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\wave.vso", &Declaration[0], 0, true, &m_dwWaveVertexShader);
+		hr = W3DShaderManager::LoadAndCreateD3DShader("shaders\\wave_vs.vso", nullptr, 0, true, &m_dwWaveVertexShader);
 		if (FAILED(hr))
+		{
+			DEBUG_LOG(("SEA: wave_vs.vso failed to load (0x%08X) -- WaterType 2 will not draw\n", (unsigned)hr));
 			return;
+		}
+
+		DEBUG_LOG(("SEA: wave_vs + wave_ps loaded (Shader Model 3)\n"));
 
 		// Create reflection texture
 		m_pReflectionTexture = DX8Wrapper::Create_Render_Target (SEA_REFLECTION_SIZE, SEA_REFLECTION_SIZE);
@@ -1211,19 +1208,9 @@ void WaterRenderObjClass::ReAcquireResources()
 			hr = 	DX8Wrapper::_Get_D3D_Device8()->CreatePixelShader((DWORD*)compiledShader->GetBufferPointer(), &m_riverWaterPixelShader);
 			compiledShader->Release();
 		}
-		shader =
-			"ps.1.1\n \
-			tex t0 \n\
-			tex t1	\n\
-			texbem t2, t1 ; use t1 as env map adjustment on t2.\n\
-			mul r0,v0,t0 ; blend vertex color into t0. \n\
-			mul r1.rgb,t2,c0 ; reduce t2 (environment mapped reflection) by constant\n\
-			add r0.rgb, r0, r1";
-		hr = D3DXAssembleShader( shader, strlen(shader), 0, nullptr, &compiledShader, nullptr);
-		if (hr==0) {
-			hr = 	DX8Wrapper::_Get_D3D_Device8()->CreatePixelShader((DWORD*)compiledShader->GetBufferPointer(), &m_waterPixelShader);
-			compiledShader->Release();
-		}
+		// A third ps.1.1 shader was assembled here into m_waterPixelShader -- an environment
+		// mapped reflection using texbem. It was never bound: nothing in the engine read
+		// that handle between creating it and releasing it. Deleted rather than ported.
 		shader =
 			"ps.1.1\n \
 			tex t0 ;get water texture\n\
@@ -2181,8 +2168,27 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
 	DX8Wrapper::Set_Vertex_Shader_Constant(CV_ZERO,   D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f), 1);
 	DX8Wrapper::Set_Vertex_Shader_Constant(CV_ONE,    D3DXVECTOR4(1.0f, 1.0f, 1.0f, 1.0f), 1);
 
+	// Establish the vertex layout before binding the shader, and in that order.
+	//
+	// This was missing, and it is why this path could not have been drawing correctly since
+	// the move to D3D9. The sea vertex buffer is created with an FVF of 0 -- under D3D8 the
+	// layout came from the declaration handed to CreateVertexShader, and the comment at that
+	// call said as much. D3D9 has no such declaration: the shim drops it, and the layout is
+	// whatever SetFVF or SetVertexDeclaration last established. drawSea never set one, so
+	// SEA_PATCH_VERTEX was being read through whichever declaration the previous draw in the
+	// frame happened to leave bound.
+	//
+	// Setting the FVF also clears the vertex shader (the wrapper does both), hence the
+	// order: the FVF supplies the declaration, then the shader is bound over it.
+	DX8Wrapper::Set_Vertex_Shader(DX8_FVF_XYZDUV1);
 	DX8Wrapper::Set_Vertex_Shader(m_dwWaveVertexShader);
 	DX8Wrapper::Set_Pixel_Shader(m_dwWavePixelShader);
+
+	// The bump environment matrix, which ps_1_1's texbem read straight out of the texture
+	// stage and a ps_3_0 shader has to be told. Same values set on stage 1 above; xy is the
+	// first row, zw the second.
+	DX8Wrapper::Set_Pixel_Shader_Constant(0,
+		D3DXVECTOR4(m_fBumpScale, 0.0f, 0.0f, m_fBumpScale), 1);
 
 //	Make reflection brighter to compensate for darker coloring on sea floor
 //	m_pDev->SetRenderState( D3DRS_SRCBLEND, D3DBLEND_ONE );
