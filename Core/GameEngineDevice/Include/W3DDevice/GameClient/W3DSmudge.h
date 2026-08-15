@@ -27,6 +27,7 @@ class SmudgeGroupClass;	//forward reference.
 class Vector3;
 class Vector4;
 class TextureClass;
+class SurfaceClass;
 class RenderInfoClass;
 class DX8IndexBufferClass;
 
@@ -47,6 +48,9 @@ public:
 
 private:
 	Bool testHardwareSupport();		///<test if video card supports the effect.
+	void createBackgroundTexture();	///<allocate the scene copy in the scene's own colour format.
+	void refreshBackgroundTexture();	///<rebuild it if the scene changed format (HDR on/off).
+	Bool captureBackground(SurfaceClass *sceneSurface);	///<StretchRect the scene into it.
 
 	enum { MAX_POINTS_PER_GROUP = 512 };
 
@@ -56,6 +60,11 @@ private:
 	ShareBufferClass<float> *m_sizeBuffer;			///< array of particle sizes
 
 	TextureClass *m_backgroundTexture;
+	///The colour format m_backgroundTexture was built for, as a plain D3DFORMAT value -- kept
+	///untyped so this header does not have to pull in D3D. A change of scene format (HDR
+	///coming up, or falling back to 8-bit) has to be noticed: StretchRect will not convert
+	///between floating point and 8-bit, so a mismatch stops the copy silently.
+	UnsignedInt m_backgroundFormat;
 	DX8IndexBufferClass	*m_indexBuffer;
 	Int m_backBufferWidth;
 	Int m_backBufferHeight;
