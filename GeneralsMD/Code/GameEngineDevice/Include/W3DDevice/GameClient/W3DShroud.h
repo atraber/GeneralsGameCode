@@ -45,6 +45,12 @@ public:
 	W3DShroudMaterialPassClass() : m_isTransparentObjectPass(FALSE) {}
 	virtual void	Install_Materials() const override;
 	virtual void	UnInstall_Materials() const override;
+	///This pass multiplies the frame buffer by the shroud over the mesh's own triangles,
+	///which only means anything where those triangles have coverage. On effect geometry --
+	///a searchlight beam, a glow cone, a rotor disc -- it paints the bare polygon instead:
+	///a hard-edged black wedge across the sky wherever a fogged beam was most transparent.
+	///See MaterialPassClass::Is_Enabled_On_Effect_Geometry.
+	virtual bool	Is_Enabled_On_Effect_Geometry() const override { return false; }
 	void enableTransparentObjectPass(Bool enable) {m_isTransparentObjectPass = enable;}
 protected:
 	//customized version to deal with transparent (alpha-tested) polys.

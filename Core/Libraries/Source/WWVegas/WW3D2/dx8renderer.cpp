@@ -354,8 +354,14 @@ void DX8FVFCategoryContainer::Render_Procedural_Material_Passes()
 		// fixed function while its mesh was on the shader. Measured on chinooks.rep, once
 		// the watchdog could see these draws at all, that was 986 split meshes and every
 		// one of them was this.
-		DX8Wrapper::Set_Mesh_Has_Solid_Pass(Mesh_Has_Solid_Pass(mpr->Peek_Mesh()));
-		mpr->Peek_Mesh()->Render_Material_Pass(mpr->Peek_Material_Pass(),index_buffer);
+		const bool hasSolidPass = Mesh_Has_Solid_Pass(mpr->Peek_Mesh());
+		DX8Wrapper::Set_Mesh_Has_Solid_Pass(hasSolidPass);
+		// An overlay that has nothing to overlay. See
+		// MaterialPassClass::Is_Enabled_On_Effect_Geometry -- the shroud is the pass that
+		// declines, because on a light shaft it draws the shaft's bare polygon.
+		if (hasSolidPass || mpr->Peek_Material_Pass()->Is_Enabled_On_Effect_Geometry()) {
+			mpr->Peek_Mesh()->Render_Material_Pass(mpr->Peek_Material_Pass(),index_buffer);
+		}
 		DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
 #ifdef RTS_DEBUG
 		DX8Wrapper::Set_Debug_Mesh_Name(nullptr);
@@ -426,8 +432,12 @@ void DX8RigidFVFCategoryContainer::Render_Delayed_Procedural_Material_Passes()
 		// fixed function while its mesh was on the shader. Measured on chinooks.rep, once
 		// the watchdog could see these draws at all, that was 986 split meshes and every
 		// one of them was this.
-		DX8Wrapper::Set_Mesh_Has_Solid_Pass(Mesh_Has_Solid_Pass(mpr->Peek_Mesh()));
-		mpr->Peek_Mesh()->Render_Material_Pass(mpr->Peek_Material_Pass(),index_buffer);
+		const bool hasSolidPass = Mesh_Has_Solid_Pass(mpr->Peek_Mesh());
+		DX8Wrapper::Set_Mesh_Has_Solid_Pass(hasSolidPass);
+		// Same rule as the immediate path above, and for the same reason.
+		if (hasSolidPass || mpr->Peek_Material_Pass()->Is_Enabled_On_Effect_Geometry()) {
+			mpr->Peek_Mesh()->Render_Material_Pass(mpr->Peek_Material_Pass(),index_buffer);
+		}
 		DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
 #ifdef RTS_DEBUG
 		DX8Wrapper::Set_Debug_Mesh_Name(nullptr);
