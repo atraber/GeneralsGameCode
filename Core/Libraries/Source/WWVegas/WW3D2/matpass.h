@@ -88,6 +88,26 @@ public:
 	void							Enable_On_Translucent_Meshes(bool onoff)	{ EnableOnTranslucentMeshes = onoff; }
 	bool							Is_Enabled_On_Translucent_Meshes()		{ return EnableOnTranslucentMeshes; }
 
+	/*
+	** May this pass be drawn over effect geometry -- a mesh no pass of which writes depth?
+	**
+	** A material pass re-draws the mesh's triangles with a material of its own, so what it
+	** contributes is decided by the pass, not by the mesh's own texture or alpha. On a
+	** surface that is the point: the triangles have coverage, and painting them again with
+	** a projected texture decorates what is already there. On effect geometry there is no
+	** coverage to decorate. A light shaft is a pair of quads whose entire shape lives in
+	** the alpha of its texture, so a second pass paints the quads themselves -- and it is
+	** most visible exactly where the effect is most transparent, which is the opposite of
+	** what an overlay should do.
+	**
+	** Ordering compounds it. Effect geometry is usually sorted, so its own pass is deferred
+	** to the sorting renderer's flush while a material pass is drawn immediately; the
+	** overlay therefore lands *underneath* the thing it was meant to modulate.
+	**
+	** Default true: an overlay that has no opinion keeps the behaviour it always had.
+	*/
+	virtual bool				Is_Enabled_On_Effect_Geometry() const	{ return true; }
+
 	static void					Enable_Per_Polygon_Culling(bool onoff)		{ EnablePerPolygonCulling = onoff; }
 	static bool					Is_Per_Polygon_Culling_Enabled()		{ return EnablePerPolygonCulling; }
 
