@@ -45,7 +45,18 @@
 SmudgeManager *TheSmudgeManager=nullptr;
 
 W3DSmudgeManager::W3DSmudgeManager()
+	: m_smudgeGroup(nullptr),
+	  m_posBuffer(nullptr),
+	  m_RGBABuffer(nullptr),
+	  m_sizeBuffer(nullptr),
+	  m_backgroundTexture(nullptr),
+	  m_backgroundFormat((UnsignedInt)D3DFMT_UNKNOWN),
+	  m_indexBuffer(nullptr),
+	  m_backBufferWidth(0),
+	  m_backBufferHeight(0)
 {
+	// These were left uninitialised. init() calls ReAcquireResources, which opens with
+	// ReleaseResources and releases both pointers before anything has ever assigned them.
 }
 
 W3DSmudgeManager::~W3DSmudgeManager()
@@ -76,20 +87,136 @@ void W3DSmudgeManager::ReleaseResources()
 static_assert(SMUDGE_DRAW_SIZE * 5 < 0x10000, "Vertex index exceeds 16-bit limit");
 
 
+/*
+** The scratch copy of the scene that the haze samples and distorts.
+**
+** It is built as a raw D3D render-target texture rather than through TextureClass's usual
+** (width, height, WW3DFormat) constructor, and that is the whole reason heat haze can work
+** under HDR. The scene's colour format is floating point then, and WW3DFormat has no
+** floating-point member to name it -- so the old constructor could not ask for a matching
+** texture, and the copy into it was a format conversion the runtime declines to make. The
+** wrapping constructor takes a texture that already exists, so the format never has to be
+** expressed in an enum that cannot express it.
+**
+** D3DUSAGE_RENDERTARGET is required by the copy, not by any drawing: StretchRect will only
+** write into a render target. This mirrors the water's refraction grab exactly -- see
+** W3DShaderManager::initRefraction, which had the same problem and the same answer.
+**
+** Everything downstream is unchanged. The draw still binds this through Set_Texture and is
+** still routed like any other effect geometry, so the shader that samples it is the same
+** ps_3_0 that would have sampled the 8-bit version.
+*/
+void W3DSmudgeManager::createBackgroundTexture()
+{
+	REF_PTR_RELEASE(m_backgroundTexture);
+	m_backgroundFormat = (UnsignedInt)D3DFMT_UNKNOWN;
+
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	// Dimensions off the back buffer, format off the scene. The two are the same size --
+	// the HDR target is built to match -- but only the scene knows whether it is floating
+	// point, and it is the scene this has to be copy-compatible with.
+	SurfaceClass *surface = DX8Wrapper::_Get_DX8_Back_Buffer();
+	if (surface == nullptr)
+		return;
+	SurfaceClass::SurfaceDescription surface_desc;
+	surface->Get_Description(surface_desc);
+	REF_PTR_RELEASE(surface);
+
+	const D3DFORMAT format = W3DShaderManager::getSceneColorFormat();
+
+	IDirect3DTexture8 *tex = nullptr;
+	if (FAILED(dev->CreateTexture(surface_desc.Width, surface_desc.Height, 1,
+			D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &tex)) || tex == nullptr)
+	{
+		DEBUG_LOG(("SMUDGE: could not create the %dx%d background copy (format %d)\n",
+			surface_desc.Width, surface_desc.Height, (Int)format));
+		return;
+	}
+
+	m_backgroundTexture = MSGNEW("TextureClass") TextureClass(tex);
+	tex->Release();	//TextureClass took its own reference
+
+	m_backgroundFormat = (UnsignedInt)format;
+	m_backBufferWidth = surface_desc.Width;
+	m_backBufferHeight = surface_desc.Height;
+}
+
+/*
+** Rebuild the copy if the scene has changed colour format underneath it.
+**
+** HDR can be initialised after this manager is -- and can switch itself off at runtime, on
+** the fallback path in initHdr -- so the format this was built for is not something that can
+** be decided once. A mismatch is not a cosmetic problem: StretchRect refuses to convert
+** between a floating-point surface and an 8-bit one, so the copy would quietly stop
+** happening and the haze would distort whatever frame was last in the texture.
+*/
+void W3DSmudgeManager::refreshBackgroundTexture()
+{
+	const D3DFORMAT sceneFormat = W3DShaderManager::getSceneColorFormat();
+	if (m_backgroundTexture != nullptr && m_backgroundFormat == (UnsignedInt)sceneFormat)
+		return;
+
+	DEBUG_LOG(("SMUDGE: scene colour format is now %d, rebuilding the background copy (was %d)\n",
+		(Int)sceneFormat, (Int)m_backgroundFormat));
+	createBackgroundTexture();
+	// The capability answer was reached against the old format; ask again.
+	m_hardwareSupportStatus = SMUDGE_SUPPORT_UNKNOWN;
+}
+
+/*
+** Copy the scene as it stands into the background texture.
+**
+** StretchRect, not SurfaceClass::Copy. Copy goes through the D3D8-era CopyRects path, which
+** cannot read a multisampled surface and cannot touch a floating-point one; StretchRect
+** resolves multisampling on the way through and handles both formats, which is what the
+** water's grab already relies on.
+*/
+Bool W3DSmudgeManager::captureBackground(SurfaceClass *sceneSurface)
+{
+	if (sceneSurface == nullptr || m_backgroundTexture == nullptr)
+		return FALSE;
+
+	IDirect3DSurface8 *src = sceneSurface->Peek_D3D_Surface();
+	if (src == nullptr)
+		return FALSE;
+
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return FALSE;
+
+	IDirect3DTexture8 *tex = m_backgroundTexture->Peek_D3D_Texture();
+	if (tex == nullptr)
+		return FALSE;
+
+	IDirect3DSurface8 *dst = nullptr;
+	if (FAILED(tex->GetSurfaceLevel(0, &dst)) || dst == nullptr)
+		return FALSE;
+
+	const HRESULT hr = dev->StretchRect(src, nullptr, dst, nullptr, D3DTEXF_NONE);
+	dst->Release();
+
+	if (FAILED(hr))
+	{
+		static Bool s_reported = FALSE;
+		if (!s_reported)
+		{
+			DEBUG_LOG(("SMUDGE: background copy failed (0x%08X) -- the haze has nothing to distort\n",
+				(unsigned)hr));
+			s_reported = TRUE;
+		}
+		return FALSE;
+	}
+	return TRUE;
+}
+
 void W3DSmudgeManager::ReAcquireResources()
 {
 	ReleaseResources();
 
-	SurfaceClass *surface=DX8Wrapper::_Get_DX8_Back_Buffer();
-	SurfaceClass::SurfaceDescription surface_desc;
-
-	surface->Get_Description(surface_desc);
-	REF_PTR_RELEASE(surface);
-
-	m_backgroundTexture = MSGNEW("TextureClass") TextureClass(surface_desc.Width,surface_desc.Height,surface_desc.Format,MIP_LEVELS_1,TextureClass::POOL_DEFAULT, true);
-
-	m_backBufferWidth = surface_desc.Width;
-	m_backBufferHeight = surface_desc.Height;
+	createBackgroundTexture();
 
 	m_indexBuffer=NEW_REF(DX8IndexBufferClass,(SMUDGE_DRAW_SIZE*4*3));	//allocate 4 triangles per smudge, each with 3 indices.
 
@@ -231,15 +358,26 @@ Bool W3DSmudgeManager::testHardwareSupport()
 			return FALSE;
 		}
 
-		// Not yet compatible with the floating-point scene target. The copy below is a
-		// same-format surface copy off the scene, and m_backgroundTexture is a TextureClass,
-		// whose WW3DFormat has no floating-point member -- so under HDR the copy would be a
-		// format conversion D3D declines to make, and the haze would distort a stale frame.
-		// Turned off rather than left to do that quietly. Giving the smudge a shader of its
-		// own is what fixes this, and takes one of the last fixed-function drawers with it.
+		// With a floating-point scene the readback comparison below cannot run: it draws a
+		// known 32-bit colour and compares the bytes, and those bytes mean nothing once the
+		// target holds half-floats. What the comparison is really asking -- can this device
+		// copy the colour target and sample the copy -- is answered for the HDR case by
+		// initHdr, which has already checked the format for RENDERTARGET, FILTER and
+		// post-pixel-shader blending. So test the one part that is genuinely new here, which
+		// is whether the copy itself goes through, and say which test ran.
 		if (W3DShaderManager::isHdrActive())
 		{
-			DEBUG_LOG(("SMUDGE: unsupported -- the scene target is floating point and the background copy cannot follow it yet\n"));
+			SurfaceClass *sceneSurface=DX8Wrapper::_Get_DX8_Render_Target();
+			const Bool copied = sceneSurface && captureBackground(sceneSurface);
+			REF_PTR_RELEASE(sceneSurface);
+
+			if (copied)
+			{
+				DEBUG_LOG(("SMUDGE: supported -- floating-point scene, background copy succeeds\n"));
+				m_hardwareSupportStatus = SMUDGE_SUPPORT_YES;
+				return TRUE;
+			}
+			DEBUG_LOG(("SMUDGE: unsupported -- floating-point scene and the background copy failed\n"));
 			m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
 			return FALSE;
 		}
@@ -308,22 +446,15 @@ Bool W3DSmudgeManager::testHardwareSupport()
 
 		// Take the copy render() takes, off whatever surface the scene is going to.
 		SurfaceClass *sceneSurface=DX8Wrapper::_Get_DX8_Render_Target();
-		SurfaceClass *background=m_backgroundTexture->Get_Surface_Level();
+		const Bool copied = sceneSurface && captureBackground(sceneSurface);
+		REF_PTR_RELEASE(sceneSurface);
 
-		if (!sceneSurface || !background)
+		if (!copied)
 		{
-			REF_PTR_RELEASE(sceneSurface);
-			REF_PTR_RELEASE(background);
+			DEBUG_LOG(("SMUDGE: unsupported -- the background copy failed\n"));
 			m_hardwareSupportStatus = SMUDGE_SUPPORT_NO;
 			return FALSE;
 		}
-
-		SurfaceClass::SurfaceDescription sceneDesc;
-		sceneSurface->Get_Description(sceneDesc);
-		background->Copy(0,0,0,0,sceneDesc.Width,sceneDesc.Height,sceneSurface);
-
-		REF_PTR_RELEASE(sceneSurface);
-		REF_PTR_RELEASE(background);
 
 		// ...and sample it, which is legal precisely because it is a copy and not the
 		// surface being drawn into.
@@ -393,6 +524,12 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	FF_SITE("W3DSmudgeManager::render");
 	// Heat-haze smudges: a screen distortion, never a surface.
 	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "smudge");
+
+	// Before the capability answer is used, not after: HDR can come up or fall back after
+	// this manager was initialised, and the copy has to match the scene's format to happen
+	// at all. This also re-opens the capability question when the format moves.
+	refreshBackgroundTexture();
+
 	//Verify that the card supports the effect.
 	if (!testHardwareSupport())
 		return;
@@ -412,9 +549,7 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	if (!sceneSurface)
 		return;
 
-	SurfaceClass *background=m_backgroundTexture ? m_backgroundTexture->Get_Surface_Level() : nullptr;
-
-	if (!background)
+	if (!m_backgroundTexture)
 	{
 		REF_PTR_RELEASE(sceneSurface);
 		return;
@@ -521,16 +656,16 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 
 	if (!count)
 	{
-		REF_PTR_RELEASE(background);
 		REF_PTR_RELEASE(sceneSurface);
 		return;	//nothing to render.
 	}
 
 	//Copy the area of the scene occupied by smudges into an alternate buffer.
-	background->Copy(0,0,0,0,surface_desc.Width,surface_desc.Height,sceneSurface);
-
-	REF_PTR_RELEASE(background);
+	const Bool copied = captureBackground(sceneSurface);
 	REF_PTR_RELEASE(sceneSurface);
+
+	if (!copied)
+		return;	//nothing to distort; drawing anyway would smear a stale frame.
 
 	Matrix4x4 identity(true);
 	DX8Wrapper::Set_Transform(D3DTS_WORLD,identity);
