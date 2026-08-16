@@ -1555,6 +1555,16 @@ bool TextureLoadTaskClass::Begin_Compressed_Load()
 #endif
 	);
 
+	// A failed create is not a "loaded" texture. Both callers of Begin_Load answer a
+	// false return by applying the missing texture, whereas saying yes here sends a null
+	// D3DTexture straight into Lock_Surfaces, which calls GetLevelCount on it. That is a
+	// null dereference on any create failure -- and creates do fail for a whole run once
+	// the device is lost and cannot be reset, which is how an alt-tab ended as an access
+	// violation inside the texture loader rather than as a black screen.
+	if (D3DTexture == nullptr) {
+		return false;
+	}
+
 	return true;
 }
 
@@ -1623,6 +1633,16 @@ bool TextureLoadTaskClass::Begin_Uncompressed_Load()
 		D3DPOOL_SYSTEMMEM
 #endif
 	);
+
+	// A failed create is not a "loaded" texture. Both callers of Begin_Load answer a
+	// false return by applying the missing texture, whereas saying yes here sends a null
+	// D3DTexture straight into Lock_Surfaces, which calls GetLevelCount on it. That is a
+	// null dereference on any create failure -- and creates do fail for a whole run once
+	// the device is lost and cannot be reset, which is how an alt-tab ended as an access
+	// violation inside the texture loader rather than as a black screen.
+	if (D3DTexture == nullptr) {
+		return false;
+	}
 
 	return true;
 }

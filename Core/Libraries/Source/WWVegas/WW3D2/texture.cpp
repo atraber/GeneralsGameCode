@@ -811,6 +811,13 @@ TextureClass::TextureClass(IDirect3DBaseTexture8* d3d_texture)
 	D3DSURFACE_DESC d3d_desc;
 	::ZeroMemory(&d3d_desc, sizeof(D3DSURFACE_DESC));
 	DX8_ErrorCode(surface->GetDesc(&d3d_desc));
+	// GetSurfaceLevel returns the surface with a reference taken, and a mip surface holds
+	// one on its container, so dropping this on the floor pins the texture for the life of
+	// the process. That is invisible for a MANAGED texture and fatal for a D3DPOOL_DEFAULT
+	// one: it survives every device teardown, and Reset() then fails with
+	// D3DERR_INVALIDCALL forever -- which is what alt-tabbing out of a game did, once the
+	// heat haze started wrapping its D3DPOOL_DEFAULT scene copy in a TextureClass here.
+	surface->Release();
 	Width=d3d_desc.Width;
 	Height=d3d_desc.Height;
 	TextureFormat=D3DFormat_To_WW3DFormat(d3d_desc.Format);
