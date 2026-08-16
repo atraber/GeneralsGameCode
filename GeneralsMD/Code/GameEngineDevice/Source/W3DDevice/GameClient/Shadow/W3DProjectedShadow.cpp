@@ -1286,6 +1286,16 @@ void W3DProjectedShadowManager::queueSimpleDecal(W3DProjectedShadow *shadow)
 			pvVertices->x=vertex.X;
 			pvVertices->y=vertex.Y;
 			pvVertices->z=vertex.Z;
+			// Every one of these four carries the shadow's colour, as the grid decals in
+			// queueDecal do. It used to carry nothing: the buffer is locked with
+			// D3DLOCK_DISCARD, so the field held whatever the driver handed back. That was
+			// already wrong under fixed function -- the flush installs PRELIT_DIFFUSE, whose
+			// combine reads D3DTA_DIFFUSE -- and it is unambiguously wrong now that these
+			// draws go through ui_ps, which modulates the texture by the vertex diffuse in
+			// both colour and alpha. A simple decal is a mine's marker, a radius cursor or a
+			// targeting reticle, so the visible form is one of those coming out the wrong
+			// colour or the wrong opacity, from frame to frame.
+			pvVertices->diffuse=shadow->m_diffuse;
 			pvVertices->u=0.0f;
 			pvVertices->v=0.0f;
 			pvVertices++;
@@ -1295,6 +1305,7 @@ void W3DProjectedShadowManager::queueSimpleDecal(W3DProjectedShadow *shadow)
 			pvVertices->x=vertex.X;
 			pvVertices->y=vertex.Y;
 			pvVertices->z=vertex.Z;
+			pvVertices->diffuse=shadow->m_diffuse;
 			pvVertices->u=0.0f;
 			pvVertices->v=1.0f;
 			pvVertices++;
@@ -1304,6 +1315,7 @@ void W3DProjectedShadowManager::queueSimpleDecal(W3DProjectedShadow *shadow)
 			pvVertices->x=vertex.X;
 			pvVertices->y=vertex.Y;
 			pvVertices->z=vertex.Z;
+			pvVertices->diffuse=shadow->m_diffuse;
 			pvVertices->u=1.0f;
 			pvVertices->v=1.0f;
 			pvVertices++;
@@ -1313,6 +1325,7 @@ void W3DProjectedShadowManager::queueSimpleDecal(W3DProjectedShadow *shadow)
 			pvVertices->x=vertex.X;
 			pvVertices->y=vertex.Y;
 			pvVertices->z=vertex.Z;
+			pvVertices->diffuse=shadow->m_diffuse;
 			pvVertices->u=1.0f;
 			pvVertices->v=0.0f;
 			pvVertices++;
