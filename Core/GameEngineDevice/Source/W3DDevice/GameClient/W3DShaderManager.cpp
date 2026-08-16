@@ -1219,6 +1219,24 @@ Int ShroudTextureShader::set(Int stage)
 	}
 	DX8Wrapper::Apply_Render_State_Changes();
 
+	// Everything below is written straight into the tracked state, after that Apply and not
+	// before it -- deliberately, per the note at the top of this function: the material's
+	// own Apply would otherwise overwrite the coordinate source again.
+	//
+	// That ordering means the routing block has already chosen this pass's shader constants
+	// by the time the texgen exists. It used to keep them: a caller like W3DBridgeBuffer,
+	// which applies its state once and then issues several draws without touching
+	// render_state, left render_state_changed clear, so every draw returned early from
+	// Apply_Render_State_Changes and the routing block never ran again. The projection
+	// below therefore never reached the vertex shader -- TexGenCtl went up as zero and
+	// unit_vs sampled the shroud with the *mesh's own UVs*, which for a bridge is the
+	// deck-and-stonework layout of cbwbridgekh.tga. On a map whose shroud is uniform that
+	// is invisible; on one with any structure in it, it painted the deck and the arch
+	// soffits with whatever those UVs happened to land on, black included.
+	//
+	// Set_DX8_Texture_Stage_State and _Set_DX8_Transform now raise TEXGEN_STATE_CHANGED for
+	// exactly these writes, so the decision is retaken before the draw. Nothing else re-runs
+	// on that bit, so the ordering this function depends on still holds.
 	DX8Wrapper::Set_DX8_Texture_Stage_State(stage,  D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_CAMERASPACEPOSITION);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(stage,  D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
 	// The base terrain is now transformed by the programmable terrain shader, whose

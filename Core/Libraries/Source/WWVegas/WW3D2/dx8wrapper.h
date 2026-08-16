@@ -244,6 +244,21 @@ class DX8Wrapper
 		INDEX_BUFFER_CHANGED = 1 << 17,
 		WORLD_IDENTITY=	1<<18,
 		VIEW_IDENTITY=		1<<19,
+		// A texture coordinate source, texture transform flag or texture matrix has been
+		// written straight into the tracked state, outside render_state.
+		//
+		// Those writes are inputs to the routing block, which reproduces the fixed-function
+		// texgen in the vertex shader -- but nothing used to mark them, so a decision taken
+		// before them stayed in force. A caller that applies its state, then writes its
+		// texgen, then draws (ShroudTextureShader::set does exactly that, and must, so the
+		// material's own Apply cannot overwrite it again) had its shader constants chosen
+		// while the texgen was still invisible: TexGenCtl went up as zero and the projection
+		// was dropped, leaving the shader sampling with the mesh's own UVs.
+		//
+		// Nothing else re-runs on this bit. Every sub-apply above the routing block is gated
+		// on its own flag, so the material and the shader are not re-applied and cannot
+		// clobber the very state that set this.
+		TEXGEN_STATE_CHANGED = 1<<20,
 
 		TEXTURES_CHANGED=
 			TEXTURE0_CHANGED|TEXTURE1_CHANGED|TEXTURE2_CHANGED|TEXTURE3_CHANGED,
@@ -342,6 +357,16 @@ public:
 
 	static void _Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, const D3DMATRIX& m);
 	static void _Get_DX8_Transform(D3DTRANSFORMSTATETYPE transform, D3DMATRIX& m);
+
+	// Raise TEXGEN_STATE_CHANGED when the matrix just written was a texture stage's.
+	//
+	// _Set_DX8_Transform does this itself, but the three Set_Transform overloads reach the
+	// device directly for anything that is not world/view/projection -- and that default
+	// branch is how *every* mapper writes its texture matrix (mapper.cpp, matrixmapper.cpp).
+	// The routing block uploads that matrix to the vertex shader, so writing one must
+	// invalidate a decision already taken, or a draw keeps constants chosen before the
+	// matrix existed. See TEXGEN_STATE_CHANGED.
+	static void Note_Texture_Transform_Write(D3DTRANSFORMSTATETYPE transform);
 
 	static void Set_DX8_Light(int index,D3DLIGHT8* light);
 	static void Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigned value);
@@ -838,6 +863,13 @@ WWINLINE void DX8Wrapper::_Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, co
 #endif
 	{
 		DX8Transforms[transform]=m;
+		// A texture matrix is an input to the routing block, which uploads it to the vertex
+		// shader so a generated coordinate set can be transformed there. Writing one has to
+		// invalidate a decision already taken, for the same reason the coordinate source
+		// does -- see TEXGEN_STATE_CHANGED.
+		if (transform >= D3DTS_TEXTURE0 && transform <= D3DTS_TEXTURE7) {
+			render_state_changed |= (unsigned)TEXGEN_STATE_CHANGED;
+		}
 		SNAPSHOT_SAY(("DX8 - SetTransform %d [%f,%f,%f,%f][%f,%f,%f,%f][%f,%f,%f,%f]",
 			transform,
 			m.m[0][0],m.m[0][1],m.m[0][2],m.m[0][3],
@@ -851,6 +883,13 @@ WWINLINE void DX8Wrapper::_Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, co
 WWINLINE void DX8Wrapper::_Get_DX8_Transform(D3DTRANSFORMSTATETYPE transform, D3DMATRIX& m)
 {
 	DX8CALL(GetTransform(transform,&m));
+}
+
+WWINLINE void DX8Wrapper::Note_Texture_Transform_Write(D3DTRANSFORMSTATETYPE transform)
+{
+	if (transform >= D3DTS_TEXTURE0 && transform <= D3DTS_TEXTURE7) {
+		render_state_changed |= (unsigned)TEXGEN_STATE_CHANGED;
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -1003,6 +1042,13 @@ WWINLINE void DX8Wrapper::Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURE
 #endif
 
 	TextureStageStates[stage][(unsigned int)state]=value;
+	// The routing block reads these two to decide whether this draw generates its texture
+	// coordinates, and to hand the vertex shader the mode and matrix that reproduce it.
+	// Writing them has to invalidate a decision already taken, or the shader keeps
+	// constants chosen before the texgen existed. See TEXGEN_STATE_CHANGED.
+	if (state == D3DTSS_TEXCOORDINDEX || state == D3DTSS_TEXTURETRANSFORMFLAGS) {
+		render_state_changed |= (unsigned)TEXGEN_STATE_CHANGED;
+	}
 	bool is_sampler_state = false;
 	D3DSAMPLERSTATETYPE sampler_state;
 	switch ((unsigned)state) {
@@ -1402,6 +1448,7 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 	default:
 		DX8_RECORD_MATRIX_CHANGE();
 		D3DMATRIX dxm=To_D3DMATRIX(m);
+		Note_Texture_Transform_Write(transform);
 		DX8CALL(SetTransform(transform,&dxm));
 		break;
 	}
@@ -1423,6 +1470,7 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 	default:
 		DX8_RECORD_MATRIX_CHANGE();
 		D3DMATRIX dxm=To_D3DMATRIX(m);
+		Note_Texture_Transform_Write(transform);
 		DX8CALL(SetTransform(transform,&dxm));
 		break;
 	}
