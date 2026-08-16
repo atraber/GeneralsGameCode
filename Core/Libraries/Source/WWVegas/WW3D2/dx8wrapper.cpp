@@ -327,6 +327,54 @@ void DX8Wrapper::Prepare_Direct_Draw(const char * site)
 	if (Is_Fixed_Function_Draw()) {
 		Flush_Fixed_Function_State();
 	}
+
+	// Everything this drawer bound at the device, the wrapper does not know about -- and
+	// what it does not know about, it will not put back.
+	//
+	// Apply_Render_State_Changes re-issues SetStreamSource and SetIndices only when
+	// VERTEX_BUFFER_CHANGED / INDEX_BUFFER_CHANGED say the buffers moved, which is a
+	// statement about the wrapper's own render_state and says nothing about the device. A
+	// direct drawer binds its own stream, its own indices and its own FVF and never touches
+	// render_state, so those flags stay clear -- and the next draw through Draw() that
+	// happens not to change buffers itself keeps drawing with the direct drawer's
+	// bindings. The renderers this reaches are the ones that bind once and then draw many
+	// times: every bridge in W3DBridgeBuffer::drawBridges after the first, every polygon
+	// renderer in an FVF category after the first.
+	//
+	// Three separate ways for that to be wrong, and they are worth naming because only the
+	// first is obvious:
+	//
+	//   * The stream is somebody else's buffer. The decal flush leaves
+	//     shadowDecalVertexBufferD3D on stream 0; a draw that reads it as bridge geometry
+	//     gets positions that are not positions.
+	//   * The base vertex index is somebody else's. It was device state in D3D8 and is a
+	//     draw argument in D3D9, so the compatibility layer keeps it in a global written at
+	//     SetIndices time -- see the note in Draw(). The decal flush sets it to
+	//     nShadowDecalStartBatchVertex, which climbs towards 32768 across a frame.
+	//   * There is no stream at all. DrawPrimitiveUP and DrawIndexedPrimitiveUP set the
+	//     stream 0 binding to NULL as a documented side effect, which D3D8 did not do, and
+	//     that is how every screen-space quad in the frame ends.
+	//
+	// All three produce the same thing on screen: triangles built from unrelated vertices,
+	// which rasterise as long thin slivers reaching across the view. Which draws are hit
+	// depends on submission order, so it changes as the camera turns and does not reproduce
+	// from one run to the next.
+	//
+	// So record that the device's bindings are no longer ours. Draw() acts on it, not
+	// Apply_Render_State_Changes: the flags that would repair this are read by Apply, and
+	// Apply is called from about thirty places that are only tidying up. Raising them here
+	// would fire at those too -- and the VERTEX_BUFFER_CHANGED branch sets the FVF from
+	// render_state's own vertex buffer, which would take down the D3DFVF_XYZRHW declaration
+	// a screen-space caller had just set for the DrawPrimitiveUP it has not issued yet.
+	// (ScreenMotionBlurFilter::postRender does exactly that: FVF, draw, Apply, draw.) It
+	// would also un-gate Apply's early return and re-run the per-draw routing block for a
+	// call that is not describing a draw.
+	//
+	// Costs one SetStreamSource and one SetIndices at each boundary between a direct drawer
+	// and the wrapper -- not per draw -- and it is stated once, at the point every direct
+	// drawer already passes through, rather than left as a rule each of them must remember.
+	m_bForeignDeviceBindings = true;
+
 #ifdef RTS_DEBUG
 	Debug_Note_Direct_Draw(site);
 #else
@@ -391,9 +439,78 @@ static DirectDrawGroup s_directDraws[16];
 static int      s_directDrawCount = 0;
 static unsigned s_directDrawFrames = 0;
 
+//-----------------------------------------------------------------------------
+// Bindings inherited from a direct-device drawer -- see the note in Prepare_Direct_Draw
+// for what goes wrong, and the one in Draw() for where it is repaired.
+//
+// Sampled at the boundary rather than per draw: what matters is the *first* wrapper draw
+// after a direct one, because that is the draw that would have used its stream and its
+// base vertex index. Grouped by the drawer that left them, since the mismatch on its own
+// says nothing about where it came from.
+//
+// This keeps reporting after the repair lands, and should. It is a gauge of how much work
+// the repair is doing, not a count of anything still broken -- a run of zeroes here would
+// mean the boundary had stopped mattering, which is a different claim and one worth being
+// able to see.
+//-----------------------------------------------------------------------------
+struct ForeignBindingGroup
+{
+	const char * site;        // the direct-device drawer whose bindings were still standing
+	unsigned     draws;       // wrapper draws that reached the boundary
+	unsigned     wrongBase;   // ...of those, how many had the wrong base vertex index
+	unsigned     wrongStream; // ...and how many had somebody else's vertex buffer, or none
+	int          worstDelta;  // largest inherited-minus-expected base seen
+};
+static ForeignBindingGroup s_foreign[16];
+static int            s_foreignCount = 0;
+static const char *   s_lastDirectDrawSite = nullptr;
+static int            s_foreignReported = 0;
+
+void DX8Wrapper::Debug_Note_Foreign_Bindings(int expectedBase, int inheritedBase, bool streamWrong)
+{
+	const char * site = s_lastDirectDrawSite != nullptr ? s_lastDirectDrawSite : "(none yet)";
+	const int delta = inheritedBase - expectedBase;
+	const bool baseWrong = (delta != 0);
+
+	// The first few go out immediately rather than waiting for the window report. This
+	// exists to answer a question somebody is holding a controller to ask -- "is what I can
+	// see on screen this?" -- and a report 600 frames later cannot be matched up with what
+	// the camera was doing when it happened.
+	if ((baseWrong || streamWrong) && s_foreignReported < 12) {
+		++s_foreignReported;
+		const char * victimSite = Debug_Get_FF_Site();
+		WWDEBUG_SAY(("FOREIGN BINDINGS: draw in %s / mesh %s, after %s, would have used base %d "
+					 "where its own buffers imply %d (delta %d)%s -- repaired",
+			victimSite != nullptr ? victimSite : "(unattributed)",
+			s_debugMeshName != nullptr ? s_debugMeshName : "(none)",
+			site, inheritedBase, expectedBase, delta,
+			streamWrong ? ", and somebody else's vertex stream" : ""));
+	}
+
+	for (int i = 0; i < s_foreignCount; ++i) {
+		if (s_foreign[i].site == site) {
+			++s_foreign[i].draws;
+			if (baseWrong)   ++s_foreign[i].wrongBase;
+			if (streamWrong) ++s_foreign[i].wrongStream;
+			const int mag   = delta < 0 ? -delta : delta;
+			const int worst = s_foreign[i].worstDelta < 0 ? -s_foreign[i].worstDelta : s_foreign[i].worstDelta;
+			if (mag > worst) s_foreign[i].worstDelta = delta;
+			return;
+		}
+	}
+	if (s_foreignCount >= 16) return;
+	ForeignBindingGroup & g = s_foreign[s_foreignCount++];
+	g.site = site;
+	g.draws = 1;
+	g.wrongBase   = baseWrong   ? 1 : 0;
+	g.wrongStream = streamWrong ? 1 : 0;
+	g.worstDelta  = delta;
+}
+
 void DX8Wrapper::Debug_Note_Direct_Draw(const char * site)
 {
 	if (site == nullptr) site = "?";
+	s_lastDirectDrawSite = site;
 	const bool ffPixel  = Is_Fixed_Function_Pixel_Draw();
 	const bool ffVertex = Is_Fixed_Function_Vertex_Draw();
 	for (int i = 0; i < s_directDrawCount; ++i) {
@@ -431,6 +548,17 @@ void DX8Wrapper::Debug_Report_Direct_Draws()
 			g.site, g.total, g.ffVertex, vpc, g.ffPixel, ppc));
 	}
 	s_directDrawCount = 0;
+
+	if (s_foreignCount != 0) {
+		WWDEBUG_SAY(("  ...and the first wrapper draw after each of them, which would have "
+					 "inherited its bindings had Draw() not asked for ours back:"));
+		for (int i = 0; i < s_foreignCount; ++i) {
+			const ForeignBindingGroup & g = s_foreign[i];
+			WWDEBUG_SAY(("    after %-22s x%-7u  wrong base %u (worst delta %+d)  wrong stream %u",
+				g.site, g.draws, g.wrongBase, g.worstDelta, g.wrongStream));
+		}
+		s_foreignCount = 0;
+	}
 }
 
 
@@ -1292,6 +1420,7 @@ float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 bool							DX8Wrapper::m_bSuppressDraw = false;
+bool							DX8Wrapper::m_bForeignDeviceBindings = false;
 bool							DX8Wrapper::m_bShadowDepthPass = false;
 bool							DX8Wrapper::m_bMeshCastsShadow = false;
 bool							DX8Wrapper::m_bEffectCastsShadow = false;
@@ -3851,6 +3980,37 @@ void DX8Wrapper::Draw(
 	// "fixed-function draws submitted through DX8Wrapper::Draw", not "all of them".
 	s_applyIsDraw = true;
 #endif
+
+	// A drawer that went straight to the device has bound its own stream, indices and FVF
+	// since the wrapper last bound anything -- see Prepare_Direct_Draw, which is where the
+	// three ways that goes wrong are written down. This draw is about to use those
+	// bindings, so ask for ours back. Here rather than in Prepare_Direct_Draw because this
+	// is the point at which a draw actually depends on them.
+	if (m_bForeignDeviceBindings) {
+		m_bForeignDeviceBindings = false;
+#ifdef RTS_DEBUG
+		// Measured here and not further down, because the repair on the next line is what
+		// there would otherwise be to measure. This says what this draw *would* have used.
+		{
+			const int expectedBase = (int)(render_state.index_base_offset + render_state.vba_offset);
+			bool streamWrong = false;
+			if (render_state.vertex_buffers[0] != nullptr &&
+				(render_state.vertex_buffer_types[0] == BUFFER_TYPE_DX8 ||
+				 render_state.vertex_buffer_types[0] == BUFFER_TYPE_DYNAMIC_DX8)) {
+				IDirect3DVertexBuffer9 * bound = nullptr;
+				UINT offset = 0, stride = 0;
+				if (SUCCEEDED(D3DDevice->GetStreamSource(0, &bound, &offset, &stride))) {
+					streamWrong = (bound != static_cast<DX8VertexBufferClass*>(
+						render_state.vertex_buffers[0])->Get_DX8_Vertex_Buffer());
+					if (bound) bound->Release();
+				}
+			}
+			Debug_Note_Foreign_Bindings(expectedBase, (int)g_D3D9_BaseVertexIndex, streamWrong);
+		}
+#endif
+		render_state_changed |= (unsigned)VERTEX_BUFFER_CHANGED | (unsigned)INDEX_BUFFER_CHANGED;
+	}
+
 	Apply_Render_State_Changes();
 #ifdef RTS_DEBUG
 	s_applyIsDraw = false;
@@ -3975,6 +4135,36 @@ void DX8Wrapper::Draw(
 					///@todo: MUST FIND OUT WHY THIS HAPPENS WITH LOTS OF PARTICLES ON BIG FIGHT!  -MW
 					break;
 				}*/
+				// State the base vertex index for this draw rather than inheriting one.
+				//
+				// In D3D8 the base was device state, set by SetIndices; in D3D9 it is an
+				// argument to DrawIndexedPrimitive. The compatibility layer bridges the two by
+				// stashing it in a global at SetIndices time and passing that global to every
+				// draw afterwards (see d3d9_compat.h), which is faithful for a caller that sets
+				// its indices and then immediately draws -- and every drawer that goes straight
+				// to the device is one of those.
+				//
+				// This path is not. Apply_Render_State_Changes only re-issues SetIndices when
+				// INDEX_BUFFER_CHANGED, so a run of draws sharing an index buffer -- each bridge
+				// in W3DBridgeBuffer::drawBridges, each polygon renderer in an FVF category --
+				// re-establishes the base on the first draw and inherits it thereafter. What it
+				// inherits is whichever value was written last, and the direct drawers write
+				// their own: the projected-shadow decals set it to nShadowDecalStartBatchVertex,
+				// which climbs towards 32768 across a frame as shadows are queued; the
+				// volumetric shadows set a buffer-manager slot start; the water grid sets its
+				// vertex buffer offset. A base that belongs to somebody else is added to every
+				// index in this draw, so it reads vertices from elsewhere in the buffer, or
+				// past its end -- and triangles built from unrelated positions rasterise as
+				// long thin slivers reaching across the screen.
+				//
+				// Which draws are exposed therefore depends on submission order, which depends
+				// on what is in view: it changes as the camera turns and it does not reproduce.
+				//
+				// Assigning the global is the whole of the repair and costs nothing, because in
+				// D3D9 no device state holds this -- it is read straight into the draw call
+				// below. This is exactly the value Apply_Render_State_Changes passes to
+				// SetIndices when it does re-issue it.
+				g_D3D9_BaseVertexIndex = (INT)(render_state.index_base_offset + render_state.vba_offset);
 				DX8_RECORD_RENDER(polygon_count,vertex_count,render_state.shader);
 				DX8_RECORD_DRAW_CALLS();
 				DX8CALL(DrawIndexedPrimitive(

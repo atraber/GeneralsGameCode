@@ -1066,6 +1066,11 @@ public:
 	// These are the last drawers not accounted for, so each one names itself here.
 	static void Debug_Note_Direct_Draw(const char * site);
 	static void Debug_Report_Direct_Draws();
+	// The first wrapper draw after a direct-device drawer, measured at the moment Draw()
+	// takes the device's bindings back -- before the repair, because after it there is
+	// nothing left to see. Says how many of those draws would have used the wrong base
+	// vertex index or somebody else's vertex stream, grouped by the drawer that left them.
+	static void Debug_Note_Foreign_Bindings(int expectedBase, int inheritedBase, bool streamWrong);
 	// Frame time over the census window: mean, median, p95 and worst, so a cost can be
 	// judged on its distribution rather than its average.
 	static void Debug_Report_Frame_Timing();
@@ -1269,6 +1274,12 @@ public:
 	// before its early return, so a stale value can only ever cost a wasted draw call and
 	// can never swallow one that should have rendered.
 	static bool							m_bSuppressDraw;
+	// Raised by Prepare_Direct_Draw: the vertex stream, index buffer, base vertex index and
+	// FVF standing at the device were bound by a caller that went round the wrapper, so the
+	// wrapper's flags no longer describe what is bound. Draw() consumes it by asking for the
+	// bindings back before the next draw that would otherwise inherit them. See the note in
+	// Prepare_Direct_Draw for why it is consumed there and not in Apply_Render_State_Changes.
+	static bool							m_bForeignDeviceBindings;
 	static bool							m_bShadowDepthPass; // current draws render into the shadow map
 	static void Set_Shadow_Depth_Pass(bool active) { m_bShadowDepthPass = active; }
 	static bool Is_Shadow_Depth_Pass() { return m_bShadowDepthPass; }
