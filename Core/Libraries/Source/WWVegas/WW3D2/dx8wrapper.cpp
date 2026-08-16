@@ -607,6 +607,39 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 				return false;
 			}
 		}
+		// Take everything off the device first. A resource that is still bound stays
+		// alive however many times the app releases it -- the driver holds its own
+		// reference on whatever is bound -- and one live D3DPOOL_DEFAULT resource is all
+		// it takes for Reset() to return D3DERR_INVALIDCALL. It then does so on every
+		// retry, because nothing here ever unbinds, so the device never comes back and
+		// the frame loop runs on with the terrain and shaders already released.
+		//
+		// Release_Device has always unbound before releasing; Reset_Device never did.
+		// The releases below (Set_Vertex_Buffer, the cleanup hook, _Deinit) only drop
+		// *our* pointers, which is not the same thing.
+		Set_Render_Target((IDirect3DSurface8 *)nullptr);	// back to the back buffer
+		for (unsigned stage=0;stage<MAX_TEXTURE_STAGES;++stage)
+		{
+			DX8CALL(SetTexture(stage,nullptr));
+			if (Textures[stage]) {
+				Textures[stage]->Release();
+				Textures[stage] = nullptr;
+			}
+		}
+		for (unsigned stream=0;stream<MAX_VERTEX_STREAMS;++stream)
+		{
+			DX8CALL(SetStreamSource(stream, nullptr, 0));
+		}
+		DX8CALL(SetIndices(nullptr,0));
+
+		// The wrapper's own render state holds ref-counted TextureClass / vertex buffer /
+		// material pointers of its own, separate from the raw bindings above, and they
+		// outlive whatever the owning subsystem does in its ReleaseResources. The smudge
+		// manager's scene copy is the one that bites: it is a D3DPOOL_DEFAULT render
+		// target bound with Set_Texture, so the render state kept it alive on its own and
+		// no amount of releasing elsewhere could get the device down to zero.
+		Release_Render_State();
+
 		// Release all non-MANAGED stuff
 		WW3D::_Invalidate_Textures();
 
