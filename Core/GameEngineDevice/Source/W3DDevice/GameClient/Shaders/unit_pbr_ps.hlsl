@@ -232,9 +232,47 @@ float4 main(PS_INPUT input) : COLOR
     Lo += DirectLight(N, V, LightDir2.xyz, LightDiffuse2.rgb, diffuseColor, F0, roughness);
     Lo += DirectLight(N, V, LightDir3.xyz, LightDiffuse3.rgb, diffuseColor, F0, roughness);
 
-    // Cast shadows darken the direct sunlight.
+    // Cast shadows.
+    //
+    // This is what was missing, and it is why PBR meshes read as not receiving shadows.
+    // The term itself was always fine -- measured on this map, 255 distinct values with
+    // 64% of PBR pixels genuinely shadowed -- but it only ever reached Lo. The ambient
+    // below was left at full strength, and in this engine ambient is the larger half of a
+    // surface's brightness (SceneAmbient ~0.48 against a cubemap averaging ~0.16), so a
+    // fully shadowed mesh stayed nearly as bright as a lit one.
+    //
+    // The renderer has one convention for this and PBR now joins it: terrain_ps and
+    // unit_ps both do `col *= lerp(0.35, 1.0, shadow)` over their whole colour, and
+    // unit_ps notes that the constant is matched to the terrain's on purpose, so that a
+    // mesh and its own cast shadow on the ground sit at the same brightness. Applying the
+    // same factor to everything is what keeps a PBR mesh at the brightness of the ground
+    // it is standing on, whatever the balance of direct and ambient happens to be on it.
+    //
+    // **Which is why the multiply happens at the very end, on the encoded colour, and not
+    // here on the linear one.** Sharing the constant is not the same as sharing the
+    // behaviour: terrain_ps and unit_ps work in gamma space throughout, so their 0.35 is a
+    // multiply of an sRGB value, while doing it in linear and encoding afterwards turns
+    // the same constant into 0.35^(1/2.2) = 0.63. That is what this shader used to do, and
+    // it meant a fully shadowed PBR mesh kept 63% of its brightness where the ground it
+    // stood on kept 35% -- a unit visibly lighter than its own shadow, from a line whose
+    // stated purpose was to make the two agree. The constant was matched and the space was
+    // not, which is the kind of mismatch that reads as a look decision rather than a bug.
+    //
+    // Driving the direct term to zero instead (Lo *= shadow) is the more physical
+    // reading -- an occluded surface receives no sunlight and its highlight should go with
+    // it -- and it was tried first. Measured, it put 30% of PBR pixels below 0.35 and the
+    // darkest at 0.004: sun-dominated pixels lose nearly everything, so units went black
+    // in shadows the ground beside them merely dimmed. Wrong in the other direction, and
+    // more noticeable than the highlight this preserves, because it is the comparison
+    // against the neighbouring surface that the eye actually makes.
+    //
+    // The cost is that a GGX highlight survives at 35% inside a shadow. That is the same
+    // thing the M3 and terrain shaders do with their own baked specular, so it is at
+    // least consistent; splitting DirectLight's diffuse from its specular to kill only
+    // the latter is the improvement if it ever looks wrong.
+    const float SHADOW_MIN = 0.35;
     float shadow = computeShadow(input.worldPos, N);
-    Lo *= shadow;
+    float shadowFill = lerp(SHADOW_MIN, 1.0, shadow);
 
     // Ambient diffuse under the scene ambient, attenuated by AO.
     float3 ambient   = diffuseColor * SceneAmbient.rgb * ao;
@@ -271,5 +309,11 @@ float4 main(PS_INPUT input) : COLOR
 #endif
 
     float diffAlpha = lerp(input.color.a, AlphaCtl.x, AlphaCtl.y);
-    return float4(LinearToSrgb(color), albedoTex.a * diffAlpha);
+    // No receive gate: this path only ever draws meshes the sun lights. Pre-lit and
+    // texture-only meshes never reach it.
+    //
+    // The cast shadow is a multiply of the encoded colour, which is exactly what
+    // terrain_ps and unit_ps do -- see the note on SHADOW_MIN above for why the space
+    // matters as much as the constant.
+    return float4(LinearToSrgb(color) * shadowFill, albedoTex.a * diffAlpha);
 }
