@@ -151,13 +151,32 @@ static void doStackDump();
 // ----------------------------------------------------------------------------
 inline Bool ignoringAsserts()
 {
+	// TheSuperHackers @fix andytraber 17/08/2026 Latch the answer TheGlobalData gives, so it
+	// outlives TheGlobalData itself.
+	//
+	// ~GlobalData sets TheWritableGlobalData back to nullptr, and asserts keep firing after
+	// that -- the memory pool leak report is the reliable one, and it runs at the very end of
+	// shutdown. Read at that point, TheGlobalData is null, -ignoreAsserts is invisible, and an
+	// unattended run stops on a modal dialog at the last step, having done everything asked of
+	// it. Headless already avoided this through DX8Wrapper_IsWindowed, per the comment in
+	// parseHeadless; latching covers -win runs too, which is what a replay harness uses.
+	static Bool s_latchedIgnore = false;
+	if (s_latchedIgnore)
+		return true;
+
 	if (!DX8Wrapper_IsWindowed)
 		return true;
 	if (TheGlobalData && TheGlobalData->m_headless)
+	{
+		s_latchedIgnore = true;
 		return true;
+	}
 #ifdef DEBUG_CRASHING
 	if (TheGlobalData && TheGlobalData->m_debugIgnoreAsserts)
+	{
+		s_latchedIgnore = true;
 		return true;
+	}
 #endif
 
 	return false;
