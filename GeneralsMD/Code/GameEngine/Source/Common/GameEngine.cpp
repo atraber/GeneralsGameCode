@@ -952,11 +952,25 @@ extern HWND ApplicationHWnd;
 /** -----------------------------------------------------------------------------------------------
  * The "main loop" of the game engine. It will not return until the game exits.
  */
+// TheSuperHackers @feature andytraber 17/08/2026 The shutdown an unattended run wants: leave
+// the same state behind an ordinary exit would -- close a recording that is still open, clear
+// the game data -- and then quit. Factored out of the benchmark timer, which did exactly this.
+static void quitUnattendedRun()
+{
+	if (TheGameLogic->isInGame())
+	{
+		if (TheRecorder->getMode() == RECORDERMODETYPE_RECORD)
+		{
+			TheRecorder->stopRecording();
+		}
+		TheGameLogic->clearGameData();
+	}
+	TheGameEngine->setQuitting(TRUE);
+}
+
 void GameEngine::execute()
 {
-#if defined(RTS_DEBUG)
 	DWORD startTime = timeGetTime() / 1000;
-#endif
 
 	// pretty basic for now
 	while( !m_quitting )
@@ -979,19 +993,38 @@ void GameEngine::execute()
 					DWORD currentTime = timeGetTime() / 1000;
 					if (TheGlobalData->m_benchmarkTimer < currentTime - startTime)
 					{
-						if (TheGameLogic->isInGame())
-						{
-							if (TheRecorder->getMode() == RECORDERMODETYPE_RECORD)
-							{
-								TheRecorder->stopRecording();
-							}
-							TheGameLogic->clearGameData();
-						}
-						TheGameEngine->setQuitting(TRUE);
+						quitUnattendedRun();
 					}
 				}
 			}
 #endif
+
+			// TheSuperHackers @feature andytraber 17/08/2026 -quitAfterSeconds and -quitAtFrame.
+			// The frame is the logic frame, so for a replay it names the same moment on every
+			// run; the wall clock does not, and is here as the blunt instrument for a run whose
+			// length is not known up front.
+			//
+			// Neither of these replaces an external timeout on the process. They are tested from
+			// inside this loop, so anything that stops the loop -- a modal assert dialog above
+			// all -- stops them from ever firing.
+			if (TheGlobalData->m_quitAfterSeconds > 0 || TheGlobalData->m_quitAtFrame >= 0)
+			{
+				const DWORD elapsedSeconds = (timeGetTime() / 1000) - startTime;
+				const Bool timeIsUp = TheGlobalData->m_quitAfterSeconds > 0 &&
+					elapsedSeconds >= (DWORD)TheGlobalData->m_quitAfterSeconds;
+				// Only in game: the logic frame is 0 through the shell and the load screen, and
+				// a frame that has already passed must still quit, so this is >= and not ==.
+				const Bool frameIsUp = TheGlobalData->m_quitAtFrame >= 0 && TheGameLogic->isInGame() &&
+					TheGameLogic->getFrame() >= (UnsignedInt)TheGlobalData->m_quitAtFrame;
+
+				if (timeIsUp || frameIsUp)
+				{
+					DEBUG_LOG(("Unattended run quitting: %s (%d seconds elapsed, logic frame %d)",
+						timeIsUp ? "-quitAfterSeconds reached" : "-quitAtFrame reached",
+						elapsedSeconds, TheGameLogic->getFrame()));
+					quitUnattendedRun();
+				}
+			}
 
 			{
 				try

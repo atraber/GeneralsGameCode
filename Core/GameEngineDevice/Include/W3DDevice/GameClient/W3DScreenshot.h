@@ -22,6 +22,18 @@
 
 void W3D_TakeCompressedScreenshot(ScreenshotFormat format, Int jpegQuality);
 
+// TheSuperHackers @feature andytraber 17/08/2026 Write the back buffer under a name and a
+// subfolder the caller chooses, instead of a timestamp under Screenshots.
+//
+// announce == FALSE keeps the "screenshot taken" message off the screen. That is not
+// cosmetic for an automated capture: the message is drawn into the frames that follow it,
+// so an announced capture would appear inside the next captured frame.
+//
+// leafname carries no extension; the one matching format is appended. subDirectory is
+// relative to the user data folder and its components are created as needed.
+void W3D_TakeCompressedScreenshotNamed(ScreenshotFormat format, Int jpegQuality,
+	const char* subDirectory, const char* leafname, Bool announce);
+
 // Called once per frame on the main thread to show messages for screenshots
 // that the screenshot thread has finished writing.
 void W3D_UpdateScreenshotMessages();

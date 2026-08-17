@@ -294,6 +294,17 @@ public:
 	static void Begin_Scene();
 	static void End_Scene(bool flip_frame = true);
 
+	// TheSuperHackers @feature andytraber 17/08/2026
+	// A callback run once, at the one instant in the frame where the finished back buffer
+	// can be read: after EndScene, so the surface is no longer being rendered into and
+	// copies off it are legal, and before Present, because the swap effect is
+	// D3DSWAPEFFECT_DISCARD and the contents are undefined the moment the frame is
+	// presented. The game layer has no point of its own between the two -- WW3D::End_Render
+	// does both -- so it asks for the callback instead, and this stays free of any knowledge
+	// of what the caller intends to do with the pixels.
+	typedef void (*PostSceneCallbackFunc)(void* userData);
+	static void Request_Post_Scene_Callback(PostSceneCallbackFunc func, void* userData);
+
 	// Flip until the primary buffer is visible.
 	static void Flip_To_Primary();
 

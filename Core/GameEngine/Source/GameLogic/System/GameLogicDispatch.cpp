@@ -291,7 +291,14 @@ void GameLogic::clearGameData( Bool showScoreScreen )
 //	if(shellGame)
 
 
-	if (TheGlobalData->m_initialFile.isEmpty() == FALSE || m_quitToDesktopAfterMatch)
+	// TheSuperHackers @feature andytraber 17/08/2026 A replay played from the command line is
+	// watched unattended, so with -quitAfterReplay the end of the replay ends the process too.
+	// The end of playback arrives here the same way an ordinary game end does: the recorder
+	// runs out of commands, calls stopPlayback, and that exits the game.
+	const Bool quitAfterCommandLineReplay = TheGlobalData->m_quitAfterReplay &&
+		TheGlobalData->m_initialReplayFile.isEmpty() == FALSE;
+
+	if (TheGlobalData->m_initialFile.isEmpty() == FALSE || m_quitToDesktopAfterMatch || quitAfterCommandLineReplay)
 	{
 		TheGameEngine->setQuitting(TRUE);
 		m_quitToDesktopAfterMatch = FALSE;

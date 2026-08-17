@@ -43,9 +43,11 @@ struct ScreenshotThreadData
 	unsigned int pitch;
 	bool is16Bit;
 	char userDataDirectory[_MAX_PATH];
+	char subDirectory[_MAX_PATH];
 	char leafname[_MAX_FNAME];
 	int quality;
 	ScreenshotFormat format;
+	bool announce;
 };
 
 // TheInGameUI is not thread safe, so the screenshot threads cannot show the success message
@@ -56,6 +58,7 @@ struct ScreenshotWrittenMessage
 {
 	ScreenshotWrittenMessage* next;
 	char leafname[_MAX_FNAME];
+	bool announce;
 };
 static MPSCIntrusiveQueue<ScreenshotWrittenMessage> s_screenshotWrittenQueue;
 
@@ -65,10 +68,21 @@ static DWORD WINAPI screenshotThreadFunc(LPVOID param)
 
 	// TheSuperHackers @feature bobtista 08/07/2026 Save screenshots into a Screenshots subfolder
 	// to keep the user data root folder tidy.
+	// TheSuperHackers @tweak andytraber 17/08/2026 The subfolder is now the caller's, and can be
+	// nested, so each component is created in turn -- CreateDirectory makes only the leaf.
 	char pathname[_MAX_PATH];
 	strlcpy(pathname, data->userDataDirectory, ARRAY_SIZE(pathname));
-	strlcat(pathname, "Screenshots\\", ARRAY_SIZE(pathname));
-	CreateDirectory(pathname, nullptr);
+	const size_t rootLength = strlen(pathname);
+	strlcat(pathname, data->subDirectory, ARRAY_SIZE(pathname));
+	for (size_t i = rootLength; pathname[i] != '\0'; ++i)
+	{
+		if (pathname[i] == '\\')
+		{
+			pathname[i] = '\0';
+			CreateDirectory(pathname, nullptr);
+			pathname[i] = '\\';
+		}
+	}
 	strlcat(pathname, data->leafname, ARRAY_SIZE(pathname));
 
 	const unsigned int width = data->width;
@@ -125,6 +139,7 @@ static DWORD WINAPI screenshotThreadFunc(LPVOID param)
 	{
 		ScreenshotWrittenMessage* message = new ScreenshotWrittenMessage;
 		strlcpy(message->leafname, data->leafname, ARRAY_SIZE(message->leafname));
+		message->announce = data->announce;
 		s_screenshotWrittenQueue.Push(message);
 	}
 	else
@@ -143,28 +158,40 @@ void W3D_UpdateScreenshotMessages()
 	ScreenshotWrittenMessage* message = s_screenshotWrittenQueue.Flush();
 	while (message != nullptr)
 	{
-		UnicodeString ufileName;
-		ufileName.translate(message->leafname);
-		TheInGameUI->message(TheGameText->fetch("GUI:ScreenCapture"), ufileName.str());
+		DEBUG_LOG(("Screenshot written: %s", message->leafname));
+		if (message->announce)
+		{
+			UnicodeString ufileName;
+			ufileName.translate(message->leafname);
+			TheInGameUI->message(TheGameText->fetch("GUI:ScreenCapture"), ufileName.str());
+		}
 		ScreenshotWrittenMessage* next = message->next;
 		delete message;
 		message = next;
 	}
 }
 
+static constexpr const char* const ScreenshotFormatExtensions[] = { "jpg", "png" };
+static_assert(ARRAY_SIZE(ScreenshotFormatExtensions) == SCREENSHOT_FORMAT_COUNT, "Incorrect array size");
+
 void W3D_TakeCompressedScreenshot(ScreenshotFormat format, Int jpegQuality)
 {
-	static constexpr const char* const ScreenshotFormatExtensions[] = { "jpg", "png" };
-	static_assert(ARRAY_SIZE(ScreenshotFormatExtensions) == SCREENSHOT_FORMAT_COUNT, "Incorrect array size");
-
 	// The filename is created here so the timestamp matches the capture time.
 	char leafname[_MAX_FNAME];
-	const char* extension = ScreenshotFormatExtensions[format];
 
 	SYSTEMTIME st;
 	GetLocalTime(&st);
-	sprintf(leafname, "sshot_%04d%02d%02d_%02d%02d%02d_%03d.%s",
-		st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, extension);
+	sprintf(leafname, "sshot_%04d%02d%02d_%02d%02d%02d_%03d",
+		st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+
+	W3D_TakeCompressedScreenshotNamed(format, jpegQuality, "Screenshots\\", leafname, TRUE);
+}
+
+void W3D_TakeCompressedScreenshotNamed(ScreenshotFormat format, Int jpegQuality,
+	const char* subDirectory, const char* leafname, Bool announce)
+{
+	char leafnameWithExtension[_MAX_FNAME];
+	sprintf(leafnameWithExtension, "%s.%s", leafname, ScreenshotFormatExtensions[format]);
 
 	// TheSuperHackers @bugfix xezon 21/05/2025 Get the back buffer and create a copy of the surface.
 	// Originally this code took the front buffer and tried to lock it. This does not work when the
@@ -211,8 +238,10 @@ void W3D_TakeCompressedScreenshot(ScreenshotFormat format, Int jpegQuality)
 	threadData->is16Bit = is16Bit;
 	threadData->quality = jpegQuality;
 	threadData->format = format;
+	threadData->announce = (announce != FALSE);
 	strlcpy(threadData->userDataDirectory, TheGlobalData->getPath_UserData().str(), ARRAY_SIZE(threadData->userDataDirectory));
-	strlcpy(threadData->leafname, leafname, ARRAY_SIZE(threadData->leafname));
+	strlcpy(threadData->subDirectory, subDirectory, ARRAY_SIZE(threadData->subDirectory));
+	strlcpy(threadData->leafname, leafnameWithExtension, ARRAY_SIZE(threadData->leafname));
 
 	// Copy the locked surface with a single memcpy, including any row padding. The pixel
 	// conversion and all file operations are done on the screenshot thread to keep the

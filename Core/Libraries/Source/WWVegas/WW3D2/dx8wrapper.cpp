@@ -1720,10 +1720,34 @@ void DX8Wrapper::Begin_Scene()
 	DX8WebBrowser::Update();
 }
 
+//-----------------------------------------------------------------------------
+// Post-scene callback. See the header for why this instant in the frame is the only
+// one at which the finished back buffer can be read.
+//-----------------------------------------------------------------------------
+static DX8Wrapper::PostSceneCallbackFunc s_postSceneCallback = nullptr;
+static void* s_postSceneCallbackData = nullptr;
+
+void DX8Wrapper::Request_Post_Scene_Callback(PostSceneCallbackFunc func, void* userData)
+{
+	s_postSceneCallback = func;
+	s_postSceneCallbackData = userData;
+}
+
 void DX8Wrapper::End_Scene(bool flip_frames)
 {
 	DX8_THREAD_ASSERT();
 	DX8CALL(EndScene());
+
+	// The back buffer is finished and still readable here; one Present later it is not.
+	// Cleared before the call so a callback that asks for another one gets the next frame
+	// rather than being re-entered on this one.
+	if (s_postSceneCallback != nullptr) {
+		const PostSceneCallbackFunc func = s_postSceneCallback;
+		void* const userData = s_postSceneCallbackData;
+		s_postSceneCallback = nullptr;
+		s_postSceneCallbackData = nullptr;
+		func(userData);
+	}
 
 	DX8WebBrowser::Render(0);
 

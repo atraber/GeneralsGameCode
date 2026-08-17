@@ -468,6 +468,97 @@ Int parsePlayReplay(char *args[], int num)
 	return 1;
 }
 
+// TheSuperHackers @feature andytraber 17/08/2026 Scheduled back-buffer captures.
+//
+// Both list flags land in the same list of logic frames -- seconds are converted here, since
+// the logic frame rate is fixed -- and both accumulate, so either can be passed more than
+// once and the two can be mixed.
+static void appendDumpFrames(const char* spec, Real framesPerUnit)
+{
+	AsciiString frames = TheGlobalData->m_frameDumpFrames;
+
+	const char* cursor = spec;
+	while (cursor != nullptr && *cursor != '\0')
+	{
+		char* end = nullptr;
+		const double value = strtod(cursor, &end);
+		if (end == cursor)
+		{
+			printf("Invalid frame dump list \"%s\"\n", spec);
+			exit(1);
+		}
+
+		AsciiString one;
+		one.format("%u", (UnsignedInt)(value * framesPerUnit + 0.5));
+		if (frames.isNotEmpty())
+			frames.concat(',');
+		frames.concat(one);
+
+		cursor = end;
+		while (*cursor == ',' || *cursor == ' ')
+			++cursor;
+	}
+
+	TheWritableGlobalData->m_frameDumpFrames = frames;
+}
+
+Int parseDumpFrames(char *args[], int num)
+{
+	if (num > 1)
+	{
+		appendDumpFrames(args[1], 1.0f);
+		return 2;
+	}
+	return 1;
+}
+
+Int parseDumpTimes(char *args[], int num)
+{
+	if (num > 1)
+	{
+		appendDumpFrames(args[1], LOGICFRAMES_PER_SECONDS_REAL);
+		return 2;
+	}
+	return 1;
+}
+
+Int parseDumpEvery(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_frameDumpEvery = atoi(args[1]);
+		return 2;
+	}
+	return 1;
+}
+
+// TheSuperHackers @feature andytraber 17/08/2026 Ways for an unattended run to end itself.
+Int parseQuitAfterReplay(char *args[], int num)
+{
+	TheWritableGlobalData->m_quitAfterReplay = TRUE;
+	return 1;
+}
+
+Int parseQuitAfterSeconds(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_quitAfterSeconds = atoi(args[1]);
+		return 2;
+	}
+	return 1;
+}
+
+Int parseQuitAtFrame(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_quitAtFrame = atoi(args[1]);
+		return 2;
+	}
+	return 1;
+}
+
 Int parseJobs(char *args[], int num)
 {
 	if (num > 1)
@@ -1156,6 +1247,26 @@ static CommandLineParam paramsForStartup[] =
 	// You can also include wildcards. The file must be in the replay folder or in a subfolder.
 	{ "-replay", parseReplay },
 	{ "-playReplay", parsePlayReplay },
+
+	// TheSuperHackers @feature andytraber 17/08/2026
+	// End an unattended run without anyone having to kill the process.
+	// -quitAfterReplay quits to desktop when the -playReplay replay reaches its end.
+	// -quitAfterSeconds quits that many seconds of wall clock after the engine started.
+	// -quitAtFrame quits at that logic frame, which is deterministic for a replay and so
+	// picks the same moment on every run, where the wall clock does not.
+	{ "-quitAfterReplay", parseQuitAfterReplay },
+	{ "-quitAfterSeconds", parseQuitAfterSeconds },
+	{ "-quitAtFrame", parseQuitAtFrame },
+
+	// TheSuperHackers @feature andytraber 17/08/2026
+	// Write the finished frame to a PNG at chosen moments of an unattended run. Both lists
+	// are comma separated, both accumulate over repeated flags, and both name the same thing
+	// in the end: a logic frame, which is the replay's own clock and so picks the same moment
+	// on every run. -dumpTimes is in seconds of that clock, and may be fractional.
+	// Captures land in <UserData>\Screenshots\FrameDump\<timestamp>\.
+	{ "-dumpFrames", parseDumpFrames },
+	{ "-dumpTimes", parseDumpTimes },
+	{ "-dumpEvery", parseDumpEvery },
 
 	// TheSuperHackers @feature helmutbuhler 23/05/2025
 	// Simulate each replay in a separate process and use 1..N processes at the same time.
