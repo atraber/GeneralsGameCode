@@ -2003,8 +2003,51 @@ void W3DView::draw()
 		const float sinSun = frustumSunElev;
 		const float cosSun = sqrtf(max(1.0f - sinSun * sinSun, 0.0f));
 		const float halfWidth  = 0.5f * shadowOrtho;
-		const float halfGround = 0.5f * shadowOrtho * sinSun + SHADOW_MARGIN;
-		const float casterUp   = SHADOW_CASTER_CEILING * cosSun;
+		const float halfGround = 0.5f * shadowOrtho * sinSun;
+
+		// How far the terrain rises above and falls below the fitted ground plane. Taken
+		// from the map's own extremes rather than a constant: a byte height field caps
+		// relief at 255*MAP_HEIGHT_SCALE, and assuming that everywhere spends the up axis
+		// -- and therefore the texel size -- on relief most maps do not have.
+		//
+		// Quantised, and for the same reason the extent is: this depends on the look-at
+		// height, which changes as the camera scrolls over uneven ground, and a frustum
+		// that resizes every frame makes every shadow edge crawl.
+		const float RELIEF_STEP = 32.0f;
+		float reliefAbove = 0.0f, reliefBelow = 0.0f;
+		if (TheTerrainRenderObject != nullptr)
+		{
+			reliefAbove = max(0.0f, TheTerrainRenderObject->getMaxHeight() - (float)shadowCentre.z);
+			reliefBelow = max(0.0f, (float)shadowCentre.z - TheTerrainRenderObject->getMinHeight());
+		}
+		reliefAbove = ceilf(reliefAbove / RELIEF_STEP) * RELIEF_STEP;
+		reliefBelow = ceilf(reliefBelow / RELIEF_STEP) * RELIEF_STEP;
+
+		// A caster costs the up axis *twice* its height, and missing the second half is
+		// what cuts long shadows off at the up-sun screen edge.
+		//
+		// A caster of height h above the plane throws its shadow h*cot(elevation) down-sun,
+		// so to shadow the far edge of the view it has to stand that far up-sun of it --
+		// which is already h*cos(elevation) further along the up axis before its own height
+		// adds the same again. The bound is therefore
+		//     up <= halfGround + 2*h*cos(elevation),
+		// and sizing it as one h*cos left room for a caster only half as tall as intended:
+		// measured, a hill above about 150 units had its peak clipped out of the depth map
+		// while its shadow was still lying across the visible ground.
+		//
+		// Terrain relief and the object ceiling are not added the same way on purpose.
+		// Terrain gets the full doubled allowance, because that is the case this was found
+		// on and the one that reads as broken. SHADOW_CASTER_CEILING keeps only its
+		// vertical component, as before: doubling it too costs another 15% of the up axis
+		// to keep an aircraft's shadow alive at the very edge of the screen, which is not
+		// worth the resolution everywhere else. Aircraft are unchanged by this.
+		const float casterUp = SHADOW_CASTER_CEILING * cosSun + 2.0f * reliefAbove * cosSun;
+
+		// The low side needs the ground that falls *below* the plane, which the flat
+		// SHADOW_MARGIN did not describe -- it is a lateral slack, not a depth one, and a
+		// valley deeper than about 100 units was clipped out of the map, whereupon
+		// everything in it read as unshadowed.
+		const float groundDown = SHADOW_MARGIN + reliefBelow * cosSun;
 
 		D3DXVECTOR3 targetPos((float)shadowCentre.x, (float)shadowCentre.y, (float)shadowCentre.z);
 		D3DXVECTOR3 lightEye(targetPos.x + sunDir.X * shadowEye,
@@ -2015,7 +2058,8 @@ void W3DView::draw()
 		D3DXMATRIX sunView, sunProj, sunVP;
 		D3DXMatrixLookAtLH(&sunView, &lightEye, &targetPos, &up);
 		D3DXMatrixOrthoOffCenterLH(&sunProj, -halfWidth, halfWidth,
-								   -halfGround, halfGround + casterUp, 1.0f, shadowFar);
+								   -(halfGround + groundDown), halfGround + casterUp,
+								   1.0f, shadowFar);
 		D3DXMatrixMultiply(&sunVP, &sunView, &sunProj);
 
 		// Snap the fitted frustum to whole shadow-map texels. Without this the centre
@@ -2046,7 +2090,7 @@ void W3DView::draw()
 		W3DShaderManager::setShadowFrustum(
 			Vector3(lightEye.x, lightEye.y, lightEye.z),
 			Vector3(targetPos.x - lightEye.x, targetPos.y - lightEye.y, targetPos.z - lightEye.z),
-			halfWidth, -halfGround, halfGround + casterUp, 1.0f, shadowFar);
+			halfWidth, -(halfGround + groundDown), halfGround + casterUp, 1.0f, shadowFar);
 
 		// Depth-compare bias, in the sun-clip depth units the shaders compare in. What it
 		// has to cover is the depth a surface gains across one shadow texel, so it is
@@ -4039,14 +4083,68 @@ bool W3DView::getDesiredTerrainDrawSize(ICoord2D &dimensions) const
 		// and uses terrain oversize if it needs to enlarge.
 		dimensions.x = WorldHeightMap::NORMAL_DRAW_WIDTH;
 		dimensions.y = WorldHeightMap::NORMAL_DRAW_HEIGHT;
-		return true;
+	}
+	else
+	{
+		// TheSuperHackers @tweak xezon 31/12/2025 Increases visible terrain area when lowering the camera pitch.
+		// Note: The default camera pitch in Generals was 37.5, which we prefer to keep the normal draw size for.
+		dimensions.x = WorldHeightMap::LOW_ANGLE_DRAW_WIDTH;
+		dimensions.y = WorldHeightMap::LOW_ANGLE_DRAW_HEIGHT;
 	}
 
-	// TheSuperHackers @tweak xezon 31/12/2025 Increases visible terrain area when lowering the camera pitch.
-	// Note: The default camera pitch in Generals was 37.5, which we prefer to keep the normal draw size for.
-	dimensions.x = WorldHeightMap::LOW_ANGLE_DRAW_WIDTH;
-	dimensions.y = WorldHeightMap::LOW_ANGLE_DRAW_HEIGHT;
+	widenTerrainDrawSizeForShadows(dimensions);
 	return true;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Reach far enough up-sun that the terrain casting into the view is actually drawn.
+	*
+	* The draw window is the only terrain the depth pass can contain, and at the default
+	* pitch it is NORMAL_DRAW_WIDTH -- 129 cells, 1290 world units -- which is the size of
+	* the screen and no larger. A hill at the up-sun edge of the screen lays its shadow
+	* h*cot(elevation) *down-sun into the view*, so the terrain that has to be drawn extends
+	* past the screen by that much; without it the shadow of every hill stops dead at the
+	* screen edge, which reads as tall terrain losing its shadow early and only ever on one
+	* side. Measured: 438 world units at a 20 degree sun for full-height terrain, about a
+	* third of the screen.
+	*
+	* The window is centred on the camera and sized symmetrically, so covering one side
+	* costs both. Sized from the map's own relief rather than the format's 159.375 ceiling,
+	* rounded up to whole vertex-buffer tiles so it changes in steps rather than every time
+	* the camera scrolls onto different ground, and capped at LOW_ANGLE_DRAW_WIDTH -- a size
+	* this renderer already uses whenever the camera pitch drops, so nothing here asks it for
+	* a window it does not already handle. */
+//-------------------------------------------------------------------------------------------------
+void W3DView::widenTerrainDrawSizeForShadows(ICoord2D &dimensions) const
+{
+	if (!W3DShaderManager::isShadowMappingActive() || TheTerrainRenderObject == nullptr)
+		return;
+
+	Vector3 sunDir(-TheGlobalData->m_terrainLightPos[0].x,
+				   -TheGlobalData->m_terrainLightPos[0].y,
+				   -TheGlobalData->m_terrainLightPos[0].z);
+	if (sunDir.Length2() < 1e-6f)
+		return;
+	sunDir.Normalize();
+
+	// The same floor the frustum fit uses. A sun on the horizon throws shadows of unbounded
+	// length, and the window cannot follow it there.
+	const Real sinSun = max(fabsf(sunDir.Z), 0.10f);
+	const Real cosSun = sqrtf(max(1.0f - sinSun * sinSun, 0.0f));
+
+	const Real reliefAbove = max(0.0f, TheTerrainRenderObject->getMaxHeight() - m_pos.z);
+	const Real reach = reliefAbove * (cosSun / sinSun);
+
+	const Int tile = VERTEX_BUFFER_TILE_LENGTH;
+	Int extraCells = (Int)ceilf(reach / MAP_XY_FACTOR);
+	extraCells = ((extraCells + tile - 1) / tile) * tile;   // whole tiles
+	if (extraCells <= 0)
+		return;
+
+	// Both sides, because the window cannot be made asymmetric about the camera.
+	const Int wanted = 2 * extraCells;
+	dimensions.x = min(dimensions.x + wanted, (Int)WorldHeightMap::LOW_ANGLE_DRAW_WIDTH);
+	dimensions.y = min(dimensions.y + wanted, (Int)WorldHeightMap::LOW_ANGLE_DRAW_HEIGHT);
 }
 
 void W3DView::updateTerrain()
