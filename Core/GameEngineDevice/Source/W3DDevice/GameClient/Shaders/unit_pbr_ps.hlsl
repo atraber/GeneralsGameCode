@@ -93,12 +93,41 @@ float3 PerturbNormalFromHeight(float3 N, float3 worldPos, float height, float st
     return normalize(N - strength * surfaceGrad);
 }
 
+// How much irradiance an engine light colour of 1.0 stands for.
+//
+// The engine's LightDiffuse is not a radiometric quantity. It comes from a pipeline whose
+// whole convention is "a white surface fully facing a light of colour C renders as C" --
+// that is what unit_vs computes (`MatDiffuse * saturate(dot(N, L))`, no constants), and it
+// is what the terrain's CPU bake computes. A Lambert BRDF is albedo/PI, so reproducing
+// that convention takes an irradiance of PI: albedo/PI * PI * N.L = albedo * N.L.
+//
+// Without this the direct term was the only part of this shader still reading the light
+// colour as if it were radiance, while the two terms either side of it -- the ambient
+// (SceneAmbient, straight off D3DRS_AMBIENT) and the cubemap (baked from that same sun and
+// ambient) -- were already in the engine's convention. So the sun arrived a factor of PI
+// weaker than the sky it was being added to, and inverted the balance of an outdoor scene:
+// measured on a daylight map the ambient was contributing more to a sunlit tank than the
+// sun was. That reads as dark and, more tellingly, flat -- the lit side never separates
+// from the shadowed side.
+//
+// It also put this shader out of step with the one drawing half the same building. A mesh
+// whose base pass routes here and whose detail pass routes to unit_detail_ps was being lit
+// by two equations that disagreed by exactly this factor.
+//
+// The specular gets it too, and must: the same light is what drives the highlight. At the
+// default ORM's roughness of 0.8 the GGX lobe is broad enough that this is not visible
+// (~0.004 -> ~0.009 against a frame that peaks at 1.0); it is only on the low-roughness
+// authored maps, and on genuine metals, that it becomes a highlight -- which is the point
+// of having authored them.
+static const float LIGHT_IRRADIANCE = PI;
+
 float3 DirectLight(float3 N, float3 V, float3 L, float3 radiance,
                    float3 diffuseColor, float3 F0, float rough)
 {
     float NdotL = saturate(dot(N, L));
     if (NdotL <= 0.0)
         return 0.0;
+    radiance *= LIGHT_IRRADIANCE;
     float3 H = normalize(V + L);
     float NdotV = max(dot(N, V), 1e-4);
     float NdotH = saturate(dot(N, H));
