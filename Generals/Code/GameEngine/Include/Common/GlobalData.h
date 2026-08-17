@@ -356,6 +356,13 @@ public:
 	std::vector<AsciiString> m_simulateReplays; ///< If not empty, simulate this list of replays and exit.
 	Int m_simulateReplayJobs; ///< Maximum number of processes to use for simulation, or SIMULATE_REPLAYS_SEQUENTIAL for sequential simulation
 
+	Bool m_quitAfterReplay;						///< Quit to desktop when the command-line replay finishes
+	Int m_quitAfterSeconds;						///< Quit to desktop this many seconds of wall clock after the engine started, or -1
+	Int m_quitAtFrame;								///< Quit to desktop at this logic frame, or -1
+
+	AsciiString m_frameDumpFrames;		///< Comma separated logic frames to capture the back buffer at
+	Int m_frameDumpEvery;							///< Capture the back buffer every this many logic frames, or -1
+
 	Int m_maxParticleCount;						///< maximum number of particles that can exist
 	Int m_maxFieldParticleCount;			///< maximum number of field-type particles that can exist (roughly)
 	WeaponBonusSet* m_weaponBonusSet;

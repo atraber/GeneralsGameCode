@@ -82,6 +82,7 @@ static void drawFramerateBar();
 #include "W3DDevice/GameClient/W3DDebugDisplay.h"
 #include "W3DDevice/GameClient/W3DProjectedShadow.h"
 #include "W3DDevice/GameClient/W3DScreenshot.h"
+#include "W3DDevice/GameClient/W3DFrameDump.h"
 #include "W3DDevice/GameClient/W3DShroud.h"
 #include "WWMath/wwmath.h"
 #include "WWLib/registry.h"
@@ -2076,6 +2077,10 @@ AGAIN:
 					m_profilerFrameCapture->Capture(getWidth(), getHeight());
 				}
 #endif
+				// TheSuperHackers @feature andytraber 17/08/2026 Last thing before the frame
+				// goes out, so a capture holds everything a player would have seen.
+				W3D_UpdateFrameDump(TheGameLogic->getFrame());
+
 				// render is all done!
 				WW3D::End_Render();
 			}
