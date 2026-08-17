@@ -145,7 +145,10 @@ float3 DirectLight(float3 N, float3 V, float3 L, float3 radiance,
 float4 main(PS_INPUT input) : COLOR
 {
     float4 albedoTex = tex2D(AlbedoSampler, input.texcoord);
-    float3 albedo    = SrgbToLinear(albedoTex.rgb) * MatAmbient.rgb;
+    // Both factors are authored in sRGB, so both are converted. Modulating a linear albedo by
+    // a raw sRGB tint applies the tint at the wrong strength -- and always the wrong way for a
+    // team colour, which is the only thing that sets MatAmbient to anything but white here.
+    float3 albedo    = SrgbToLinear(albedoTex.rgb) * SrgbToLinear(MatAmbient.rgb);
 
     float4 orm       = tex2D(OrmSampler, input.texcoord);
     float  ao        = orm.r;
