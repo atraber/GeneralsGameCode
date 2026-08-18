@@ -107,7 +107,6 @@ extern INT g_D3D9_BaseVertexIndex;
 #define SetIndices(pIndexData, BaseVertexIndex) SetIndices((g_D3D9_BaseVertexIndex = (BaseVertexIndex), pIndexData))
 #define DrawIndexedPrimitive(type, minIndex, numVerts, startIndex, primCount) \
 	DrawIndexedPrimitive(type, g_D3D9_BaseVertexIndex, minIndex, numVerts, startIndex, primCount)
-#define CheckDeviceMultiSampleType(adapter, devtype, format, windowed, mstype) CheckDeviceMultiSampleType(adapter, devtype, format, windowed, mstype, nullptr)
 #define D3DENUM_NO_WHQL_LEVEL 0
 #define DX8_LOCK_CAST(x) (void**)(x)
 

@@ -1126,7 +1126,8 @@ bool DX8Wrapper::Set_Render_Device(int dev, int width, int height, int bits, int
 			D3DDEVTYPE_HAL,
 			_PresentParameters.BackBufferFormat,
 			IsWindowed,
-			MultiSampleAntiAliasing
+			MultiSampleAntiAliasing,
+			nullptr
 		);
 
 		HRESULT hrDepth = D3DInterface->CheckDeviceMultiSampleType(
@@ -1134,7 +1135,8 @@ bool DX8Wrapper::Set_Render_Device(int dev, int width, int height, int bits, int
 			D3DDEVTYPE_HAL,
 			_PresentParameters.AutoDepthStencilFormat,
 			IsWindowed,
-			MultiSampleAntiAliasing
+			MultiSampleAntiAliasing,
+			nullptr
 		);
 
 		if (FAILED(hrBack) || FAILED(hrDepth)) {
