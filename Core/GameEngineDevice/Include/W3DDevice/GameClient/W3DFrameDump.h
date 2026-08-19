@@ -25,10 +25,14 @@
 //
 // The schedule is in logic frames (-dumpFrames, -dumpEvery; -dumpTimes is converted to
 // logic frames when it is parsed). The logic frame is what makes a capture repeatable: it
-// is the replay's own clock, so the same frame number is the same moment of the same game
+// is the game's own clock, so the same frame number is the same moment of the same game
 // on every run, where a wall-clock second is whatever the machine happened to reach.
+//
+// The frame passed in is the one counted from the start of the watched game -- see
+// getUnattendedRunFrame() -- and not the raw logic frame, so a schedule written for a replay
+// starting at frame 0 means the same thing for a save game resuming at frame 18000.
 //
 // Call once per rendered frame, from inside the render block and before the frame is
 // presented. Nothing is captured here -- this only decides that this frame is wanted and
 // asks DX8Wrapper for the one instant at which the finished back buffer can be read.
-void W3D_UpdateFrameDump(UnsignedInt logicFrame);
+void W3D_UpdateFrameDump(UnsignedInt runFrame);

@@ -468,6 +468,30 @@ Int parsePlayReplay(char *args[], int num)
 	return 1;
 }
 
+// TheSuperHackers @feature andytraber 19/08/2026 Watch a live game rather than a replay.
+//
+// The save file is named by its leaf name in the Save folder, the way the load menu names it.
+// Everything else about the run is what -playReplay already set up: no intro, no shell, and an
+// ending that comes from -quitAfterSeconds, -quitAtFrame or the camera script's own quit cue.
+Int parseLoadGame(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_initialSaveFile = args[1];
+
+		TheWritableGlobalData->m_playIntro = FALSE;
+		TheWritableGlobalData->m_playSizzle = FALSE;
+		TheWritableGlobalData->m_shellMapOn = FALSE;
+
+		// Make watching a save game possible while other clients are running
+		rts::ClientInstance::setMultiInstance(TRUE);
+		rts::ClientInstance::skipPrimaryInstance();
+
+		return 2;
+	}
+	return 1;
+}
+
 // TheSuperHackers @feature andytraber 17/08/2026 Scheduled back-buffer captures.
 //
 // Both list flags land in the same list of logic frames -- seconds are converted here, since
@@ -527,6 +551,34 @@ Int parseDumpEvery(char *args[], int num)
 	if (num > 1)
 	{
 		TheWritableGlobalData->m_frameDumpEvery = atoi(args[1]);
+		return 2;
+	}
+	return 1;
+}
+
+// TheSuperHackers @feature andytraber 19/08/2026 The camera timeline of an unattended run.
+// Both flags feed the same parser and both accumulate, so a file can be topped up from the
+// command line. The cues themselves are parsed later, when the game is running; the grammar
+// is in CameraScript.h.
+Int parseCameraScript(char *args[], int num)
+{
+	if (num > 1)
+	{
+		TheWritableGlobalData->m_cameraScriptFile = args[1];
+		return 2;
+	}
+	return 1;
+}
+
+Int parseCamera(char *args[], int num)
+{
+	if (num > 1)
+	{
+		AsciiString cues = TheGlobalData->m_cameraScriptText;
+		if (cues.isNotEmpty())
+			cues.concat(';');
+		cues.concat(args[1]);
+		TheWritableGlobalData->m_cameraScriptText = cues;
 		return 2;
 	}
 	return 1;
@@ -1248,12 +1300,18 @@ static CommandLineParam paramsForStartup[] =
 	{ "-replay", parseReplay },
 	{ "-playReplay", parsePlayReplay },
 
+	// TheSuperHackers @feature andytraber 19/08/2026
+	// Load a save game and watch it play out live, the way -playReplay watches a replay.
+	// Pass the save file's leaf name as the load menu shows it, e.g. -loadGame Save0001.sav
+	{ "-loadGame", parseLoadGame },
+
 	// TheSuperHackers @feature andytraber 17/08/2026
 	// End an unattended run without anyone having to kill the process.
 	// -quitAfterReplay quits to desktop when the -playReplay replay reaches its end.
 	// -quitAfterSeconds quits that many seconds of wall clock after the engine started.
-	// -quitAtFrame quits at that logic frame, which is deterministic for a replay and so
-	// picks the same moment on every run, where the wall clock does not.
+	// -quitAtFrame quits at that logic frame counted from the start of the watched game, so it
+	// picks the same moment on every run where the wall clock does not, and a save game that
+	// resumes at frame 18000 still quits at the frame the flag names.
 	{ "-quitAfterReplay", parseQuitAfterReplay },
 	{ "-quitAfterSeconds", parseQuitAfterSeconds },
 	{ "-quitAtFrame", parseQuitAtFrame },
@@ -1261,12 +1319,19 @@ static CommandLineParam paramsForStartup[] =
 	// TheSuperHackers @feature andytraber 17/08/2026
 	// Write the finished frame to a PNG at chosen moments of an unattended run. Both lists
 	// are comma separated, both accumulate over repeated flags, and both name the same thing
-	// in the end: a logic frame, which is the replay's own clock and so picks the same moment
-	// on every run. -dumpTimes is in seconds of that clock, and may be fractional.
+	// in the end: a logic frame counted from the start of the watched game, which picks the
+	// same moment on every run. -dumpTimes is in seconds of that clock, and may be fractional.
 	// Captures land in <UserData>\Screenshots\FrameDump\<timestamp>\.
 	{ "-dumpFrames", parseDumpFrames },
 	{ "-dumpTimes", parseDumpTimes },
 	{ "-dumpEvery", parseDumpEvery },
+
+	// TheSuperHackers @feature andytraber 19/08/2026
+	// Drive the camera from a list of timed cues, since a game watched live has nobody at the
+	// mouse. -cameraScript names a file, -camera gives cues inline separated by ';', both
+	// accumulate, and the times are on the same clock as -dumpTimes. See CameraScript.h.
+	{ "-cameraScript", parseCameraScript },
+	{ "-camera", parseCamera },
 
 	// TheSuperHackers @feature helmutbuhler 23/05/2025
 	// Simulate each replay in a separate process and use 1..N processes at the same time.

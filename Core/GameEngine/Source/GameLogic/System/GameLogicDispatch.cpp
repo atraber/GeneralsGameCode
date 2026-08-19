@@ -298,7 +298,13 @@ void GameLogic::clearGameData( Bool showScoreScreen )
 	const Bool quitAfterCommandLineReplay = TheGlobalData->m_quitAfterReplay &&
 		TheGlobalData->m_initialReplayFile.isEmpty() == FALSE;
 
-	if (TheGlobalData->m_initialFile.isEmpty() == FALSE || m_quitToDesktopAfterMatch || quitAfterCommandLineReplay)
+	// TheSuperHackers @feature andytraber 19/08/2026 A save game watched from the command line
+	// has no end of its own to wait for the way a replay does: it runs until the game is won or
+	// lost. Reaching that end ends the process too, the same way it does for -file.
+	const Bool quitAfterCommandLineSaveGame = TheGlobalData->m_initialSaveFile.isEmpty() == FALSE;
+
+	if (TheGlobalData->m_initialFile.isEmpty() == FALSE || m_quitToDesktopAfterMatch ||
+		quitAfterCommandLineReplay || quitAfterCommandLineSaveGame)
 	{
 		TheGameEngine->setQuitting(TRUE);
 		m_quitToDesktopAfterMatch = FALSE;

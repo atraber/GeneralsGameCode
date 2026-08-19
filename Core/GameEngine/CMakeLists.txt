@@ -128,6 +128,7 @@ set(GAMEENGINE_SRC
 #    Include/Common/ThingSort.h
 #    Include/Common/ThingTemplate.h
 #    Include/Common/TunnelTracker.h
+    Include/Common/UnattendedRun.h
     Include/Common/UnicodeString.h
 #    Include/Common/UnitTimings.h
 #    Include/Common/Upgrade.h
@@ -144,6 +145,7 @@ set(GAMEENGINE_SRC
     Include/GameClient/Anim2D.h
 #    Include/GameClient/AnimateWindowManager.h
 #    Include/GameClient/CampaignManager.h
+    Include/GameClient/CameraScript.h
     Include/GameClient/ChallengeGenerals.h
     Include/GameClient/ClientInstance.h
     Include/GameClient/ClientRandomValue.h
@@ -689,9 +691,11 @@ set(GAMEENGINE_SRC
 #    Source/Common/Thing/Thing.cpp
 #    Source/Common/Thing/ThingFactory.cpp
 #    Source/Common/Thing/ThingTemplate.cpp
+    Source/Common/UnattendedRun.cpp
     Source/Common/UserPreferences.cpp
 #    Source/Common/version.cpp
     Source/Common/WorkerProcess.cpp
+    Source/GameClient/CameraScript.cpp
     Source/GameClient/ClientInstance.cpp
     Source/GameClient/Color.cpp
     Source/GameClient/Credits.cpp

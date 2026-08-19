@@ -44,6 +44,7 @@ static void drawFramerateBar();
 #include "Common/FramePacer.h"
 #include "Common/ThingFactory.h"
 #include "Common/GlobalData.h"
+#include "Common/UnattendedRun.h"
 #include "Common/PerfTimer.h"
 #include "Common/FileSystem.h"
 #include "Common/LocalFileSystem.h"
@@ -2079,7 +2080,7 @@ AGAIN:
 #endif
 				// TheSuperHackers @feature andytraber 17/08/2026 Last thing before the frame
 				// goes out, so a capture holds everything a player would have seen.
-				W3D_UpdateFrameDump(TheGameLogic->getFrame());
+				W3D_UpdateFrameDump(getUnattendedRunFrame());
 
 				// render is all done!
 				WW3D::End_Render();

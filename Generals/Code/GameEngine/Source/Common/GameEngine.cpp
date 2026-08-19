@@ -55,6 +55,7 @@
 #include "Common/Debug.h"
 #include "Common/GameState.h"
 #include "Common/GameStateMap.h"
+#include "Common/UnattendedRun.h"
 #include "Common/Science.h"
 #include "Common/FunctionLexicon.h"
 #include "Common/CommandLine.h"
@@ -573,6 +574,14 @@ void GameEngine::init()
 			// Playback itself is started at the end of init(), after resetSubsystems(). See below.
 		}
 
+		if (TheGlobalData->m_initialSaveFile.isEmpty() == FALSE)
+		{
+			TheWritableGlobalData->m_shellMapOn = FALSE;
+			TheWritableGlobalData->m_playIntro = FALSE;
+			TheWritableGlobalData->m_playSizzle = FALSE;
+			// The load itself happens at the end of init(), after resetSubsystems(). See below.
+		}
+
 		//
 		if (TheMapCache && TheGlobalData->m_shellMapOn)
 		{
@@ -618,6 +627,17 @@ void GameEngine::init()
 	if (TheGlobalData->m_initialReplayFile.isEmpty() == FALSE)
 	{
 		TheRecorder->playbackFile(TheGlobalData->m_initialReplayFile);
+	}
+
+	// TheSuperHackers @feature andytraber 19/08/2026 A save game is loaded here for the same
+	// reason and at the same moment: loadGame() resets the engine and restores a running game
+	// into it, and the resetSubsystems() above would undo that as thoroughly as it undid the
+	// replay. A run whose save will not load has nothing left to watch, so it quits rather than
+	// sitting in the shell until something kills it.
+	if (TheGlobalData->m_initialSaveFile.isEmpty() == FALSE)
+	{
+		if (!startUnattendedSaveGame(TheGlobalData->m_initialSaveFile))
+			setQuitting(TRUE);
 	}
 }
 
@@ -788,7 +808,8 @@ extern HWND ApplicationHWnd;
 // TheSuperHackers @feature andytraber 17/08/2026 The shutdown an unattended run wants: leave
 // the same state behind an ordinary exit would -- close a recording that is still open, clear
 // the game data -- and then quit. Factored out of the benchmark timer, which did exactly this.
-static void quitUnattendedRun()
+// Declared in UnattendedRun.h, because the camera script ends its runs the same way.
+void quitUnattendedRun()
 {
 	if (TheGameLogic->isInGame())
 	{
@@ -833,9 +854,11 @@ void GameEngine::execute()
 #endif
 
 			// TheSuperHackers @feature andytraber 17/08/2026 -quitAfterSeconds and -quitAtFrame.
-			// The frame is the logic frame, so for a replay it names the same moment on every
-			// run; the wall clock does not, and is here as the blunt instrument for a run whose
-			// length is not known up front.
+			// The frame is counted from the start of the watched game -- see
+			// getUnattendedRunFrame() -- so it names the same moment on every run, whether that
+			// game is a replay starting at logic frame 0 or a save resuming at logic frame 18000.
+			// The wall clock names no moment at all, and is here as the blunt instrument for a run
+			// whose length is not known up front.
 			//
 			// Neither of these replaces an external timeout on the process. They are tested from
 			// inside this loop, so anything that stops the loop -- a modal assert dialog above
@@ -848,13 +871,13 @@ void GameEngine::execute()
 				// Only in game: the logic frame is 0 through the shell and the load screen, and
 				// a frame that has already passed must still quit, so this is >= and not ==.
 				const Bool frameIsUp = TheGlobalData->m_quitAtFrame >= 0 && TheGameLogic->isInGame() &&
-					TheGameLogic->getFrame() >= (UnsignedInt)TheGlobalData->m_quitAtFrame;
+					getUnattendedRunFrame() >= (UnsignedInt)TheGlobalData->m_quitAtFrame;
 
 				if (timeIsUp || frameIsUp)
 				{
-					DEBUG_LOG(("Unattended run quitting: %s (%d seconds elapsed, logic frame %d)",
+					DEBUG_LOG(("Unattended run quitting: %s (%d seconds elapsed, run frame %d, logic frame %d)",
 						timeIsUp ? "-quitAfterSeconds reached" : "-quitAtFrame reached",
-						elapsedSeconds, TheGameLogic->getFrame()));
+						elapsedSeconds, getUnattendedRunFrame(), TheGameLogic->getFrame()));
 					quitUnattendedRun();
 				}
 			}
