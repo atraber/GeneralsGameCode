@@ -22,6 +22,8 @@
 #include "Common/FramePacer.h"
 #include "Common/GameLOD.h"
 
+#include "GameLogic/GameLogic.h"
+
 #include "GameClient/Display.h"
 #include "GameClient/DisplayStringManager.h"
 #include "GameClient/GameText.h"
@@ -230,7 +232,17 @@ void Intro::doSizzleMovie()
 
 void Intro::doPostIntro()
 {
-	TheWritableGlobalData->m_breakTheMovie = TRUE;
+	// TheSuperHackers @bugfix andytraber 19/08/2026 m_breakTheMovie gates the whole render
+	// block in W3DDisplay::draw, and after the intro it is the main menu, or the shell game's
+	// load screen, that clears it again. A run that goes straight from the command line into a
+	// game sees neither. It got away with that only as long as its game started after this
+	// point, through a load screen that happened to clear the flag; -loadGame starts its game
+	// inside GameEngine::init(), before the intro has updated once, and the game then ran for
+	// the whole run without a single scene ever being drawn. Nothing here is worth suppressing
+	// once a game is already running.
+	if (TheGameLogic == nullptr || !TheGameLogic->isInGame())
+		TheWritableGlobalData->m_breakTheMovie = TRUE;
+
 	TheWritableGlobalData->m_allowExitOutOfMovies = TRUE;
 }
 
