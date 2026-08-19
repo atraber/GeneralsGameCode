@@ -16,6 +16,8 @@
 // Bound only when a detail texture is present -- the single-texture shader (unit_ps)
 // never samples stage 1, since sampling a stage with no texture bound is undefined.
 
+#include "constants.hlsli"
+
 sampler BaseSampler   : register(s0);
 sampler DetailSampler : register(s1);
 
@@ -55,10 +57,6 @@ float4 ShadowMeshParams : register(c9);
 sampler CloudSampler : register(s2);
 float4 CloudScroll : register(c10);   // xy = layer A drift, zw = layer B (world units)
 float4 CloudCtl    : register(c11);   // x = cloud layer on, y = shade strength
-
-static const float CLOUD_PERIOD_A = 1800.0;
-static const float CLOUD_PERIOD_B = 2900.0;
-static const float3 CLOUD_SHADE_TINT = float3(0.78, 0.82, 0.90);
 
 float3 cloudShade(float3 cloudPos)
 {
@@ -164,7 +162,6 @@ float4 main(PS_INPUT input) : COLOR
             + Stage1AOp.z * a1
             + Stage1AOp.w * a2;
 
-    const float SHADOW_MIN = 0.35;
     rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(input.lightPos));
     rgb *= cloudShade(input.cloudPos);
 

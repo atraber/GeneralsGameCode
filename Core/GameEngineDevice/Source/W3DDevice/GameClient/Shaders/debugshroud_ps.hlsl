@@ -11,9 +11,9 @@
 // tile says whether the field is uniform, which is what decides whether the frame is
 // evidence of anything.
 
-sampler2D ShroudSampler : register(s0);
+#include "constants.hlsli"
 
-static const float3 LUMA = float3(0.299, 0.587, 0.114);
+sampler2D ShroudSampler : register(s0);
 
 float4 main(float2 uv : TEXCOORD0) : COLOR
 {

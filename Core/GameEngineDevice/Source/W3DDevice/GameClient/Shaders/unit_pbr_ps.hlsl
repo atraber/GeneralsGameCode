@@ -18,6 +18,8 @@
 // (s4), re-baked from the scene's dominant light/ambient as time-of-day drifts,
 // supplies the Fresnel-weighted reflection term.
 
+#include "constants.hlsli"
+
 sampler2D   AlbedoSampler : register(s0);
 sampler2D   OrmSampler    : register(s1);
 samplerCUBE EnvSampler    : register(s4);   // shared environment cubemap (reflections)
@@ -58,10 +60,6 @@ float4 ShadowMeshParams : register(c23);
 sampler2D   CloudSampler : register(s2);
 float4 CloudScroll : register(c24);  // xy = layer A drift, zw = layer B (world units)
 float4 CloudCtl    : register(c25);  // x = cloud layer on, y = shade strength
-
-static const float CLOUD_PERIOD_A = 1800.0;
-static const float CLOUD_PERIOD_B = 2900.0;
-static const float3 CLOUD_SHADE_TINT = float3(0.78, 0.82, 0.90);
 
 float3 cloudShade(float3 worldPos)
 {
@@ -445,7 +443,6 @@ float4 main(PS_INPUT input) : COLOR
     // thing the M3 and terrain shaders do with their own baked specular, so it is at
     // least consistent; splitting DirectLight's diffuse from its specular to kill only
     // the latter is the improvement if it ever looks wrong.
-    const float SHADOW_MIN = 0.35;
     float shadow = computeShadow(input.worldPos, N);
     float shadowFill = lerp(SHADOW_MIN, 1.0, shadow);
 
@@ -666,6 +663,48 @@ float4 main(PS_INPUT input) : COLOR
         cubeSpec *= 8.0;   // exposure only, to make a dim-but-correct result legible
 #endif
         return float4(LinearToSrgb(cubeSpec), 1.0);
+    }
+#elif PBR_DEBUG_MODE == 13
+    return float4(shadow.xxx, 1.0);
+#elif PBR_DEBUG_MODE == 14
+    {
+        float3 wp   = input.worldPos + N * ShadowMeshParams.x;
+        float4 clip = mul(float4(wp, 1.0), SunVP);
+        float3 ndc  = clip.xyz / clip.w;
+        float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+            return float4(1.0, 0.0, 0.0, 1.0);
+        float stored = unpackDepth(tex2D(ShadowMap, uv));
+        return float4(0.0, saturate(ndc.z), saturate(stored), 1.0);
+    }
+#elif PBR_DEBUG_MODE == 15
+    return float4(ShadowParams.y,
+                  saturate(ShadowMeshParams.y * 10.0),
+                  saturate(ShadowMeshParams.y * 1000.0), 1.0);
+#elif PBR_DEBUG_MODE == 16
+    {
+        // What fraction of its fully-lit brightness a PBR pixel retains once the shadow is
+        // applied. This used to have to reconstruct the unshadowed colour and divide,
+        // because the shadow was folded into Lo and ambient separately and the answer
+        // depended on the balance between them at that pixel -- which is precisely how the
+        // pre-fix bug hid, sitting near 1.0 where the term said fully shadowed.
+        //
+        // With one factor on the whole encoded colour the answer is shadowFill itself, by
+        // construction, and there is nothing left for the balance of terms to distort. The
+        // mode is kept because the question it now answers is still worth asking: that the
+        // floor reaching the frame really is SHADOW_MIN, and really is the terrain's, read
+        // back off a capture rather than off the source. Compare it against the same
+        // measurement on the ground beside the mesh -- they should agree exactly now.
+        //
+        // Note this reports the factor the *shader* applies. What survives to the PNG is
+        // lower: with the HDR pass on, a measured fully-shadowed pixel displays at
+        // SHADOW_MIN^1.49, so the 0.62 here reaches the frame as 0.49. See constants.hlsli.
+        //
+        // Red alone, green and blue forced to zero: greyscale was unreadable, because the
+        // filter that picks the result back out of a frame cannot tell a grey debug pixel
+        // from dark terrain or grey UI. A pure red ramp is a channel combination the rest
+        // of the frame never produces.
+        return float4(shadowFill, 0.0, 0.0, 1.0);
     }
 #endif
 

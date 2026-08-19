@@ -5,6 +5,8 @@
 // output. Multi-texture passes use unit_detail_ps instead, so this shader never
 // samples a stage it has no texture for.
 
+#include "constants.hlsli"
+
 sampler BaseSampler : register(s0);
 
 // x = 1 when a base texture is bound, 0 for an untextured (diffuse-only) pass, which
@@ -38,10 +40,6 @@ float4 ShadowMeshParams : register(c9);
 sampler CloudSampler : register(s2);
 float4 CloudScroll : register(c10);   // xy = layer A drift, zw = layer B (world units)
 float4 CloudCtl    : register(c11);   // x = cloud layer on, y = shade strength
-
-static const float CLOUD_PERIOD_A = 1800.0;
-static const float CLOUD_PERIOD_B = 2900.0;
-static const float3 CLOUD_SHADE_TINT = float3(0.78, 0.82, 0.90);
 
 float3 cloudShade(float3 cloudPos)
 {
@@ -125,9 +123,8 @@ float4 main(PS_INPUT input) : COLOR
 
     // Darken toward a floor rather than to black: the lit colour from the vertex shader
     // is ambient and direct light already summed, so there is no direct term left to
-    // remove on its own. SHADOW_MIN matches the terrain's, so a unit and its own cast
-    // shadow on the ground sit at the same brightness.
-    const float SHADOW_MIN = 0.35;
+    // remove on its own. SHADOW_MIN comes from constants.hlsli, the same value the terrain
+    // reads, so a unit and its own cast shadow on the ground sit at the same brightness.
     float3 rgb = baseColor.rgb * input.color.rgb;
     rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(input.lightPos));
     rgb *= cloudShade(input.cloudPos);
