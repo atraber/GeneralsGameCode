@@ -8,13 +8,13 @@
 //
 // Drawn as a fullscreen XYZRHW quad, typically into a reduced-resolution target.
 
+#include "constants.hlsli"
+
 sampler2D SceneSampler : register(s0);
 
 // Bloom tuning -- edit and recompile the shader to tweak (no engine rebuild needed).
 static const float BLOOM_THRESHOLD = 0.65;  // luminance above which pixels bloom
 static const float BLOOM_KNEE      = 0.30;  // soft ramp width above the threshold
-
-static const float3 LUMA = float3(0.299, 0.587, 0.114);
 
 float4 main(float2 uv : TEXCOORD0) : COLOR
 {

@@ -6,19 +6,11 @@
 // by STRETCH_FACTOR (the fixed-function camera-space transform cancels the view),
 // with a scroll offset for the cloud layer.
 
+#include "constants.hlsli"
+
 row_major float4x4 WorldViewProj : register(c0);
 float4 CloudOffset : register(c4);   // xy = cloud layer A drift, zw = layer B (world units)
 row_major float4x4 SunVP : register(c5);   // sun view*projection (terrain verts are world-space)
-
-// 1 / (63 * MAP_XY_FACTOR / 2), MAP_XY_FACTOR = 10  ->  1/315
-static const float STRETCH_FACTOR = 1.0 / 315.0;
-
-// Cloud shadow. Two layers, each projected over thousands of world units and drifting
-// at its own rate, so the field does not read as one texture sliding rigidly across the
-// map. CloudOffset carries both layers' drift in *world* units; dividing here rather
-// than scrolling in UV means one wind speed means the same thing at either scale.
-static const float CLOUD_PERIOD_A = 1800.0;
-static const float CLOUD_PERIOD_B = 2900.0;
 
 
 struct VS_INPUT

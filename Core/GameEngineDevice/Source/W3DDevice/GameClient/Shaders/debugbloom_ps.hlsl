@@ -11,9 +11,9 @@
 // of this frame bloom" is a question about the frame, and an answer that hides it is
 // half an answer.
 
-sampler2D BrightSampler : register(s0);
+#include "constants.hlsli"
 
-static const float3 LUMA = float3(0.299, 0.587, 0.114);
+sampler2D BrightSampler : register(s0);
 
 float4 main(float2 uv : TEXCOORD0) : COLOR
 {

@@ -9,6 +9,8 @@
 // map. That has to happen here rather than in the vertex data because the artwork
 // tiles seamlessly from cell to cell -- see the comment on stochasticSample.
 
+#include "constants.hlsli"
+
 sampler BaseSampler  : register(s0);
 sampler ClassMap     : register(s1);   // per-slot class table (point sampled)
 sampler CloudSampler : register(s2);
@@ -76,22 +78,8 @@ static const float CLASS_MAP_DIM   = 32.0;   // TERRAIN_CLASS_MAP_DIM
 // loss of *direct sun*; the sky still lights the ground, and skylight is blue, so shaded
 // ground goes darker and cooler rather than simply dimmer. Multiplying by the texture --
 // what this did before -- drives everything toward black and reads as dirt on the lens.
-// Colour of ground under full cloud: how the shade is *coloured*, not how deep it is.
-// Depth is CloudShadowStrength's job, and the two multiply, so this constant should only
-// ever have to answer "what colour is skylight".
-//
-// It used to answer "how dark is a cloud" as well, at 0.60/0.66/0.79. Against the 0.8
-// strength that is a 0.68/0.73/0.83 multiply: a third of the luminance, but 40% of the
-// red against 21% of the blue. That much hue rotation stops reading as shade and starts
-// reading as the wrong colour -- measured against vanilla on a pixel-aligned frame, a
-// China power plant under cloud lost 22% of its luminance and 23% of its saturation and
-// came out uniformly cold grey with no sunlit face, while the ground beside it was
-// brighter than vanilla's.
-//
-// At 0.78/0.82/0.90 full coverage multiplies by 0.824/0.856/0.920 -- 15% off the
-// luminance, and R:B narrowed from 0.82 to 0.90. Some spread is kept deliberately:
-// sky-lit shade genuinely is blue, and a perfectly neutral grey reads as a dirty lens.
-static const float3 CLOUD_SHADE_TINT = float3(0.78, 0.82, 0.90);
+// The tint itself lives in constants.hlsli: terrain, road and units all darken toward the
+// same colour, or cloud crossing a tank shades it differently from the ground under it.
 
 float3 cloudShade(float4 cloudUV, float enable, float strength)
 {
@@ -410,7 +398,8 @@ float4 main(PS_INPUT input) : COLOR
 
     // Cast shadows: the terrain colour has its lighting baked in, so darken toward a
     // floor (ambient) rather than to black where occluded from the sun.
-    const float SHADOW_MIN = 0.35;
+    //
+    // SHADOW_MIN is in constants.hlsli, so every receiver darkens to the same place.
     float shadow = terrainShadow(input.lightPos);
     col *= lerp(SHADOW_MIN, 1.0, shadow);
 
