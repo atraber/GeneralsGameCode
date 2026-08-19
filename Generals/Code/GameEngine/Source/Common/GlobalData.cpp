@@ -957,7 +957,7 @@ GlobalData::GlobalData()
 	m_textureFilteringMode = TextureFilterClass::TextureFilterMode::TEXTURE_FILTER_BILINEAR;
 	m_textureAnisotropyLevel = TextureFilterClass::AnisotropicFilterMode::TEXTURE_FILTER_ANISOTROPIC_2X;
 	m_useBloom = TRUE;
-	m_useHdr = FALSE;
+	m_useHdr = TRUE;
 
 //	m_languageFilterPref = false;
 	m_languageFilterPref = true;

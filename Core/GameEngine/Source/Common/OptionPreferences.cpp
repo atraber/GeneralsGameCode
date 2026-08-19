@@ -142,12 +142,13 @@ Bool OptionPreferences::getBloomEnabled() const
 
 Bool OptionPreferences::getHdrEnabled() const
 {
-	// High dynamic range scene target. Defaults to off: it is opt-in until the sources
-	// that can actually exceed 1.0 and the tone curve that brings them back are in.
+	// High dynamic range scene target with tone mapping. Defaults to on when the key is
+	// absent, matching bloom; set UseHDR = no in Options.ini to fall back to the plain
+	// 8-bit scene target.
 	OptionPreferences::const_iterator it = find("UseHDR");
 	if (it == end())
-		return FALSE;
-	return parseIniBool(it->second.str(), FALSE);
+		return TRUE;
+	return parseIniBool(it->second.str(), TRUE);
 }
 
 Bool OptionPreferences::getTerrainTileVariationEnabled() const
