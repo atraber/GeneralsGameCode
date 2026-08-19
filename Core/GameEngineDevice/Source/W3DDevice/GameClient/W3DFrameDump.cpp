@@ -112,7 +112,7 @@ static void frameDumpCallback(void* /*userData*/)
 	W3D_TakeCompressedScreenshotNamed(SCREENSHOT_PNG, 0, s_runDirectory, s_pendingLeafname, FALSE);
 }
 
-void W3D_UpdateFrameDump(UnsignedInt logicFrame)
+void W3D_UpdateFrameDump(UnsignedInt runFrame)
 {
 	if (!s_initialized)
 		initialize();
@@ -120,9 +120,9 @@ void W3D_UpdateFrameDump(UnsignedInt logicFrame)
 	if (!s_enabled)
 		return;
 
-	// Frame 0 is the shell and the load screen, where the logic clock has not started and
-	// every frame would look due. Nothing before the game is running is worth capturing.
-	if (logicFrame == 0)
+	// Frame 0 is the shell and the load screen, where the run clock has not started and every
+	// frame would look due. Nothing before the watched game is running is worth capturing.
+	if (runFrame == 0)
 		return;
 
 	Bool due = FALSE;
@@ -131,24 +131,24 @@ void W3D_UpdateFrameDump(UnsignedInt logicFrame)
 	// TiVo fast mode only every thirtieth logic frame is drawn at all -- so a requested frame
 	// is very often never a rendered frame. Match the first rendered frame at or past it, and
 	// retire every request the clock has already gone by so a skipped one cannot fire late.
-	while (s_nextDumpFrame < s_dumpFrames.size() && s_dumpFrames[s_nextDumpFrame] <= logicFrame)
+	while (s_nextDumpFrame < s_dumpFrames.size() && s_dumpFrames[s_nextDumpFrame] <= runFrame)
 	{
 		++s_nextDumpFrame;
 		due = TRUE;
 	}
 
 	if (TheGlobalData->m_frameDumpEvery > 0 &&
-		logicFrame - s_lastPeriodicFrame >= (UnsignedInt)TheGlobalData->m_frameDumpEvery)
+		runFrame - s_lastPeriodicFrame >= (UnsignedInt)TheGlobalData->m_frameDumpEvery)
 	{
-		s_lastPeriodicFrame = logicFrame;
+		s_lastPeriodicFrame = runFrame;
 		due = TRUE;
 	}
 
 	if (!due)
 		return;
 
-	// Named for the logic frame actually captured, not the one that was asked for, so the
-	// file says which moment of the game it is a picture of.
-	sprintf(s_pendingLeafname, "frame_%06u", logicFrame);
+	// Named for the frame actually captured, not the one that was asked for, so the file says
+	// which moment of the game it is a picture of.
+	sprintf(s_pendingLeafname, "frame_%06u", runFrame);
 	DX8Wrapper::Request_Post_Scene_Callback(frameDumpCallback, nullptr);
 }

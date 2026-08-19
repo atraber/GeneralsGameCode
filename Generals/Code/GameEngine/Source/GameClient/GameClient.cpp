@@ -42,8 +42,10 @@
 #include "Common/PlayerList.h"
 #include "Common/ThingFactory.h"
 #include "Common/ThingTemplate.h"
+#include "Common/UnattendedRun.h"
 #include "Common/Xfer.h"
 #include "GameClient/Anim2D.h"
+#include "GameClient/CameraScript.h"
 #include "GameClient/CampaignManager.h"
 #include "GameClient/CommandXlat.h"
 #include "GameClient/ControlBar.h"
@@ -539,6 +541,10 @@ void GameClient::update()
 		TheMouse->createStreamMessages();
 
 	}
+
+	// TheSuperHackers @feature andytraber 19/08/2026 The camera timeline of an unattended run,
+	// stepped before the view is updated so a cue takes effect on the frame it was written for.
+	CameraScript_Update(getUnattendedRunFrame());
 
 	if (m_intro != nullptr)
 	{

@@ -352,6 +352,7 @@ public:
 	Bool m_buildMapCache;
 	AsciiString m_initialFile;				///< If this is specified, load a specific map from the command-line
 	AsciiString m_initialReplayFile;			///< If this is specified, load and play this replay from the command-line
+	AsciiString m_initialSaveFile;			///< If this is specified, load and watch this save game from the command-line
 	AsciiString m_pendingFile;				///< If this is specified, use this map at the next game start
 
 	std::vector<AsciiString> m_simulateReplays; ///< If not empty, simulate this list of replays and exit.
@@ -363,6 +364,9 @@ public:
 
 	AsciiString m_frameDumpFrames;		///< Comma separated logic frames to capture the back buffer at
 	Int m_frameDumpEvery;							///< Capture the back buffer every this many logic frames, or -1
+
+	AsciiString m_cameraScriptFile;		///< Camera script to drive the camera of an unattended run with
+	AsciiString m_cameraScriptText;		///< Camera script cues given inline on the command line
 
 	Int m_maxParticleCount;						///< maximum number of particles that can exist
 	Int m_maxFieldParticleCount;			///< maximum number of field-type particles that can exist (roughly)

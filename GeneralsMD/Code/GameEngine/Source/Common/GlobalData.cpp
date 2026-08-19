@@ -994,6 +994,7 @@ GlobalData::GlobalData()
 	m_buildMapCache = FALSE;
 	m_initialFile.clear();
 	m_initialReplayFile.clear();
+	m_initialSaveFile.clear();
 	m_pendingFile.clear();
 
 	m_simulateReplays.clear();
@@ -1005,6 +1006,9 @@ GlobalData::GlobalData()
 
 	m_frameDumpFrames.clear();
 	m_frameDumpEvery = -1;
+
+	m_cameraScriptFile.clear();
+	m_cameraScriptText.clear();
 
 	for (i = LEVEL_FIRST; i <= LEVEL_LAST; ++i)
 		m_healthBonus[i] = 1.0f;
