@@ -700,6 +700,16 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	// shader for a draw it cannot see. What has changed is that this function now chooses
 	// one for itself, explicitly, below: a shader bound here is bound against the vertex
 	// format actually in the stream, which was the whole of what went wrong before.
+	//
+	// The technique check used to report this scope as a disagreement, once per decal
+	// batch per frame, and it was the check that was wrong rather than this declaration.
+	// Apply_Render_State_Changes is called below to flush the matrices, before the vertex
+	// buffer for these decals is bound; the live inference therefore read this shader
+	// against the last mesh's vertex format. The check now skips applications of state
+	// that are not draws, which is the same bias the fixed-function draw census already
+	// accounted for. Nothing about the value below changed, and nothing should: raising it
+	// to EFFECT would let the routing bind unit_ps here on the strength of that same
+	// mixture of two draws' state.
 	DeclaredTechniqueClass declareFixedFunction(MESH_TECHNIQUE_FIXED_FUNCTION, "flushDecals");
 	static	Matrix4x4 mWorld(true);	//initialize to identity matrix
 

@@ -5135,7 +5135,28 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// surface -- every one of the 6264 disagreements in the first run. They now report
 		// the format they are actually drawn with, which is the format the classifier was
 		// reading all along, so the two agree by construction rather than by exemption.
-		if (m_meshTechnique != MESH_TECHNIQUE_UNCLASSIFIED && (curFVF & D3DFVF_XYZ)) {
+		//
+		// s_applyIsDraw, for the same reason the fixed-function attribution below carries
+		// it: Apply_Render_State_Changes is public and most of its callers are not draws.
+		// A caller that only wants the matrices flushed leaves this function holding one
+		// draw's shader and material beside another draw's vertex buffer, and the live
+		// technique inferred from that mixture describes neither of them.
+		//
+		// W3DProjectedShadowManager::flushDecals is the case that exposed it. It declares
+		// FIXED_FUNCTION -- correctly, and see the comment there for why -- then calls
+		// Apply_Render_State_Changes to force the view and projection matrices out, at a
+		// point where its own multiplicative/additive shader is already set but its vertex
+		// buffer is not: it binds that on the device itself, afterwards. So the live block
+		// read the decal's blend against the *previous* draw's format and called it an
+		// EFFECT, and the check reported that as the classifier disagreeing. One mismatch
+		// per decal batch per frame -- 1800 a window for three hazard-field layers, and
+		// zero before those layers existed only because nothing else in that save queued
+		// a projected decal at all.
+		//
+		// This is not an exemption for flushDecals; nothing here mentions it. It is the
+		// check declining to compare against state that no single draw ever held.
+		if (s_applyIsDraw &&
+			m_meshTechnique != MESH_TECHNIQUE_UNCLASSIFIED && (curFVF & D3DFVF_XYZ)) {
 			// Mirrors the classifier's single mesh-level rule: a blend that carries no
 			// coverage -- additive, or soft with no alpha test -- on a mesh that writes
 			// depth nowhere. Both halves ask the mesh, so both are reproduced that way
