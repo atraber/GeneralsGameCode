@@ -4833,11 +4833,21 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// civilian buildings, whose untextured pass shows through as flat lit white).
 		// The shader reproduces this exactly -- lit colour with no texture modulation --
 		// so route it too and keep the whole mesh on one pipeline.
+		//
+		// The blend is not asked about here. It used to be -- this required blending to be
+		// off outright -- and that was a second blend test standing in front of the one
+		// that already exists: reproducibleBlend, a few lines below, is what decides
+		// whether a blend mode can be reproduced, and it is applied to this draw either
+		// way. Blending has nothing to do with whether an untextured stage 0 can be
+		// expressed, and TexCtl.x already expresses it: unit_ps folds the base sample to
+		// white, leaving the lit colour, and the frame-buffer blend is hardware downstream
+		// of the pixel shader for a blended untextured pass exactly as for a textured one.
+		// This being a capability gate and not a kind gate, widening it can only merge
+		// draws onto one pipeline, never split a mesh across two.
 		const DWORD s0ColorOp = TextureStageStates[0][D3DTSS_COLOROP];
 		const DWORD s0ColorArg2 = TextureStageStates[0][D3DTSS_COLORARG2] & D3DTA_SELECTMASK;
 		const bool untexturedDiffuseOnly =
 			render_state.Textures[0] == nullptr &&
-			!alphaBlendOn &&
 			((s0ColorOp == D3DTOP_SELECTARG2 && s0ColorArg2 == D3DTA_DIFFUSE) ||
 			 s0ColorOp == D3DTOP_DISABLE);
 
