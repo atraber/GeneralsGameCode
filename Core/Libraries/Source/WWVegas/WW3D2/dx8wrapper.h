@@ -1731,13 +1731,27 @@ WWINLINE void DX8Wrapper::Set_Ambient(const Vector3& color)
 
 WWINLINE void DX8Wrapper::Set_DX8_Material(const D3DMATERIAL8* mat)
 {
-	DX8_RECORD_MATERIAL_CHANGE();
 	WWASSERT(mat);
-	SNAPSHOT_SAY(("DX8 - SetMaterial"));
 	// Tracked, not sent -- a material is fixed-function vertex lighting and nothing else.
 	// The copy is what the routing block reads; the device only learns about it if some
-	// draw actually goes out on fixed function. Unlike the state words above there is no
-	// redundancy check in front of this, so every call counts as a write.
+	// draw actually goes out on fixed function.
+	//
+	// Redundant asks are dropped here, as they are for every other tracked word. This one
+	// had no such check and so counted every call as a write, which is why
+	// VertexMaterialClass::Apply led the fixed-function census by an order of magnitude:
+	// 857432 render words a window against 856292 calls, one apiece. The mesh renderer
+	// sets a material per pass and the great majority of consecutive passes share one.
+	//
+	// Comparing against CurrentMaterial and not against FFDeviceMaterial is the point:
+	// this is the value callers read back through Get_DX8_Material, so equality here means
+	// nothing observable changed. What the *device* holds is a separate question, answered
+	// by the compare in Flush_Fixed_Function_State, and the two must not be conflated --
+	// Invalidate_Cached_Render_States poisons FFDeviceMaterial and raises FFMaterialPending
+	// while deliberately leaving CurrentMaterial intact, so a device that has lost its
+	// material still gets one resent whether or not this early-out fires.
+	if (memcmp(&CurrentMaterial, mat, sizeof(D3DMATERIAL8)) == 0) return;
+	DX8_RECORD_MATERIAL_CHANGE();
+	SNAPSHOT_SAY(("DX8 - SetMaterial"));
 	CurrentMaterial = *mat;
 	FFMaterialPending = true;
 #ifdef RTS_DEBUG
