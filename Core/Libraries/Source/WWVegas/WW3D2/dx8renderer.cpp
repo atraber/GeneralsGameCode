@@ -1032,8 +1032,16 @@ void DX8RigidFVFCategoryContainer::Add_Mesh(MeshModelClass* mmc_)
 	{
 		*(Vector3*)(vb+fi.Get_Location_Offset())=locs[i];
 
-		if ((FVF&D3DFVF_NORMAL)==D3DFVF_NORMAL && norms) {
-			*(Vector3*)(vb+fi.Get_Normal_Offset())=norms[i];
+		// The null test belongs inside the FVF test, not beside it: skipping the write
+		// leaves whatever the buffer happened to hold in a field the declaration promises
+		// the device it will find. Straight up is the same stand-in the vertex normal
+		// computation falls back to, and the diffuse case below already reads this way.
+		if ((FVF&D3DFVF_NORMAL)==D3DFVF_NORMAL) {
+			if (norms) {
+				*(Vector3*)(vb+fi.Get_Normal_Offset())=norms[i];
+			} else {
+				*(Vector3*)(vb+fi.Get_Normal_Offset())=Vector3(0.0f, 0.0f, 1.0f);
+			}
 		}
 
 		if ((FVF&D3DFVF_DIFFUSE)==D3DFVF_DIFFUSE) {
