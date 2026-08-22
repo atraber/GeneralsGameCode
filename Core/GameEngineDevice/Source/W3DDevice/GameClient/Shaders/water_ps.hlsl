@@ -30,6 +30,9 @@
 // gamma frame buffer, and the terrain and roads underneath it were shaded the same way, so
 // a physically-linear result here would be the only thing in the scene that did not match.
 
+#include "constants.hlsli"
+#include "shadow.hlsli"
+
 sampler2D   WaterTex   : register(s0);
 sampler2D   Refraction : register(s1);
 sampler2D   NoiseTex   : register(s2);
@@ -137,35 +140,26 @@ float viewDepth(float ndcZ)
 // depth packed across RGB, so the taps have to be point-sampled and the smoothing has to
 // come from weighting the comparisons rather than the depths.
 //
-// Four rather than the sixteen the mesh shader uses: this term only gates a specular
-// highlight and applies a partial darkening to a large smooth surface, where the extra
-// taps buy an edge quality nothing on the water is sharp enough to show.
+// Eight rather than the sixteen the mesh shader uses: this term only gates a specular
+// highlight and applies a partial darkening to a large smooth surface already broken up by
+// its own wave normals, where the extra taps buy an edge quality nothing on the water is
+// sharp enough to show. It is its own relaxed Poisson set rather than half of the mesh
+// one -- a prefix of a Poisson set is not itself Poisson (see shadow.hlsli).
 float computeShadow(float3 worldPos)
 {
     if (ShadowParams.y <= 0.0)
         return 1.0;
 
-    float4 clip = mul(float4(worldPos, 1.0), SunVP);
-    float3 ndc  = clip.xyz / clip.w;
-    float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
-        return 1.0;   // outside the sun frustum -> lit
+    float3 ndc = shadowNdc(mul(float4(worldPos, 1.0), SunVP));
+    float2 uv  = shadowUv(ndc);
 
-    const float texel = ShadowParams.z;
-    float2 texelPos = uv / texel;
-    float2 frc      = frac(texelPos - 0.5);
-    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
-
-    float lit = 0.0;
-    [unroll] for (int y = 0; y < 2; ++y)
-        [unroll] for (int x = 0; x < 2; ++x) {
-            float2 tapUv  = baseUv + float2(x, y) * texel;
-            float  stored = unpackDepth(tex2D(ShadowMap, tapUv));
-            float  tapLit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
-            float  w      = (x == 0 ? 1.0 - frc.x : frc.x) * (y == 0 ? 1.0 - frc.y : frc.y);
-            lit += tapLit * w;
-        }
-    return lerp(1.0, lit, ShadowParams.y);
+    // No receiver-plane fit here, and not because it would be awkward: the water surface
+    // is a horizontal plane, so its depth gradient in shadow-map UV is a constant the
+    // blanket bias already covers. Fitting one per pixel would spend ddx/ddy and a divide
+    // to rediscover that. Passing zero makes the filter fall back to the constant bias.
+    return lerp(1.0, shadowFilter8(ShadowMap, uv, ndc.z, ShadowParams.z,
+                                   ShadowParams.w, float2(0.0, 0.0), ShadowParams.x),
+                ShadowParams.y);
 }
 
 // The surface normal, built analytically rather than sampled.

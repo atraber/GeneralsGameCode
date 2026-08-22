@@ -9,11 +9,12 @@
 // the terrain simply writes 1.
 
 #include "constants.hlsli"
+#include "shadow.hlsli"
 
 sampler BaseSampler  : register(s0);
 sampler CloudSampler : register(s2);
 sampler NoiseSampler : register(s3);
-sampler ShadowMap    : register(s5);   // directional shadow map (packed depth)
+sampler2D ShadowMap    : register(s5);   // directional shadow map (packed depth)
 
 float4 OverlayEnable : register(c0); // x = cloud on, y = noise on, z = cloud shade strength
 float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 = off), z = texel
@@ -56,46 +57,24 @@ struct PS_INPUT
     float4 lightPos : TEXCOORD4;
 };
 
-float unpackDepth(float4 rgba)
-{
-    // Weights are 255, matching shadowdepth_ps's pack -- see the note there.
-    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
-}
-
 // Cast-shadow term. Deliberately identical to terrainShadow in terrain_ps: a road is a
 // decal on the terrain, so the two have to agree tap for tap, or the shadow edge breaks
-// where it crosses onto the tarmac.
+// where it crosses onto the tarmac. Sharing the filter through shadow.hlsli is what makes
+// that structural rather than a promise -- the two agree because there is one filter, not
+// because two copies were kept in step by hand.
 float roadShadow(float4 lightPos)
 {
-    // Guard the divide: a degenerate w yields inf, then NaN, and NaN survives every
-    // operation after it -- the pixel is simply gone.
-    float3 ndc = lightPos.xyz / max(abs(lightPos.w), 1e-6);
-    float2 uv  = ndc.xy * float2(0.5, -0.5) + 0.5;
-    float inBounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+    float3 ndc = shadowNdc(lightPos);
+    float2 uv  = shadowUv(ndc);
 
-    const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
+    // Fitted here, in unbranched code -- see shadow.hlsli. A road carries no vertex normal
+    // for the lookup to be lifted along, so like the terrain it depends on the plane fit
+    // rather than on a normal offset to survive a kernel wider than a texel.
+    float2 dzduv = shadowReceiverGradient(uv, ndc.z);
 
-    // Bilinear-weighted PCF over a 3x3 texel footprint. The taps have to be point-sampled
-    // -- depth is packed across RGB and hardware filtering would interpolate the packed
-    // bytes -- so the smoothing comes from weighting the comparisons by where the pixel
-    // sits inside its texel.
-    float2 texelPos = uv / texel;
-    float2 frc      = frac(texelPos - 0.5);
-    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
-
-    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
-    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
-
-    float lit = 0.0;
-    [unroll] for (int y = 0; y < 4; ++y)
-        [unroll] for (int x = 0; x < 4; ++x) {
-            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
-            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
-            float tapLit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
-            lit += tapLit * wx[x] * wy[y];
-        }
-    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
-    return saturate(lerp(1.0, lit / 9.0, inBounds * ShadowParams.y));
+    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+                               ShadowParams.w, dzduv, ShadowParams.x);
+    return saturate(lerp(1.0, lit, ShadowParams.y));
 }
 
 float4 main(PS_INPUT input) : COLOR

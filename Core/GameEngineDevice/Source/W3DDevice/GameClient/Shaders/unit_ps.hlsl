@@ -6,6 +6,7 @@
 // samples a stage it has no texture for.
 
 #include "constants.hlsli"
+#include "shadow.hlsli"
 
 sampler BaseSampler : register(s0);
 
@@ -19,7 +20,7 @@ sampler BaseSampler : register(s0);
 // w = 1 when stage 0's alpha combine uses the texture alpha, 0 when it does not.
 float4 TexCtl : register(c1);
 
-sampler ShadowMap : register(s5);      // directional shadow map (packed depth)
+sampler2D ShadowMap : register(s5);      // directional shadow map (packed depth)
 float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow strength (0 = off)
 // y = the depth bias for this mesh. The vertex shader has already lifted the lookup off
 // the surface along its normal (see unit_vs), so what is left here is numerical slack
@@ -65,47 +66,23 @@ struct PS_INPUT
     float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
 };
 
-// Cast-shadow term. Same pack/compare and 2x2 PCF as the terrain, so a unit and the
-// ground it stands on agree about where a shadow falls. Branchless for ps_2_0: the
-// out-of-frustum case folds in as a mask rather than an early-out.
-float unpackDepth(float4 rgba)
+// Cast-shadow term. The filter is the shared one in shadow.hlsli, so a unit and the ground
+// it stands on agree tap for tap about where a shadow falls and how far it softens -- the
+// same shadow must not soften differently depending on which shader the mesh routed to.
+//
+// The projection and the receiver-plane fit are *not* done here. They need ddx/ddy, and
+// main calls this inside dynamic flow control where the screen-space neighbours are
+// unavailable, so the caller works them out first and passes them in. The filter itself is
+// branch-safe (it samples with an explicit level throughout).
+float shadowTerm(float3 ndc, float2 uv, float2 dzduv)
 {
-    // Weights are 255, matching shadowdepth_ps's pack -- see the note there.
-    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
-}
-
-float shadowTerm(float4 lightPos)
-{
-    // Guard the divide: a degenerate w yields inf, then NaN, and NaN survives every
-    // operation after it -- the pixel is simply gone. Cheaper to be certain here.
-    float3 ndc = lightPos.xyz / max(abs(lightPos.w), 1e-6);
-    float2 uv  = ndc.xy * float2(0.5, -0.5) + 0.5;
-    float inBounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
-
-    const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
-
-    // Bilinear-weighted PCF over a 3x3 texel footprint, matching terrain_ps and
-    // unit_pbr_ps -- the same shadow must not soften differently depending on which
-    // shader the mesh happened to route to. The taps are point-sampled because the depth
-    // is packed across RGB; the smoothing comes from weighting the comparisons by where
-    // the pixel sits inside its texel, which is what stops the edge stepping.
-    float2 texelPos = uv / texel;
-    float2 frc      = frac(texelPos - 0.5);
-    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
-
-    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
-    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
-
-    float lit = 0.0;
-    [unroll] for (int y = 0; y < 4; ++y)
-        [unroll] for (int x = 0; x < 4; ++x) {
-            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
-            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
-            float tapLit = (ndc.z - ShadowMeshParams.y > stored) ? 0.0 : 1.0;
-            lit += tapLit * wx[x] * wy[y];
-        }
-    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
-    return saturate(lerp(1.0, lit / 9.0, inBounds * ShadowParams.y));
+    // ShadowMeshParams.y, not ShadowParams.x: the vertex shader has already lifted the
+    // lookup off the surface along its normal (see unit_vs), so what is left here is
+    // numerical slack rather than a slope allowance -- and with the plane fit covering the
+    // slope across the kernel, it stays slack however wide the kernel gets.
+    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+                               ShadowParams.w, dzduv, ShadowMeshParams.y);
+    return saturate(lerp(1.0, lit, ShadowParams.y));
 }
 
 float4 main(PS_INPUT input) : COLOR
@@ -126,7 +103,11 @@ float4 main(PS_INPUT input) : COLOR
     // remove on its own. SHADOW_MIN comes from constants.hlsli, the same value the terrain
     // reads, so a unit and its own cast shadow on the ground sit at the same brightness.
     float3 rgb = baseColor.rgb * input.color.rgb;
-    rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(input.lightPos));
+
+    float3 shNdc  = shadowNdc(input.lightPos);
+    float2 shUv   = shadowUv(shNdc);
+    float2 shGrad = shadowReceiverGradient(shUv, shNdc.z);
+    rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(shNdc, shUv, shGrad));
     rgb *= cloudShade(input.cloudPos);
     return float4(rgb, texAlpha * diffAlpha);
 }

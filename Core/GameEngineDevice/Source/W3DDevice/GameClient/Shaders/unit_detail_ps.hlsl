@@ -17,6 +17,7 @@
 // never samples stage 1, since sampling a stage with no texture bound is undefined.
 
 #include "constants.hlsli"
+#include "shadow.hlsli"
 
 sampler BaseSampler   : register(s0);
 sampler DetailSampler : register(s1);
@@ -39,7 +40,7 @@ float4 Stage1AArg1 : register(c5);
 float4 Stage1AArg2 : register(c6);
 float4 Stage1AOp   : register(c7);
 
-sampler ShadowMap : register(s5);      // directional shadow map (packed depth)
+sampler2D ShadowMap : register(s5);      // directional shadow map (packed depth)
 float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow strength (0 = off)
 // y = this mesh's depth bias, small because unit_vs has already lifted the lookup off the
 // surface along its normal. See the note in unit_ps.
@@ -72,45 +73,14 @@ float3 cloudShade(float3 cloudPos)
 }
 
 
-// Cast-shadow term, matching unit_ps / terrain_ps. Single tap here rather than 2x2:
-// the combine emulation above already fills most of the ps_2_0 budget.
-float unpackDepth(float4 rgba)
+// Cast-shadow term, matching unit_ps / terrain_ps through the shared filter in
+// shadow.hlsli. As in unit_ps, the projection and the receiver-plane fit are the caller's
+// job: they need ddx/ddy, and main calls this inside dynamic flow control.
+float shadowTerm(float3 ndc, float2 uv, float2 dzduv)
 {
-    // Weights are 255, matching shadowdepth_ps's pack -- see the note there.
-    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
-}
-
-float shadowTerm(float4 lightPos)
-{
-    // Guard the divide: a degenerate w yields inf, then NaN, and NaN survives every
-    // operation after it -- the pixel is simply gone. Cheaper to be certain here.
-    float3 ndc = lightPos.xyz / max(abs(lightPos.w), 1e-6);
-    float2 uv  = ndc.xy * float2(0.5, -0.5) + 0.5;
-    float inBounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
-
-    // Bilinear-weighted PCF over a 3x3 texel footprint, matching terrain_ps, unit_ps and
-    // unit_pbr_ps. This was a single unfiltered tap -- the hardest shadow edge of the
-    // four paths -- because the filter had to fit ps_2_0 alongside the detail blend.
-    // The taps are point-sampled because the depth is packed across RGB; the smoothing
-    // comes from weighting the comparisons by where the pixel sits inside its texel.
-    const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
-    float2 texelPos = uv / texel;
-    float2 frc      = frac(texelPos - 0.5);
-    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
-
-    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
-    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
-
-    float lit = 0.0;
-    [unroll] for (int y = 0; y < 4; ++y)
-        [unroll] for (int x = 0; x < 4; ++x) {
-            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
-            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
-            float tapLit = (ndc.z - ShadowMeshParams.y > stored) ? 0.0 : 1.0;
-            lit += tapLit * wx[x] * wy[y];
-        }
-    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
-    return saturate(lerp(1.0, lit / 9.0, inBounds * ShadowParams.y));
+    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+                               ShadowParams.w, dzduv, ShadowMeshParams.y);
+    return saturate(lerp(1.0, lit, ShadowParams.y));
 }
 
 struct PS_INPUT
@@ -162,7 +132,10 @@ float4 main(PS_INPUT input) : COLOR
             + Stage1AOp.z * a1
             + Stage1AOp.w * a2;
 
-    rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(input.lightPos));
+    float3 shNdc  = shadowNdc(input.lightPos);
+    float2 shUv   = shadowUv(shNdc);
+    float2 shGrad = shadowReceiverGradient(shUv, shNdc.z);
+    rgb *= lerp(SHADOW_MIN, 1.0, shadowTerm(shNdc, shUv, shGrad));
     rgb *= cloudShade(input.cloudPos);
 
     return float4(saturate(rgb), saturate(a));

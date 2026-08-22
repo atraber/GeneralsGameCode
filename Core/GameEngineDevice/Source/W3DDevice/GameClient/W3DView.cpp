@@ -2114,11 +2114,52 @@ void W3DView::draw()
 		// on it until the zoom brought the number down. Meshes get the normal offset below
 		// instead, which is a lateral lift rather than a depth licence and so moves those
 		// shadows by a texel or two instead of erasing them.
-		const float SHADOW_BIAS_TEXELS = 3.0f;
+		// Down from three texels to one, and that reduction is the point of the wide
+		// filter's receiver-plane bias rather than an independent tweak. Three texels was
+		// sized to cover the depth a *sloped* surface gains across a texel, because a
+		// constant bias was the only defence the terrain had. The shaders now fit the
+		// receiver's own plane per pixel and ask each tap for the depth that plane would
+		// have there (see shadow.hlsli), so the slope term cancels analytically and what is
+		// left for a constant is numerical slack. Widening the kernel therefore *lowers*
+		// this number instead of raising it, which is the whole reason the plane fit is
+		// worth its dozen ALU: a wide box filter with a constant bias would have needed
+		// several times three texels and would have lifted every small caster out of its
+		// own shadow.
+		//
+		// The 1/sin(elevation) factor is kept even though the plane fit has largely made it
+		// redundant. It costs nothing at a high sun and leaves margin at a low one, where
+		// the plane fit is working hardest and its clamp is closest to biting.
+		const float SHADOW_BIAS_TEXELS = 1.0f;
 		const float texelWorld = shadowOrtho / (float)DX8Wrapper::SHADOW_MAP_SIZE;
 		const float sunElevation = max(fabsf(sunDir.Z), 0.15f);
 		const float groundBias =
 			(SHADOW_BIAS_TEXELS * texelWorld) / (sunElevation * (shadowFar - 1.0f));
+
+		// Softness: the radius of the Poisson disk the receivers filter over, quoted in
+		// world units here and converted to texels for the shader.
+		//
+		// World units, not texels, because the sun frustum is fitted to the camera: a
+		// radius fixed in texels would be worth a sixth of a world unit zoomed right in and
+		// a unit and a half zoomed out, so shadows would visibly sharpen as the player
+		// zoomed in on them. Fixing the world size instead keeps the penumbra a property of
+		// the scene.
+		//
+		// 1.5 units is about a sixth of a terrain cell, so a shadow edge resolves over
+		// roughly a third of a cell. Enough to read as soft next to a 20-unit tank without
+		// dissolving what a building casts on itself.
+		const float SHADOW_SOFTNESS_WORLD = 1.5f;
+		// The ceiling is an undersampling limit, not a taste one. Sixteen Poisson taps have
+		// a minimum separation of 0.464 of the radius, so past about six texels the gaps
+		// between samples exceed two texels and the per-pixel rotation starts reading as
+		// grain rather than as a gradient. It binds only when zoomed right in, where the
+		// frustum is tightest and a texel is worth least ground -- which is also where the
+		// shadow is largest on screen and grain would show most. The floor keeps the kernel
+		// from collapsing below the half-width of the 3x3 box this replaced.
+		const float SHADOW_SOFT_MIN_TEXELS = 1.0f;
+		const float SHADOW_SOFT_MAX_TEXELS = 6.0f;
+		const float filterRadiusTexels = clamp(SHADOW_SOFT_MIN_TEXELS,
+											   SHADOW_SOFTNESS_WORLD / texelWorld,
+											   SHADOW_SOFT_MAX_TEXELS);
 
 		// Normal offset. Rather than letting the receiver's depth compare pass by a margin,
 		// lift the point it looks the shadow map up at off its own surface along the
@@ -2143,7 +2184,8 @@ void W3DView::draw()
 		const float SHADOW_MESH_BIAS_TEXELS = 0.5f;
 		const float meshBias = (SHADOW_MESH_BIAS_TEXELS * texelWorld) / (shadowFar - 1.0f);
 
-		DX8Wrapper::Set_Shadow_Params(groundBias, 1.0f, normalOffsetWorld, meshBias);
+		DX8Wrapper::Set_Shadow_Params(groundBias, 1.0f, normalOffsetWorld, meshBias,
+									  filterRadiusTexels);
 
 		// (The depth pass forces the full square viewport itself, inside the
 		// scene's SCENE_PASS_SHADOW_MAP branch, since the camera's Apply sets a
@@ -2160,7 +2202,7 @@ void W3DView::draw()
 		// Shadow mapping off: zero strength makes the unit and terrain shaders ignore
 		// whatever is still bound on stage 5, rather than reading a stale or unbound map
 		// (which unpacks to depth 0 and would shadow the entire scene).
-		DX8Wrapper::Set_Shadow_Params(0.0f, 0.0f, 0.0f, 0.0f);
+		DX8Wrapper::Set_Shadow_Params(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 		W3DShaderManager::setShadowFrustum(Vector3(0.0f, 0.0f, 0.0f),
 										   Vector3(0.0f, 0.0f, 0.0f),
 										   0.0f, 0.0f, 0.0f, 0.0f, 0.0f);

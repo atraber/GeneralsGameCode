@@ -1037,10 +1037,16 @@ public:
 	static IDirect3DBaseTexture8*		m_pCloudMap;
 	static float						m_sunVP[16];
 	// x = depth-compare bias in sun-clip units, y = shadow strength (0 disables the
-	// lookup without unbinding anything), z = one texel in UV. The bias has to track the
-	// frustum: it fights the world-space size of a shadow texel, and that now changes
-	// with the zoom. The texel size rides along so the PCF taps cannot fall out of step
-	// with SHADOW_MAP_SIZE.
+	// lookup without unbinding anything), z = one texel in UV, w = the PCF kernel radius
+	// in texels. The bias has to track the frustum: it fights the world-space size of a
+	// shadow texel, and that now changes with the zoom. The texel size rides along so the
+	// PCF taps cannot fall out of step with SHADOW_MAP_SIZE.
+	//
+	// The radius is here for the same reason the bias is. The penumbra is sized in world
+	// units up in W3DView, and a texel is worth a different amount of ground at each zoom,
+	// so a radius baked into the shader would make shadows soften and sharpen as the
+	// camera moved in and out. Converting per frame is what keeps the look fixed to the
+	// world instead of to the shadow map.
 	static float						m_shadowParams[4];
 	// The mesh receivers' half of the same settings, kept apart because they defend
 	// themselves differently: x = how far the lookup is lifted along the surface normal,
@@ -1181,10 +1187,12 @@ public:
 		m_ssrParams[2] = proj33;   m_ssrParams[3] = proj43;
 	}
 	static void Set_Shadow_Params(float bias, float strength,
-								  float normalOffsetWorld, float meshBias)
+								  float normalOffsetWorld, float meshBias,
+								  float filterRadiusTexels)
 	{
 		m_shadowParams[0] = bias; m_shadowParams[1] = strength;
-		m_shadowParams[2] = 1.0f / (float)SHADOW_MAP_SIZE; m_shadowParams[3] = 0.0f;
+		m_shadowParams[2] = 1.0f / (float)SHADOW_MAP_SIZE;
+		m_shadowParams[3] = filterRadiusTexels;
 		m_shadowMeshParams[0] = normalOffsetWorld; m_shadowMeshParams[1] = meshBias;
 		m_shadowMeshParams[2] = 0.0f; m_shadowMeshParams[3] = 0.0f;
 	}
