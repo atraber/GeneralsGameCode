@@ -287,6 +287,12 @@ void MeshGeometryClass::Reset_Geometry(int polycount,int vertcount)
 #if (!OPTIMIZE_VNORM_RAM)
 		VertexNorm = NEW_REF(ShareBufferClass<Vector3>,(VertexCount, "MeshGeometryClass::VertexNorm"));
 		VertexNorm->Clear();
+		// Cleared is not the same as filled. A mesh whose file carries no vertex normals
+		// chunk would otherwise keep this array of zeroes and be shaded by it, which is
+		// what left a handful of assets with normals of no length at all. Mark it dirty
+		// here and let read_vertex_normals clear the mark if the chunk does arrive, so
+		// the fallback costs nothing on the meshes that do not need it.
+		Set_Flag(DIRTY_VNORMALS, true);
 #endif
 	}
 }
@@ -1291,12 +1297,12 @@ void MeshGeometryClass::Compute_Vertex_Normals(Vector3 * vnorm)
 	TriIndex * poly = Poly->Get_Array();
 	const uint32 * shadeIx	= Get_Vertex_Shade_Index_Array(false);
 
+	VectorProcessorClass::Clear(vnorm, VertexCount);
+
 	// Two cases, with or without vertex shade indices.  The vertex shade indices
 	// implicitly contain the smoothing groups information from the original mesh.
 	// In their abscesnce, the entire mesh is smoothed.
 	if (!shadeIx) {
-
-		VectorProcessorClass::Clear(vnorm, VertexCount);
 
 		for(int pidx = 0; pidx < PolyCount; pidx++) {
 
@@ -1315,8 +1321,6 @@ void MeshGeometryClass::Compute_Vertex_Normals(Vector3 * vnorm)
 
 	} else {
 
-		VectorProcessorClass::Clear (vnorm, VertexCount);
-
 		for (int pidx = 0; pidx < PolyCount; pidx++)	{
 
 			vnorm[shadeIx[poly[pidx].I]].X += peq[pidx].X;
@@ -1332,18 +1336,30 @@ void MeshGeometryClass::Compute_Vertex_Normals(Vector3 * vnorm)
 			vnorm[shadeIx[poly[pidx].K]].Z += peq[pidx].Z;
 		}
 
-		// normalize the "master" vertex normals and copy the smoothed ones
-		// (note: we always encounter the "master" ones first)
-		for (unsigned vidx = 0; vidx < (unsigned)VertexCount; vidx ++) {
-			if (shadeIx[vidx] == vidx) {
-				vnorm[vidx].Normalize();
-			} else {
+		// Copy each smoothed vertex the accumulation its master collected. Unnormalised:
+		// the loop below normalises every vertex anyway, and a copy taken before that
+		// points the same way as a copy taken after it. The index is range checked because
+		// it arrives from the file -- a master outside the array would otherwise be read
+		// from whatever follows it in memory.
+		for (int vidx = 0; vidx < VertexCount; vidx++) {
+			if (shadeIx[vidx] != (uint32)vidx && shadeIx[vidx] < (uint32)VertexCount) {
 				vnorm[vidx] = vnorm[shadeIx[vidx]];
 			}
 		}
 	}
 
-	VectorProcessorClass::Normalize(vnorm, VertexCount);
+	// Not VectorProcessorClass::Normalize, which divides by the length unconditionally.
+	// A vertex no polygon references, or one whose polygons' plane normals cancel, has
+	// accumulated nothing, and 0/0 is a NaN that survives everything downstream -- it
+	// reaches unit_pbr_ps and takes the pixel with it. Straight up is arbitrary but it is
+	// a direction, which is all the rest of the pipeline requires of it.
+	for (int vidx = 0; vidx < VertexCount; vidx++) {
+		if (vnorm[vidx].Length2() < 1e-12f) {
+			vnorm[vidx].Set(0.0f, 0.0f, 1.0f);
+		} else {
+			vnorm[vidx].Normalize();
+		}
+	}
 
 	Set_Flag(DIRTY_VNORMALS,false);
 }
@@ -1817,6 +1833,11 @@ WW3DErrorType MeshGeometryClass::read_vertex_normals(ChunkLoadClass & cload)
 		mdlnorms[i].Set(norm.X,norm.Y,norm.Z);
 	}
 
+	// The file supplied them, so the geometry-derived fallback armed in Reset_Geometry is
+	// not wanted. Only on the success path: a chunk that ran out half way through has left
+	// the tail of the array at whatever Clear() put there, and computing over it is a
+	// better answer than shading with it.
+	Set_Flag(DIRTY_VNORMALS, false);
 	return WW3D_ERROR_OK;
 }
 
