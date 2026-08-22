@@ -56,6 +56,7 @@ static PoolSizeRec PoolSizes[] =
 	{ "TerrainRoadType", 64, 64, },
 	{ "WindowLayoutPool", 32, 32 },
 	{ "AnimatedParticleSysBoneClientUpdate", 16, 16 },
+	{ "HazardFieldDecalClientUpdate", 16, 16 },
 	{ "SwayClientUpdate", 4096, 32 },
 	{ "BeaconClientUpdate", 64, 32 },
 	{ "AIGroupPool", 64, 32 },
