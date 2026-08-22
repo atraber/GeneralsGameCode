@@ -250,6 +250,7 @@
 
 // client update includes
 #include "GameClient/Module/AnimatedParticleSysBoneClientUpdate.h"
+#include "GameClient/Module/HazardFieldDecalClientUpdate.h"
 #include "GameClient/Module/SwayClientUpdate.h"
 #include "GameClient/Module/BeaconClientUpdate.h"
 
@@ -500,6 +501,7 @@ void ModuleFactory::init()
 
 	// client update modules
 	addModule( AnimatedParticleSysBoneClientUpdate );
+	addModule( HazardFieldDecalClientUpdate );
 	addModule( SwayClientUpdate );
 	addModule( BeaconClientUpdate );
 

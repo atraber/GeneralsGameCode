@@ -210,6 +210,7 @@ set(GAMEENGINE_SRC
 #    Include/GameClient/MessageBox.h
     Include/GameClient/MetaEvent.h
     Include/GameClient/Module/AnimatedParticleSysBoneClientUpdate.h
+    Include/GameClient/Module/HazardFieldDecalClientUpdate.h
     Include/GameClient/Module/BeaconClientUpdate.h
     Include/GameClient/Module/SwayClientUpdate.h
     Include/GameClient/Mouse.h
@@ -704,6 +705,7 @@ set(GAMEENGINE_SRC
     Source/GameClient/DisplayStringManager.cpp
 #    Source/GameClient/Drawable.cpp
     Source/GameClient/Drawable/Update/AnimatedParticleSysBoneClientUpdate.cpp
+    Source/GameClient/Drawable/Update/HazardFieldDecalClientUpdate.cpp
     Source/GameClient/Drawable/Update/BeaconClientUpdate.cpp
     Source/GameClient/Drawable/Update/SwayClientUpdate.cpp
     Source/GameClient/DrawGroupInfo.cpp
