@@ -496,7 +496,13 @@ void ThingTemplate::parseModuleName(INI* ini, void *instance, void* store, const
 	}
 
 	// if we're overriding, we can totally skip over this block
-	if (ini->getLoadType() == INI_LOAD_CREATE_OVERRIDES)
+	//
+	// A patch takes the same route. The else branch below only clears modules still marked as
+	// copied from default, which a fully parsed template's modules are not -- so a bare "Draw ="
+	// in a patch would leave the original draw module in place and *append* a second one. Going
+	// through AddModule / RemoveModule / ReplaceModule makes the intent explicit and gets the
+	// same-type and unique-tag checks below.
+	if (ini->isOverrideOrPatchLoad())
 	{
 		if (self->m_moduleParsingMode == MODULEPARSE_ADD_REMOVE_REPLACE)
 		{
@@ -504,7 +510,7 @@ void ThingTemplate::parseModuleName(INI* ini, void *instance, void* store, const
 		}
 		else
 		{
-			DEBUG_CRASH(("[LINE: %d - FILE: '%s'] You must use AddModule to add modules in override INI files.",
+			DEBUG_CRASH(("[LINE: %d - FILE: '%s'] You must use AddModule to add modules in override or patch INI files.",
 				ini->getLineNum(), ini->getFilename().str(), self->getName().str()));
 			throw INI_INVALID_DATA;
 		}
@@ -601,7 +607,7 @@ void ThingTemplate::parsePrerequisites( INI* ini, void *instance, void *store, c
 		{ nullptr, nullptr, nullptr, 0 }
 	};
 
-	if (ini->getLoadType() == INI_LOAD_CREATE_OVERRIDES)
+	if (ini->isOverrideOrPatchLoad())
 	{
 		self->m_prereqInfo.clear();
 	}
@@ -819,7 +825,7 @@ void ThingTemplate::parseArmorTemplateSet( INI* ini, void *instance, void * /*st
 	ArmorTemplateSet ws;
 	ws.parseArmorTemplateSet(ini);
 #if defined(RTS_DEBUG)
-	if (ini->getLoadType() != INI_LOAD_CREATE_OVERRIDES)
+	if (!ini->isOverrideOrPatchLoad())
 	{
 		for (ArmorTemplateSetVector::const_iterator it = self->m_armorTemplateSets.begin(); it != self->m_armorTemplateSets.end(); ++it)
 		{
@@ -847,7 +853,7 @@ void ThingTemplate::parseWeaponTemplateSet( INI* ini, void *instance, void * /*s
 	WeaponTemplateSet ws;
 	ws.parseWeaponTemplateSet(ini, self);
 #if defined(RTS_DEBUG)
-	if (ini->getLoadType() != INI_LOAD_CREATE_OVERRIDES)
+	if (!ini->isOverrideOrPatchLoad())
 	{
 		for (WeaponTemplateSetVector::const_iterator it = self->m_weaponTemplateSets.begin(); it != self->m_weaponTemplateSets.end(); ++it)
 		{
