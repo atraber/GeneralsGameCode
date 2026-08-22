@@ -43,6 +43,19 @@ if(RTS_INSTALL_PREFIX_ZEROHOUR)
     install(TARGETS z_generals RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}")
     install(FILES $<TARGET_PDB_FILE:z_generals> DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}" OPTIONAL)
 
+    # Loose game data: the INI patches under mod/. Installed with the executable because
+    # they are the data half of features the executable carries -- without
+    # Data\INI\Patch\HazardFields.ini, for instance, HazardFieldDecalClientUpdate is
+    # configured onto nothing and the hazard-field effect is dead code. Patches only write
+    # the settings they name (see mod/README.md), so this adds files rather than replacing
+    # any shipped one, but it does change the INI CRC that replay headers carry: a client
+    # built from this tree and a stock client cannot play together, by design.
+    #
+    # The tree is per game because a patch must name definitions that game actually
+    # declares, and the loader stops the load if one does not exist. mod/GeneralsMD names
+    # Generals-Challenge objects (NukeGeneral.ini) that base Generals has never had.
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/mod/GeneralsMD/Data/" DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}/Data")
+
     if(TARGET z_worldbuilder)
         install(TARGETS z_worldbuilder RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}")
         install(FILES $<TARGET_PDB_FILE:z_worldbuilder> DESTINATION "${RTS_INSTALL_PREFIX_ZEROHOUR}" OPTIONAL)

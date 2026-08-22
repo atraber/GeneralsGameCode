@@ -503,6 +503,21 @@ void GameEngine::init()
 		// Create the interface for sending game results
 		initSubsystem(TheGameResultsQueue,"TheGameResultsQueue", GameResultsInterface::createNewGameResultsInterface(), nullptr);
 
+		// Patches load last, after every subsystem has read its own INI, so a patch can edit
+		// anything the game just defined and can refer to any name the game just learned.
+		//
+		// Still inside xferCRC, deliberately. The CRC is stamped into replay headers and checked
+		// on playback (Recorder.cpp), so a patch that changes the game changes the CRC, and a
+		// mismatched client or a stale replay is reported rather than quietly desyncing. Before
+		// postProcessLoadAll(), equally deliberately, so patched templates go through the same
+		// name resolution as everything else.
+		//
+		// The directory is optional and its absence is not an error: loadDirectory simply reads
+		// no files. loadFileDirectory is not used here because it throws when nothing is found.
+		// Files within it load in sorted name order, which is how INI::loadDirectory already
+		// keeps network games consistent between machines.
+		ini.loadDirectory("Data\\INI\\Patch", INI_LOAD_PATCH, &xferCRC, TRUE);
+
 		xferCRC.close();
 		TheWritableGlobalData->m_iniCRC = xferCRC.getCRC();
 		DEBUG_LOG(("INI CRC is 0x%8.8X", TheGlobalData->m_iniCRC));

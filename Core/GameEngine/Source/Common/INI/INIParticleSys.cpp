@@ -48,9 +48,21 @@ void INI::parseParticleSystemDefinition( INI* ini )
 	ParticleSystemTemplate *sysTemplate = const_cast<ParticleSystemTemplate*>(TheParticleSystemManager->findTemplate( name ));
 	if (sysTemplate == nullptr)
 	{
+		if (ini->isPatchLoad())
+		{
+			// A patch edits a system that is already defined; nothing here answers to that name.
+			// See INI_LOAD_PATCH.
+			DEBUG_CRASH(( "[LINE: %d in '%s'] Patch names ParticleSystem %s, but no INI loaded so far declares it.",
+										ini->getLineNum(), ini->getFilename().str(), name.str() ));
+			throw INI_INVALID_DATA;
+		}
+
 		// no item is present, create a new one
 		sysTemplate = TheParticleSystemManager->newTemplate( name );
 	}
+
+	// Fields the block names are written straight onto the existing template; a patch needs no
+	// special handling beyond the guard above, because that is already what this parser does.
 
 	// parse the ini definition
 	ini->initFromINI( sysTemplate, sysTemplate->getFieldParse() );

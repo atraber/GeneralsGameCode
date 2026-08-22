@@ -384,6 +384,18 @@ AsciiString TheThingTemplateBeingParsedName;
 	ThingTemplate *thingTemplate = TheThingFactory->findTemplateInternal( name, FALSE );
 	if( !thingTemplate )
 	{
+		if( ini->isPatchLoad() )
+		{
+			// A patch edits an object; there is no object here to edit. Overwhelmingly this is a
+			// misspelled name, and quietly declaring a half-specified object instead would fail
+			// much later and a long way from the line that caused it. Note that *adding* an object
+			// from a loose file needs no patch: a name nothing else declares hits the branch above
+			// under a normal load and simply works.
+			DEBUG_CRASH(( "[LINE: %d in '%s'] Patch names Object %s, but no INI loaded so far declares it.",
+										ini->getLineNum(), ini->getFilename().str(), name.str() ));
+			throw INI_INVALID_DATA;
+		}
+
 		// no item is present, create a new one
 		thingTemplate = TheThingFactory->newTemplate( name );
 		if ( ini->getLoadType() == INI_LOAD_CREATE_OVERRIDES )
@@ -392,6 +404,16 @@ AsciiString TheThingTemplateBeingParsedName;
 			// gets deleted on ::reset().
 			thingTemplate->markAsOverride();
 		}
+	}
+	else if( ini->isPatchLoad() )
+	{
+		// Patch the template that is already here, in place. Fields the block names are written
+		// over; every field it does not name keeps whatever the base data gave it.
+		//
+		// Deliberately *not* newOverride(): an override is a fresh template chained off this one,
+		// and ThingFactory::reset() frees the whole chain between matches. That is right for
+		// map.ini, whose edits are meant to last one map, and wrong for an edit meant to be part
+		// of the game.
 	}
 	else if( ini->getLoadType() != INI_LOAD_CREATE_OVERRIDES )
 	{

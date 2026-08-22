@@ -49,8 +49,29 @@ enum INILoadType CPP_11(: Int)
 	INI_LOAD_INVALID,						///< invalid load type
 	INI_LOAD_OVERWRITE,					///< create new or load *over* existing data instance
 	INI_LOAD_CREATE_OVERRIDES,	///< create new or load into *new* override data instance
-	INI_LOAD_MULTIFILE					///< create new or continue loading into existing data instance.
+	INI_LOAD_MULTIFILE,					///< create new or continue loading into existing data instance.
+	INI_LOAD_PATCH							///< load *over* an existing data instance that must already exist.
 };
+
+// INI_LOAD_PATCH exists so a small file can change a handful of settings without restating
+// the file that declared them. Loose files beat the .big archives, but wholesale: overriding
+// one line of CivilianUnit.ini used to mean shipping a 20,548-line copy of it.
+//
+// It behaves exactly like INI_LOAD_OVERWRITE -- fields named in the block are written onto the
+// instance that is already there, everything else keeps the value the base data gave it -- with
+// two differences, both of which exist to turn a silent mistake into a loud one:
+//
+//   1. A block naming something that does not already exist is an error, not a new definition.
+//      A patch is by definition an edit of something, so a typo is a typo rather than a dead
+//      entry nothing ever reads.
+//   2. Module blocks inside an Object must go through AddModule / RemoveModule / ReplaceModule
+//      -- the grammar map.ini already uses. A bare "Draw =" would otherwise *append* a second
+//      draw module rather than replace the first, because the clear-on-redeclare path only
+//      clears modules still marked as copied from default.
+//
+// Distinct from INI_LOAD_CREATE_OVERRIDES, which patches into a *new* override instance chained
+// off the original. Those are map-scoped by design and ThingFactory::reset() deletes them between
+// matches, so they cannot carry a change that is meant to be part of the game.
 
 //-------------------------------------------------------------------------------------------------
 /** INI constant defines */
@@ -248,6 +269,9 @@ public:
 
 	AsciiString getFilename() const { return m_filename; }
 	INILoadType getLoadType() const { return m_loadType; }
+	Bool isPatchLoad() const { return m_loadType == INI_LOAD_PATCH; }
+	/// TRUE when a block is expected to name something that already exists, rather than declare it.
+	Bool isOverrideOrPatchLoad() const { return m_loadType == INI_LOAD_CREATE_OVERRIDES || m_loadType == INI_LOAD_PATCH; }
 	UnsignedInt getLineNum() const { return m_lineNum; }
 	Bool isEOF() const { return m_endOfFile; }
 	static const char *getSeps()        { return " \n\r\t="; }   ///< default delimiters for strtok parsing

@@ -43,6 +43,26 @@ if(RTS_INSTALL_PREFIX_GENERALS)
     install(TARGETS g_generals RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}")
     install(FILES $<TARGET_PDB_FILE:g_generals> DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}" OPTIONAL)
 
+    # Loose game data: the INI patches under mod/. Installed with the executable because
+    # they are the data half of features the executable carries -- without
+    # Data\INI\Patch\HazardFields.ini, for instance, HazardFieldDecalClientUpdate is
+    # configured onto nothing and the hazard-field effect is dead code. Patches only write
+    # the settings they name (see mod/README.md), so this adds files rather than replacing
+    # any shipped one, but it does change the INI CRC that replay headers carry: a client
+    # built from this tree and a stock client cannot play together, by design.
+    #
+    # The tree is per game because a patch must name definitions that game actually
+    # declares, and the loader stops the load if one does not exist. mod/GeneralsMD names
+    # Generals-Challenge objects (NukeGeneral.ini) that base Generals has never had.
+    #
+    # Check where this actually lands before putting anything here: the registry lookups
+    # above can resolve both install prefixes to the same folder (an EA App or First Decade
+    # machine with only Zero Hour installed does exactly that), in which case a patch meant
+    # for base Generals is deployed into a Zero Hour install and stops its load.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/mod/Generals/Data")
+        install(DIRECTORY "${CMAKE_SOURCE_DIR}/mod/Generals/Data/" DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}/Data")
+    endif()
+
     if(TARGET g_worldbuilder)
         install(TARGETS g_worldbuilder RUNTIME DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}")
         install(FILES $<TARGET_PDB_FILE:g_worldbuilder> DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}" OPTIONAL)

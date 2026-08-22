@@ -1,0 +1,4 @@
+# The game reads these as loose files and they ship CRLF, as every file inside the
+# .big archives does. Pinned rather than left to core.autocrlf so a checkout on any
+# platform deploys the same bytes the game was tested against.
+**/Data/INI/**  text eol=crlf
