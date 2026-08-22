@@ -19,6 +19,7 @@
 // supplies the Fresnel-weighted reflection term.
 
 #include "constants.hlsli"
+#include "shadow.hlsli"
 
 sampler2D   AlbedoSampler : register(s0);
 sampler2D   OrmSampler    : register(s1);
@@ -113,8 +114,8 @@ float3 F_Schlick(float VdotH, float3 F0)
     return F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
 }
 
-// Directional shadow map. Unpack the RGB-packed depth and 3x3-PCF compare this
-// pixel's sun-clip-space depth against it. Returns 1 = lit, 0 = fully shadowed.
+// Directional shadow map. Projects this pixel into sun clip space and runs the shared
+// wide Poisson PCF over it -- see shadow.hlsli. Returns 1 = lit, 0 = fully shadowed.
 float unpackDepth(float4 rgba)
 {
     // Weights are 255, matching shadowdepth_ps's pack -- see the note there.
@@ -130,50 +131,27 @@ float computeShadow(float3 worldPos, float3 worldNormal)
     // pixel and follows the shading normal exactly.
     worldPos += worldNormal * ShadowMeshParams.x;
 
-    float4 clip = mul(float4(worldPos, 1.0), SunVP);
-    float3 ndc  = clip.xyz / clip.w;
-    float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;   // clip -> UV, flip Y for the texture
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
-        return 1.0;   // outside the sun frustum -> lit
+    float3 ndc = shadowNdc(mul(float4(worldPos, 1.0), SunVP));
+    float2 uv  = shadowUv(ndc);
 
-    // The bias comes in per frame rather than being baked: it has to counter the
-    // world-space size of a shadow texel, and the sun frustum is fitted to the camera,
-    // so that size changes with the zoom. A fixed value large enough for the widest
-    // frustum erases small casters' shadows entirely once zoomed in.
-    const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
-
-    // Bilinear-weighted PCF over a 3x3 texel footprint.
+    // No early-out for a pixel outside the sun frustum any more. The filter guards each
+    // tap instead (see shadow.hlsli): a kernel several texels wide can have its centre
+    // inside the map while part of its sample disk is not, and stage 5 is CLAMP, so those
+    // outer taps would otherwise read the border texel and stamp a false shadow along the
+    // map edge. Every tap outside still comes back lit, so a pixel fully outside gets the
+    // same 1.0 this used to return.
     //
-    // The taps have to be point-sampled -- the map holds depth packed across RGB, and
-    // hardware filtering would interpolate the packed bytes, which is meaningless. So the
-    // smoothing has to come from weighting the *comparisons* instead of the depths.
-    //
-    // Weighting them by where the pixel falls inside its texel is the part that removes
-    // stair-stepping. A plain box of point comparisons (what this was) still snaps every
-    // tap to the texel grid: it only turns a hard edge into ten grey levels that are all
-    // still aligned to that grid, which reads as chunky steps rather than a soft edge.
-    // Blending across the texel makes the transition continuous as the edge crosses it.
-    // Note the map is already 4096 -- this was never a resolution problem.
-    //
-    // Sixteen taps: a 3-texel-wide box needs a 4-tap span once it is offset by the
-    // fractional position, with the two end taps carrying the partial weights.
-    float2 texelPos = uv / texel;
-    float2 frc      = frac(texelPos - 0.5);
-    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
+    // Receiver-plane depth bias, fitted here rather than by the caller: unlike unit_ps this
+    // shader does not branch around the lookup, so ddx/ddy are available on the spot.
+    float2 dzduv = shadowReceiverGradient(uv, ndc.z);
 
-    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
-    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
-
-    float lit = 0.0;
-    [unroll] for (int y = 0; y < 4; ++y)
-        [unroll] for (int x = 0; x < 4; ++x) {
-            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
-            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
-            float tapLit = (ndc.z - ShadowMeshParams.y > stored) ? 0.0 : 1.0;
-            lit += tapLit * wx[x] * wy[y];
-        }
-    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
-    return lerp(1.0, lit / 9.0, ShadowParams.y);
+    // Radius and bias both arrive per frame rather than being baked: they are quoted in
+    // world units up on the CPU, and the sun frustum is fitted to the camera, so a texel is
+    // worth a different amount of ground at each zoom. A fixed value large enough for the
+    // widest frustum erases small casters' shadows entirely once zoomed in.
+    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+                               ShadowParams.w, dzduv, ShadowMeshParams.y);
+    return lerp(1.0, lit, ShadowParams.y);
 }
 
 // Clip-space depth back to a view-space distance. The prepass stores z/w under the

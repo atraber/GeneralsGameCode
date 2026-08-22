@@ -10,13 +10,14 @@
 // tiles seamlessly from cell to cell -- see the comment on stochasticSample.
 
 #include "constants.hlsli"
+#include "shadow.hlsli"
 
 sampler BaseSampler  : register(s0);
 sampler ClassMap     : register(s1);   // per-slot class table (point sampled)
 sampler CloudSampler : register(s2);
 sampler NoiseSampler : register(s3);
 sampler DetailMap    : register(s4);   // procedural detail: RG = gradient, B = height
-sampler ShadowMap    : register(s5);   // directional shadow map (packed depth)
+sampler2D ShadowMap    : register(s5);   // directional shadow map (packed depth)
 
 float4 OverlayEnable : register(c0); // x = cloud on, y = noise on, z = cloud shade strength
 float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 = off)
@@ -302,55 +303,37 @@ float4 stochasticSample(float2 uv, float2 worldXY, float2 ddxUV, float2 ddyUV)
     return w.x * c0 + w.y * c1 + w.z * c2;
 }
 
-float unpackDepth(float4 rgba)
-{
-    // Weights are 255, matching shadowdepth_ps's pack -- see the note there.
-    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
-}
-
-// Cast-shadow term for the terrain. The out-of-frustum case is folded in with a mask
-// rather than an early-out, which keeps the texture fetches in uniform flow.
+// Cast-shadow term for the terrain. The out-of-frustum case is handled per tap inside the
+// filter rather than by an early-out here, which keeps the texture fetches in uniform flow
+// and -- now that the kernel is several texels wide -- correctly handles a pixel whose
+// centre is inside the map while half its sample disk is not.
 //
-// This is where cast shadows are seen most: almost every shadow in a normal frame falls
-// on the ground rather than on a unit. It used to be a 2x2 box of point comparisons,
-// which is what made those shadows stair-step. That filter was chosen because a wider
-// one overflowed the ps_2_0 arithmetic slots alongside the terrain blend; the shader now
-// targets ps_3_0 so it can run the same filter unit_pbr_ps does.
+// This is where cast shadows are seen most: almost every shadow in a normal frame falls on
+// the ground rather than on a unit. The filter itself lives in shadow.hlsli so that the
+// terrain, the roads laid on it and anything standing on it soften identically -- a road
+// is a decal on this surface, and an edge that softened differently either side of the
+// tarmac would be worse than no softening at all.
 float terrainShadow(float4 lightPos)
 {
-    // Guard the divide: a degenerate w yields inf, then NaN, and NaN survives every
-    // operation after it -- the pixel is simply gone. Cheaper to be certain here.
-    float3 ndc = lightPos.xyz / max(abs(lightPos.w), 1e-6);
-    float2 uv  = ndc.xy * float2(0.5, -0.5) + 0.5;
-    float inBounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+    float3 ndc = shadowNdc(lightPos);
+    float2 uv  = shadowUv(ndc);
 
-    // Bias arrives per frame (see unit_pbr_ps): the sun frustum is fitted to the camera,
-    // so a texel's world size -- and with it the bias needed -- changes with the zoom.
-    const float texel = ShadowParams.z;   // 1/SHADOW_MAP_SIZE, fed per frame
+    // Receiver-plane depth bias, fitted here in unbranched code (see shadow.hlsli). The
+    // terrain needs it more than anything else does: it is broad, it slopes, and it has no
+    // vertex normal to lift the lookup along the way a mesh does -- so before this, the
+    // whole slope allowance had to be paid as a blanket depth licence, which is what the
+    // three-texel ground bias was. With the plane fitted, that licence covers numerical
+    // slack only, and the constant comes down rather than up as the kernel widens.
+    float2 dzduv = shadowReceiverGradient(uv, ndc.z);
 
-    // Bilinear-weighted PCF over a 3x3 texel footprint. The taps have to be point-sampled
-    // -- depth is packed across RGB and hardware filtering would interpolate the packed
-    // bytes -- so the smoothing comes from weighting the comparisons by where the pixel
-    // sits inside its texel. That weighting, not the tap count, is what removes the
-    // stepping: a box of point comparisons still snaps every tap to the texel grid.
-    float2 texelPos = uv / texel;
-    float2 frc      = frac(texelPos - 0.5);
-    float2 baseUv   = (floor(texelPos - 0.5) + 0.5) * texel;
+    // Radius and bias both arrive per frame: the sun frustum is fitted to the camera, so a
+    // texel's world size changes with the zoom, and both a penumbra quoted in world units
+    // and a bias that fights a texel's worth of ground have to follow it.
+    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+                               ShadowParams.w, dzduv, ShadowParams.x);
 
-    float wx[4] = { 1.0 - frc.x, 1.0, 1.0, frc.x };
-    float wy[4] = { 1.0 - frc.y, 1.0, 1.0, frc.y };
-
-    float lit = 0.0;
-    [unroll] for (int y = 0; y < 4; ++y)
-        [unroll] for (int x = 0; x < 4; ++x) {
-            float2 tapUv = baseUv + float2(x - 1, y - 1) * texel;
-            float stored = unpackDepth(tex2D(ShadowMap, tapUv));
-            float tapLit = (ndc.z - ShadowParams.x > stored) ? 0.0 : 1.0;
-            lit += tapLit * wx[x] * wy[y];
-        }
-    // Weights sum to 3 per axis ((1-f) + 1 + 1 + f), so 9 over the kernel.
-    // Outside the sun frustum, or with shadowing off, everything is lit.
-    return saturate(lerp(1.0, lit / 9.0, inBounds * ShadowParams.y));
+    // With shadowing off, everything is lit.
+    return saturate(lerp(1.0, lit, ShadowParams.y));
 }
 
 float4 main(PS_INPUT input) : COLOR
