@@ -38,6 +38,10 @@
 /*		7/18/2002 : Initial creation                                           */
 /*---------------------------------------------------------------------------*/
 
+// Before dsound.h, which uses LPWAVEFORMATEX without declaring it: the definition lives
+// in mmsystem.h, and WIN32_LEAN_AND_MEAN keeps windows.h from pulling that in. MSVC gets
+// away with it through its own include ordering; nothing guarantees that.
+#include <mmsystem.h>
 #include <dsound.h>
 #include "Lib/BaseType.h"
 #include "MilesAudioDevice/MilesAudioManager.h"
@@ -3115,8 +3119,12 @@ void AudioFileCache::releaseOpenAudioFile( OpenAudioFile *fileToRelease )
 			// Files read in via AIL_decompress_ADPCM must be freed with AIL_mem_free_lock.
 			AIL_mem_free_lock(fileToRelease->m_file);
 		} else {
-			// Otherwise, we read it, we own it, blow it away.
-			delete [] fileToRelease->m_file;
+			// Otherwise, we read it, we own it, blow it away. Through char*, because
+			// m_file is void* and deleting an array through void* is undefined -- there
+			// is no element type to count or destroy. It came from readEntireAndClose,
+			// which returns exactly char*, and the AIL_mem_free_lock case above has
+			// already taken the only other kind of allocation this field ever holds.
+			delete [] (char*)fileToRelease->m_file;
 		}
 		fileToRelease->m_file = nullptr;
 		fileToRelease->m_eventInfo = nullptr;
