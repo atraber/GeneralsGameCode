@@ -136,6 +136,15 @@ public:
 								const SphereClass & obj_sphere,
 								unsigned int *personalities);
 
+	// The same ribbon, built against the sun instead of the camera, for the shadow map.
+	// See the note on the implementation for why this is a separate and much shorter
+	// piece of code than RenderStreak rather than a flag on it.
+	void	Render_Sun_Depth(	const Matrix3D & transform,
+								unsigned int point_count,
+								Vector3 * points,
+								Vector4 * colors,
+								float * widths);
+
 private:
 
 	// Utility functions

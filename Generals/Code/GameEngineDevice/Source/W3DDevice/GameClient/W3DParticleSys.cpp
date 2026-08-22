@@ -127,13 +127,11 @@ void DoParticleShadows( RenderInfoClass &rinfo )
  *   be corrected for.
  * - It skips everything the shadow map cannot use: systems classified as light rather
  *   than matter, smudges, and sprites too small to survive a texel.
- * - Every system it does take is submitted as sun-facing sprites, including the STREAK
- *   ones. A streak draws as a ribbon threaded through its particles, and rebuilding that
- *   ribbon against the sun would mean a second copy of StreakRendererClass' eye-space
- *   geometry. A round sprite at each point, the width of the ribbon there, is the same
- *   tube to within the resolution of a shadow texel -- the trail's near-engine end, where
- *   the points are still further apart than they are wide, falls under the size floor
- *   below and casts nothing either way.
+ * - It draws each system the way that system is drawn: sprites as sun-facing quads, and
+ *   a STREAK as a ribbon, through StreakRendererClass::Render_Sun_Depth. A streak
+ *   submitted as sprites came out a chain of separate blobs, because a trail's points are
+ *   further apart than they are wide for most of its length -- it read as dashes lying
+ *   across the trail rather than as a shadow of it.
  */
 void W3DParticleSystemManager::doParticleShadows(RenderInfoClass &rinfo)
 {
@@ -171,6 +169,86 @@ void W3DParticleSystemManager::doParticleShadows(RenderInfoClass &rinfo)
 
 		if (!sys->castsShadows())
 			continue;
+
+		// A streak casts as a ribbon, not as a string of sprites, and so takes a
+		// different path from here down. Its points are not independent: they are the
+		// spine of one continuous surface, so none of them may be dropped and their order
+		// is the geometry. That rules out both filters the sprite path applies below --
+		// the per-particle size floor would punch holes in the middle of a trail, and the
+		// per-particle sun cull would cut it into pieces at the frustum edge. The whole
+		// system is culled or none of it is.
+		if (sys->isUsingStreak())
+		{
+			if (m_streakLine == NULL)
+				continue;
+
+			Int scount = 0;
+			Vector3 *sposArray = m_posBuffer->Get_Array();
+			Real *ssizeArray = m_sizeBuffer->Get_Array();
+			Vector4 *sRGBAArray = m_RGBABuffer->Get_Array();
+			Real maxWidth = 0.0f;
+			Vector3 lo(0.0f, 0.0f, 0.0f), hi(0.0f, 0.0f, 0.0f);
+
+			for (Particle *p = sys->getFirstParticle(); p; p = p->m_systemNext)
+			{
+				const Coord3D *pos = p->getPosition();
+				const Real w = p->getSize();
+				sposArray[scount].Set(pos->x, pos->y, pos->z);
+				ssizeArray[scount] = w;
+
+				const RGBColor *color = p->getColor();
+				sRGBAArray[scount].X = color->red;
+				sRGBAArray[scount].Y = color->green;
+				sRGBAArray[scount].Z = color->blue;
+				sRGBAArray[scount].W = p->getAlpha();
+
+				if (scount == 0) { lo = sposArray[0]; hi = sposArray[0]; }
+				else {
+					lo.X = MIN(lo.X, pos->x); lo.Y = MIN(lo.Y, pos->y); lo.Z = MIN(lo.Z, pos->z);
+					hi.X = MAX(hi.X, pos->x); hi.Y = MAX(hi.Y, pos->y); hi.Z = MAX(hi.Z, pos->z);
+				}
+				if (w > maxWidth) maxWidth = w;
+
+				if (++scount == MAX_POINTS_PER_GROUP)
+					break;
+			}
+
+			// Two points make the shortest ribbon there is; one is not a ribbon at all.
+			if (scount < 2)
+				continue;
+
+			// The trailing point's colour is zeroed for the same reason the visible pass
+			// zeroes it: the oldest particle is where the ribbon ends, and ending it on
+			// whatever alpha that particle happened to hold leaves a squared-off edge
+			// hanging in mid-air. In the shadow that edge is a straight line of dark
+			// ground with nothing above it.
+			sRGBAArray[0].W = 0.0f;
+
+			// One cull for the whole system, against the sphere that contains it.
+			const Vector3 centre = (lo + hi) * 0.5f;
+			const Real radius = (hi - lo).Length() * 0.5f + maxWidth;
+			if (DX8Wrapper::Cull_Sphere_By_Sun(centre, radius))
+				continue;
+
+			// Below the floor a ribbon is thinner than the shadow texel it would land in,
+			// so what it casts is a dotted line rather than a shadow. Measured on the
+			// widest point rather than each: a trail is a single object and either it is
+			// worth drawing or it is not.
+			if (maxWidth < MIN_SHADOW_PARTICLE_SIZE)
+				continue;
+
+			TextureClass *stex = W3DDisplay::m_assetManager->Get_Texture( sys->getParticleTypeName().str() );
+			m_streakLine->Reset_Line();
+			m_streakLine->Set_Texture( stex );
+			stex->Release_Ref();	//release reference since it's held by the streak line
+			m_streakLine->Set_LocsWidthsColors( scount, sposArray, ssizeArray, sRGBAArray, NULL );
+			m_streakLine->Render_Sun_Depth();
+
+			++systemsCast;
+			particlesSubmitted += (unsigned)scount;
+			continue;
+		}
+
 
 		Int count = 0;
 		Vector3 *posArray = m_posBuffer->Get_Array();

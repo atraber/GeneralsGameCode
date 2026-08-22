@@ -1079,6 +1079,12 @@ public:
 	static const Vector3 & Get_Sun_Right() { return m_sunCullRight; }
 	static const Vector3 & Get_Sun_Up() { return m_sunCullUp; }
 
+	// The direction the sun's light travels, i.e. the sun view's forward axis. A ribbon
+	// needs this rather than the two above: it is not a billboard and has no freedom to
+	// turn, so what the sun decides is only which way round its own axis it presents its
+	// width. See StreakRendererClass::Render_Sun_Depth.
+	static const Vector3 & Get_Sun_Forward() { return m_sunCullFwd; }
+
 	// Screen-space reflections. The camera-view depth SSR marches against is produced
 	// by re-running the shadow depth pass from the camera instead of the sun: same
 	// shaders, same routing, same packed RGBA8 target. Only two things differ, and
