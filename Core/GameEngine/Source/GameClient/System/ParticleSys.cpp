@@ -808,10 +808,18 @@ Bool ParticleSystemInfo::castsShadows() const
 	if (m_shadowType == SHADOW_YES) return TRUE;
 	if (m_shadowType == SHADOW_NO)  return FALSE;
 
-	// Only actual sprites. A DRAWABLE system draws models, which cast through the mesh
-	// renderer already and would cast twice from here; a STREAK is a tracer, all light;
-	// a SMUDGE is a distortion of the background and has no substance to it whatsoever.
-	if (m_particleType != PARTICLE && m_particleType != VOLUME_PARTICLE)
+	// A DRAWABLE system draws models, which cast through the mesh renderer already and
+	// would cast twice from here; a SMUDGE is a distortion of the background and has no
+	// substance to it whatsoever.
+	//
+	// STREAK used to be excluded here as well, on the grounds that a streak is a tracer.
+	// It is not: counted over the shipped systems, all 18 additive streaks are tracers
+	// (missile exhausts, toxin beams) and all 12 alpha ones are matter -- jet contrails,
+	// the toxin sprays, and the four black engine-smoke trails, which is what a cargo
+	// plane trails behind its engines. The blend mode below already separates those two
+	// groups exactly, so excluding the whole type on top of it only dropped the matter.
+	if (m_particleType != PARTICLE && m_particleType != VOLUME_PARTICLE &&
+		m_particleType != STREAK)
 		return FALSE;
 
 	// Matter, not light. See above.

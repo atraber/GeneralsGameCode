@@ -126,7 +126,14 @@ void DoParticleShadows( RenderInfoClass &rinfo )
  *   the camera cull would have dropped it -- the same mistake the mesh depth pass had to
  *   be corrected for.
  * - It skips everything the shadow map cannot use: systems classified as light rather
- *   than matter, streaks, smudges, and sprites too small to survive a texel.
+ *   than matter, smudges, and sprites too small to survive a texel.
+ * - Every system it does take is submitted as sun-facing sprites, including the STREAK
+ *   ones. A streak draws as a ribbon threaded through its particles, and rebuilding that
+ *   ribbon against the sun would mean a second copy of StreakRendererClass' eye-space
+ *   geometry. A round sprite at each point, the width of the ribbon there, is the same
+ *   tube to within the resolution of a shadow texel -- the trail's near-engine end, where
+ *   the points are still further apart than they are wide, falls under the size floor
+ *   below and casts nothing either way.
  */
 void W3DParticleSystemManager::doParticleShadows(RenderInfoClass &rinfo)
 {

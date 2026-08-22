@@ -89,6 +89,7 @@
 #include "simplevec.h"
 #include "realcrc.h"
 #include "dx8wrapper.h"
+#include "WW3D2/meshshadowname.h"
 
 #ifdef _UNIX
 #include "osdep/osdep.h"
@@ -321,6 +322,11 @@ WW3DErrorType MeshModelClass::Load_W3D(ChunkLoadClass & cload)
 	}
 
 	if (context->Header.Attributes & W3D_MESH_FLAG_CAST_SHADOW) {
+		Set_Flag(CAST_SHADOW,true);
+	} else if (Mesh_Name_Reads_As_Rotor_Disc(context->Header.MeshName)) {
+		// The artist meant to and did not -- see meshshadowname.h. Supplying it here
+		// rather than at the point of use keeps the answer with the asset, and keeps the
+		// renderer's inner loop a flag test.
 		Set_Flag(CAST_SHADOW,true);
 	}
 
