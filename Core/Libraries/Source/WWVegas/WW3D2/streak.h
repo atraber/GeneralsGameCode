@@ -132,6 +132,12 @@ class StreakLineClass : public RenderObjClass
 		/////////////////////////////////////////////////////////////////////////////
 		virtual void					Render( RenderInfoClass & rinfo ) override;
 
+		// Cast this streak into the sun's shadow map, as a ribbon rather than as a
+		// string of sprites. Called by the particle manager's shadow pass, which runs
+		// before the visible one; it reads the same arrays Set_LocsWidthsColors filled
+		// and draws nothing outside the depth pass.
+		void							Render_Sun_Depth();
+
 		/////////////////////////////////////////////////////////////////////////////
 		// Render Object Interface - Bounding Volumes
 		/////////////////////////////////////////////////////////////////////////////

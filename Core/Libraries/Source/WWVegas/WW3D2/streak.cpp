@@ -691,6 +691,24 @@ void StreakLineClass::Render_Streak_Line(RenderInfoClass & rinfo)
 }
 
 
+void StreakLineClass::Render_Sun_Depth(void)
+{
+	// Same guards as Render_Streak_Line: the three arrays are filled together by
+	// Set_LocsWidthsColors and a mismatch means somebody filled them by hand.
+	if (PointLocations.Count() < 2) return;
+	if (PointColors.Count() != PointLocations.Count()) return;
+	if (PointWidths.Count() != PointLocations.Count()) return;
+
+	StreakRenderer.Render_Sun_Depth(
+		Transform,
+		PointLocations.Count(),
+		&(PointLocations[0]),
+		&(PointColors[0]),
+		&(PointWidths[0])
+		);
+}
+
+
 bool StreakLineClass::Cast_Ray(RayCollisionTestClass & raytest)
 {
 	if ((Get_Collision_Type() & raytest.CollisionType) == 0) return false;

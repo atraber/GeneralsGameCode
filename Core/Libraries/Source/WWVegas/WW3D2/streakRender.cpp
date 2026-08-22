@@ -1397,6 +1397,183 @@ void StreakRendererClass::RenderStreak
 /////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
+/**
+ * Cast this streak into the sun's shadow map, as a ribbon.
+ *
+ * A streak is a rope of smoke, and its shadow has to be a rope too. Submitting the
+ * points as sun-facing sprites -- which is what the particle path does, and what this
+ * replaced -- gives a chain of separate blobs strung along the trail, because a trail's
+ * points are further apart than they are wide for most of its length. They read as
+ * dashes lying across the trail rather than as a shadow of it.
+ *
+ * This is deliberately not RenderStreak with the camera swapped out, even though it
+ * draws the same ribbon. RenderStreak works in eye space and spends most of its length
+ * on perspective: silhouette planes from the eye through each segment's cylinder, then
+ * merging the intersections where the ribbon folds back on itself. None of that exists
+ * for a directional light. Parallel rays make the ribbon's width the same everywhere and
+ * its edges parallel, so the whole construction collapses to one cross product per
+ * point. Sharing the code would have meant threading a "no eye point" case through every
+ * step of the hard version to reach the easy one.
+ *
+ * The joints are mitred: each point gets one pair of vertices, built from the average of
+ * the directions on either side of it, and consecutive quads are stitched through that
+ * same pair. Two quads therefore cannot come apart at a bend, which is the whole point.
+ */
+void StreakRendererClass::Render_Sun_Depth
+(
+	const Matrix3D & transform,
+	unsigned int point_count,
+	Vector3 * points,
+	Vector4 * colors,
+	float * widths
+)
+{
+	// Only ever the sun's pass -- outside it these draws would write packed depth into
+	// the frame the player is looking at. And no basis, no cast: a frame that never
+	// fitted a sun frustum has no direction to lay the ribbon's width against.
+	if (!DX8Wrapper::Is_Shadow_Depth_Pass()) return;
+	if (!DX8Wrapper::Has_Sun_Cull_Box()) return;
+	if (point_count < 2) return;
+	if (points == nullptr || colors == nullptr || widths == nullptr) return;
+	if (point_count > MAX_STREAK_POINT_BUFFER_SIZE) point_count = MAX_STREAK_POINT_BUFFER_SIZE;
+
+	const Vector3 sun_fwd = DX8Wrapper::Get_Sun_Forward();
+	const Vector3 sun_right = DX8Wrapper::Get_Sun_Right();
+
+	// World space, identity World, and the view left strictly alone. The depth shader's
+	// World * SunVP then does all of it, and the routing still sees a real view -- an
+	// identity one is how it recognises a screen-space overlay, and RenderStreak sets one
+	// precisely because it has already done the view transform by hand.
+	DX8Wrapper::Set_World_Identity();
+
+	// One pair of vertices per point, offset along the ribbon's own width. The tangent at
+	// a point is the average of the segments meeting there, so the offset bisects the
+	// bend and the two quads sharing the point share its vertices exactly.
+	Vector3 world[MAX_STREAK_POINT_BUFFER_SIZE];
+	Vector3 edge_lo[MAX_STREAK_POINT_BUFFER_SIZE];
+	Vector3 edge_hi[MAX_STREAK_POINT_BUFFER_SIZE];
+	unsigned int i;
+
+	for (i = 0; i < point_count; i++) {
+		Matrix3D::Transform_Vector(transform, points[i], &world[i]);
+	}
+
+	Vector3 prev_side = sun_right;
+	for (i = 0; i < point_count; i++)
+	{
+		Vector3 tangent(0.0f, 0.0f, 0.0f);
+		if (i > 0) {
+			Vector3 d = world[i] - world[i - 1];
+			if (d.Length2() > 1e-8f) { d.Normalize(); tangent += d; }
+		}
+		if (i + 1 < point_count) {
+			Vector3 d = world[i + 1] - world[i];
+			if (d.Length2() > 1e-8f) { d.Normalize(); tangent += d; }
+		}
+
+		Vector3 side;
+		Vector3::Cross_Product(tangent, sun_fwd, &side);
+		if (side.Length2() > 1e-8f) {
+			side.Normalize();
+			prev_side = side;
+		} else {
+			// The trail runs straight down the sun's own rays here, so it presents no
+			// width at all to the light and any offset is as good as another. Carrying
+			// the last one forward keeps the ribbon from flipping over at that point.
+			side = prev_side;
+		}
+
+		// Matches the visible pass, which offsets by widths[] rather than half of it --
+		// so the shadow is the width of the ribbon casting it, not half or twice.
+		const float w = widths[i];
+		edge_lo[i] = world[i] - side * w;
+		edge_hi[i] = world[i] + side * w;
+	}
+
+	DX8Wrapper::Set_Texture(0, Texture);
+
+	// Set for the state it leaves behind rather than for any blending: the depth pass
+	// forces blending off and binds its own shaders, but the routing reads these to
+	// decide what kind of draw this is. Alpha, because that is what makes a streak matter
+	// rather than light -- see ParticleSystemInfo::castsShadows.
+	VertexMaterialClass *mat = VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
+	DX8Wrapper::Set_Material(mat);
+	REF_PTR_RELEASE(mat);
+	ShaderClass shader = ShaderClass::_PresetAlphaSpriteShader;
+	shader.Set_Cull_Mode(ShaderClass::CULL_MODE_DISABLE);
+	DX8Wrapper::Set_Shader(shader);
+
+	// Declare the draw a physical caster for as long as it is being submitted. Without it
+	// the routing cannot tell this from a laser beam and masks it out of the map; with
+	// it, the draw reaches the sprite depth shaders, which dither coverage from the
+	// vertex alpha instead of thresholding it. See ShadowCastingEffectClass.
+	ShadowCastingEffectClass declareCaster;
+
+	// Never sorted, for the same reason the sprite path is not: this pass composites
+	// nothing, and SortingRendererClass::Flush clears declarations for its duration
+	// because what it draws was described by something no longer standing.
+	const unsigned int seg_count = point_count - 1;
+	const unsigned int vnum = point_count * 2;      // the mitred pair per point
+	const unsigned int tri_count = seg_count * 2;
+
+	DynamicVBAccessClass verts(BUFFER_TYPE_DYNAMIC_DX8, dynamic_fvf_type, vnum);
+	{
+		DynamicVBAccessClass::WriteLockClass lock(&verts);
+		unsigned char *vb = (unsigned char*)lock.Get_Formatted_Vertex_Array();
+		const FVFInfoClass &fvfinfo = verts.FVF_Info();
+		const unsigned locOffset = fvfinfo.Get_Location_Offset();
+		const unsigned diffuseOffset = fvfinfo.Get_Diffuse_Offset();
+		const unsigned texOffset = fvfinfo.Get_Tex_Offset(0);
+		const unsigned vbSize = fvfinfo.Get_FVF_Size();
+
+		// u runs across the ribbon and v along it, exactly as the visible pass maps them.
+		// The contrail texture is a cross-section: a soft-edged band in u and very nearly
+		// flat in v, so this is what feathers the shadow's long edges instead of leaving
+		// them cut square.
+		for (i = 0; i < point_count; i++)
+		{
+			const unsigned int col = DX8Wrapper::Convert_Color_Clamp(colors[i]);
+			for (int e = 0; e < 2; e++)
+			{
+				*reinterpret_cast<Vector3*>(vb + locOffset) = (e != 0) ? edge_hi[i] : edge_lo[i];
+				*reinterpret_cast<unsigned int*>(vb + diffuseOffset) = col;
+				Vector2 *uv = reinterpret_cast<Vector2*>(vb + texOffset);
+				uv->U = (e != 0) ? 1.0f : 0.0f;
+				uv->V = 0.0f;
+				vb += vbSize;
+			}
+		}
+	}
+
+	// Indexed because there is no other kind of draw here, not to save the four vertices
+	// a segment it saves. DX8Wrapper::Draw is DrawIndexedPrimitive on every path it has,
+	// so a draw that sets no index buffer is assembled through whichever index buffer was
+	// bound last, over its own vertices. This ribbon shipped that way and the trail cast a
+	// stack of long bars lying across it -- the same slivers-reaching-across-the-screen
+	// failure the base-vertex note in DX8Wrapper::Draw describes, from the same cause.
+	// Vertices that are right in the buffer prove nothing about what the device builds
+	// out of them.
+	DynamicIBAccessClass ib_access(BUFFER_TYPE_DYNAMIC_DX8, tri_count * 3);
+	{
+		DynamicIBAccessClass::WriteLockClass lock(&ib_access);
+		unsigned short *inds = lock.Get_Index_Array();
+		for (unsigned int seg = 0; seg < seg_count; seg++)
+		{
+			const unsigned short lo = (unsigned short)(seg * 2);
+			*inds++ = lo;
+			*inds++ = (unsigned short)(lo + 1);
+			*inds++ = (unsigned short)(lo + 2);
+			*inds++ = (unsigned short)(lo + 1);
+			*inds++ = (unsigned short)(lo + 3);
+			*inds++ = (unsigned short)(lo + 2);
+		}
+	}
+
+	DX8Wrapper::Set_Index_Buffer(ib_access, 0);
+	DX8Wrapper::Set_Vertex_Buffer(verts);
+	DX8Wrapper::Draw_Triangles(0, tri_count, 0, vnum);
+}
+
 VertexFormatXYZUV1 *StreakRendererClass::getVertexBuffer(unsigned int number)
 {
 	// TODO: use a stl vector instead of our own array.
