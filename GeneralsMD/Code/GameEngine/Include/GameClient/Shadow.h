@@ -131,6 +131,24 @@ public:
 
 protected:
 
+		/// TheSuperHackers @bugfix An additive decal is blended ONE:ONE, so its vertex alpha
+		/// never reaches the frame buffer and opacity has to be carried by the colour
+		/// instead. That was the intent here; the arithmetic was wrong. Each of the three
+		/// scaled channels was OR'd together without being shifted back into its own byte,
+		/// so an additive decal came out as some shade of blue at alpha zero whatever colour
+		/// it asked for. Nothing shipped used SHADOW_ADDITIVE_DECAL, which is why it could
+		/// stay broken.
+		UnsignedInt scaledAdditiveDiffuse() const
+		{
+			const Real fvalue = (Real)m_opacity / 255.0f;
+			const UnsignedInt r = REAL_TO_INT((Real)((m_color >> 16) & 0xff) * fvalue);
+			const UnsignedInt g = REAL_TO_INT((Real)((m_color >>  8) & 0xff) * fvalue);
+			const UnsignedInt b = REAL_TO_INT((Real)( m_color        & 0xff) * fvalue);
+			// Alpha is opaque rather than the opacity: the blend ignores it, and a zero
+			// there would be a lie about a decal that is fully present.
+			return 0xff000000 | (r << 16) | (g << 8) | b;
+		}
+
 		Bool m_isEnabled;	/// toggle to turn rendering of this shadow on/off.
 		Bool m_isInvisibleEnabled;	/// if set, overrides and causes no rendering.
 		UnsignedInt m_opacity;		///< value between 0 (transparent) and 255 (opaque)
@@ -173,10 +191,7 @@ inline void Shadow::setOpacity(Int value)
 	{
 		if (m_type & SHADOW_ADDITIVE_DECAL)
 		{
-			Real fvalue=(Real)m_opacity/255.0f;
-			m_diffuse=REAL_TO_INT(((Real)(m_color & 0xff) * fvalue))
-					|REAL_TO_INT(((Real)((m_color >> 8) & 0xff) * fvalue))
-					|REAL_TO_INT(((Real)((m_color >> 16) & 0xff) * fvalue));
+			m_diffuse = scaledAdditiveDiffuse();
 		}
 	}
 }
@@ -193,10 +208,7 @@ inline void Shadow::setColor(Color value)
 	{
 		if (m_type & SHADOW_ADDITIVE_DECAL)
 		{
-			Real fvalue=(Real)m_opacity/255.0f;
-			m_diffuse=REAL_TO_INT(((Real)(m_color & 0xff) * fvalue))
-					|REAL_TO_INT(((Real)((m_color >> 8) & 0xff) * fvalue))
-					|REAL_TO_INT(((Real)((m_color >> 16) & 0xff) * fvalue));
+			m_diffuse = scaledAdditiveDiffuse();
 		}
 	}
 }
