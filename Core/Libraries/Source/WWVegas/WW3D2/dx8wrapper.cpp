@@ -798,6 +798,28 @@ namespace {
 	unsigned s_ffSiteDropped = 0;
 	const char* s_ffSite = nullptr;
 
+	// Which state words arrive with no site around them. The "(unattributed)" row says
+	// only that some emitting function has no FF_SITE on it, and the count alone does not
+	// say which -- there are ten deferred render states and seventeen stage states, and
+	// the writers of each are in different subsystems. The word names the writer.
+	enum { MAX_UNATTRIBUTED_WORDS = 12 };
+	struct UnattributedWord { unsigned isStage; unsigned state; unsigned count; };
+	UnattributedWord s_ffUnattributed[MAX_UNATTRIBUTED_WORDS];
+	int s_ffUnattributedCount = 0;
+
+	void NoteUnattributedWord(unsigned isStage, unsigned state)
+	{
+		for (int i = 0; i < s_ffUnattributedCount; ++i) {
+			if (s_ffUnattributed[i].isStage == isStage && s_ffUnattributed[i].state == state) {
+				++s_ffUnattributed[i].count;
+				return;
+			}
+		}
+		if (s_ffUnattributedCount >= MAX_UNATTRIBUTED_WORDS) return;
+		UnattributedWord& w = s_ffUnattributed[s_ffUnattributedCount++];
+		w.isStage = isStage; w.state = state; w.count = 1;
+	}
+
 	FFSiteGroup* FindOrAddFFSite(const char* site)
 	{
 		for (int i = 0; i < s_ffSiteCount; ++i) {
@@ -833,9 +855,10 @@ void DX8Wrapper::Debug_Set_FF_Site(const char* site)
 
 void DX8Wrapper::Debug_Note_FF_State_Write(unsigned isTextureStage, unsigned state)
 {
-	(void)isTextureStage; (void)state;   // both callers have already tested the predicate
 	// An unattributed write is the interesting failure here, so it gets a row of its own
 	// rather than being dropped: it means some emitting function has no FF_SITE on it.
+	// The word it wrote is recorded too, because that is what names the function.
+	if (s_ffSite == nullptr) NoteUnattributedWord(isTextureStage, state);
 	FFSiteGroup* g = FindOrAddFFSite(s_ffSite != nullptr ? s_ffSite : "(unattributed)");
 	if (g == nullptr) { ++s_ffSiteDropped; return; }
 	if (isTextureStage) ++g->stageWrites; else ++g->renderWrites;
@@ -865,6 +888,12 @@ void DX8Wrapper::Debug_Report_FF_Sites()
 	WWDEBUG_SAY(("  a site with calls and no writes is asking for state that already held "
 				 "*on this replay* -- that is not on its own a licence to delete it, since "
 				 "another draw order could leave a different value in the same word."));
+	WWDEBUG_SAY(("  the top two rows are not residue and will not reach zero. The routing "
+				 "block reads TextureStageStates[0..1] and the material to build TexCtl, "
+				 "the stage-1 combine and the texgen constants, so what ShaderClass::Apply "
+				 "and VertexMaterialClass::Apply write *is* the description the shader path "
+				 "translates -- it is this census's input language, not its backlog. They "
+				 "shrink only if the combine comes to be expressed some other way."));
 	s_ffFlushedWrites = 0;
 	// Descending by writes, then by calls, so the top of the list is where the work goes.
 	for (int rank = 0; rank < s_ffSiteCount; ++rank) {
@@ -885,6 +914,19 @@ void DX8Wrapper::Debug_Report_FF_Sites()
 		s_ffSites[best].stageWrites = 0;
 		s_ffSites[best].renderWrites = 0;
 	}
+
+	for (int i = 0; i < s_ffUnattributedCount; ++i) {
+		const UnattributedWord& w = s_ffUnattributed[i];
+		// One word is ambiguous: Set_DX8_Material has no state number of its own and
+		// borrows D3DRS_DIFFUSEMATERIALSOURCE to report itself, so an entry naming that
+		// state is either a real write of it or a material set, and the reader has to
+		// look at both. Every other word here identifies its writer outright.
+		WWDEBUG_SAY(("    unattributed word: %-34s x%u",
+			w.isStage ? Get_DX8_Texture_Stage_State_Name((D3DTEXTURESTAGESTATETYPE)w.state)
+					  : Get_DX8_Render_State_Name((D3DRENDERSTATETYPE)w.state),
+			w.count));
+	}
+	s_ffUnattributedCount = 0;
 
 	s_ffSiteCount = 0;
 	s_ffSiteDropped = 0;
@@ -7118,6 +7160,12 @@ void DX8Wrapper::Set_Light(unsigned index,const LightClass &light)
 */
 void DX8Wrapper::Set_Light_Environment(LightEnvironmentClass* light_env)
 {
+	// The site goes on the emitting function rather than on its callers, because there are
+	// five of them across three subsystems -- the mesh renderer, the heightmap, ww3d's own
+	// scene render and MeshClass -- and only two sat inside a site of any kind. The rest
+	// wrote D3DRS_AMBIENT from nowhere, which the census reported as an "(unattributed)"
+	// row of exactly two render words a frame with no calls against them.
+	FF_SITE("DX8Wrapper::Set_Light_Environment");
 	// Shader light environment support															*
 	Light_Environment=light_env;
 

@@ -1707,6 +1707,16 @@ WWINLINE void DX8Wrapper::Set_Fog(bool enable, const Vector3 &color, float start
 
 WWINLINE void DX8Wrapper::Set_Ambient(const Vector3& color)
 {
+	// The scene ambient has two writers -- this one, from WW3D::Render once per scene, and
+	// Set_Light_Environment, from the mesh renderer and the heightmap. Both are named, so
+	// that a D3DRS_AMBIENT write in the census says which of the two made it. This was the
+	// last thing left in the "(unattributed)" row: two render words a frame, which is
+	// exactly the number of scenes WW3D::Render draws.
+	//
+	// Not a candidate for removal in any case: the routing block reads
+	// RenderStates[D3DRS_AMBIENT] to build the shared light environment the unit shaders
+	// are handed, so this word feeds the programmable path as much as the fixed one.
+	FF_SITE("DX8Wrapper::Set_Ambient");
 	Ambient_Color=color;
 	Set_DX8_Render_State(D3DRS_AMBIENT, DX8Wrapper::Convert_Color(color,0.0f));
 }
