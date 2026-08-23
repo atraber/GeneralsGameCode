@@ -1794,6 +1794,17 @@ unsigned DX8TextureCategoryClass::Add_Mesh(
 
 void DX8TextureCategoryClass::Render()
 {
+	// Named so that what this function writes on its own account is separable from what
+	// the functions it calls write. Everything below it declares a site: ShaderClass::Apply,
+	// VertexMaterialClass::Apply, the mappers, Set_Light_Environment. FFSiteScope restores
+	// rather than clears, so naming the outer scope does not take their writes away.
+	//
+	// What is left over is the D3DRS_NORMALIZENORMALS pair below, raised and lowered around
+	// each mesh whose object scale is not 1 -- and measured, that is nothing: this row
+	// reports zero writes against millions of calls, because consecutive meshes agree about
+	// their scale and the tracked word already holds the answer. The site earns its place by
+	// establishing that rather than by finding work.
+	FF_SITE("DX8TextureCategoryClass::Render");
 	#ifdef WWDEBUG
 	if (!WW3D::Expose_Prelit()) {
 	#endif
