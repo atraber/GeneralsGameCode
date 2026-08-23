@@ -18,7 +18,7 @@ Hour patch below names Generals-Challenge objects from `NukeGeneral.ini`, which 
 Generals has never had. A change that genuinely applies to both games belongs in both trees.
 
 Loose files beat the archives — `W3DFileSystem.cpp:158` resolves names through
-`TheFileSystem`, which searches LocalFile before the big files. There are two ways to use
+`TheFileSystem`, which searches LocalFile before the big files. There are three ways to use
 that, and they are not interchangeable.
 
 ## Overrides replace; patches edit
@@ -34,8 +34,30 @@ definitions the game has already built; every field a patch does not mention kee
 the shipped data gave it. The hazard-field change below is 502 lines as a patch and was
 82,064 lines as overrides.
 
-Prefer a patch. Reach for a wholesale override only when a patch genuinely cannot express
-the edit — see the limits at the end.
+## The third way: a same-named directory
+
+For INI a subsystem loads by name, there is an older merge point that costs nothing to use.
+`INI::loadFileDirectory` (`INI.cpp:192`) is what `SubsystemInterfaceList::initSubsystem`
+calls, and it loads `<name>.ini` **and then every `*.ini` in a `<name>\` directory**, sorted,
+all `INI_LOAD_OVERWRITE` onto the same instance. So `Data/INI/GameData/MyChange.ini` merges
+over the vendor `Data/INI/GameData.ini` without shadowing it — the archive copy still loads
+and supplies every setting the new file does not mention.
+
+Two things make this better than a patch where it applies:
+
+- It runs at the subsystem's **own** load site, not at the end of loading. That is the only
+  way to change a field something latches during init — see `MaxCameraHeight` below.
+- It needs no new load mode, and it has worked since 2003.
+
+And two that limit it: it only exists for paths passed to `initSubsystem`/`loadFileDirectory`
+(`GameData`, `Water`, `Weather`, `Science`, `Multiplayer`, `Terrain`, `Roads`, `Object`, …,
+not an arbitrary file), and being `INI_LOAD_OVERWRITE` it has no typo guard and no module
+grammar — a misspelled block name silently declares a new thing.
+
+So: **a same-named directory** for a subsystem's own INI, especially anything read during
+init; **`Data/INI/Patch/`** for definitions the game builds (objects, particle systems, and
+anything needing `AddModule`/`ReplaceModule`); **a wholesale override** only when neither
+can express the edit.
 
 ## How patches load
 
@@ -109,6 +131,16 @@ ASSERTION FAILURE: Error parsing block 'Object' in INI file 'Data\INI\Patch\zz_t
   patches load afterwards, so a patch applies to the object it names and not to its reskins.
 - **Replace a `WeaponSet` or `ArmorSet`.** Those append rather than replace; use a patch to
   add a set, not to edit one.
+- **Change a `GameData` field that something latches during load.** Patches deliberately load
+  last, which for `GameData` is *after* the subsystems that read it. `GlobalData` itself takes
+  the write — `parseGameDataDefinition` calls `initFromINI` straight onto
+  `TheWritableGlobalData` under this load mode, no override instance — but a subsystem that
+  copied the value into its own member during init keeps the old one. `MaxCameraHeight`,
+  `MinCameraHeight`, `CameraYaw` and `CameraPitch` are the known cases: the `View` constructor
+  (`View.cpp:99`) copies them, and `TheTacticalView` is built in `InGameUI::init`
+  (`InGameUI.cpp:1370`), during `TheGameClient` — well before `Data\INI\Patch` is read. Fields
+  read live at use, like `CameraHeight`, patch fine. For a latched one, use a
+  `Data/INI/GameData/` file instead: same merge, at the right time.
 
 ## What is here
 
@@ -128,9 +160,29 @@ animate.
   while `AnthraxField*` is retuned rather than switched off because the drifting ground mist
   above the stain is still wanted.
 
-`Data/INI/GameData.ini` also exists as a loose override on the development install, but it
-predates this work and is unrelated (it pins `CloudShadowStrength`). It is deliberately not
-committed here.
+`Data/INI/GameData.ini` also exists as a loose override on the development install. It
+predates this work and is unrelated, and it is deliberately not committed here. Diffed key by
+key against the vendor file in `INIZH.big`, all 276 of its settings match the shipped values
+except two:
+
+| setting | vendor | override |
+|---|---|---|
+| `CameraHeight` | 232.0 | 600.0 |
+| `MaxCameraHeight` | 310.0 | 600.0 |
+
+(The `InfantryLight*Scale` values look different too — `100f` against `100` — but `scanReal`
+is `sscanf("%f")`, which stops at the `f`. Same number.)
+
+So it is a camera zoom-out tweak wearing 461 lines of vendor content. Note what it is *not*:
+those 270 matching settings are not redundant while that file exists. `Data/INI/Default/
+GameData.ini` is 39 bytes and sets only `MapName`, so nothing else layers underneath — a
+loose `Data/INI/GameData.ini` shadows the vendor file outright, and any key deleted from it
+falls back to the `GlobalData` constructor, not to the shipped value. Only 47 of its 272
+keys happen to match the constructor.
+
+The fix is not to trim it but to replace it: delete it, and put the two settings in
+`Data/INI/GameData/CameraZoom.ini`, where the vendor file loads normally and only these two
+are merged over it. Two lines instead of 463, with the same result.
 
 ## Textures
 
