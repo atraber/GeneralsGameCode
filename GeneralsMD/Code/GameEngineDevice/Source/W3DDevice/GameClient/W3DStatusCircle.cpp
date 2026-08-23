@@ -45,9 +45,24 @@
 	ShaderClass::DETAILCOLOR_SCALE, ShaderClass::DETAILALPHA_DISABLE, ShaderClass::ALPHATEST_DISABLE, ShaderClass::CULL_MODE_ENABLE, \
 	ShaderClass::DETAILCOLOR_SCALE, ShaderClass::DETAILALPHA_DISABLE) )
 
-// Texturing, no zbuffer, disabled zbuffer write, primary gradient, alpha blending
+// No texture, no zbuffer, disabled zbuffer write, primary gradient, alpha blending.
+//
+// TEXTURING_DISABLE, and it was TEXTURING_ENABLE. Nothing here ever binds a texture --
+// Render() calls Set_Texture(0, nullptr) on both paths -- so the enabled form asked the
+// fixed-function combine to select from a stage with nothing in it, which D3D does not
+// define. Measured on the draw: stage 0 came out SELECTARG1 of D3DTA_TEXTURE, meaning the
+// fade quad's colour was whatever the driver returns for an unbound sampler, and the
+// vertex diffuse that updateScreenVB fills with the fade intensity reached the screen
+// nowhere. Disabled, stage 0 resolves to the diffuse on both presets --
+// SELECTARG2/DIFFUSE here, COLOROP DISABLE for the no-gradient SC_ADD -- which is the
+// colour this code computes.
+//
+// That is also what let the draw route: an untextured pass is reproducible by unit_ps
+// (TexCtl.x folds the base sample to white), but only once stage 0 says the colour comes
+// from the diffuse. These were the last fixed-function draws going out through
+// DX8Wrapper::Draw.
 #define SC_ALPHA ( SHADE_CNST(ShaderClass::PASS_ALWAYS, ShaderClass::DEPTH_WRITE_DISABLE, ShaderClass::COLOR_WRITE_ENABLE, ShaderClass::SRCBLEND_SRC_ALPHA, \
-	ShaderClass::DSTBLEND_ONE_MINUS_SRC_ALPHA, ShaderClass::FOG_DISABLE, ShaderClass::GRADIENT_MODULATE, ShaderClass::SECONDARY_GRADIENT_DISABLE, ShaderClass::TEXTURING_ENABLE, \
+	ShaderClass::DSTBLEND_ONE_MINUS_SRC_ALPHA, ShaderClass::FOG_DISABLE, ShaderClass::GRADIENT_MODULATE, ShaderClass::SECONDARY_GRADIENT_DISABLE, ShaderClass::TEXTURING_DISABLE, \
 	ShaderClass::ALPHATEST_DISABLE, ShaderClass::CULL_MODE_ENABLE, \
 	ShaderClass::DETAILCOLOR_DISABLE, ShaderClass::DETAILALPHA_DISABLE) )
 
@@ -57,9 +72,10 @@
 	ShaderClass::DETAILCOLOR_DISABLE, ShaderClass::DETAILALPHA_DISABLE, ShaderClass::ALPHATEST_DISABLE, ShaderClass::CULL_MODE_ENABLE, \
 	ShaderClass::DETAILCOLOR_DISABLE, ShaderClass::DETAILALPHA_DISABLE) )
 
-// Texturing, no zbuffer, disabled zbuffer write, no gradient, add src to dest.
+// No texture, no zbuffer, disabled zbuffer write, no gradient, add src to dest.
+// TEXTURING_DISABLE for the reason given on SC_ALPHA above.
 #define SC_ADD ( SHADE_CNST(ShaderClass::PASS_ALWAYS, ShaderClass::DEPTH_WRITE_DISABLE, ShaderClass::COLOR_WRITE_ENABLE, ShaderClass::SRCBLEND_ONE, \
-	ShaderClass::DSTBLEND_ONE, ShaderClass::FOG_DISABLE, ShaderClass::GRADIENT_DISABLE, ShaderClass::SECONDARY_GRADIENT_DISABLE, ShaderClass::TEXTURING_ENABLE, \
+	ShaderClass::DSTBLEND_ONE, ShaderClass::FOG_DISABLE, ShaderClass::GRADIENT_DISABLE, ShaderClass::SECONDARY_GRADIENT_DISABLE, ShaderClass::TEXTURING_DISABLE, \
 	ShaderClass::ALPHATEST_DISABLE, ShaderClass::CULL_MODE_ENABLE, \
 	ShaderClass::DETAILCOLOR_DISABLE, ShaderClass::DETAILALPHA_DISABLE) )
 
