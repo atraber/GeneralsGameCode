@@ -464,23 +464,19 @@ static Bool findSingleSubObj(RenderObjClass* robj, const AsciiString& boneName, 
 	{
 		mtx = childObject->Get_Transform();
 
-		// you'd think this would work, but, it does not. do it the hard way.
-		// boneIndex = childObject->Get_Sub_Object_Bone_Index(childObject);
+		// TheSuperHackers @bugfix andytraber 24/08/2026 The old line asked the child for its own bone
+		// index instead of asking the parent, which is why it never worked, and the loop that replaced
+		// it fed a whole-object sub-object index to the (LodIndex, ModelIndex) overload. That overload
+		// indexes Lod[LodIndex] directly, while Get_Sub_Object() numbers every LOD end to end and then
+		// the bone-attached models, so any model with more than one LOD read off the end of Lod[0].
+		// Ask the parent by pointer instead; that search covers all LODs and the attached models.
+		boneIndex = robj->Get_Sub_Object_Bone_Index(childObject);
 
-		for (Int subObj = 0; subObj < robj->Get_Num_Sub_Objects(); subObj++)
-		{
-			RenderObjClass* test = robj->Get_Sub_Object(subObj);
-			if (test == childObject)
-			{
-				boneIndex = robj->Get_Sub_Object_Bone_Index(0, subObj);
 #if defined(RTS_DEBUG)
-				test->Release_Ref();
-				test = robj->Get_Sub_Object_On_Bone(0, boneIndex);
-				DEBUG_ASSERTCRASH(test != nullptr && test == childObject, ("*** ASSET ERROR: Hmm, bone problem"));
+		RenderObjClass* test = robj->Get_Sub_Object_On_Bone(0, boneIndex);
+		DEBUG_ASSERTCRASH(test != nullptr && test == childObject, ("*** ASSET ERROR: Hmm, bone problem"));
+		if (test) test->Release_Ref();
 #endif
-			}
-			if (test) test->Release_Ref();
-		}
 
 		childObject->Release_Ref();
 
@@ -2282,8 +2278,15 @@ static void doHideShowBoneSubObjs(Bool state, Int numSubObjects, Int boneIdx, Re
 #if 1	//(gth) fixed and tested this version
 	for (Int i=0; i < numSubObjects; i++)
 	{
+		// TheSuperHackers @bugfix andytraber 24/08/2026 numSubObjects counts every LOD end to end plus
+		// the bone-attached models, so it cannot index Lod[0] the way the (LodIndex, ModelIndex) overload
+		// does. Fetch the sub-object and ask for its bone index by pointer, which searches all of them.
+		RenderObjClass* childObject = fullObject->Get_Sub_Object(i);
+		if (childObject == nullptr)
+			continue;
+
 		bool is_child = false;
-		Int parentBoneIndex = fullObject->Get_Sub_Object_Bone_Index(0, i);
+		Int parentBoneIndex = fullObject->Get_Sub_Object_Bone_Index(childObject);
 
 		while (parentBoneIndex != 0)
 		{
@@ -2298,10 +2301,10 @@ static void doHideShowBoneSubObjs(Bool state, Int numSubObjects, Int boneIdx, Re
 
 		if (is_child)
 		{
-			RenderObjClass* childObject = fullObject->Get_Sub_Object(i);
 			childObject->Set_Hidden(state);
-			childObject->Release_Ref();
 		}
+
+		childObject->Release_Ref();
 	}
 #endif
 #if 0	//old slow version
@@ -2353,10 +2356,9 @@ void W3DModelDraw::doHideShowSubObjs(const std::vector<ModelConditionInfo::HideS
 	{
 		for (std::vector<ModelConditionInfo::HideShowSubObjInfo>::const_iterator it = vec->begin(); it != vec->end(); ++it)
 		{
-			Int objIndex;
 			RenderObjClass* subObj;
 
-			if ((subObj = m_renderObject->Get_Sub_Object_By_Name(it->subObjName.str(), &objIndex)) != nullptr)
+			if ((subObj = m_renderObject->Get_Sub_Object_By_Name(it->subObjName.str())) != nullptr)
 			{
 				subObj->Set_Hidden(it->hide);
 
@@ -2365,7 +2367,11 @@ void W3DModelDraw::doHideShowSubObjs(const std::vector<ModelConditionInfo::HideS
 				{
 					//get the bone of this subobject so we can hide all other child objects that use this bone
 					//as a parent.
-					Int boneIdx = m_renderObject->Get_Sub_Object_Bone_Index(0, objIndex);
+					// TheSuperHackers @bugfix andytraber 24/08/2026 Ask by pointer. The index that
+					// Get_Sub_Object_By_Name reports spans every LOD, but the (LodIndex, ModelIndex)
+					// overload indexes Lod[0] alone, so a sub-object living in a higher LOD - GLA
+					// worker UIWRKR_SKN has 25 models in LOD 0 and 3 more in LOD 1 - read past its end.
+					Int boneIdx = m_renderObject->Get_Sub_Object_Bone_Index(subObj);
 					doHideShowBoneSubObjs(it->hide, m_renderObject->Get_Num_Sub_Objects(), boneIdx, m_renderObject, htree);
 				}
 				subObj->Release_Ref();
@@ -2817,10 +2823,9 @@ void W3DModelDraw::hideGarrisonFlags(Bool hide)
 	if (!m_renderObject)
 		return;
 
-	Int objIndex;
 	RenderObjClass* subObj;
 
-	if ((subObj = m_renderObject->Get_Sub_Object_By_Name("POLE", &objIndex)) != nullptr)
+	if ((subObj = m_renderObject->Get_Sub_Object_By_Name("POLE")) != nullptr)
 	{
 		subObj->Set_Hidden(hide);
 
@@ -2829,7 +2834,9 @@ void W3DModelDraw::hideGarrisonFlags(Bool hide)
 		{
 			//get the bone of this subobject so we can hide all other child objects that use this bone
 			//as a parent.
-			Int boneIdx = m_renderObject->Get_Sub_Object_Bone_Index(0, objIndex);
+			// TheSuperHackers @bugfix andytraber 24/08/2026 Ask by pointer, not by an index that spans
+			// every LOD while the (LodIndex, ModelIndex) overload only indexes Lod[0].
+			Int boneIdx = m_renderObject->Get_Sub_Object_Bone_Index(subObj);
 			doHideShowBoneSubObjs(hide, m_renderObject->Get_Num_Sub_Objects(), boneIdx, m_renderObject, htree);
 		}
 		subObj->Release_Ref();
@@ -3980,10 +3987,9 @@ void W3DModelDraw::updateSubObjects()
 	{
 		for (std::vector<ModelConditionInfo::HideShowSubObjInfo>::const_iterator it = m_subObjectVec.begin(); it != m_subObjectVec.end(); ++it)
 		{
-			Int objIndex;
 			RenderObjClass* subObj;
 
-			if ((subObj = m_renderObject->Get_Sub_Object_By_Name(it->subObjName.str(), &objIndex)) != nullptr)
+			if ((subObj = m_renderObject->Get_Sub_Object_By_Name(it->subObjName.str())) != nullptr)
 			{
 				subObj->Set_Hidden(it->hide);
 
@@ -3992,7 +3998,9 @@ void W3DModelDraw::updateSubObjects()
 				{
 					//get the bone of this subobject so we can hide all other child objects that use this bone
 					//as a parent.
-					Int boneIdx = m_renderObject->Get_Sub_Object_Bone_Index(0, objIndex);
+					// TheSuperHackers @bugfix andytraber 24/08/2026 Ask by pointer, not by an index that
+					// spans every LOD while the (LodIndex, ModelIndex) overload only indexes Lod[0].
+					Int boneIdx = m_renderObject->Get_Sub_Object_Bone_Index(subObj);
 					doHideShowBoneSubObjs( it->hide, m_renderObject->Get_Num_Sub_Objects(), boneIdx, m_renderObject, htree);
 				}
 				subObj->Release_Ref();
