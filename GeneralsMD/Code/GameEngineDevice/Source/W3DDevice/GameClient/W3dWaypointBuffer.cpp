@@ -67,6 +67,7 @@
 #include "GameClient/Drawable.h"
 #include "GameClient/GameClient.h"
 #include "GameClient/InGameUI.h"
+#include "GameClient/View.h"
 
 #include "GameLogic/Object.h"
 
@@ -84,6 +85,54 @@
 
 
 #define MAX_DISPLAY_NODES 512
+
+// How thick these lines should read on screen, in pixels. See screenConstantWidth below for
+// why the answer is given in pixels rather than in the world units the line is drawn with.
+// The rally line is the thinner of the two; the enemy path a listening outpost reveals keeps
+// the twice-as-heavy weight it always had relative to it.
+static const Real WAYPOINT_LINE_PIXELS = 6.0f;
+static const Real ENEMY_PATH_LINE_PIXELS = 10.0f;
+
+//=============================================================================
+// screenConstantWidth
+//=============================================================================
+/** Convert a thickness in screen pixels into the world-space width SegLineRendererClass
+wants.
+
+A segmented line is a camera-facing ribbon whose width is given in world units, so how thick
+it reads depends on how far the camera is and how many pixels the display has -- and the
+stock 1.5 units was chosen against the resolutions of the day. Measured on a rally line at
+2560x1440 and the default zoom it subtends about four pixels, of which only the middle two
+or three carry enough of the additive colour to read: thin but legible. Pull the camera back
+and that shrinks towards a pixel, which is where it stops reading as a line at all.
+
+It is worth saying what this is *not*, because the symptom invites the wrong fix: the line
+is never occluded by the ground. It draws with PASS_ALWAYS and cannot be. Anything that
+looks like it sinking into a hill is this thinness, not a depth test.
+
+Asking for pixels and converting back at the distance the line actually sits keeps it the
+same weight at every zoom and on every display. The conversion is exact for a point at
+`dist`; a line spans a range of depths, but these lie on the ground within a few units of
+each other, so one width for the whole line is well within a pixel of right.
+
+The floor is the stock width: this may only ever make the line easier to see, never thinner
+than it has always been. */
+//=============================================================================
+static Real screenConstantWidth( const CameraClass &camera, const Vector3 &at, Real pixels )
+{
+	const Int screenHeight = TheTacticalView ? TheTacticalView->getHeight() : 0;
+	if( screenHeight <= 0 )
+		return 1.5f;   // no view to measure against; keep the width this has always had
+
+	const Vector3 toCamera = at - camera.Get_Position();
+	const Real dist = toCamera.Length();
+	// Half the vertical extent of the view frustum at that distance, over half the screen,
+	// is world units per pixel.
+	const Real worldPerPixel =
+		2.0f * dist * (Real)tan( camera.Get_Vertical_FOV() * 0.5f ) / (Real)screenHeight;
+
+	return max( 1.5f, pixels * worldPerPixel );
+}
 
 
 
@@ -205,6 +254,7 @@ void W3DWaypointBuffer::drawWaypoints(RenderInfoClass &rinfo)
 						}
 					}
 					//Now render the lines in one pass!
+					m_line->Set_Width( screenConstantWidth( rinfo.Camera, points[ 0 ], WAYPOINT_LINE_PIXELS ) );
 					m_line->Set_Points( numPoints, points );
 					m_line->Render( localRinfo );
 				}
@@ -307,7 +357,7 @@ void W3DWaypointBuffer::drawWaypoints(RenderInfoClass &rinfo)
 					            //Now render the lines in one pass!
 
                       m_line->Set_Color( Vector3( 0.95f, 0.5f, 0.0f ) );
-                      m_line->Set_Width( 3.0f );
+                      m_line->Set_Width( screenConstantWidth( rinfo.Camera, points[ 0 ], ENEMY_PATH_LINE_PIXELS ) );
 
 					            m_line->Set_Points( numPoints, points );
 					            m_line->Render( localRinfo );
@@ -521,6 +571,7 @@ void W3DWaypointBuffer::drawWaypoints(RenderInfoClass &rinfo)
 					WW3D::Render(*m_waypointNodeRobj,localRinfo); //The little hockey puck
 
 
+					m_line->Set_Width( screenConstantWidth( rinfo.Camera, points[ 0 ], WAYPOINT_LINE_PIXELS ) );
 					m_line->Set_Points( numPoints, points );
 					m_line->Render( localRinfo );
 
