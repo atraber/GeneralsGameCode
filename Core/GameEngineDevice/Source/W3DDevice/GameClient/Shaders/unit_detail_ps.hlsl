@@ -83,6 +83,51 @@ float shadowTerm(float3 ndc, float2 uv, float2 dzduv)
     return saturate(lerp(1.0, lit, ShadowParams.y));
 }
 
+sampler SceneDepth : register(s7);    // camera-view packed depth from the SSR prepass
+// x = 1 when this draw is an airborne sprite that may fade against the scene (see
+//     DX8Wrapper::m_softParticles -- ground decals reach this shader too and must not),
+// y = the view-space distance over which a sprite fades out as it approaches what is
+//     behind it, z/w = the two projection terms that turn a clip depth into a distance.
+float4 SoftCtl : register(c12);
+
+// Unpack the RGB-packed depth the prepass writes. Weights are 255, matching
+// shadowdepth_ps's pack -- the same helper water_ps carries.
+float unpackSceneDepth(float4 rgba)
+{
+    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+}
+
+// Clip depth back to a view distance. Right-handed projection here, so clip.w = -viewZ;
+// the abs() keeps it valid under a left-handed one too. Same expression as water_ps.
+float softViewDepth(float ndcZ)
+{
+    return abs(SoftCtl.w / (SoftCtl.z + ndcZ));
+}
+
+// How much of this sprite survives where it meets whatever is behind it. A camera-facing
+// quad cuts a hard straight line into the ground it intersects; fading it out over the
+// last few world units before that contact is the whole difference between a sprite and
+// something that looks like it has volume.
+float softParticleFade(float4 screenPos)
+{
+    // DIAGNOSTIC: force off, to separate the fade maths from the signature change.
+    return 1.0;
+    if (SoftCtl.x < 0.5)
+        return 1.0;
+
+    // Clip -> screen UV, Y flipped for the texture. Same expression unit_pbr_ps uses to
+    // read this very map, deliberately: two shaders sampling one target must agree.
+    float2 uv = (screenPos.xy / screenPos.w) * float2(0.5, -0.5) + 0.5;
+
+    float sceneZ  = softViewDepth(unpackSceneDepth(tex2D(SceneDepth, uv)));
+    float spriteZ = softViewDepth(screenPos.z / screenPos.w);
+
+    // The prepass excludes water and anything else that did not write depth, which comes
+    // back as the far plane -- a huge sceneZ, so the fade is simply 1 and the sprite is
+    // left alone. That is the right answer rather than a special case.
+    return saturate((sceneZ - spriteZ) / max(SoftCtl.y, 0.001));
+}
+
 struct PS_INPUT
 {
     float4 position  : POSITION;
@@ -90,6 +135,7 @@ struct PS_INPUT
     float2 texcoord  : TEXCOORD0;   // stage 0 coordinates
     float2 texcoord1 : TEXCOORD1;   // stage 1 coordinates (may be generated)
     float4 lightPos  : TEXCOORD2;   // position in the sun's clip space
+    float4 screenPos : TEXCOORD5;
     float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
 };
 
@@ -146,5 +192,8 @@ float4 main(PS_INPUT input) : COLOR
     }
     rgb *= cloudShade(input.cloudPos);
 
-    return float4(saturate(rgb), saturate(a));
+    // See the note in unit_ps: both colour and alpha are scaled so the fade reaches
+    // additive draws as well as blended ones.
+    float soft = softParticleFade(input.screenPos);
+    return float4(saturate(rgb) * soft, saturate(a) * soft);
 }

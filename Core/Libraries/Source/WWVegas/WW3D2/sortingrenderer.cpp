@@ -171,6 +171,24 @@ public:
 	bool mesh_has_solid_pass;
 	bool mesh_renderer_draw;
 
+	// And whether this draw was one of the airborne sprites that may fade where it meets
+	// the scene, for the same reason and with the same failure mode as the three above.
+	//
+	// The soft fade is opt-in per draw site precisely because geometry that lies *on* the
+	// ground -- roads, tank tracks, scorch marks, a waypoint line -- has its own depth
+	// equal to the scene's, so a fade erases it outright instead of softening it. Reading
+	// the wrapper's flag at flush time made that opt-in meaningless for anything deferred:
+	// W3DSmudgeManager::render forces a flush from inside W3DParticleSystemManager::
+	// doParticles' scope, so every node queued earlier in the frame -- the waypoint and
+	// rally-point lines among them, queued back during terrain rendering -- was drawn as
+	// if it were a smoke puff and faded to nothing along its whole length.
+	//
+	// It leaks the other way too: a particle queued into the pool and drawn by the later
+	// flush found the scope already closed and lost the fade it was meant to have. One
+	// value on the node answers both.
+	bool soft_particles;
+	float soft_particle_fade;
+
 	Vector3 transformed_center;
 	unsigned short start_index;			// First index used in the ib
 	unsigned short polygon_count;			// Polygon count to process (3 indices = one polygon)
@@ -259,6 +277,8 @@ void SortingRendererClass::Insert_Triangles(
 	state->technique = DX8Wrapper::Get_Mesh_Technique();
 	state->mesh_has_solid_pass = DX8Wrapper::Get_Mesh_Has_Solid_Pass();
 	state->mesh_renderer_draw = DX8Wrapper::Get_Mesh_Renderer_Draw();
+	state->soft_particles = DX8Wrapper::Is_Soft_Particles();
+	state->soft_particle_fade = DX8Wrapper::Get_Soft_Particle_Fade();
 
 	if (bounding_sphere.Is_Valid())
 	{
@@ -393,6 +413,7 @@ static void Apply_Render_State(SortingNodeStruct* node)
 	DX8Wrapper::Set_Mesh_Technique(node->technique);
 	DX8Wrapper::Set_Mesh_Has_Solid_Pass(node->mesh_has_solid_pass);
 	DX8Wrapper::Set_Mesh_Renderer_Draw(node->mesh_renderer_draw);
+	DX8Wrapper::Set_Soft_Particles(node->soft_particles, node->soft_particle_fade);
 
 	DX8Wrapper::Set_Shader(render_state.shader);
 
@@ -662,6 +683,14 @@ void SortingRendererClass::Flush()
 	// that carried nothing gets nothing rather than the flush site's own state, and that
 	// the last node's values do not outlive the flush.
 	DeclaredTechniqueClass declareNothing(MESH_TECHNIQUE_UNCLASSIFIED, "sorting-flush");
+	// The soft-particle declaration is the same kind of statement about the same draws, and
+	// needs the same floor. W3DSmudgeManager::render forces a flush from inside the scope
+	// W3DParticleSystemManager::doParticles opens, so without this every node queued
+	// earlier in the frame is drawn as though it were one of that scope's sprites -- and a
+	// ground-hugging one, whose depth matches the scene's, fades to nothing. That is what
+	// erased the waypoint and rally-point lines: queued during terrain rendering, drawn
+	// here, faded out along their whole length against the ground they lie on.
+	SoftParticleScopeClass declareNoSprites(false, 0.0f);
 	Matrix4x4 old_view;
 	Matrix4x4 old_world;
 	DX8Wrapper::Get_Transform(D3DTS_VIEW,old_view);
@@ -691,12 +720,14 @@ void SortingRendererClass::Flush()
 			DX8Wrapper::Set_Mesh_Technique(state->technique);
 			DX8Wrapper::Set_Mesh_Has_Solid_Pass(state->mesh_has_solid_pass);
 			DX8Wrapper::Set_Mesh_Renderer_Draw(state->mesh_renderer_draw);
+			DX8Wrapper::Set_Soft_Particles(state->soft_particles, state->soft_particle_fade);
 			DX8Wrapper::Set_Render_State(state->sorting_state);
 			DX8Wrapper::Draw_Triangles(state->start_index,state->polygon_count,state->min_vertex_index,state->vertex_count);
 			DX8Wrapper::Release_Render_State();
 			DX8Wrapper::Set_Mesh_Technique(MESH_TECHNIQUE_UNCLASSIFIED);
 			DX8Wrapper::Set_Mesh_Has_Solid_Pass(false);
 			DX8Wrapper::Set_Mesh_Renderer_Draw(false);
+			DX8Wrapper::Set_Soft_Particles(false, 0.0f);
 			Release_Refs(state);
 			clean_list.push_front(state);
 		}

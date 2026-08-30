@@ -1415,6 +1415,16 @@ public:
 	// strength does), y = max ray length in world units, zw = the projection's _33/_43,
 	// with which the shader turns a stored z/w back into a view-space distance.
 	static float						m_ssrParams[4];
+	// Soft particles. Set only around draws that are genuinely airborne sprites, never
+	// blanket-enabled for effect geometry: roads, tank tracks and scorch marks reach the
+	// same shader, and they sit *on* the ground, so a depth fade would erase them
+	// completely rather than soften them.
+	static bool							m_softParticles;
+	static float						m_softParticleFade;   // world units over which a sprite fades out
+	static void Set_Soft_Particles(bool on, float fadeDistance)
+		{ m_softParticles = on; m_softParticleFade = fadeDistance; }
+	static bool Is_Soft_Particles() { return m_softParticles; }
+	static float Get_Soft_Particle_Fade() { return m_softParticleFade; }
 	static void Set_Ssr_Params(float strength, float maxDist, float proj33, float proj43)
 	{
 		m_ssrParams[0] = strength; m_ssrParams[1] = maxDist;
@@ -1502,6 +1512,30 @@ public:
 ** Usage:
 **     DeclaredTechniqueClass declare(MESH_TECHNIQUE_EFFECT);
 */
+// Marks a scope whose draws are airborne sprites and may fade where they meet the scene.
+// See DX8Wrapper::m_softParticles for why this is opt-in per draw site.
+//
+// Takes the answer either way, so the same class states "these are sprites" and "these are
+// explicitly not" -- the sorting flush needs the second to keep a declaration standing at
+// the flush site off geometry that was queued somewhere else entirely. It restores what it
+// found rather than clearing, so the two nest.
+class SoftParticleScopeClass
+{
+public:
+	SoftParticleScopeClass(bool on, float fadeDistance)
+		: PrevOn(DX8Wrapper::Is_Soft_Particles()),
+		  PrevFade(DX8Wrapper::Get_Soft_Particle_Fade())
+		{ DX8Wrapper::Set_Soft_Particles(on, fadeDistance); }
+	~SoftParticleScopeClass()
+		{ DX8Wrapper::Set_Soft_Particles(PrevOn, PrevFade); }
+private:
+	bool PrevOn;
+	float PrevFade;
+
+	SoftParticleScopeClass(const SoftParticleScopeClass &);
+	SoftParticleScopeClass & operator = (const SoftParticleScopeClass &);
+};
+
 class DeclaredTechniqueClass
 {
 public:
