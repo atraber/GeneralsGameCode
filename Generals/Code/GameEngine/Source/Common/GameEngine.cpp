@@ -33,6 +33,7 @@
 #include "Common/BuildAssistant.h"
 #include "Common/CRCDebug.h"
 #include "Common/FramePacer.h"
+#include "Common/FrameTiming.h"
 #include "Common/Radar.h"
 #include "Common/PlayerTemplate.h"
 #include "Common/Team.h"
@@ -791,7 +792,12 @@ void GameEngine::update()
 			/// @todo Move audio init, update, etc, into GameClient update
 
 			TheAudio->UPDATE();
-			TheGameClient->UPDATE();
+			{
+				// The display draw happens inside here and times itself; what is left in
+				// this bucket is the client's own update.
+				FRAME_TIMING_SCOPE(PHASE_CLIENT);
+				TheGameClient->UPDATE();
+			}
 			TheMessageStream->propagateMessages();
 
 			if (TheNetwork != nullptr)
@@ -803,7 +809,10 @@ void GameEngine::update()
 		// TheSuperHackers @info Ignores frozen time because the script engine needs updating in the logic update regardless.
 		if (canUpdateGameLogic(FramePacer::IgnoreFrozenTime))
 		{
-			TheGameLogic->UPDATE();
+			{
+				FRAME_TIMING_SCOPE(PHASE_LOGIC);
+				TheGameLogic->UPDATE();
+			}
 
 			if (!TheFramePacer->isTimeFrozen())
 			{

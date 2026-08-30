@@ -18,6 +18,7 @@
 #include "PreRTS.h"
 
 #include "Common/FramePacer.h"
+#include "Common/FrameTiming.h"
 
 #include "GameClient/View.h"
 
@@ -55,7 +56,20 @@ void FramePacer::update()
 	// TheSuperHackers @bugfix xezon 05/08/2025 Re-implements the frame rate limiter
 	// with higher resolution counters to cap the frame rate more accurately to the desired limit.
 	const UnsignedInt maxFps = getActualFramesPerSecondLimit();// allowFpsLimit ? getFramesPerSecondLimit() : RenderFpsPreset::UncappedFpsValue;
-	m_updateTime = m_frameRateLimit.wait(maxFps);
+
+	// TheSuperHackers @feature andytraber 29/08/2026 The frame's work is now finished and
+	// everything past this point is the limiter burning the rest of the budget, so this is
+	// where the two get separated. Timing the wait explicitly is what makes the render cost
+	// readable at all: without it every capped frame reports the budget back and the
+	// measurement says nothing about how much of it was actually used.
+	{
+		FRAME_TIMING_SCOPE(PHASE_WAIT);
+		m_updateTime = m_frameRateLimit.wait(maxFps);
+	}
+
+	// Closed here rather than at the top of the next frame because the limiter has just
+	// measured the frame period, and that is the one number the phases cannot derive.
+	FrameTiming::endFrame(m_updateTime);
 }
 
 void FramePacer::setFramesPerSecondLimit( Int fps )

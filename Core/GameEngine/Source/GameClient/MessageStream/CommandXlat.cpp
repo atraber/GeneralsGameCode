@@ -55,6 +55,7 @@
 #include "GameClient/InGameUI.h"
 #include "GameClient/CommandXlat.h"
 #include "GameClient/DebugDisplay.h"
+#include "GameClient/FrameTimingDisplay.h"
 #include "GameClient/Drawable.h"
 #include "GameClient/GameClient.h"
 #include "GameClient/GameWindowManager.h"
@@ -4401,7 +4402,7 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
 		//------------------------------------------------------------------------------- DEMO MESSAGES
 		//-----------------------------------------------------------------------------------------
-		// Step the in-game debug visualization. F11 / Shift+F11 / Ctrl+F11 by default;
+		// Step the in-game debug visualization. F10 / Shift+F10 / Alt+F10 by default;
 		// see MetaMap::generateMetaMap for why those keys and WW3D2/debugvis.h for the
 		// modes themselves.
 		//
@@ -5404,6 +5405,22 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 			disp = DESTROY_MESSAGE;
 			break;
 		}
+
+#if defined(RTS_DEBUG)
+		//------------------------------------------------------------------------DEMO MESSAGES
+		//-----------------------------------------------------------------------------------------
+		// TheSuperHackers @feature andytraber 30/08/2026 The per-phase frame timing readout,
+		// Ctrl+Shift+F10 by default. Its own toggle rather than another state on the debug
+		// stats key, so
+		// both can be shown at once: the counters say how much is being drawn, this says where
+		// the time goes, and the two are most useful read together.
+		case GameMessage::MSG_META_DEMO_TOGGLE_FRAME_TIMING:
+		{
+			toggleFrameTimingOverlay();
+			disp = DESTROY_MESSAGE;
+			break;
+		}
+#endif // defined(RTS_DEBUG)
 
 		//------------------------------------------------------------------------DEMO MESSAGES
 		//-----------------------------------------------------------------------------------------
