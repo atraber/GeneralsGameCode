@@ -1105,7 +1105,7 @@ void W3DBridgeBuffer::updateCenter(CameraClass *camera, RefRenderObjListIterator
 //=============================================================================
 /** Draws the bridges. */
 //=============================================================================
-void W3DBridgeBuffer::drawBridges(CameraClass * camera, Bool wireframe, TextureClass *cloudTexture)
+void W3DBridgeBuffer::drawBridges(CameraClass * camera, Bool wireframe)
 {
 
 	Int curBridge;
@@ -1160,21 +1160,26 @@ void W3DBridgeBuffer::drawBridges(CameraClass * camera, Bool wireframe, TextureC
 
 	DX8Wrapper::Apply_Render_State_Changes();
 
-	if (!wireframe && cloudTexture)
-	{	//Force a cloud texture projection into stage 1
-		W3DShaderManager::setTexture(1,cloudTexture);
-		W3DShaderManager::setShader(W3DShaderManager::ST_CLOUD_TEXTURE,1);
-	}
-
+	// The cloud used to be projected into stage 1 here, by a fixed-function camera-space
+	// texture transform. A bridge is not a mesh, so it carries no technique and reaches the
+	// routing block undeclared -- and a second bound texture is what that block reads as
+	// "this draw wants a detail combine", so it was drawn by unit_detail_ps.
+	//
+	// The projection itself survived that: unit_vs reproduces a camera-space texgen and its
+	// texture matrix for stage 1 as well as stage 0, so the cloud landed where it should.
+	// The problem was that it landed there *twice*. unit_detail_ps folds stage 1 in through
+	// the detail combine and then, like every surface shader here, multiplies by the
+	// cloudShade it computes itself from the ground-plane position. Two cloud layers, one
+	// asked for.
+	//
+	// So the projection is redundant rather than wrong, and dropping it is the fix: the
+	// bridge becomes a single-texture draw, routes to the plain surface path, and is
+	// shadowed by the cloud once.
 	for (curBridge=0; curBridge<m_numBridges; curBridge++) {
 		if (m_bridges[curBridge].isEnabled() && m_bridges[curBridge].isVisible()) {
 			m_bridges[curBridge].renderBridge(wireframe);
 		}
 	}
-
-	if (!wireframe && cloudTexture)
-		//Force a cloud texture projection into stage 1
-		W3DShaderManager::resetShader(W3DShaderManager::ST_CLOUD_TEXTURE);
 
 	//Render shroud pass over all the bridges
 	if (!wireframe && TheTerrainRenderObject->getShroud())

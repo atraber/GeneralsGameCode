@@ -3375,11 +3375,29 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		const bool texTransformActive =
 			((ttf & 0xFFu) >= (DWORD)D3DTTFF_COUNT1 && (ttf & 0xFFu) <= (DWORD)D3DTTFF_COUNT4) ||
 			(ttf & (DWORD)D3DTTFF_PROJECTED) != 0;
+		// Stage 1 generates coordinates too -- the cloud layer a bridge draws over itself
+		// projects from camera space exactly as the shroud does -- and a generation this
+		// gate does not see is a generation the shader is never told to reproduce, leaving
+		// that stage sampled through the mesh's own UVs. Only meaningful when stage 1
+		// actually carries a texture: otherwise the state is whatever a previous draw left
+		// behind, and treating that as a texgen would push ordinary single-texture meshes
+		// off the programmable path for no reason. Measured over a full replay, this
+		// catches four draws, all of them the cloud projected onto bridge and road decks.
+		const DWORD texCoordGen1 = TextureStageStates[1][D3DTSS_TEXCOORDINDEX] & 0xFFFF0000u;
+		const DWORD ttf1 = TextureStageStates[1][D3DTSS_TEXTURETRANSFORMFLAGS];
+		const bool stage1Texgen =
+			render_state.Textures[1] != nullptr &&
+			(texCoordGen1 == D3DTSS_TCI_CAMERASPACENORMAL ||
+			 texCoordGen1 == D3DTSS_TCI_CAMERASPACEPOSITION ||
+			 texCoordGen1 == D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR ||
+			 ((ttf1 & 0xFFu) >= (DWORD)D3DTTFF_COUNT1 && (ttf1 & 0xFFu) <= (DWORD)D3DTTFF_COUNT4) ||
+			 (ttf1 & (DWORD)D3DTTFF_PROJECTED) != 0);
 		const bool texgenActive =
 			texCoordGen == D3DTSS_TCI_CAMERASPACENORMAL ||
 			texCoordGen == D3DTSS_TCI_CAMERASPACEPOSITION ||
 			texCoordGen == D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR ||
-			texTransformActive;
+			texTransformActive ||
+			stage1Texgen;
 
 		// Texture coordinate generation for both stages. The vertex shader can produce
 		// camera-space coordinates and apply the stage's texture matrix, so a draw that
