@@ -67,6 +67,20 @@ float3 Safe_Normalize(float3 v)
 
 // Selects one of the coordinate sources without branching: the weights are 1 only for
 // the matching mode, so this compiles to a handful of arithmetic instructions.
+//
+// The padding each source gets is not free choice: it has to be the vector the fixed
+// function pipeline would have handed the texture matrix, because the matrices come
+// straight from the mappers that were written against it. D3D pads an n-component
+// coordinate set with a 1 in slot n and zeroes after it, so a 2-D mesh coordinate is
+// (u, v, 1, 0) -- which is why every 2-D mapper puts its translation in _31/_32 and why
+// the row-major mul below has to see a 1 in .z to pick it up. Passing (u, v, 0, 1)
+// instead multiplies that translation by zero and reads _41, which no mapper writes:
+// scale and rotation survive, translation silently disappears. That is what stopped
+// tank treads scrolling (LinearOffset), and it applies equally to the Grid, Rotate and
+// SineLinearOffset mappers, which all write the same slot.
+//
+// The camera-space sources are genuine 3-D vectors and keep the (x, y, z, 1) the fixed
+// function pipeline gives them -- the shroud projection depends on that w.
 float4 Select_TexGen_Source(float mode, float2 meshUV, float3 viewPos,
                             float3 viewNormal, float3 reflection)
 {
@@ -74,7 +88,7 @@ float4 Select_TexGen_Source(float mode, float2 meshUV, float3 viewPos,
     float w1 = saturate(1.0 - abs(mode - 1.0));
     float w2 = saturate(1.0 - abs(mode - 2.0));
     float w3 = saturate(1.0 - abs(mode - 3.0));
-    return w0 * float4(meshUV, 0.0, 1.0)
+    return w0 * float4(meshUV, 1.0, 0.0)
          + w1 * float4(viewPos, 1.0)
          + w2 * float4(viewNormal, 1.0)
          + w3 * float4(reflection, 1.0);
