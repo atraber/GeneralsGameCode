@@ -118,6 +118,92 @@ static void normAngle(Real &angle)
 	angle = WWMath::Normalize_Angle(angle);
 }
 
+//-------------------------------------------------------------------------------------------------
+/** Smallest circle in the XY plane containing all four points. Welzl's result for n=4 without
+	the recursion: the minimal circle is pinned either by two points (they are its diameter) or
+	by three (they are on it), so testing the six pairs and four triples and keeping the smallest
+	that contains everything is exact.
+
+	Used to fit the sun frustum. The obvious cheaper answer -- the farthest corner from the
+	centroid -- is not the same circle and is a poor one here: the view footprint is a trapezoid
+	whose centroid sits well behind its circumcentre, which inflates the radius by about 12%
+	(26% of the area, and so of the shadow resolution) for nothing. */
+//-------------------------------------------------------------------------------------------------
+static Real minimumEnclosingCircle(const Coord3D *pt, Int count, Real &outX, Real &outY)
+{
+	outX = outY = 0.0f;
+	if (count <= 0)
+		return 0.0f;
+
+	Real bestR = -1.0f;
+
+	// A candidate is admissible only if it actually contains every point. Radii are compared
+	// squared, and the containment test carries a relative slack so a point lying exactly on
+	// the circle is not rejected by rounding.
+	struct Local
+	{
+		static void consider(const Coord3D *pt, Int count, Real cx, Real cy, Real rSqr,
+							 Real &bestR, Real &outX, Real &outY)
+		{
+			if (bestR >= 0.0f && rSqr >= bestR * bestR)
+				return;
+			const Real slack = rSqr * 1e-4f + 1e-3f;
+			for (Int i = 0; i < count; ++i)
+			{
+				const Real dx = pt[i].x - cx;
+				const Real dy = pt[i].y - cy;
+				if (dx * dx + dy * dy > rSqr + slack)
+					return;
+			}
+			bestR = sqrtf(rSqr);
+			outX = cx;
+			outY = cy;
+		}
+	};
+
+	// Pairs: the two points are the diameter.
+	for (Int i = 0; i < count; ++i)
+		for (Int j = i + 1; j < count; ++j)
+		{
+			const Real cx = 0.5f * (pt[i].x + pt[j].x);
+			const Real cy = 0.5f * (pt[i].y + pt[j].y);
+			const Real dx = pt[i].x - cx;
+			const Real dy = pt[i].y - cy;
+			Local::consider(pt, count, cx, cy, dx * dx + dy * dy, bestR, outX, outY);
+		}
+
+	// Triples: the circumcircle. Skipped when the three are collinear, in which case a pair
+	// above already covers them.
+	for (Int i = 0; i < count; ++i)
+		for (Int j = i + 1; j < count; ++j)
+			for (Int k = j + 1; k < count; ++k)
+			{
+				const Real ax = pt[i].x, ay = pt[i].y;
+				const Real bx = pt[j].x, by = pt[j].y;
+				const Real cx3 = pt[k].x, cy3 = pt[k].y;
+				const Real d = 2.0f * (ax * (by - cy3) + bx * (cy3 - ay) + cx3 * (ay - by));
+				if (fabsf(d) < 1e-4f)
+					continue;
+				const Real aSqr = ax * ax + ay * ay;
+				const Real bSqr = bx * bx + by * by;
+				const Real cSqr = cx3 * cx3 + cy3 * cy3;
+				const Real ux = (aSqr * (by - cy3) + bSqr * (cy3 - ay) + cSqr * (ay - by)) / d;
+				const Real uy = (aSqr * (cx3 - bx) + bSqr * (ax - cx3) + cSqr * (bx - ax)) / d;
+				const Real dx = ax - ux;
+				const Real dy = ay - uy;
+				Local::consider(pt, count, ux, uy, dx * dx + dy * dy, bestR, outX, outY);
+			}
+
+	if (bestR < 0.0f)
+	{
+		// Cannot happen for a well-formed point set; keep the caller safe rather than sorry.
+		outX = pt[0].x;
+		outY = pt[0].y;
+		return 0.0f;
+	}
+	return bestR;
+}
+
 
 Real W3DView::getHeightAroundPos(Real x, Real y, Real terrainSampleSize) const
 {
@@ -1900,54 +1986,6 @@ void W3DView::draw()
 		// what is on screen -- whereupon a receiver outside it reads as lit and a caster
 		// outside it is culled, so both the shadows on a building and the shadows it
 		// throws simply end.
-		const float SHADOW_ORTHO_MAX  = 6000.0f;  // sanity ceiling; not meant to be reached
-		const float SHADOW_ORTHO_MIN  = 600.0f;   // tightest, so a top-down zoom stays sane
-		const float SHADOW_ORTHO_STEP = 64.0f;    // extent quantum (see below)
-		const float SHADOW_MARGIN     = 96.0f;    // slack for casters just off the view edge
-		// Room along the light either side of the fitted ground plane, for casters above it
-		// (aircraft, hilltops) and ground below it (valleys). Added to the plane's own
-		// depth spread, which is what actually sizes the frustum.
-		const float SHADOW_ABOVE      = 1200.0f;
-		const float SHADOW_BELOW      = 800.0f;
-		// Altitude worth keeping shadows for. Sizes the frustum's up side (below) and,
-		// in getAxisAlignedViewRegion, how far up-sun drawables keep being updated.
-		const float SHADOW_CASTER_CEILING = 200.0f;
-
-		// Bound the four view corners projected onto the look-at ground plane. A circle
-		// rather than a box: the extent is then invariant under camera rotation, so
-		// orbiting doesn't resize the frustum and make the shadows crawl. The radius is
-		// quantised for the same reason, so small zoom/scroll changes leave it alone.
-		float shadowOrtho = SHADOW_ORTHO_MAX;
-		Coord3D shadowCentre = m_pos;
-		Coord3D viewCorner[4];
-		if (getScreenCornerWorldPointsAtZ(&viewCorner[0], &viewCorner[1], &viewCorner[2],
-										  &viewCorner[3], m_pos.z) == PlaneClass::INSIDE_SEGMENT)
-		{
-			// (Anything but INSIDE_SEGMENT means a corner ray runs near-parallel to the
-			// ground and lands arbitrarily far away -- keep the fixed frustum for that.)
-			Coord3D mid;
-			mid.x = mid.y = 0.0f;
-			for (Int i = 0; i < 4; ++i)
-			{
-				mid.x += viewCorner[i].x * 0.25f;
-				mid.y += viewCorner[i].y * 0.25f;
-			}
-			mid.z = m_pos.z;
-
-			Real radiusSqr = 0.0f;
-			for (Int i = 0; i < 4; ++i)
-			{
-				const Real dx = viewCorner[i].x - mid.x;
-				const Real dy = viewCorner[i].y - mid.y;
-				radiusSqr = max(radiusSqr, dx * dx + dy * dy);
-			}
-
-			shadowOrtho = 2.0f * (sqrtf(radiusSqr) + SHADOW_MARGIN);
-			shadowOrtho = ceilf(shadowOrtho / SHADOW_ORTHO_STEP) * SHADOW_ORTHO_STEP;
-			shadowOrtho = clamp(SHADOW_ORTHO_MIN, shadowOrtho, SHADOW_ORTHO_MAX);
-			shadowCentre = mid;
-		}
-
 		// Direction from the ground toward the sun, taken from the scene's own terrain
 		// lighting -- the same source the legacy shadows used, so cast shadows fall the
 		// way the map's baked lighting says they should. (m_terrainLightPos points along
@@ -1964,101 +2002,136 @@ void W3DView::draw()
 			sunDir.Set(0.40f, 0.30f, 0.85f);   // degenerate map lighting: keep it overhead-ish
 		sunDir.Normalize();
 
-		// How much depth the fitted ground plane spans along the light. A square patch of
-		// horizontal ground is stretched along the light by cot(elevation) as the sun sees
-		// it, so the up-sun corner of the box is that much nearer to the sun than its
-		// centre and the down-sun corner that much further -- at this map's ~20 degree sun,
-		// close to three times the box's own width from end to end.
-		//
-		// The near and far planes have to be placed around that, and it is why they cannot
-		// be constants. The 2600/5200 they were left no room at all: measured at the
-		// nominal maximum camera height the plane already ran from -38 to 5238, so its
-		// up-sun corner fell behind the near plane and was clipped straight out of the
-		// map -- and that corner is precisely where the casters whose shadows reach into
-		// the view are standing. Raise the camera and the clipped strip grows with it.
-		//
-		// A lower floor on the elevation here than the bias below uses: this one has to
-		// over-estimate the spread to stay safe, where the bias has to under-estimate.
 		const float frustumSunElev = max(fabsf(sunDir.Z), 0.10f);
-		const float cotSun = sqrtf(max(1.0f - frustumSunElev * frustumSunElev, 0.0f)) / frustumSunElev;
-		const float halfDepthSpread = 0.5f * shadowOrtho * cotSun;
-		const float shadowEye = halfDepthSpread + SHADOW_ABOVE;
-		const float shadowFar = shadowEye + halfDepthSpread + SHADOW_BELOW;
 
-		// The box is not square. It covers a patch of *ground*, and the sun sees ground
-		// foreshortened: a horizontal square of side L is only L*sin(elevation) tall in
-		// the sun's view, which at ~20 degrees is a third. A square frustum therefore
-		// spends two thirds of the map's height on nothing -- visible directly in a dump
-		// of the map, where the terrain occupies a wide band across the middle and the
-		// rest is cleared. Sizing the height for what actually lands there buys that back
-		// as resolution, which is the one thing fine self-shadowing on a building needs.
-		//
-		// Rotation-safe: the height depends on the sun's elevation, not on the camera's
-		// yaw, so orbiting does not resize it. Only the width follows the view, and that
-		// stays the rotation-invariant circle it was.
-		//
-		// Asymmetric, because height only displaces a caster one way: raising a point by h
-		// moves it +h*cos(elevation) in the sun's up axis, so the extra room is needed
-		// above the ground band and not below it.
-		const float sinSun = frustumSunElev;
-		const float cosSun = sqrtf(max(1.0f - sinSun * sinSun, 0.0f));
-		const float halfWidth  = 0.5f * shadowOrtho;
-		const float halfGround = 0.5f * shadowOrtho * sinSun;
+		// Light basis in world space: forward is the travel direction of the light rays (-sunDir)
+		D3DXVECTOR3 lightFwd(-sunDir.X, -sunDir.Y, -sunDir.Z);
+		D3DXVECTOR3 lightHint = (fabsf(sunDir.Z) > 0.9f) ? D3DXVECTOR3(0.0f, 1.0f, 0.0f)
+														  : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+		D3DXVECTOR3 lightRight, lightUp;
+		D3DXVec3Cross(&lightRight, &lightHint, &lightFwd);
+		D3DXVec3Normalize(&lightRight, &lightRight);
+		D3DXVec3Cross(&lightUp, &lightFwd, &lightRight);
+		D3DXVec3Normalize(&lightUp, &lightUp);
 
 		// How far the terrain rises above and falls below the fitted ground plane. Taken
 		// from the map's own extremes rather than a constant: a byte height field caps
 		// relief at 255*MAP_HEIGHT_SCALE, and assuming that everywhere spends the up axis
 		// -- and therefore the texel size -- on relief most maps do not have.
-		//
-		// Quantised, and for the same reason the extent is: this depends on the look-at
-		// height, which changes as the camera scrolls over uneven ground, and a frustum
-		// that resizes every frame makes every shadow edge crawl.
 		const float RELIEF_STEP = 32.0f;
 		float reliefAbove = 0.0f, reliefBelow = 0.0f;
 		if (TheTerrainRenderObject != nullptr)
 		{
-			reliefAbove = max(0.0f, TheTerrainRenderObject->getMaxHeight() - (float)shadowCentre.z);
-			reliefBelow = max(0.0f, (float)shadowCentre.z - TheTerrainRenderObject->getMinHeight());
+			reliefAbove = max(0.0f, TheTerrainRenderObject->getMaxHeight() - (float)m_pos.z);
+			reliefBelow = max(0.0f, (float)m_pos.z - TheTerrainRenderObject->getMinHeight());
 		}
 		reliefAbove = ceilf(reliefAbove / RELIEF_STEP) * RELIEF_STEP;
 		reliefBelow = ceilf(reliefBelow / RELIEF_STEP) * RELIEF_STEP;
 
-		// A caster costs the up axis *twice* its height, and missing the second half is
-		// what cuts long shadows off at the up-sun screen edge.
-		//
-		// A caster of height h above the plane throws its shadow h*cot(elevation) down-sun,
-		// so to shadow the far edge of the view it has to stand that far up-sun of it --
-		// which is already h*cos(elevation) further along the up axis before its own height
-		// adds the same again. The bound is therefore
-		//     up <= halfGround + 2*h*cos(elevation),
-		// and sizing it as one h*cos left room for a caster only half as tall as intended:
-		// measured, a hill above about 150 units had its peak clipped out of the depth map
-		// while its shadow was still lying across the visible ground.
-		//
-		// Terrain relief and the object ceiling are not added the same way on purpose.
-		// Terrain gets the full doubled allowance, because that is the case this was found
-		// on and the one that reads as broken. SHADOW_CASTER_CEILING keeps only its
-		// vertical component, as before: doubling it too costs another 15% of the up axis
-		// to keep an aircraft's shadow alive at the very edge of the screen, which is not
-		// worth the resolution everywhere else. Aircraft are unchanged by this.
-		const float casterUp = SHADOW_CASTER_CEILING * cosSun + 2.0f * reliefAbove * cosSun;
+		const float SHADOW_ORTHO_MAX  = 6000.0f;  // sanity ceiling; not meant to be reached
+		const float SHADOW_ORTHO_MIN  = 600.0f;   // tightest, so a top-down zoom stays sane
+		const float SHADOW_ORTHO_STEP = 64.0f;    // extent quantum (see below)
+		const float SHADOW_MARGIN     = 96.0f;    // slack for casters just off the view edge
+		// Altitude worth keeping shadows for. Receivers above the ground -- a building roof,
+		// an aircraft -- sit that much further along the light's up axis, and this is also how
+		// far up-sun getAxisAlignedViewRegion keeps updating drawables.
+		const float SHADOW_CASTER_CEILING = 200.0f;
 
-		// The low side needs the ground that falls *below* the plane, which the flat
-		// SHADOW_MARGIN did not describe -- it is a lateral slack, not a depth one, and a
-		// valley deeper than about 100 units was clipped out of the map, whereupon
-		// everything in it read as unshadowed.
-		const float groundDown = SHADOW_MARGIN + reliefBelow * cosSun;
+		// Ground -> light space is an anisotropic scale, and that one fact sizes everything
+		// below. lightRight is horizontal (it is z cross lightFwd), so a horizontal vector
+		// projects as its component across the sun's azimuth at scale 1, and its component
+		// along the azimuth at scale sin(elevation). Height projects onto the up axis at
+		// cos(elevation), and onto the depth axis at -sin(elevation).
+		const float sinSun = frustumSunElev;
+		const float cosSun = sqrtf(max(1.0f - sinSun * sinSun, 0.0f));
 
-		D3DXVECTOR3 targetPos((float)shadowCentre.x, (float)shadowCentre.y, (float)shadowCentre.z);
-		D3DXVECTOR3 lightEye(targetPos.x + sunDir.X * shadowEye,
-							 targetPos.y + sunDir.Y * shadowEye,
-							 targetPos.z + sunDir.Z * shadowEye);
-		D3DXVECTOR3 up = (fabsf(sunDir.Z) > 0.9f) ? D3DXVECTOR3(0.0f, 1.0f, 0.0f)
-												  : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
+		// Bound the four view corners projected onto the look-at ground plane with a circle,
+		// not a box. The extent is then invariant under camera rotation, so orbiting does not
+		// resize the frustum and make every shadow edge crawl: a ground circle of radius R
+		// maps to an ellipse of semi-axes R and R*sin(elevation) that is fixed in light space
+		// however the camera is pointed, whereas a light-space box around the same corners
+		// swings 47% over a full orbit and steps through the quantum below dozens of times,
+		// rescaling every texel in the map each time.
+		//
+		// Measured, that box is worth 1.32x the area of this circle averaged over yaw, so
+		// about 15% finer shadows -- 0.16 against 0.18 world units per texel at default zoom
+		// on a 4096 map, both far below a terrain cell. Not worth buying with a rotation
+		// artifact. A circle is also provably the tightest yaw-invariant bound there is: an
+		// invariant bound has to contain the footprint at every yaw, and that union is a disc.
+		//
+		// The radius is quantised, so small zoom/scroll changes leave it alone as well. The
+		// centre is not, and does not need to be: it only translates the frustum, which the
+		// texel snap below absorbs exactly.
+		float shadowOrtho = SHADOW_ORTHO_MAX;
+		Coord3D shadowCentre = m_pos;
+		Coord3D viewCorner[4];
+		if (getScreenCornerWorldPointsAtZ(&viewCorner[0], &viewCorner[1], &viewCorner[2],
+										  &viewCorner[3], m_pos.z) == PlaneClass::INSIDE_SEGMENT)
+		{
+			// (Anything but INSIDE_SEGMENT means a corner ray runs near-parallel to the
+			// ground and lands arbitrarily far away -- keep the fixed frustum for that.)
+			Real centreX = 0.0f, centreY = 0.0f;
+			const Real radius = minimumEnclosingCircle(viewCorner, 4, centreX, centreY);
+
+			shadowOrtho = 2.0f * (radius + SHADOW_MARGIN);
+			shadowOrtho = ceilf(shadowOrtho / SHADOW_ORTHO_STEP) * SHADOW_ORTHO_STEP;
+			shadowOrtho = clamp(SHADOW_ORTHO_MIN, shadowOrtho, SHADOW_ORTHO_MAX);
+			shadowCentre.x = centreX;
+			shadowCentre.y = centreY;
+			shadowCentre.z = m_pos.z;
+		}
+
+		const float halfWidth  = 0.5f * shadowOrtho;
+		// The ellipse's own semi-axis along the sun. The box is not square, and sizing the
+		// height for what actually lands there is the one thing fine self-shadowing needs:
+		// a square frustum spends two thirds of the map on nothing at this map's ~20 degree
+		// sun, visible directly in a dump of it as a wide band of terrain with cleared space
+		// above and below.
+		const float halfGround = 0.5f * shadowOrtho * sinSun;
+
+		// The up axis carries *receivers* only, and this is the correction that pays for the
+		// resolution. A caster and the ground it shadows lie on one light ray, so they share
+		// their light-space X and Y exactly -- raising a caster by h moves it +h*cos(elev)
+		// along the up axis, and pushes the point it shadows h/tan(elev) down-sun, which is
+		// -h*cos(elev) back along that same axis. The two cancel.
+		//
+		// The old fit counted both as gains and so reserved 2*h*cos(elev) of up axis for
+		// casters that never needed any of it. Height belongs on the depth axis instead, and
+		// goes there below. What is left here is genuine: terrain relief within the view, and
+		// receivers standing above the ground plane.
+		const float upExtent   = halfGround + (reliefAbove + SHADOW_CASTER_CEILING) * cosSun + SHADOW_MARGIN;
+		const float downExtent = halfGround + reliefBelow * cosSun + SHADOW_MARGIN;
+
+		// Depth. The fitted circle spans +-R*cos(elev) along the light, relief tilts that by
+		// sin(elev), and then the near plane has to reach up-sun far enough to catch the
+		// casters: a caster h above the receiver it shadows is exactly h/sin(elev) nearer the
+		// light, which at a low sun is the largest number in this whole block.
+		//
+		// This is why the near and far planes cannot be constants. The 2600/5200 they were
+		// left no room at all -- measured at the nominal maximum camera height the fitted
+		// plane already ran from -38 to 5238, so its up-sun corner fell behind the near plane
+		// and was clipped out of the map, and that corner is precisely where the casters whose
+		// shadows reach into the view are standing.
+		const float halfDepthSpread = 0.5f * shadowOrtho * cosSun;
+		const float casterDepth = (reliefAbove + reliefBelow + SHADOW_CASTER_CEILING) / sinSun;
+		const float nearZ = -(halfDepthSpread + reliefAbove * sinSun + casterDepth + SHADOW_MARGIN);
+		const float farZ  =  (halfDepthSpread + reliefBelow * sinSun + SHADOW_MARGIN);
+		const float shadowFar = max(farZ - nearZ + 1.0f, 100.0f);
+
+		// Eye one unit up-sun of the near plane, so the projection's near distance of 1.0
+		// lands exactly on nearZ and its far distance exactly on farZ.
+		D3DXVECTOR3 centrePos((float)shadowCentre.x, (float)shadowCentre.y, (float)shadowCentre.z);
+		D3DXVECTOR3 lightEye(centrePos.x + (nearZ - 1.0f) * lightFwd.x,
+							 centrePos.y + (nearZ - 1.0f) * lightFwd.y,
+							 centrePos.z + (nearZ - 1.0f) * lightFwd.z);
+		D3DXVECTOR3 lookAt(lightEye.x + lightFwd.x,
+						   lightEye.y + lightFwd.y,
+						   lightEye.z + lightFwd.z);
+
 		D3DXMATRIX sunView, sunProj, sunVP;
-		D3DXMatrixLookAtLH(&sunView, &lightEye, &targetPos, &up);
+		D3DXMatrixLookAtLH(&sunView, &lightEye, &lookAt, &lightUp);
 		D3DXMatrixOrthoOffCenterLH(&sunProj, -halfWidth, halfWidth,
-								   -(halfGround + groundDown), halfGround + casterUp,
+								   -downExtent, upExtent,
 								   1.0f, shadowFar);
 		D3DXMatrixMultiply(&sunVP, &sunView, &sunProj);
 
@@ -2089,8 +2162,8 @@ void W3DView::draw()
 		// texel snap is left out, being worth less than a texel.
 		W3DShaderManager::setShadowFrustum(
 			Vector3(lightEye.x, lightEye.y, lightEye.z),
-			Vector3(targetPos.x - lightEye.x, targetPos.y - lightEye.y, targetPos.z - lightEye.z),
-			halfWidth, -(halfGround + groundDown), halfGround + casterUp, 1.0f, shadowFar);
+			Vector3(lightFwd.x, lightFwd.y, lightFwd.z),
+			halfWidth, -downExtent, upExtent, 1.0f, shadowFar);
 
 		// Depth-compare bias, in the sun-clip depth units the shaders compare in. What it
 		// has to cover is the depth a surface gains across one shadow texel, so it is
@@ -2099,6 +2172,10 @@ void W3DView::draw()
 		// fixed value cannot work -- the old 0.0025 was ~13 world units, ten texels at
 		// full zoom-out and forty once zoomed in, which lifts small casters clean out of
 		// their own shadow.
+		//
+		// The lateral extent, not the up one: the fit makes a texel square on the *ground*
+		// (the up axis is shorter by exactly the sin(elevation) the ground is foreshortened
+		// by), so either axis describes the same world size and this is the simpler one.
 		//
 		// The sun's elevation matters as much as the zoom. A texel is square in the sun's
 		// view, but the ground it lands on is stretched along the light by 1/sin(elevation)
@@ -2114,21 +2191,12 @@ void W3DView::draw()
 		// on it until the zoom brought the number down. Meshes get the normal offset below
 		// instead, which is a lateral lift rather than a depth licence and so moves those
 		// shadows by a texel or two instead of erasing them.
-		// Down from three texels to one, and that reduction is the point of the wide
-		// filter's receiver-plane bias rather than an independent tweak. Three texels was
-		// sized to cover the depth a *sloped* surface gains across a texel, because a
-		// constant bias was the only defence the terrain had. The shaders now fit the
-		// receiver's own plane per pixel and ask each tap for the depth that plane would
-		// have there (see shadow.hlsli), so the slope term cancels analytically and what is
-		// left for a constant is numerical slack. Widening the kernel therefore *lowers*
-		// this number instead of raising it, which is the whole reason the plane fit is
-		// worth its dozen ALU: a wide box filter with a constant bias would have needed
-		// several times three texels and would have lifted every small caster out of its
-		// own shadow.
 		//
-		// The 1/sin(elevation) factor is kept even though the plane fit has largely made it
-		// redundant. It costs nothing at a high sun and leaves margin at a low one, where
-		// the plane fit is working hardest and its clamp is closest to biting.
+		// One texel, not the three a constant bias would need, and that reduction is the
+		// point of the wide filter's receiver-plane bias rather than an independent tweak.
+		// The shaders fit the receiver's own plane per pixel and ask each tap for the depth
+		// that plane would have there (see shadow.hlsli), so the slope term cancels
+		// analytically and what is left for a constant is numerical slack.
 		const float SHADOW_BIAS_TEXELS = 1.0f;
 		const float texelWorld = shadowOrtho / (float)DX8Wrapper::SHADOW_MAP_SIZE;
 		const float sunElevation = max(fabsf(sunDir.Z), 0.15f);
