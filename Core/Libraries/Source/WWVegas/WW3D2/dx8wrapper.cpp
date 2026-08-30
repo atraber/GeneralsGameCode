@@ -4093,27 +4093,57 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				m_bEffectCastsShadow && !m_bDepthPrepass &&
 				m_dwShadowDepthParticleVS != 0 && m_dwShadowDepthParticlePS != 0;
 
-			// Alpha cutoff for this caster. Zero leaves the hardware alpha test in sole
-			// charge, which is what opaque and cut-out geometry want. Blended casters
-			// have no alpha test of their own, so they are cut here instead -- high
-			// enough that only the dense part of a rotor disc casts, not the wash of
-			// blur around it.
+			// A rotor disc is the other translucent caster, and the shared shader dithers
+			// it for the same reason -- but through the plain vertex shader, not the
+			// particle one. A mesh has no per-particle alpha to read, and reading COLOR0
+			// off a vertex format that may not carry it is undefined, so the switch is a
+			// constant rather than a second shader pair.
 			//
-			// y is the particle variant's density ceiling instead, since it dithers rather
-			// than cuts: the fraction of the sun a fully opaque sprite texel is allowed to
-			// take. Short of 1 on purpose. Smoke that stops the sun outright reads as a
-			// hole in the ground rather than as smoke, and the alpha these sprites carry
-			// is authored for compositing over a scene, not for optical depth.
+			// What identifies one: soft-blended, depth-write off, and admitted to the pass
+			// at all only by W3D_MESH_FLAG_CAST_SHADOW (see softBlendedCaster above, and
+			// meshshadowname.h for the discs whose artist forgot to set it). That is the
+			// exact set the flag exists to pick out. A soft-blended mesh that *writes*
+			// depth is a solid surface drawn with blending and keeps the hard cut, and so
+			// does anything in the camera depth prepass -- SSR marches against solid
+			// surfaces, and a stippled rotor would punch holes in the reflections behind
+			// it, the same reason particles stay out of it.
+			const bool ditheredMeshCaster =
+				softBlendedCaster && m_bMeshCastsShadow && !meshDepthWrite &&
+				!m_bDepthPrepass;
+
+			// x: alpha cutoff for a caster that is cut rather than dithered. Zero leaves
+			// the hardware alpha test in sole charge, which is what opaque and cut-out
+			// geometry want. Blended casters have no alpha test of their own, so they are
+			// cut here instead.
+			//
+			// y is the particle variant's density ceiling: the fraction of the sun a fully
+			// opaque sprite texel is allowed to take. Short of 1 on purpose. Smoke that
+			// stops the sun outright reads as a hole in the ground rather than as smoke,
+			// and the alpha these sprites carry is authored for compositing over a scene,
+			// not for optical depth.
 			//
 			// Raised from the 0.7 it was first tried at. Measured against a tank battle,
 			// that gave a mean darkening of about 9% of local brightness under a dust
 			// trail -- present, but easy to miss on the thinner effects, which are most of
 			// them. The headroom to 1.0 is what stops a dense plume going to a silhouette,
 			// so there is room to spend some of it without losing that.
-			const float shadowAlphaCutoff = softBlendedCaster ? 0.45f : 0.0f;
+			//
+			// z is the same ceiling for the shared shader's dither, and zero switches the
+			// dither off. It is 1, not the sprites' 0.85, because a mesh's alpha *is* its
+			// coverage rather than an artist's compositing weight. Most of the meshes this
+			// path admits are not rotor discs at all: censused over the shipped set, every
+			// other soft-blended flagged mesh -- TV dishes, ducts, warehouse roofs, a bank
+			// -- carries a fully opaque alpha channel, and any ceiling below 1 would take
+			// that fraction of their shadow away for nothing. At 1 they dither to solid and
+			// come out exactly as they did under the cutoff, and only genuinely partial
+			// alpha is affected.
+			const float shadowAlphaCutoff =
+				(softBlendedCaster && !ditheredMeshCaster) ? 0.45f : 0.0f;
 			const float PARTICLE_SHADOW_DENSITY = 0.85f;
+			const float MESH_SHADOW_DENSITY = 1.0f;
 			const D3DXVECTOR4 shadowCastParams(shadowAlphaCutoff, PARTICLE_SHADOW_DENSITY,
-											   0.0f, 0.0f);
+											   ditheredMeshCaster ? MESH_SHADOW_DENSITY : 0.0f,
+											   0.0f);
 			Set_Pixel_Shader_Constant(0, &shadowCastParams, 1);
 			Set_Vertex_Shader(particleCaster ? m_dwShadowDepthParticleVS : m_dwShadowDepthVS);
 			Set_Pixel_Shader(particleCaster ? m_dwShadowDepthParticlePS : m_dwShadowDepthPS);

@@ -26,7 +26,8 @@ sampler BaseSampler : register(s0);   // the sprite's own texture, for its alpha
 
 // y = density ceiling: the most of the sun a fully opaque sprite texel may take. Short of
 // 1 deliberately -- see the note where it is set. x is the plain shader's hard cutoff and
-// is unused here; the pattern below is this shader's only arbiter.
+// z its own dither ceiling; neither is read here, since the pattern below is this
+// shader's only arbiter.
 float4 ShadowCastParams : register(c0);
 
 struct PS_INPUT { float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1;
