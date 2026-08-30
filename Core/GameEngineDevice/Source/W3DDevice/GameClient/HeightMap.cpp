@@ -2143,7 +2143,7 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 		ShaderClass::Invalidate();
 		DX8Wrapper::Apply_Render_State_Changes();
 
-		m_bridgeBuffer->drawBridges(&rinfo.Camera, m_disableTextures, doCloud?m_stageTwoTexture:nullptr);
+		m_bridgeBuffer->drawBridges(&rinfo.Camera, m_disableTextures);
 
 		if (TheTerrainTracksRenderObjClassSystem)
 			TheTerrainTracksRenderObjClassSystem->flush();
@@ -2159,7 +2159,7 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 		DX8Wrapper::Apply_Render_State_Changes();
 	}
 	else
-			m_bridgeBuffer->drawBridges(&rinfo.Camera, m_disableTextures, m_stageTwoTexture);
+			m_bridgeBuffer->drawBridges(&rinfo.Camera, m_disableTextures);
 
   if ( m_waypointBuffer )
 	  m_waypointBuffer->drawWaypoints(rinfo);

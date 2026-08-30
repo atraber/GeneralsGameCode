@@ -66,7 +66,6 @@ public:
 		ST_ROAD_BASE_NOISE1,	//shader to apply base texture and cloud/noise 1.
 		ST_ROAD_BASE_NOISE2,	//shader to apply base texture and cloud/noise 2.
 		ST_ROAD_BASE_NOISE12,//shader to apply base texture and both cloud/noise
-		ST_CLOUD_TEXTURE,			//shader to project clouds.
 		ST_MAX
 	};
 

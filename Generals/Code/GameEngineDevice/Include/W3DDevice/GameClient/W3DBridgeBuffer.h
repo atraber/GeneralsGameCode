@@ -155,7 +155,7 @@ public:
 	/// Empties the bridge buffer.
 	void clearAllBridges();
 	/// Draws the bridges.  Uses camera for culling.
-	void drawBridges(CameraClass * camera, Bool wireframe, TextureClass *cloudTexture);
+	void drawBridges(CameraClass * camera, Bool wireframe);
 	/// Called when the view changes, and sort key needs to be recalculated.
 	/// Normally sortKey gets calculated when a bridge becomes visible.
 	void doFullUpdate() {m_updateVis = true;};
