@@ -58,6 +58,8 @@ set(_rts_shaders
     # 2D interface (control bar, command bar, text)
     ui_vs
     ui_ps
+    # Screen-space quads for the post-process chain, replacing D3DFVF_XYZRHW
+    screenquad_vs
     # Projected alpha mask (screen cross-fade wipe, wireframe preview)
     mask_vs
     mask_ps

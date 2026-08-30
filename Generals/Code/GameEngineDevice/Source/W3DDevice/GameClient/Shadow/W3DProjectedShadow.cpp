@@ -738,12 +738,37 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	m_pDev->SetTransform(D3DTS_WORLD,(_D3DMATRIX *)&mWorld);
 
 	m_pDev->SetStreamSource(0,shadowDecalVertexBufferD3D,sizeof(SHADOW_DECAL_VERTEX));
-	m_pDev->SetVertexShader(SHADOW_DECAL_FVF);
-	// This draw goes out on the device, so it inherits whatever Apply_Render_State_Changes
-	// bound for the draw before it. Setting the FVF above replaces the vertex shader and
-	// not the pixel shader. See Force_Fixed_Function_Pipeline -- the Zero Hour copy of
-	// this function is where the missing mines and targeting reticles were traced to.
-	DX8Wrapper::Force_Fixed_Function_Pipeline();
+
+	// Through the wrapper rather than at the device, so its idea of what is bound stays
+	// true -- Prepare_Direct_Draw below reads it to decide whether fixed-function state has
+	// to be flushed, and a direct SetVertexShader here left that reading the previous draw's
+	// binding. Set first regardless: handed an FVF this clears the bound shader, so the real
+	// one has to come after, and the FVF remains as the declaration it reads through.
+	DX8Wrapper::Set_Vertex_Shader(SHADOW_DECAL_FVF);
+
+	// SHADOW_DECAL_FVF is position, diffuse and one texture coordinate set, which is exactly
+	// ui_vs's input; the decal's combine is the shadow texture modulated by the vertex
+	// diffuse in both colour and alpha, which is exactly ui_ps with both samples on. So the
+	// interface pair expresses this draw as it stands -- the blend that distinguishes a
+	// multiplicative decal from an additive one is frame-buffer state the hardware applies
+	// after the shader, as it did after the stages.
+	//
+	// The world transform has to be passed, not left on the device: with a vertex shader
+	// bound D3DTS_WORLD stops being consulted. Built as an identity rather than converted
+	// from mWorld beside it -- mWorld *is* the identity, and Matrix4x4 is in Westwood
+	// convention, so a cast between the two would be a transpose waiting to matter the day
+	// this stops being identity.
+	D3DXMATRIX decalWorld;
+	D3DXMatrixIdentity(&decalWorld);
+	if (!DX8Wrapper::Bind_Ui_Shader_World(decalWorld, true, true))
+	{
+		// No interface shader: keep the fixed-function path exactly as it was. This draw
+		// goes out on the device, so it inherits whatever Apply_Render_State_Changes bound
+		// for the draw before it, and setting the FVF above replaces the vertex shader and
+		// not the pixel shader. See Force_Fixed_Function_Pipeline -- the Zero Hour copy of
+		// this function is where the missing mines and targeting reticles were traced to.
+		DX8Wrapper::Force_Fixed_Function_Pipeline();
+	}
 
 //Hard Shadows using stencil
 /*	m_pDev->SetRenderState( D3DRS_SRCBLEND,  D3DBLEND_ZERO);

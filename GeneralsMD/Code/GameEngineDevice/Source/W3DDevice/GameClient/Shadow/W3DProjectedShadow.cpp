@@ -686,6 +686,7 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	// texture, so the declaration covered real building geometry and called it an
 	// effect. The technique check caught it -- 19412 draws a window reporting
 	// "declared effect, live surface" on atroofparts01.tga, a roof.
+	//
 	// FIXED_FUNCTION rather than EFFECT, which is what this used to say. These decals are
 	// blended marks and EFFECT described them accurately -- but a technique is not a
 	// description, it is an instruction to the routing, and the routing cannot route this
@@ -694,6 +695,11 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	// drew last. Once EFFECT began reaching the programmable path, that stale state
 	// started binding unit_ps over a decal drawn with a fixed-function vertex stream, and
 	// mines, radius cursors and targeting reticles disappeared.
+	//
+	// The declaration stays for that reason -- it still has to stop the routing choosing a
+	// shader for a draw it cannot see. What has changed is that this function now chooses
+	// one for itself, explicitly, below: a shader bound here is bound against the vertex
+	// format actually in the stream, which was the whole of what went wrong before.
 	DeclaredTechniqueClass declareFixedFunction(MESH_TECHNIQUE_FIXED_FUNCTION, "flushDecals");
 	static	Matrix4x4 mWorld(true);	//initialize to identity matrix
 
@@ -749,12 +755,37 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	m_pDev->SetTransform(D3DTS_WORLD,(_D3DMATRIX *)&mWorld);
 
 	m_pDev->SetStreamSource(0,shadowDecalVertexBufferD3D,sizeof(SHADOW_DECAL_VERTEX));
-	m_pDev->SetVertexShader(SHADOW_DECAL_FVF);
-	// The declaration above stops a shader being chosen for this draw; this takes down one
-	// chosen for an earlier draw, which Apply_Render_State_Changes leaves standing when it
-	// returns early because no render state changed. Two consecutive decal batches sharing
-	// a texture, material and shader do exactly that.
-	DX8Wrapper::Force_Fixed_Function_Pipeline();
+
+	// Through the wrapper rather than at the device, so its idea of what is bound stays
+	// true -- Prepare_Direct_Draw below reads it to decide whether fixed-function state has
+	// to be flushed, and a direct SetVertexShader here left that reading the previous draw's
+	// binding. Set first regardless: handed an FVF this clears the bound shader, so the real
+	// one has to come after, and the FVF remains as the declaration it reads through.
+	DX8Wrapper::Set_Vertex_Shader(SHADOW_DECAL_FVF);
+
+	// SHADOW_DECAL_FVF is position, diffuse and one texture coordinate set, which is exactly
+	// ui_vs's input; the decal's combine is the shadow texture modulated by the vertex
+	// diffuse in both colour and alpha, which is exactly ui_ps with both samples on. So the
+	// interface pair expresses this draw as it stands -- the blend that distinguishes a
+	// multiplicative decal from an additive one is frame-buffer state the hardware applies
+	// after the shader, as it did after the stages.
+	//
+	// The world transform has to be passed, not left on the device: with a vertex shader
+	// bound D3DTS_WORLD stops being consulted, so whatever transform this draw needs must be
+	// in the constant. Built as an identity rather than converted from mWorld beside it --
+	// mWorld *is* the identity, and Matrix4x4 is in Westwood convention, so a cast between
+	// the two would be a transpose waiting to matter the day this stops being identity.
+	D3DXMATRIX decalWorld;
+	D3DXMatrixIdentity(&decalWorld);
+	if (!DX8Wrapper::Bind_Ui_Shader_World(decalWorld, true, true))
+	{
+		// No interface shader: keep the fixed-function path exactly as it was. The
+		// declaration above stops a shader being chosen for this draw; this takes down one
+		// chosen for an earlier draw, which Apply_Render_State_Changes leaves standing when
+		// it returns early because no render state changed. Two consecutive decal batches
+		// sharing a texture, material and shader do exactly that.
+		DX8Wrapper::Force_Fixed_Function_Pipeline();
+	}
 
 //Hard Shadows using stencil
 /*	m_pDev->SetRenderState( D3DRS_SRCBLEND,  D3DBLEND_ZERO);
@@ -773,15 +804,20 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 //m_pDev->SetRenderState( D3DRS_ALPHABLENDENABLE, FALSE );	//useful to see bounds
 
 #ifdef RTS_DEBUG
-	// Is anything programmable still bound at the moment this draw goes out? It draws
-	// straight on the device, so whatever Apply_Render_State_Changes left standing is
-	// what rasterises it -- and SetVertexShader above drops the vertex shader without
-	// touching the pixel shader.
+	// What is bound at the moment this draw goes out. It draws straight on the device, so
+	// whatever is standing here is what rasterises it, and nothing downstream will correct
+	// a wrong answer.
+	//
+	// The expectation is now the opposite of what it was: this used to insist the pixel
+	// shader be 0, because a shader bound for some earlier draw against a different vertex
+	// format is what made the mines and targeting reticles vanish. Now both halves should be
+	// the interface pair, bound here, against the format in the stream. A zero in either
+	// column means the bind failed and the draw fell back to fixed function.
 	{
 		static int reported = 0;
 		if (reported < 8) {
 			++reported;
-			WWDEBUG_SAY(("DECAL DRAW: vs=%08x ps=%08x (fvf=%08x) -- ps must be 0",
+			WWDEBUG_SAY(("DECAL DRAW: vs=%08x ps=%08x (fvf=%08x) -- both non-zero means routed",
 				DX8Wrapper::Get_Vertex_Shader(), DX8Wrapper::Get_Pixel_Shader(),
 				(unsigned)(SHADOW_DECAL_FVF)));
 		}
