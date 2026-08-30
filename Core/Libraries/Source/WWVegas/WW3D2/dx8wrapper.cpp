@@ -2468,6 +2468,15 @@ void DX8Wrapper::Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal,
 {
 	switch (m_debugVisMode) {
 
+		case DEBUG_VIS_MESH_TECHNIQUE:
+			// The declared technique, and whether the draw actually reached a shader.
+			// Both halves matter: the technique alone says what the asset asked for, and
+			// the pipeline alone says what happened, but only the pair says whether the
+			// two agree -- which is the whole question this milestone is about.
+			Debug_Flat_Shade(Debug_Vis_Technique_Color(m_meshTechnique, fixedFunction),
+							 fixedFunction);
+			break;
+
 		case DEBUG_VIS_WIREFRAME:
 			// Lines only, in one colour. Depth is left exactly as the draw set it, so
 			// this is a solid wireframe rather than an x-ray one: what is behind a hill
