@@ -1924,6 +1924,15 @@ AGAIN:
 				// draw all views of the world
 				drawViews();
 
+#if defined(RTS_DEBUG)
+				// Debug visualization overlays, between the finished scene and the game
+				// UI. After the scene so the post-process chain cannot tone-map or bloom
+				// an inspector tile; before the UI so the control bar and the messages
+				// stay readable on top of it -- including the banner naming the mode,
+				// which is the only thing telling you why the screen looks like that.
+				W3DShaderManager::drawDebugVisOverlay(getWidth(), getHeight());
+#endif
+
 
 				// draw the user interface
 				{

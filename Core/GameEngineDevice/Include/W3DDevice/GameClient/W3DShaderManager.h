@@ -77,10 +77,35 @@ public:
 
 	// Programmable (D3D9) unit render path.
 	static void initUnitShaders();	///<create the vertex declaration and load the unit vertex/pixel shaders.
+	///Set stage to linear filtering with clamped addressing -- what every screen-space
+	///quad wants, and what none of them should be re-deriving for itself.
+	static void setLinearClampSampler(DWORD stage);
+	///Draw a screen-space quad over [dx,dy]..[dx+dw,dy+dh], sampling source UVs on
+	///TEXCOORD0 and a second set on TEXCOORD1. The caller binds its own pixel shader.
+	static HRESULT drawScreenQuad(LPDIRECT3DDEVICE8 dev,
+		float dx, float dy, float dw, float dh,
+		float sU0, float sV0, float sU1, float sV1,
+		float bU0, float bV0, float bU1, float bV1);
+	///Keep a copy of the bloom bright-pass result for DEBUG_VIS_BLOOM to draw.
+	///
+	///Called by the bloom filter immediately after its bright pass, and does nothing
+	///unless that mode is active. It has to be a copy: the two blur passes ping-pong
+	///through the same pair of targets straight afterwards, so by the end of the frame
+	///neither holds the unblurred result -- and a blurred glow is spread over its
+	///neighbours by construction, which is the one thing that mode must not show.
+	static void captureBloomBrightPass(IDirect3DSurface8 *brightSurface, Int width, Int height);
+	///Draw whatever the current debug visualization mode puts on top of the frame.
+	///Called once per frame after the scene and its post-process, before the game UI.
+	///Does nothing unless a mode that draws an overlay is active.
+	static void drawDebugVisOverlay(Int screenWidth, Int screenHeight);
 	///Load the debug-visualization shaders. Failure is not fatal: each mode checks its
 	///own shader and does nothing if it is missing.
 	static void initDebugVis();
 	static void shutdownDebugVis();
+	static DWORD m_debugBloomPS;					///<debugbloom_ps: false-colours the bright-pass copy
+	static DWORD m_debugShroudPS;					///<debugshroud_ps: draws the shroud field as a tile
+	static IDirect3DTexture8 *m_debugBrightTexture;	///<copy of the bloom bright pass, made only while DEBUG_VIS_BLOOM is on
+	static IDirect3DSurface8 *m_debugBrightSurface;	///<its surface, the StretchRect destination
 	static void shutdownUnitShaders();	///<release the unit shaders and vertex declaration.
 	static void getCloudOffset(float& x, float& y); ///<current scrolling cloud-overlay offset.
 	static TextureBaseClass* resolveOrmTexture(TextureBaseClass* baseTexture); ///<PBR ORM map for a base texture, or null (cached).

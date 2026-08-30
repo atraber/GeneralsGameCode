@@ -85,6 +85,23 @@ enum DebugVisMode CPP_11(: int)
 	// pre-lit geometry are shown flat rather than guessed at. See the legend.
 	DEBUG_VIS_NORMALS,
 
+	// ---- Buffer inspectors: draw something the frame was built from, over the top ----
+	// What the bloom bright pass selected, in false colour over the scene.
+	//
+	// Where bloom comes from is the one thing about it that cannot be read off the
+	// finished frame: the glow is blurred over everything near it, so a highlight that
+	// blooms and a neighbour that merely sits under someone else's glow look alike. The
+	// bright pass knows the difference and this shows its answer directly.
+	DEBUG_VIS_BLOOM,
+	// The shroud field itself, as a top-down tile.
+	//
+	// Every shroud bug so far has been a sampling bug -- geometry reading the field with
+	// the wrong coordinates -- and those are invisible on a map whose shroud is uniform,
+	// because sampling a flat field at the wrong place returns the right answer. This
+	// shows what is actually in the field, so "the shroud looks fine" can be separated
+	// from "the shroud is flat here and would look fine either way".
+	DEBUG_VIS_SHROUD,
+
 	DEBUG_VIS_COUNT
 };
 
