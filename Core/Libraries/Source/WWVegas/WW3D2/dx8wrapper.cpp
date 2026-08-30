@@ -3380,8 +3380,20 @@ bool DX8Wrapper::Find_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORM
 
 bool DX8Wrapper::Test_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORMAT zmode)
 {
+	// Query the adapter the device will actually be created on, not adapter 0. Create_Device
+	// passes CurRenderDevice to CreateDevice, so validating formats against D3DADAPTER_DEFAULT
+	// asked the wrong GPU on any multi-adapter machine.
+	//
+	// This reports what the chosen adapter supports and nothing else. It must not go looking
+	// for an adapter that does support the format: by the time we get here Set_Render_Device
+	// has already taken the display format and resolution from this adapter, CurRenderDevice
+	// is the user's saved choice, and Registry_Save_Render_Device will persist whatever it
+	// holds. A device created on one adapter with another's display mode is worse than
+	// falling through to the next z format.
+	const UINT adapter = (CurRenderDevice >= 0) ? (UINT)CurRenderDevice : D3DADAPTER_DEFAULT;
+
 	// See if we have this mode first
-	if (FAILED(D3DInterface->CheckDeviceFormat(D3DADAPTER_DEFAULT,WW3D_DEVTYPE,
+	if (FAILED(D3DInterface->CheckDeviceFormat(adapter,WW3D_DEVTYPE,
 		colorbuffer,D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_SURFACE,zmode)))
 	{
 		WWDEBUG_SAY(("CheckDeviceFormat failed.  Colorbuffer format = %d  Zbufferformat = %d",colorbuffer,zmode));
@@ -3389,7 +3401,7 @@ bool DX8Wrapper::Test_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORM
 	}
 
 	// Then see if it matches the color buffer
-	if(FAILED(D3DInterface->CheckDepthStencilMatch(D3DADAPTER_DEFAULT, WW3D_DEVTYPE,
+	if(FAILED(D3DInterface->CheckDepthStencilMatch(adapter, WW3D_DEVTYPE,
 		colorbuffer,backbuffer,zmode)))
 	{
 		WWDEBUG_SAY(("CheckDepthStencilMatch failed.  Colorbuffer format = %d  Backbuffer format = %d Zbufferformat = %d",colorbuffer,backbuffer,zmode));
