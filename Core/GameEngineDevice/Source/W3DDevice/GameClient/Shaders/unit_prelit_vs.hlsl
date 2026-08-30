@@ -55,6 +55,9 @@ struct VS_OUTPUT
     float2 texcoord1 : TEXCOORD1;
     float4 lightPos  : TEXCOORD2;  // position in the sun's clip space (cast shadows)
     float3 cloudPos  : TEXCOORD3;  // xy = world position on the ground plane, z = receives sun
+    // The clip position again, so the pixel shader can find itself on screen and read the
+    // depth prepass. POSITION is not readable in a pixel shader, hence the copy.
+    float4 screenPos : TEXCOORD5;
 };
 
 // Passthrough or camera-space position only -- the normal-based sources cannot be
@@ -76,6 +79,7 @@ VS_OUTPUT main(VS_INPUT input)
     VS_OUTPUT output;
 
     output.position = mul(float4(input.position, 1.0), WorldViewProj);
+    output.screenPos = output.position;
 
     // Texture-only overlay passes composite over an already-shaded base, so they neither
     // take the vertex colour nor receive the shadow a second time. Everything else here is

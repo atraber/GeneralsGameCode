@@ -1525,6 +1525,8 @@ float							DX8Wrapper::m_depthVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneDepth = nullptr;
 IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneColor = nullptr;
 float							DX8Wrapper::m_ssrParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+bool							DX8Wrapper::m_softParticles = false;
+float							DX8Wrapper::m_softParticleFade = 0.0f;
 void DX8Wrapper::Set_Depth_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_depthVP[i] = m16[i];
@@ -6215,6 +6217,36 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// PBR draw actually left its ORM there.
 				Restore_Stage1_After_Pbr();
 				Restore_Pbr_Extra_Stages();
+				// Soft particles. This must come *after* Restore_Pbr_Extra_Stages above:
+				// that call puts stages 2, 4, 6 and 7 back to what render_state holds,
+				// which for a sprite is nothing. Binding stage 7 before it meant the bind
+				// was undone before the draw and the shader sampled an unbound stage --
+				// black, every time, whatever was bound. The symptom was every particle
+				// in the frame disappearing, and it survived three wrong diagnoses.
+				//
+				// Stage 7 is bound whenever a depth map exists, on the same reasoning as
+				// the shadow map: the shader samples it in code the compiler cannot skip,
+				// and a read from an unbound stage is undefined in D3D9. SoftCtl.x is what
+				// actually switches the fade on.
+				//
+				// c12 is SunVP (c12-15) on the PBR path. Safe because this is written on
+				// every non-PBR draw, immediately before it, but worth knowing.
+				const bool softProjValid = (m_ssrParams[3] != 0.0f);
+				const bool softOn = m_softParticles && (m_pSceneDepth != nullptr) && softProjValid
+								  && (m_softParticleFade > 0.0f);
+				if (m_pSceneDepth != nullptr) {
+					Set_DX8_Texture(7, m_pSceneDepth);
+					// Point filtering: packed depth is three bytes of one number and
+					// interpolating them blends nonsense.
+					Set_DX8_Texture_Stage_State(7, D3DTSS_MINFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				}
+				D3DXVECTOR4 softCtl(softOn ? 1.0f : 0.0f,
+									(m_softParticleFade > 0.0f) ? m_softParticleFade : 1.0f,
+									m_ssrParams[2], m_ssrParams[3]);
+				Set_Pixel_Shader_Constant(12, &softCtl, 1);
 				Set_Vertex_Shader_Constant(16, &sceneAmbient, 1);
 				for (int li = 0; li < 4; ++li) {
 					// Transform world-space light direction to camera space for unit_vs

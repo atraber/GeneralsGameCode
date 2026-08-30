@@ -75,6 +75,9 @@ struct VS_OUTPUT
     float2 texcoord1 : TEXCOORD1;  // stage 1 coordinates
     float4 lightPos  : TEXCOORD2;  // position in the sun's clip space (cast shadows)
     float3 cloudPos  : TEXCOORD3;  // xy = world position on the ground plane, z = receives sun
+    // The clip position again, so the pixel shader can find itself on screen and read the
+    // depth prepass. POSITION is not readable in a pixel shader, hence the copy.
+    float4 screenPos : TEXCOORD5;
 };
 
 // Normalizing a zero-length vector yields NaN, and NaN survives everything downstream --
@@ -125,6 +128,7 @@ VS_OUTPUT main(VS_INPUT input)
     VS_OUTPUT output;
 
     output.position = mul(float4(input.position, 1.0), WorldViewProj);
+    output.screenPos = output.position;
 
     // Only meshes actually lit by the sun receive its shadow. Texture-only overlays and
     // pre-lit meshes (effects, which carry their own baked colour) keep it out of their

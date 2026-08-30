@@ -36,6 +36,7 @@
 #include "W3DDevice/GameClient/W3DSnow.h"
 #include "WW3D2/camera.h"
 #include "WW3D2/dx8wrapper.h"
+#include "WW3D2/debugvis.h"
 
 
 //------------------------------------------------------------------------------ Performance Timers
@@ -338,6 +339,12 @@ void W3DParticleSystemManager::doParticleShadows(RenderInfoClass &rinfo)
 #endif
 }
 
+// World units over which an airborne sprite fades out as it approaches whatever is behind
+// it. Roughly the radius of a small smoke puff: large enough that a cloud meeting the
+// ground loses its cut edge, small enough that a sprite well clear of anything is
+// untouched.
+static const float SOFT_PARTICLE_FADE_DISTANCE = 12.0f;
+
 void W3DParticleSystemManager::doParticles(RenderInfoClass &rinfo)
 {
 
@@ -351,6 +358,12 @@ void W3DParticleSystemManager::doParticles(RenderInfoClass &rinfo)
 	/// @todo lorenzen sez: this should be debug only:
 	m_onScreenParticleCount = 0;
 
+	// Everything drawn from here on is an airborne sprite, so it may fade where it meets
+	// the scene behind it. Scoped to this function rather than switched on globally for
+	// blended geometry: roads, tank tracks and scorch marks go through the same pixel
+	// shader and lie *on* the ground, where their own depth equals the scene's, so a fade
+	// would erase them outright instead of softening them.
+	SoftParticleScopeClass softParticles(true, SOFT_PARTICLE_FADE_DISTANCE);
  	const FrustumClass & frustum = rinfo.Camera.Get_Frustum();
 	AABoxClass bbox;
 
