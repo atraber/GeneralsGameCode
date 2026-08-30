@@ -193,10 +193,11 @@ void drawFrameTimingOverlay( Int topY )
 		s_lines[0]->setText(line);
 
 		UnicodeString phases;
-		phases.format(L"logic %.2f  client %.2f  draw %.2f",
+		phases.format(L"logic %.2f  client %.2f  draw %.2f  shadow %.2f",
 			snap.phaseMs[FrameTiming::PHASE_LOGIC],
 			snap.phaseMs[FrameTiming::PHASE_CLIENT],
-			snap.phaseMs[FrameTiming::PHASE_DRAW]);
+			snap.phaseMs[FrameTiming::PHASE_DRAW],
+			snap.phaseMs[FrameTiming::PHASE_SHADOWMAP]);
 		s_lines[1]->setText(phases);
 
 		phases.format(L"scene %.2f  postfx %.2f  ui %.2f  gpuwait %.2f   (cpu time; gpuwait = stalled on GPU)",

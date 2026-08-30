@@ -101,6 +101,15 @@ enum DebugVisMode CPP_11(: int)
 	// shows what is actually in the field, so "the shroud looks fine" can be separated
 	// from "the shroud is flat here and would look fine either way".
 	DEBUG_VIS_SHROUD,
+	// The sun's depth map, unpacked and drawn as a corner tile.
+	//
+	// The map is the input to every cast shadow, and almost every shadow bug is
+	// visible in it before it is visible on the ground: a caster missing from the
+	// map is a caster culled by the wrong frustum, and depth that saturates to flat
+	// white or flat black is a sun projection whose near/far do not bracket the
+	// scene. Reading it off the finished frame instead means guessing which of those
+	// produced the same black roof.
+	DEBUG_VIS_SHADOW_MAP,
 
 	DEBUG_VIS_COUNT
 };

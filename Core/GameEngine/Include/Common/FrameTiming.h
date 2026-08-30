@@ -58,6 +58,7 @@ namespace FrameTiming
 		PHASE_LOGIC = 0,		///< TheGameLogic->UPDATE()
 		PHASE_CLIENT,			///< TheGameClient->UPDATE(), less the display draw below
 		PHASE_DRAW,				///< the display draw, less the render phases below
+		PHASE_SHADOWMAP,		///< the sun's depth pass
 		PHASE_SCENE,			///< the main scene render
 		PHASE_POSTFX,			///< the screen filter chain
 		PHASE_UI,				///< in-game UI, control bar, mouse
