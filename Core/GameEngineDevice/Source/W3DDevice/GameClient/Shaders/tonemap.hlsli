@@ -79,7 +79,7 @@ float3 ToneMapShoulder(float3 x, float knee)
 }
 
 //   1 = ACES filmic      2 = Reinhard + white point      3 = shoulder only
-#define TONEMAP_CURVE       1
+#define TONEMAP_CURVE       3
 #define TONEMAP_WHITE       4.0    // curve 2 only: linear value that maps to display white
 #define TONEMAP_KNEE        0.80   // curve 3 only: below this, exactly unchanged
 

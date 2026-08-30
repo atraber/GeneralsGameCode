@@ -25,7 +25,26 @@
 // lighting baked into the colour they start from, so there is no direct term left to remove
 // on its own. Sharing it is what makes a unit and its own cast shadow on the ground sit at
 // the same brightness, which is the whole reason it is here rather than in five shaders.
-static const float SHADOW_MIN = 0.35;
+//
+// **This constant is not the fraction that reaches the screen.** Measured on china.rep
+// frame 3600 against a build with the floor forced to 1.0, a fully shadowed ground pixel
+// displayed at 0.209 of its own unshadowed value while this said 0.35, and at 0.410 while
+// it said 0.55. Both fit displayed = SHADOW_MIN^1.49 exactly, and the same exponent came
+// back off self-shadowed mesh faces, so it is downstream of every shader here -- the tone
+// map, which decodes this gamma-encoded buffer, compresses and re-encodes. Anything picked
+// as "how much light should a shadow keep" has to be raised by that power to survive to
+// the frame.
+//
+// 0.51 displays as about 0.49 under the shoulder curve, which is identity below its 0.80
+// knee and so leaves the shadowed range alone. It was 0.35, which displayed as 0.21 and is
+// why a physically defensible number still read as a hole in the ground: shaded faces lost
+// their material, and the stock diffuse maps already have occlusion painted into them, so
+// the dynamic term was shading art that was shaded once already. Measured shadowed/lit on
+// open ground either side of one cast shadow: 0.44 -> 0.57 on china.rep (Twilight Flame),
+// 0.49 -> 0.64 on shadow_frustum2.rep (barren badlands, bright daylight). Vanilla sat at
+// 0.74, so shadows here are still deeper than the game shipped with -- which is the point,
+// they just are not holes any more.
+static const float SHADOW_MIN = 0.51;
 
 
 // ---------------------------------------------------------------------------------------
