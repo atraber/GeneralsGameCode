@@ -584,6 +584,12 @@ Int parseCamera(char *args[], int num)
 	return 1;
 }
 
+Int parseDumpShadowMap(char *args[], int num)
+{
+	TheWritableGlobalData->m_frameDumpShadowMap = TRUE;
+	return 1;
+}
+
 // TheSuperHackers @feature andytraber 17/08/2026 Ways for an unattended run to end itself.
 Int parseQuitAfterReplay(char *args[], int num)
 {
@@ -1325,6 +1331,7 @@ static CommandLineParam paramsForStartup[] =
 	{ "-dumpFrames", parseDumpFrames },
 	{ "-dumpTimes", parseDumpTimes },
 	{ "-dumpEvery", parseDumpEvery },
+	{ "-dumpShadowMap", parseDumpShadowMap },
 
 	// TheSuperHackers @feature andytraber 19/08/2026
 	// Drive the camera from a list of timed cues, since a game watched live has nobody at the

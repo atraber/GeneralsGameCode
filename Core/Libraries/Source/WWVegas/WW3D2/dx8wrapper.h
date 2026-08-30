@@ -369,6 +369,11 @@ public:
 	typedef void (*PostSceneCallbackFunc)(void* userData);
 	static void Request_Post_Scene_Callback(PostSceneCallbackFunc func, void* userData);
 
+	// Writes the sun's shadow map beside a frame dump. Deliberately available: a back
+	// buffer with no visible shadows has two causes -- the map is empty, or the receivers
+	// are not sampling it -- and they are indistinguishable from the back buffer alone.
+	static bool Dump_Shadow_Map(const char* pathname);
+
 	// Flip until the primary buffer is visible.
 	static void Flip_To_Primary();
 
