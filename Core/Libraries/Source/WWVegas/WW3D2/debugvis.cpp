@@ -17,6 +17,7 @@
 */
 
 #include "debugvis.h"
+#include "meshtechnique.h"
 
 const char * Debug_Vis_Mode_Name(DebugVisMode mode)
 {
@@ -26,6 +27,7 @@ const char * Debug_Vis_Mode_Name(DebugVisMode mode)
 		case DEBUG_VIS_SHROUD:			return "Shroud field";
 		case DEBUG_VIS_SHADOW_MAP:		return "Shadow map";
 		case DEBUG_VIS_DEPTH:			return "Camera depth";
+		case DEBUG_VIS_MESH_TECHNIQUE:	return "Mesh technique";
 		case DEBUG_VIS_OVERDRAW:		return "Overdraw";
 		case DEBUG_VIS_WIREFRAME:		return "Wireframe";
 		case DEBUG_VIS_NORMALS:			return "Normals";
@@ -36,6 +38,9 @@ const char * Debug_Vis_Mode_Name(DebugVisMode mode)
 const char * Debug_Vis_Mode_Legend(DebugVisMode mode)
 {
 	switch (mode) {
+		case DEBUG_VIS_MESH_TECHNIQUE:
+			return "surface=green  prelit=blue  effect=yellow  "
+				   "unclassified=grey  declared-FF=magenta  fell back to FF=red";
 		case DEBUG_VIS_BLOOM:
 			// The threshold is not quoted because it is not fixed: the bright pass is fed a
 			// number that has to move with the scene buffer. What the tint means is constant.
@@ -58,3 +63,29 @@ const char * Debug_Vis_Mode_Legend(DebugVisMode mode)
 	}
 }
 
+
+unsigned Debug_Vis_Technique_Color(int technique, bool fixedFunction)
+{
+	if (fixedFunction) {
+		// Two different problems, two colours. Magenta is geometry the classifier
+		// declared FIXED_FUNCTION: expected, and the size of the remaining burn-down.
+		// Red is a draw whose asset said it could be shaded and which fell back
+		// anyway -- a capability gap in the shaders, and the more interesting of the
+		// two, so it gets the more alarming colour.
+		if (technique == MESH_TECHNIQUE_FIXED_FUNCTION)
+			return 0xFFFF00FF;   // magenta: declared fixed function
+		return 0xFFFF2020;       // red: wanted the shader, did not get it
+	}
+
+	switch (technique) {
+		case MESH_TECHNIQUE_SURFACE:	return 0xFF40C040;   // green
+		case MESH_TECHNIQUE_PRELIT:		return 0xFF4080E0;   // blue
+		case MESH_TECHNIQUE_EFFECT:		return 0xFFE0D040;   // yellow
+		// No technique was declared, so this did not come through the mesh renderer:
+		// terrain, water, the shroud, particles, 2D. Grey rather than a hue of its
+		// own -- it is the backdrop the other four are being read against, and most
+		// of a typical frame is this.
+		case MESH_TECHNIQUE_UNCLASSIFIED:
+		default:						return 0xFF808080;
+	}
+}

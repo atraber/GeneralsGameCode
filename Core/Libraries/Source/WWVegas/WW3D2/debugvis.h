@@ -121,6 +121,16 @@ enum DebugVisMode CPP_11(: int)
 	// and shows the entire visible map as one shade just short of 1.
 	DEBUG_VIS_DEPTH,
 
+	// Every draw flat-shaded by the MeshTechnique it declared, and by the pipeline
+	// that actually drew it.
+	//
+	// Answers the two questions that have cost the most time here. "Is this mesh
+	// drawn by one pipeline?" -- a mesh that flickers between two colours frame to
+	// frame is a mesh being split, which is what z-fights. And "what is left on
+	// fixed function?" -- those draw in a colour nothing else uses, so the remaining
+	// work is a thing you can point at on screen rather than a number in a census.
+	DEBUG_VIS_MESH_TECHNIQUE,
+
 	DEBUG_VIS_COUNT
 };
 
@@ -144,3 +154,12 @@ const char * Debug_Vis_Mode_Name(DebugVisMode mode);
 ** legend (the shadow map tile labels itself).
 */
 const char * Debug_Vis_Mode_Legend(DebugVisMode mode);
+
+/*
+** The colour DEBUG_VIS_MESH_TECHNIQUE flat-shades a draw with.
+**
+** Takes the technique as an int rather than a MeshTechnique so that this header
+** stays free of meshtechnique.h -- it is included by the wrapper, which has both,
+** and by callers that have neither.
+*/
+unsigned Debug_Vis_Technique_Color(int technique, bool fixedFunction);
