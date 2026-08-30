@@ -61,6 +61,18 @@ namespace FrameTiming
 
 	static Int64		s_freq = 0;
 
+	static PhaseBracketHook	s_bracketHook = nullptr;
+
+	// GPU history is kept separately from the CPU history and advances on its own clock: a
+	// frame only lands here once its timestamps have resolved and come back non-disjoint, so
+	// the two windows cover the same stretch of time but not the same count of frames.
+	static Real			s_gpuPhaseHistory[PHASE_COUNT][HISTORY_SIZE] = { { 0 } };
+	static Real			s_gpuTotalHistory[HISTORY_SIZE] = { 0 };
+	static Int			s_gpuHead = 0;
+	static Int			s_gpuCount = 0;
+	static Bool			s_gpuSupported = FALSE;
+	static UnsignedInt	s_gpuDisjointFrames = 0;
+
 	static const char* s_phaseNames[PHASE_COUNT] =
 	{
 		"logic", "client", "draw", "shadow", "depth", "scene", "postfx", "ui", "gpuwait", "wait"
@@ -103,6 +115,9 @@ namespace FrameTiming
 		entry.phase = phase;
 		entry.startTicks = nowTicks();
 		entry.childTicks = 0;
+
+		if (s_bracketHook != nullptr)
+			s_bracketHook(phase, TRUE);
 	}
 
 	void endPhase( Phase phase )
@@ -125,8 +140,35 @@ namespace FrameTiming
 		// ...and the whole span counts as a child of whatever encloses it.
 		if (s_depth > 0)
 			s_stack[s_depth - 1].childTicks += elapsed;
+
+		if (s_bracketHook != nullptr)
+			s_bracketHook(phase, FALSE);
 	}
 
+
+	void setPhaseBracketHook( PhaseBracketHook hook )
+	{
+		s_bracketHook = hook;
+	}
+
+
+	void submitGpuFrame( const Real* phaseMs, Real totalMs )
+	{
+		for (Int i = 0; i < PHASE_COUNT; ++i)
+			s_gpuPhaseHistory[i][s_gpuHead] = phaseMs[i];
+		s_gpuTotalHistory[s_gpuHead] = totalMs;
+
+		s_gpuHead = (s_gpuHead + 1) % HISTORY_SIZE;
+		if (s_gpuCount < HISTORY_SIZE)
+			++s_gpuCount;
+	}
+
+
+	void setGpuStatus( Bool supported, UnsignedInt disjointFrames )
+	{
+		s_gpuSupported = supported;
+		s_gpuDisjointFrames = disjointFrames;
+	}
 
 	void endFrame( Real framePeriodSeconds )
 	{
@@ -200,11 +242,39 @@ namespace FrameTiming
 		out.workP95Ms = sorted[idx];
 
 		out.budgetMs = 0.0f;
-		if (TheFramePacer != nullptr && TheFramePacer->isActualFramesPerSecondLimitEnabled())
+		const Bool limited = (TheFramePacer != nullptr &&
+							  TheFramePacer->isActualFramesPerSecondLimitEnabled());
+		if (limited)
 		{
 			const Int limit = TheFramePacer->getActualFramesPerSecondLimit();
 			if (limit > 0)
 				out.budgetMs = 1000.0f / (Real)limit;
+		}
+
+		out.gpuSupported = s_gpuSupported;
+		out.gpuDisjointFrames = s_gpuDisjointFrames;
+		out.gpuSampleCount = s_gpuCount;
+
+		// The refusal that makes the rest of it worth reading. Under a frame rate cap half
+		// the frame is idle, the GPU clocks down, and heavier work makes it boost -- which is
+		// how a 2.25x pixel increase once measured 18.6% *faster* here, reproducibly. The
+		// disjoint query catches a clock change inside one frame; it cannot catch a clock
+		// that is simply low and steady for the whole run. Nothing but uncapping does.
+		out.gpuMeasurable = !limited;
+
+		if (s_gpuCount > 0)
+		{
+			for (Int p = 0; p < PHASE_COUNT; ++p)
+			{
+				Real sum = 0.0f;
+				for (Int i = 0; i < s_gpuCount; ++i)
+					sum += s_gpuPhaseHistory[p][i];
+				out.gpuPhaseMs[p] = sum / s_gpuCount;
+			}
+			Real total = 0.0f;
+			for (Int i = 0; i < s_gpuCount; ++i)
+				total += s_gpuTotalHistory[i];
+			out.gpuTotalMs = total / s_gpuCount;
 		}
 	}
 

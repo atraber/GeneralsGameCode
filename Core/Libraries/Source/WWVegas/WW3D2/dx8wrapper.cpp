@@ -51,6 +51,7 @@
 #endif
 
 #include "dx8wrapper.h"
+#include "gputimer.h"
 #include "dx8webbrowser.h"
 #include "dx8fvf.h"
 #include "dx8vertexbuffer.h"
@@ -2368,6 +2369,13 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 		DynamicIBAccessClass::_Deinit();
 		DX8TextureManagerClass::Release_Textures();
 		SHD_SHUTDOWN_SHADERS;
+
+#if defined(RTS_DEBUG)
+		// Query objects are one more thing that can hold Reset() at D3DERR_INVALIDCALL, and
+		// this codebase has already lost a session to that failure mode. The pool rebuilds
+		// itself on the next Begin_Frame, so nothing reacquires it below.
+		GpuTimer::Release();
+#endif
 
 		// Reset frame count to reflect the flipping chain being reset by Reset()
 		FrameCount = 0;

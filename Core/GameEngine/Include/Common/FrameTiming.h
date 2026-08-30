@@ -82,7 +82,31 @@ namespace FrameTiming
 		Real frameMs;				///< mean total frame period (work + wait)
 		Real budgetMs;				///< the frame budget from the fps cap, or 0 when uncapped
 		Int  sampleCount;			///< frames in the window; < HISTORY_SIZE while filling
+
+		// GPU side. Filled by the device layer from D3D9 timestamp queries; see
+		// WW3D2/gputimer.h for why these are the numbers most likely to be lying to you.
+		// Only the sibling render phases carry GPU spans -- bracketing a phase that submits
+		// no GPU work measures whatever happened to be in flight, which is worse than
+		// measuring nothing. gpuTotalMs is the whole frame's GPU span.
+		Real gpuPhaseMs[PHASE_COUNT];
+		Real gpuTotalMs;
+		Int  gpuSampleCount;		///< resolved, non-disjoint frames in the window
+		Bool gpuSupported;			///< the device could create timestamp queries
+		Bool gpuMeasurable;			///< false while the fps limiter is on; see below
+		UnsignedInt gpuDisjointFrames;	///< frames thrown away for a mid-frame clock change
 	};
+
+	/// Hook the device layer installs so the same scopes can bracket GPU work. FrameTiming
+	/// knows nothing about D3D and must not: this is the whole of the coupling.
+	typedef void (*PhaseBracketHook)( Phase phase, Bool begin );
+	void setPhaseBracketHook( PhaseBracketHook hook );
+
+	/// Hand back one frame's resolved GPU timings. phaseMs is indexed by Phase; slots the
+	/// device layer did not bracket must be 0.
+	void submitGpuFrame( const Real* phaseMs, Real totalMs );
+
+	/// Tell the readout what the GPU timer is capable of right now.
+	void setGpuStatus( Bool supported, UnsignedInt disjointFrames );
 
 	/// Begin/end a phase. Nesting is allowed and produces exclusive times.
 	void beginPhase( Phase phase );
