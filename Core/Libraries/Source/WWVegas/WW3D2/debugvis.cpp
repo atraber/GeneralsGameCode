@@ -25,6 +25,7 @@ const char * Debug_Vis_Mode_Name(DebugVisMode mode)
 		case DEBUG_VIS_BLOOM:			return "Bloom bright pass";
 		case DEBUG_VIS_SHROUD:			return "Shroud field";
 		case DEBUG_VIS_SHADOW_MAP:		return "Shadow map";
+		case DEBUG_VIS_DEPTH:			return "Camera depth";
 		case DEBUG_VIS_OVERDRAW:		return "Overdraw";
 		case DEBUG_VIS_WIREFRAME:		return "Wireframe";
 		case DEBUG_VIS_NORMALS:			return "Normals";

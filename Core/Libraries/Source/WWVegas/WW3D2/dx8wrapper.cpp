@@ -279,13 +279,15 @@ void DX8Wrapper::Restore_Stage1_After_Pbr()
 }
 
 // The same story one stage further out: the shared environment cubemap is bound to
-// stage 4 for a PBR draw, straight to the device like the ORM. Nothing in the
-// applied-texture cache knows to take it off, so the next fixed-function draw
-// inherits a texture on a stage it never asked for and renders through it.
+// stage 4 for a PBR draw, and the two screen-space reflection targets to 6 and 7 --
+// all three straight to the device like the ORM. Nothing in the applied-texture cache
+// knows to take them off, so the next fixed-function draw inherits textures on stages
+// it never asked for and renders through them.
 //
 // Sorted translucent geometry -- rotor discs, glow cones -- is exactly the kind of
 // draw that shows this, because it never routes to the programmable path and so is
-// always the one inheriting.
+// always the one inheriting. Stage 4 already had this restore; 6 and 7 arrived with
+// SSR and would have put those draws back in the same hole without it.
 static bool s_pbrExtraStagesBound = false;
 
 void DX8Wrapper::Restore_Pbr_Extra_Stages()
@@ -293,11 +295,15 @@ void DX8Wrapper::Restore_Pbr_Extra_Stages()
 	if (!s_pbrExtraStagesBound)
 		return;
 	s_pbrExtraStagesBound = false;
-	Set_DX8_Texture(4, render_state.Textures[4] != nullptr
-					   ? render_state.Textures[4]->Peek_D3D_Base_Texture()
-					   : NULL);
-	Set_DX8_Texture_Stage_State(4, D3DTSS_COLOROP, D3DTOP_DISABLE);
-	Set_DX8_Texture_Stage_State(4, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	const unsigned pbrExtraStages[3] = { 4, 6, 7 };
+	for (int i = 0; i < 3; ++i) {
+		const unsigned stage = pbrExtraStages[i];
+		Set_DX8_Texture(stage, render_state.Textures[stage] != nullptr
+							   ? render_state.Textures[stage]->Peek_D3D_Base_Texture()
+							   : NULL);
+		Set_DX8_Texture_Stage_State(stage, D3DTSS_COLOROP, D3DTOP_DISABLE);
+		Set_DX8_Texture_Stage_State(stage, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	}
 }
 
 // Same story one stage along: the shadow map is bound to stage 5 for the lit passes that
@@ -3251,7 +3257,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// projections this code does not anticipate, and all of it landing where
 				// the stored depth sits closest to 1.0 and tolerates error least.
 				// Passing the coefficients removes the round trip entirely.
-				//   ndcZ = _33 + _43/viewZ  ->  viewZ = _43 / (ndcZ - _33)
+				// The projection in use is right-handed, so the inversion is
+				//   ndcZ = -_33 - _43/viewZ  ->  viewZ = abs(_43 / (_33 + ndcZ))
+				// which is what unit_pbr_ps and debugdepth_ps both compute, abs() included
+				// so the expression survives a left-handed projection too. This comment
+				// used to state the left-handed pair, and every consumer written from it
+				// got a negative distance for every pixel; the depth inspector, built from
+				// this line, came out uniformly white until it was checked against the
+				// shader. Measured here: _33 = -1.006, _43 = -10.06, i.e. near 10, far 1677.
 				// How far a reflection may travel before giving up and leaving the
 				// cubemap in place. Long enough to cross a vehicle and reach the ground
 				// beside it, short enough that the march stays fine-grained.

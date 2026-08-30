@@ -277,6 +277,10 @@ static void parseCue(char** tokens, Int count, const char* source, Int line)
 		{
 			cue.args[0] = 6.0f;
 		}
+		else if (stricmp(tokens[2], "depth") == 0)
+		{
+			cue.args[0] = 7.0f;
+		}
 		else
 		{
 			DEBUG_LOG(("CAMERA SCRIPT: %s line %d: unknown debugvis mode '%s'", source, line, tokens[2]));

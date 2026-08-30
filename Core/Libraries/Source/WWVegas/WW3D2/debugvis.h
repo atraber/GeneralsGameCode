@@ -111,6 +111,16 @@ enum DebugVisMode CPP_11(: int)
 	// produced the same black roof.
 	DEBUG_VIS_SHADOW_MAP,
 
+	// The camera-space depth prepass, linearised, as a corner tile.
+	//
+	// This is what screen-space reflections march along, and a depth buffer that is
+	// subtly wrong -- inverted, mis-scaled, or built from a projection that disagrees
+	// with the one the scene was drawn with -- produces reflections that are merely
+	// odd rather than obviously broken. Linearised because the stored value is
+	// post-projection z/w, which spends almost its whole range in the first few metres
+	// and shows the entire visible map as one shade just short of 1.
+	DEBUG_VIS_DEPTH,
+
 	DEBUG_VIS_COUNT
 };
 
