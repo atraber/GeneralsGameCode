@@ -322,9 +322,9 @@ void DX8Wrapper::Prepare_Direct_Draw(const char * site)
 	// A drawer that goes to the device itself binds nothing, so it inherits whatever
 	// shaders the previous draw left -- including none at all, which is fixed function.
 	// Which it is can still be read off the device's bindings, and that is the same test
-	// Draw() makes: no pixel shader, or a vertex "shader" below 0x10000 that is really an
-	// FVF. A direct drawer that did bind a pixel shader needs none of this state.
-	if (Pixel_Shader == 0 || Vertex_Shader < 0x10000) {
+	// Draw() makes. A direct drawer that bound both a vertex and a pixel shader needs none
+	// of this state.
+	if (Is_Fixed_Function_Draw()) {
 		Flush_Fixed_Function_State();
 	}
 #ifdef RTS_DEBUG
@@ -362,16 +362,30 @@ static bool s_applyIsDraw = false;
 //-----------------------------------------------------------------------------
 // Direct-device draws: the callers that bypass DX8Wrapper::Draw entirely.
 //
-// Each records whether a pixel shader was bound at the moment it drew. A zero there
-// means the draw went out on the fixed-function pipeline; it also means the draw took
-// whatever the *previous* draw left bound, since nothing on this path binds anything,
-// which is how the same geometry can land on different pipelines from frame to frame.
+// Each records which halves of the pipeline were programmable at the moment it drew.
+// Nothing on this path binds anything, so a draw takes whatever the *previous* draw
+// left bound, which is how the same geometry can land on different pipelines from
+// frame to frame.
+//
+// The two halves are counted apart because they are lost and regained separately, and
+// counting only one of them reads as further along than the code is. A pixel shader
+// with a D3DFVF_XYZRHW vertex format is the common case: the fragment side is
+// programmable while the vertex side is not merely fixed-function but skipped
+// altogether, the position arriving already in screen space. Every screen-space quad
+// in the frame -- the bloom chain, the tone map, the filters -- is drawn that way. The
+// old single "fixed function" column tested the pixel shader alone and so reported all
+// of them as done.
+//
+// The pair of tests is the same one Prepare_Direct_Draw makes to decide whether the
+// deferred fixed-function state has to be flushed; they are written once, here, so the
+// census and the flush cannot drift apart again.
 //-----------------------------------------------------------------------------
 struct DirectDrawGroup
 {
 	const char * site;
 	unsigned     total;
-	unsigned     fixedFunction;   // pixel shader was 0
+	unsigned     ffPixel;    // no pixel shader bound
+	unsigned     ffVertex;   // an FVF rather than a vertex shader
 };
 static DirectDrawGroup s_directDraws[16];
 static int      s_directDrawCount = 0;
@@ -380,11 +394,13 @@ static unsigned s_directDrawFrames = 0;
 void DX8Wrapper::Debug_Note_Direct_Draw(const char * site)
 {
 	if (site == nullptr) site = "?";
-	const bool ff = (Pixel_Shader == 0);
+	const bool ffPixel  = Is_Fixed_Function_Pixel_Draw();
+	const bool ffVertex = Is_Fixed_Function_Vertex_Draw();
 	for (int i = 0; i < s_directDrawCount; ++i) {
 		if (s_directDraws[i].site == site) {
 			++s_directDraws[i].total;
-			if (ff) ++s_directDraws[i].fixedFunction;
+			if (ffPixel)  ++s_directDraws[i].ffPixel;
+			if (ffVertex) ++s_directDraws[i].ffVertex;
 			return;
 		}
 	}
@@ -392,7 +408,8 @@ void DX8Wrapper::Debug_Note_Direct_Draw(const char * site)
 	DirectDrawGroup & g = s_directDraws[s_directDrawCount++];
 	g.site = site;
 	g.total = 1;
-	g.fixedFunction = ff ? 1 : 0;
+	g.ffPixel  = ffPixel  ? 1 : 0;
+	g.ffVertex = ffVertex ? 1 : 0;
 }
 
 void DX8Wrapper::Debug_Report_Direct_Draws()
@@ -404,12 +421,14 @@ void DX8Wrapper::Debug_Report_Direct_Draws()
 		return;
 	}
 	WWDEBUG_SAY(("DIRECT-DEVICE DRAWS over 600 frames (these bypass DX8Wrapper::Draw and "
-				 "are not in the census above):"));
+				 "are not in the census above). FF-vertex means an FVF rather than a vertex "
+				 "shader; FF-pixel means no pixel shader. A site is only done when both are 0:"));
 	for (int i = 0; i < s_directDrawCount; ++i) {
 		const DirectDrawGroup & g = s_directDraws[i];
-		WWDEBUG_SAY(("  %-24s x%-7u  fixed function %u (%u%%)",
-			g.site, g.total, g.fixedFunction,
-			g.total ? (unsigned)((unsigned __int64)g.fixedFunction * 100 / g.total) : 0));
+		const unsigned vpc = g.total ? (unsigned)((unsigned __int64)g.ffVertex * 100 / g.total) : 0;
+		const unsigned ppc = g.total ? (unsigned)((unsigned __int64)g.ffPixel  * 100 / g.total) : 0;
+		WWDEBUG_SAY(("  %-24s x%-7u  FF-vertex %u (%u%%)  FF-pixel %u (%u%%)",
+			g.site, g.total, g.ffVertex, vpc, g.ffPixel, ppc));
 	}
 	s_directDrawCount = 0;
 }
@@ -1233,6 +1252,7 @@ DWORD							DX8Wrapper::m_dwUiVS = 0;
 DWORD							DX8Wrapper::m_dwUiPS = 0;
 bool							DX8Wrapper::m_bUiPass = false;
 bool							DX8Wrapper::m_uiGreyscale = false;
+DWORD							DX8Wrapper::m_dwScreenQuadVS = 0;
 DWORD							DX8Wrapper::m_dwMaskVS = 0;
 DWORD							DX8Wrapper::m_dwMaskPS = 0;
 bool							DX8Wrapper::m_bMaskPass = false;
@@ -1457,65 +1477,31 @@ void DX8Wrapper::Force_Fixed_Function_Pipeline()
 	m_bUnitShaderBound = false;
 }
 
-bool DX8Wrapper::Bind_Screen_Space_Shader()
+/*
+** Put the interface shader pair on a draw the routing block will never see, with a
+** transform the caller supplies.
+**
+** ui_vs is a passthrough with a matrix in front of it and ui_ps is a stage-0 combine of
+** texture against vertex diffuse -- between them the whole of what the remaining
+** direct-device drawers were asking the fixed-function pipeline for. What separates one
+** caller from another is only the matrix (screen space for the quads, world-view-proj for
+** geometry) and whether the combine samples the texture, so those are the arguments and
+** everything else is shared.
+**
+** Returns false if the shaders are unavailable, in which case the caller must keep its
+** fixed-function path -- so drawers can be moved across one at a time.
+*/
+bool DX8Wrapper::Bind_Ui_Shader_Direct(const D3DXMATRIX & wvp, bool sampleColour, bool sampleAlpha)
 {
 	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
 
-	// The viewport, not the back buffer: these quads are sized against a view that need
-	// not fill the window, and the mapping has to agree with whatever the rasteriser is
-	// clipping to. D3DFVF_XYZRHW was defined against the viewport too, so this reproduces
-	// it rather than approximating it.
-	D3DVIEWPORT9 vp;
-	if (FAILED(_Get_D3D_Device8()->GetViewport(&vp)) || vp.Width == 0 || vp.Height == 0)
-		return false;
-
 	Set_Vertex_Shader(m_dwUiVS);
 	Set_Pixel_Shader(m_dwUiPS);
+	Set_Vertex_Shader_Constant(0, &wvp, 4);
 
-	// Pixels to clip. x: [0,W] -> [-1,1]. y: [0,H] -> [1,-1], because screen y grows
-	// downward and clip y grows up. No half-pixel offset: that correction is for making
-	// texels land on pixel centres, and these quads are untextured.
-	//
-	// Row-major, to match the shader's row_major float4x4 and the mul() order in it.
-	const float sx =  2.0f / (float)vp.Width;
-	const float sy = -2.0f / (float)vp.Height;
-	D3DXMATRIX m(  sx, 0.0f, 0.0f, 0.0f,
-				 0.0f,   sy, 0.0f, 0.0f,
-				 0.0f, 0.0f, 1.0f, 0.0f,
-				-1.0f, 1.0f, 0.0f, 1.0f);
-	Set_Vertex_Shader_Constant(0, &m, 4);
-
-#ifdef RTS_DEBUG
-	// The matrix is the whole of what replaced D3DFVF_XYZRHW, and a sign error in it puts
-	// the quad upside down or off screen -- which on a stencil-masked tint reads as "the
-	// feature stopped working", not as "the matrix is wrong". So state the mapping once
-	// rather than going looking for it in a screenshot: the viewport's own corners, run
-	// through the matrix the shader will use, must come out as the clip-space corners.
-	// Reported per distinct viewport rather than once, because "once" answered the wrong
-	// question: the first call came while the 4096x4096 shadow map was still the target,
-	// and one sample cannot tell a wrong basis from an unusual first frame.
-	{
-		static unsigned seen[4] = { 0, 0, 0, 0 };
-		static int seenCount = 0;
-		const unsigned key = (vp.Width << 16) | vp.Height;
-		bool isNew = true;
-		for (int i = 0; i < seenCount; ++i) if (seen[i] == key) { isNew = false; break; }
-		if (isNew && seenCount < 4) {
-			seen[seenCount++] = key;
-			D3DXVECTOR4 tl, br;
-			D3DXVECTOR4 tlIn(0.0f, 0.0f, 0.0f, 1.0f);
-			D3DXVECTOR4 brIn((float)vp.Width, (float)vp.Height, 0.0f, 1.0f);
-			D3DXVec4Transform(&tl, &tlIn, &m);
-			D3DXVec4Transform(&br, &brIn, &m);
-			WWDEBUG_SAY(("SCREEN-SPACE SHADER: viewport %ux%u -> top-left (%.3f, %.3f) "
-						 "bottom-right (%.3f, %.3f)  [expect (-1, 1) and (1, -1)]",
-				vp.Width, vp.Height, tl.x, tl.y, br.x, br.y));
-		}
-	}
-#endif
-
-	// Untextured, not desaturated: colour and alpha both come from the vertex diffuse.
-	const D3DXVECTOR4 uiCtl(0.0f, 0.0f, 0.0f, 0.0f);
+	// (samples colour, desaturate, samples alpha, unused). Never desaturating: that path
+	// exists for disabled interface buttons, and none of these callers is one.
+	const D3DXVECTOR4 uiCtl(sampleColour ? 1.0f : 0.0f, 0.0f, sampleAlpha ? 1.0f : 0.0f, 0.0f);
 	Set_Pixel_Shader_Constant(0, &uiCtl, 1);
 
 	// Say what the fixed-function baseline is, or the next caller will get this shader
@@ -1531,6 +1517,129 @@ bool DX8Wrapper::Bind_Screen_Space_Shader()
 	s_dwOriginalPS = 0;
 	m_bUnitShaderBound = true;
 	return true;
+}
+
+/*
+** The world-space form: the caller supplies its world matrix and the view and projection
+** are taken from the device, which is where its own draw would have read them.
+**
+** Reading them back rather than tracking them is deliberate. These callers reach the device
+** through Apply_Render_State_Changes, which is what puts the current view and projection
+** there; asking the device gives the matrices that draw would actually have used, including
+** in the cases where a pass set up a projection of its own. The alternative -- a cached copy
+** in the wrapper -- is a second account of the same fact, and the first thing it would do is
+** disagree with the device for the one pass nobody remembered to update.
+*/
+bool DX8Wrapper::Bind_Ui_Shader_World(const D3DXMATRIX & world, bool sampleColour, bool sampleAlpha)
+{
+	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
+
+	D3DXMATRIX view, proj;
+	LPDIRECT3DDEVICE8 dev = _Get_D3D_Device8();
+	if (dev == nullptr) return false;
+	if (FAILED(dev->GetTransform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX*>(&view))) ||
+		FAILED(dev->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj))))
+		return false;
+
+	// Row-vector order, matching both D3D9's fixed-function transform (position * W * V * P)
+	// and the shader's mul(float4(position, 1), WorldViewProj). Getting this backwards does
+	// not draw the geometry wrong, it draws nothing, which is worth knowing before going
+	// looking for a blend state.
+	D3DXMATRIX wvp;
+	D3DXMatrixMultiply(&wvp, &world, &view);
+	D3DXMatrixMultiply(&wvp, &wvp, &proj);
+
+	return Bind_Ui_Shader_Direct(wvp, sampleColour, sampleAlpha);
+}
+
+/*
+** The pixels-to-clip mapping D3DFVF_XYZRHW used to imply, built from the viewport.
+**
+** The viewport and not the back buffer: these quads are sized against a view that need not
+** fill the window, and the mapping has to agree with whatever the rasteriser is clipping to.
+** XYZRHW was defined against the viewport too, so this reproduces it rather than
+** approximating it.
+**
+** Returns false if there is no usable viewport, in which case the caller must not draw.
+*/
+bool DX8Wrapper::Build_Pixels_To_Clip(D3DXMATRIX & out)
+{
+	D3DVIEWPORT9 vp;
+	if (FAILED(_Get_D3D_Device8()->GetViewport(&vp)) || vp.Width == 0 || vp.Height == 0)
+		return false;
+
+	// x: [0,W] -> [-1,1]. y: [0,H] -> [1,-1], because screen y grows downward and clip y
+	// grows up. Row-major, to match the shaders' row_major float4x4 and the mul() order in
+	// them -- the translation is in the last row, which is the row-vector convention D3D9's
+	// own fixed-function transform used.
+	const float sx =  2.0f / (float)vp.Width;
+	const float sy = -2.0f / (float)vp.Height;
+	out = D3DXMATRIX(  sx, 0.0f, 0.0f, 0.0f,
+					 0.0f,   sy, 0.0f, 0.0f,
+					 0.0f, 0.0f, 1.0f, 0.0f,
+					-1.0f, 1.0f, 0.0f, 1.0f);
+
+#ifdef RTS_DEBUG
+	// The matrix is the whole of what replaced D3DFVF_XYZRHW, and a sign error in it puts
+	// the quad upside down or off screen -- which on a post-process pass reads as "the
+	// effect stopped working", not as "the matrix is wrong". So state the mapping rather
+	// than going looking for it in a screenshot: the viewport's own corners, run through the
+	// matrix the shader will use, must come out as the clip-space corners.
+	//
+	// Reported per distinct viewport rather than once, because "once" answered the wrong
+	// question: the first call came while the 4096x4096 shadow map was still the target, and
+	// one sample cannot tell a wrong basis from an unusual first frame.
+	{
+		static unsigned seen[4] = { 0, 0, 0, 0 };
+		static int seenCount = 0;
+		const unsigned key = (vp.Width << 16) | vp.Height;
+		bool isNew = true;
+		for (int i = 0; i < seenCount; ++i) if (seen[i] == key) { isNew = false; break; }
+		if (isNew && seenCount < 4) {
+			seen[seenCount++] = key;
+			D3DXVECTOR4 tl, br;
+			D3DXVECTOR4 tlIn(0.0f, 0.0f, 0.0f, 1.0f);
+			D3DXVECTOR4 brIn((float)vp.Width, (float)vp.Height, 0.0f, 1.0f);
+			D3DXVec4Transform(&tl, &tlIn, &out);
+			D3DXVec4Transform(&br, &brIn, &out);
+			WWDEBUG_SAY(("SCREEN-SPACE SHADER: viewport %ux%u -> top-left (%.3f, %.3f) "
+						 "bottom-right (%.3f, %.3f)  [expect (-1, 1) and (1, -1)]",
+				vp.Width, vp.Height, tl.x, tl.y, br.x, br.y));
+		}
+	}
+#endif
+	return true;
+}
+
+/*
+** The vertex half only: the post-process callers bring their own pixel shader.
+**
+** Does not touch s_dwOriginalPS or m_bUnitShaderBound, unlike the ui binds below. Those
+** exist to tell the routing block what "back to fixed function" means for a draw it can
+** see; a post-process quad is drawn straight at the device between passes, and claiming
+** the fixed-function baseline had changed would be a lie about a pipeline this never
+** entered.
+*/
+bool DX8Wrapper::Bind_Screen_Quad_Shader()
+{
+	if (m_dwScreenQuadVS == 0) return false;
+
+	D3DXMATRIX m;
+	if (!Build_Pixels_To_Clip(m)) return false;
+
+	Set_Vertex_Shader(m_dwScreenQuadVS);
+	Set_Vertex_Shader_Constant(0, &m, 4);
+	return true;
+}
+
+bool DX8Wrapper::Bind_Screen_Space_Shader(bool sampleColour, bool sampleAlpha)
+{
+	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
+
+	D3DXMATRIX m;
+	if (!Build_Pixels_To_Clip(m)) return false;
+
+	return Bind_Ui_Shader_Direct(m, sampleColour, sampleAlpha);
 }
 
 bool								_DX8SingleThreaded										= false;
@@ -3783,7 +3892,7 @@ void DX8Wrapper::Draw(
 	//
 	// Costs a predictable branch per draw on the path where nothing is pending, which is
 	// every draw in a frame that has no fixed-function geometry left in it.
-	if ((Pixel_Shader == 0 || Vertex_Shader < 0x10000) && Has_Pending_Fixed_Function_State()) {
+	if (Is_Fixed_Function_Draw() && Has_Pending_Fixed_Function_State()) {
 		Flush_Fixed_Function_State();
 	}
 

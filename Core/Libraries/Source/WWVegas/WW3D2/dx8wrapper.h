@@ -685,6 +685,27 @@ public:
 	static void Flush_Fixed_Function_State();
 	static bool Is_Deferred_FF_Stage_State(unsigned state);
 	static bool Is_Deferred_FF_Render_State(unsigned state);
+
+	// Which half of the pipeline a draw is about to use, read off what is bound.
+	//
+	// Separate questions with separate answers: D3D9 lets a pixel shader pair with a
+	// fixed-function vertex format, and every screen-space quad in the frame does exactly
+	// that. Asking only about the pixel shader -- which the direct-draw census used to do --
+	// reports those as fully programmable when their vertex side is not merely
+	// fixed-function but skipped, the position arriving already in screen space.
+	//
+	// Either one being true means the fixed-function pipeline is live for this draw and any
+	// deferred state it depends on has to be on the device first.
+	static bool Is_Fixed_Function_Vertex_Draw()
+	{
+		// Below 0x10000 the handle is an FVF code rather than a vertex shader.
+		return Vertex_Shader < 0x10000;
+	}
+	static bool Is_Fixed_Function_Pixel_Draw() { return Pixel_Shader == 0; }
+	static bool Is_Fixed_Function_Draw()
+	{
+		return Is_Fixed_Function_Pixel_Draw() || Is_Fixed_Function_Vertex_Draw();
+	}
 	// Declare a draw the wrapper will not see. Flushes any deferred fixed-function state,
 	// because a direct-device drawer binds nothing and may well be running fixed function
 	// -- and in a debug build, counts it, since nothing else can.
@@ -704,7 +725,32 @@ public:
 	// it replaces D3DFVF_XYZRHW, which said the same thing to the fixed-function pipeline.
 	// Returns false if the shader is unavailable, in which case the caller must keep its
 	// fixed-function path -- so this can be adopted one drawer at a time.
-	static bool Bind_Screen_Space_Shader();
+	//
+	// sampleColour / sampleAlpha say whether the combine reads the bound texture, matching
+	// the stage-0 COLORARG/ALPHAARG the caller would otherwise have written. Both default
+	// off, which is a flat vertex-diffuse quad.
+	static bool Bind_Screen_Space_Shader(bool sampleColour = false, bool sampleAlpha = false);
+
+	// The same pair with a transform the caller supplies, for direct-device drawers whose
+	// geometry is in world space rather than screen space (the shadow decals, the projected
+	// terrain shadow). Screen space is one caller of this.
+	static bool Bind_Ui_Shader_Direct(const D3DXMATRIX & wvp, bool sampleColour, bool sampleAlpha);
+	// As above, but concatenating the caller's world matrix with the view and projection the
+	// device currently holds -- which for these callers is the pair Apply_Render_State_Changes
+	// just put there.
+	static bool Bind_Ui_Shader_World(const D3DXMATRIX & world, bool sampleColour, bool sampleAlpha);
+
+	// Bind the screen-space quad *vertex* shader and give it the pixels-to-clip matrix,
+	// leaving the pixel shader alone for the caller to set. The FVF must already be set --
+	// Set_Vertex_Shader clears the bound shader when handed one, so the declaration has to
+	// come first -- and must be XYZ | DIFFUSE | TEX2 to match the declaration in
+	// screenquad_vs.hlsl. Returns false if the shader is unavailable, leaving the caller on
+	// whatever it had.
+	static bool Bind_Screen_Quad_Shader();
+	// The pixels-to-clip matrix itself, built from the current viewport. Shared by both
+	// binds above; exposed because a caller that builds its own constant set still needs
+	// exactly this mapping and must not reinvent the sign convention.
+	static bool Build_Pixels_To_Clip(D3DXMATRIX & out);
 	// The material as last set, without asking the device for it.
 	static const D3DMATERIAL8 & Get_DX8_Material() { return CurrentMaterial; }
 
@@ -1093,6 +1139,15 @@ public:
 	static void Set_Ui_Pass(bool active) { m_bUiPass = active; }
 	static void Set_Ui_Greyscale(bool on) { m_uiGreyscale = on; }
 	static bool Has_Ui_Shader() { return m_dwUiVS != 0 && m_dwUiPS != 0; }
+
+	// The vertex half of a screen-space quad, for the post-process chain: the bloom passes,
+	// the tone map, the screen filters, the smudge, the profiler capture. Each of those
+	// brings its own pixel shader and wants only the vertex side replaced, which is what
+	// separates this from the ui pair -- and it carries two texture coordinate sets, which
+	// ui_vs does not, because the bloom composite samples scene and bloom with different
+	// coordinates in one draw.
+	static DWORD						m_dwScreenQuadVS;
+	static bool Has_Screen_Quad_Shader() { return m_dwScreenQuadVS != 0; }
 
 	// The projected alpha mask, declared by W3DMaskMaterialPassClass. Unlike every other
 	// declared pass this one is not a *kind of geometry* -- it is the whole scene, drawn a

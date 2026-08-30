@@ -280,11 +280,17 @@ void ScreenDefaultFilter::reset()
 ///recompiling them -- no engine rebuild needed. The only per-frame shader constant set
 ///from here is the blur step, which depends on the runtime target size.
 
-// Fullscreen-quad vertex: pre-transformed position + diffuse + two texcoord sets
+// Fullscreen-quad vertex: position in screen pixels + diffuse + two texcoord sets
 // (TEXCOORD0 = scene / pass source, TEXCOORD1 = bloom target).
+//
+// Untransformed, not D3DFVF_XYZRHW. A transformed position carries the POSITIONT semantic,
+// which D3D9 reserves to the fixed-function pipeline, so a quad drawn that way runs fixed
+// function on the vertex side however programmable its pixel shader is -- and every pass of
+// the bloom chain and the tone map is drawn by this one helper. screenquad_vs consumes the
+// pixel coordinates unchanged and applies the mapping to clip space that XYZRHW implied.
 struct BloomVtx
 {
-	D3DXVECTOR4 p;
+	float       x, y, z;
 	DWORD       color;
 	float       u0, v0;
 	float       u1, v1;
@@ -315,10 +321,10 @@ HRESULT W3DShaderManager::drawScreenQuad(LPDIRECT3DDEVICE8 dev,
 {
 	const float ox = dx - 0.5f, oy = dy - 0.5f;  // -0.5 texel: align pixels to texels
 	BloomVtx v[4];
-	v[0].p = D3DXVECTOR4(ox + dw, oy + dh, 0.0f, 1.0f); v[0].u0 = sU1; v[0].v0 = sV1; v[0].u1 = bU1; v[0].v1 = bV1;
-	v[1].p = D3DXVECTOR4(ox + dw, oy,      0.0f, 1.0f); v[1].u0 = sU1; v[1].v0 = sV0; v[1].u1 = bU1; v[1].v1 = bV0;
-	v[2].p = D3DXVECTOR4(ox,      oy + dh, 0.0f, 1.0f); v[2].u0 = sU0; v[2].v0 = sV1; v[2].u1 = bU0; v[2].v1 = bV1;
-	v[3].p = D3DXVECTOR4(ox,      oy,      0.0f, 1.0f); v[3].u0 = sU0; v[3].v0 = sV0; v[3].u1 = bU0; v[3].v1 = bV0;
+	v[0].x = ox + dw; v[0].y = oy + dh; v[0].z = 0.0f; v[0].u0 = sU1; v[0].v0 = sV1; v[0].u1 = bU1; v[0].v1 = bV1;
+	v[1].x = ox + dw; v[1].y = oy;      v[1].z = 0.0f; v[1].u0 = sU1; v[1].v0 = sV0; v[1].u1 = bU1; v[1].v1 = bV0;
+	v[2].x = ox;      v[2].y = oy + dh; v[2].z = 0.0f; v[2].u0 = sU0; v[2].v0 = sV1; v[2].u1 = bU0; v[2].v1 = bV1;
+	v[3].x = ox;      v[3].y = oy;      v[3].z = 0.0f; v[3].u0 = sU0; v[3].v0 = sV0; v[3].u1 = bU0; v[3].v1 = bV0;
 	v[0].color = v[1].color = v[2].color = v[3].color = 0xffffffff;
 	// Solid, always. D3DRS_FILLMODE is sticky device state that nothing else here resets,
 	// so DEBUG_VIS_WIREFRAME -- which sets it per scene draw -- otherwise leaks into the
@@ -326,7 +332,11 @@ HRESULT W3DShaderManager::drawScreenQuad(LPDIRECT3DDEVICE8 dev,
 	// instead of the frame. There is no case where a screen-space quad wants to be
 	// anything but solid, so this belongs here rather than in every caller.
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_FILLMODE, D3DFILL_SOLID);
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX2);
+	// FVF first: handed one, Set_Vertex_Shader clears the bound shader, so the real one has
+	// to come after. The FVF stays on as the declaration the shader reads through.
+	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2);
+	if (!DX8Wrapper::Bind_Screen_Quad_Shader())
+		return E_FAIL;   // no vertex shader means no post-process; the caller skips the pass
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	return dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
 }
@@ -1526,14 +1536,13 @@ Int ShroudTextureShader::set(Int stage)
 	// depth mismatch while still rejecting geometry in front of the terrain.
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC,D3DCMP_LESSEQUAL);
 	// LESSEQUAL is still an exact comparison, and exactness is the problem: this pass
-	// re-draws geometry that has already been drawn, and it no longer computes its depth
-	// the same way. A bridge's base pass runs through the programmable unit shader while
-	// this one is fixed-function, and the two disagree by a few ULPs -- enough for the
-	// comparison to fail wherever the fixed-function result lands fractionally behind.
-	// The failures are not scattered pixels but whole triangular regions, because the
-	// sign of the difference varies smoothly across a face and flips along a contour;
-	// they slide as the camera turns, which is what made a shrouded bridge look like it
-	// had holes cut in it. Measured directly: forcing ZFUNC to ALWAYS removes the pattern
+	// re-draws geometry that has already been drawn, and it does not always compute its
+	// depth the same way. Where the two differ they differ by a few ULPs -- enough for the
+	// comparison to fail wherever this pass lands fractionally behind. The failures are not
+	// scattered pixels but whole triangular regions, because the sign of the difference
+	// varies smoothly across a face and flips along a contour; they slide as the camera
+	// turns, which is what made a shrouded bridge look like it had holes cut in it.
+	// Measured directly at the time: forcing ZFUNC to ALWAYS removed the pattern
 	// completely, while every other input to this pass (view, world, texgen source and
 	// matrix, sampler state) measured correct.
 	//
@@ -1543,6 +1552,24 @@ Int ShroudTextureShader::set(Int stage)
 	// remedy for a co-planar decal pass and it costs nothing when the two agree. Note
 	// D3DRS_ZBIAS cannot do this -- the D3D9 compatibility header maps it to a dummy
 	// render-state slot, so those calls have been doing nothing since the port.
+	//
+	// Which callers still need it has changed since, and this is worth stating precisely
+	// because the original note named the bridge as the case and that is no longer true.
+	// Re-measured 2026-08-15:
+	//
+	//   * The terrain still needs it. Its base pass is terrain_vs and its shroud pass is
+	//     not, so the two genuinely compute different depth -- see the note in terrain_vs,
+	//     which points back here.
+	//   * A bridge no longer does. Nothing in the frame is fixed function any more (the
+	//     census reports 0 of 434758 draws), and W3DBridgeBuffer::drawBridges now submits
+	//     its base pass through unit_pbr_ps and this pass through unit_ps -- two different
+	//     pixel shaders, but unit_vs and unit_pbr_vs both transform by the same
+	//     CPU-concatenated WorldViewProj in c0, so the positions are bit-identical and the
+	//     ULP disagreement this bias covers cannot arise between them.
+	//
+	// The bias stays because the terrain still depends on it, and it is harmless where the
+	// depths already agree. But do not reason from it about a bridge: when a shrouded
+	// bridge next drew wrongly the cause was not depth at all but the ordering below.
 	{
 		const float slopeBias = -1.0f;
 		const float constBias = -1.0e-5f;
@@ -2097,6 +2124,12 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::m_dwUiPS == 0) {
 		LoadAndCreateD3DShader("shaders\\ui_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUiPS);
 	}
+	// Screen-space quads for the post-process chain. Vertex only: every caller brings its
+	// own pixel shader and used D3DFVF_XYZRHW for the vertex side, which is a fixed-function
+	// draw however programmable the fragment side is.
+	if (DX8Wrapper::m_dwScreenQuadVS == 0) {
+		LoadAndCreateD3DShader("shaders\\screenquad_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwScreenQuadVS);
+	}
 	// Projected alpha mask: the whole scene redrawn with colour writes off, depositing the
 	// cross-fade mask's alpha for the wipe (and the wireframe preview) to composite against.
 	if (DX8Wrapper::m_dwMaskVS == 0) {
@@ -2629,6 +2662,11 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE, 0x0000000F);
 	DX8Wrapper::Set_Pixel_Shader(0);
+	DX8Wrapper::Set_DX8_Texture(0, nullptr);
+	// The quad binds its own stream, FVF and vertex shader straight at the device now
+	// (see Prepare_Direct_Draw), so the wrapper's idea of what the device holds is stale
+	// from here on. Every other post-process site ends this way for the same reason.
+	DX8Wrapper::Invalidate_Cached_Render_States();
 #else
 	(void)screenWidth; (void)screenHeight;
 #endif
@@ -3771,11 +3809,18 @@ void W3DShaderManager::drawViewport(Int color)
 {
 	LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
 
-	struct _TRANS_LIT_TEX_VERTEX {
-		D3DXVECTOR4 p;
+	// Untransformed, and carrying the second coordinate set screenquad_vs declares. Both
+	// follow from replacing D3DFVF_XYZRHW: a transformed position is fixed-function only, and
+	// the shader's declaration is shared with the bloom chain, which needs two sets. This
+	// pass wants one, so the second is a copy -- eight bytes on four vertices, against
+	// keeping a second shader and a second FVF in step with this one.
+	struct _SCREEN_QUAD_VERTEX {
+		float x, y, z;
 		DWORD color;   // diffuse color
 		float	u;
 		float	v;
+		float	u1;
+		float	v1;
 	} v[4];
 
 	Int xpos, ypos, width, height;
@@ -3785,28 +3830,33 @@ void W3DShaderManager::drawViewport(Int color)
 	height=TheTacticalView->getHeight();
 
 	//bottom right
-	v[0].p = D3DXVECTOR4( xpos+width-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
+	v[0].x = xpos+width-0.5f; v[0].y = ypos+height-0.5f; v[0].z = 0.0f;
 	v[0].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[0].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
 	//top right
-	v[1].p = D3DXVECTOR4( xpos+width-0.5f, ypos-0.5f, 0.0f, 1.0f );
+	v[1].x = xpos+width-0.5f; v[1].y = ypos-0.5f; v[1].z = 0.0f;
 	v[1].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[1].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
 	//bottom left
-	v[2].p = D3DXVECTOR4(  xpos-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
+	v[2].x = xpos-0.5f; v[2].y = ypos+height-0.5f; v[2].z = 0.0f;
 	v[2].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[2].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
 	//top left
-	v[3].p = D3DXVECTOR4(  xpos-0.5f,  ypos-0.5f, 0.0f, 1.0f );
+	v[3].x = xpos-0.5f; v[3].y = ypos-0.5f; v[3].z = 0.0f;
 	v[3].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[3].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	v[0].color = color;
-	v[1].color = color;
-	v[2].color = color;
-	v[3].color = color;
+	for (Int i = 0; i < 4; ++i) {
+		v[i].color = color;
+		v[i].u1 = v[i].u;
+		v[i].v1 = v[i].v;
+	}
 
 	//draw polygons like this is very inefficient but for only 2 triangles, it's
 	//not worth bothering with index/vertex buffers.
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+	// FVF first: handed one, Set_Vertex_Shader clears the bound shader, so the real one has
+	// to come after. The FVF stays on as the declaration the shader reads through.
+	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2);
+	if (!DX8Wrapper::Bind_Screen_Quad_Shader())
+		return;   // no vertex shader means this pass cannot be drawn at all
 
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREEN_QUAD_VERTEX));
 }
 
 // W3DShaderManager::startRenderToTexture =======================================================
