@@ -124,8 +124,12 @@ public:
 	// against the light instead of against the camera -- they are different volumes, and
 	// culling by the camera is what makes a caster's shadow vanish the moment the caster
 	// itself leaves the screen.
+	// The box is not square -- see the note where it is built in W3DView -- so the up
+	// axis is given as an explicit range rather than a half-extent, and that range is
+	// asymmetric because height only ever displaces a caster toward the sun.
 	static void setShadowFrustum(const Vector3 &eye, const Vector3 &lookDir,
-								 Real halfExtent, Real nearDist, Real farDist);
+								 Real halfWidth, Real upMin, Real upMax,
+								 Real nearDist, Real farDist);
 	static Bool hasShadowFrustum() { return m_shadowFrustumValid; }
 	///<true when the sphere lies wholly outside the sun frustum, i.e. cannot cast into the map.
 	static Bool cullSphereFromShadowFrustum(const Vector3 &center, Real radius);
@@ -199,7 +203,9 @@ protected:
 	static Vector3 m_shadowFrustumRight;
 	static Vector3 m_shadowFrustumUp;
 	static Vector3 m_shadowFrustumFwd;
-	static Real m_shadowFrustumHalfExtent;
+	static Real m_shadowFrustumHalfWidth;
+	static Real m_shadowFrustumUpMin;
+	static Real m_shadowFrustumUpMax;
 	static Real m_shadowFrustumNear;
 	static Real m_shadowFrustumFar;
 	static DWORD m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
