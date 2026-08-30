@@ -34,6 +34,7 @@
 #include "Common/FramePacer.h"
 #include "Common/GameAudio.h"
 #include "Common/GameEngine.h"
+#include "Common/GameUtility.h"
 #include "Common/GlobalData.h"
 #include "Common/NameKeyGenerator.h"
 #include "Common/ThingFactory.h"
@@ -825,7 +826,7 @@ void GameLogic::logicMessageDispatcher( GameMessage *msg, void *userData )
 #endif
 
 	/**/ /// @todo: multiplayer semantics
-	if (currentlySelectedGroup && TheRecorder->isPlaybackMode() && TheGlobalData->m_useCameraInReplay && TheControlBar->getObserverLookAtPlayer() == msgPlayer /*&& !TheRecorder->isMultiplayer()*/)
+	if (currentlySelectedGroup && TheRecorder->isPlaybackMode() && TheGlobalData->m_useCameraInReplay && (TheControlBar->getObserverLookAtPlayer() == nullptr || TheControlBar->getObserverLookAtPlayer() == msgPlayer) /*&& !TheRecorder->isMultiplayer()*/)
 	{
 		const VecObjectID& selectedObjects = currentlySelectedGroup->getAllIDs();
 		TheInGameUI->deselectAllDrawables();
@@ -2302,7 +2303,19 @@ bool GameLogic::onSetReplayCamera(MAYBE_UNUSED GameMessage *msg)
 {
 	Player *msgPlayer = getMessagePlayer(msg);
 
-	if (TheRecorder->isPlaybackMode() && TheGlobalData->m_useCameraInReplay && TheControlBar->getObserverLookAtPlayer() == msgPlayer)
+	const Bool replayCameraActive = TheRecorder->isPlaybackMode() && TheGlobalData->m_useCameraInReplay;
+
+	// Playback that begins with no observed player -- the null / ReplayObserver case, which is
+	// where an unattended run started from the command line begins -- followed nobody at all:
+	// every recorded camera belongs to some player, and none of them is the null observer, so
+	// the test below never matched and the camera sat wherever the map left it. Adopt the first
+	// player that offers a camera; from then on the existing test keeps it on that one.
+	if (replayCameraActive && TheControlBar->getObserverLookAtPlayer() == nullptr && msgPlayer != nullptr)
+	{
+		rts::changeObservedPlayer(msgPlayer);
+	}
+
+	if (replayCameraActive && TheControlBar->getObserverLookAtPlayer() == msgPlayer)
 	{
 		if (TheTacticalView->isCameraMovementFinished())
 		{

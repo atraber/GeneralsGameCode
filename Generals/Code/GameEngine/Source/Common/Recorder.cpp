@@ -1026,9 +1026,15 @@ void RecorderClass::handleCRCMessage(UnsignedInt newCRC, Int playerIndex, Bool f
 			// Print Mismatch in case we are simulating replays from console.
 			printf("CRC Mismatch in Frame %d\n", mismatchFrame);
 
+			// A replay launched from the command line is played back unattended, so there is nobody
+			// around to resume it. Keep playing and just report the mismatch once.
+			if (TheGlobalData->m_initialReplayFile.isNotEmpty())
+			{
+				m_crcInfo.setSawCRCMismatch();
+			}
 			// TheSuperHackers @tweak Pause the game on mismatch.
 			// But not when a window with focus is opened, because that can make resuming difficult.
-			if (TheWindowManager->winGetFocus() == nullptr)
+			else if (TheWindowManager->winGetFocus() == nullptr)
 			{
 				Bool pause = TRUE;
 				Bool pauseMusic = FALSE;

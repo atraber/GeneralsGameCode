@@ -993,6 +993,7 @@ GlobalData::GlobalData()
 
 	m_buildMapCache = FALSE;
 	m_initialFile.clear();
+	m_initialReplayFile.clear();
 	m_pendingFile.clear();
 
 	m_simulateReplays.clear();
