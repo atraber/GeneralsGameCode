@@ -681,7 +681,7 @@ GlobalData::GlobalData()
 	m_terrainDetailScale = 1.0f;
 	// Colour is the effect most likely to look wrong if overdone, so it starts low.
 	m_terrainDetailColor = 0.12f;
-	m_cloudShadowStrength = 1.0f;
+	m_cloudShadowStrength = 0.8f;
 	m_textureReductionFactor = -1;
 	m_enableBehindBuildingMarkers = TRUE;
 	m_scriptDebug = FALSE;

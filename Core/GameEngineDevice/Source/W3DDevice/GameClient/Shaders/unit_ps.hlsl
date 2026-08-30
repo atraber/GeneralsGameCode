@@ -41,7 +41,7 @@ float4 CloudCtl    : register(c11);   // x = cloud layer on, y = shade strength
 
 static const float CLOUD_PERIOD_A = 1800.0;
 static const float CLOUD_PERIOD_B = 2900.0;
-static const float3 CLOUD_SHADE_TINT = float3(0.60, 0.66, 0.79);
+static const float3 CLOUD_SHADE_TINT = float3(0.78, 0.82, 0.90);
 
 float3 cloudShade(float3 cloudPos)
 {

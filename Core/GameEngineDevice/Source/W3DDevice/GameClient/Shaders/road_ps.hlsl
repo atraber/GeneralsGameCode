@@ -28,12 +28,22 @@ float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 =
 // loss of *direct sun*; the sky still lights the ground, and skylight is blue, so shaded
 // ground goes darker and cooler rather than simply dimmer. Multiplying by the texture --
 // what this did before -- drives everything toward black and reads as dirt on the lens.
-// Colour of ground under full cloud. Luminance works out near 0.66, so a fully shaded
-// patch is about a third darker than sunlit ground, and cooler because what is left
-// lighting it is skylight. The first pass used 0.66/0.71/0.82 against a strength of
-// 0.75, which bottomed out at only 78% brightness even under solid cloud -- far too
-// timid to read as weather.
-static const float3 CLOUD_SHADE_TINT = float3(0.60, 0.66, 0.79);
+// Colour of ground under full cloud: how the shade is *coloured*, not how deep it is.
+// Depth is CloudShadowStrength's job, and the two multiply, so this constant should only
+// ever have to answer "what colour is skylight".
+//
+// It used to answer "how dark is a cloud" as well, at 0.60/0.66/0.79. Against the 0.8
+// strength that is a 0.68/0.73/0.83 multiply: a third of the luminance, but 40% of the
+// red against 21% of the blue. That much hue rotation stops reading as shade and starts
+// reading as the wrong colour -- measured against vanilla on a pixel-aligned frame, a
+// China power plant under cloud lost 22% of its luminance and 23% of its saturation and
+// came out uniformly cold grey with no sunlit face, while the ground beside it was
+// brighter than vanilla's.
+//
+// At 0.78/0.82/0.90 full coverage multiplies by 0.824/0.856/0.920 -- 15% off the
+// luminance, and R:B narrowed from 0.82 to 0.90. Some spread is kept deliberately:
+// sky-lit shade genuinely is blue, and a perfectly neutral grey reads as a dirty lens.
+static const float3 CLOUD_SHADE_TINT = float3(0.78, 0.82, 0.90);
 
 float3 cloudShade(float4 cloudUV, float enable, float strength)
 {
