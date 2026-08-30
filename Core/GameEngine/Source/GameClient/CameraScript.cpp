@@ -49,6 +49,7 @@ enum CameraCueType CPP_11(: Int)
 	CUE_FOLLOW,
 	CUE_UNFOLLOW,
 	CUE_HUD,
+	CUE_DEBUGVIS,
 	CUE_QUIT,
 };
 
@@ -230,6 +231,45 @@ static void parseCue(char** tokens, Int count, const char* source, Int line)
 			return;
 		}
 		cue.args[0] = (stricmp(tokens[2], "on") == 0) ? 1.0f : 0.0f;
+	}
+	// The mode numbers are literals, not the DebugVisMode enumerators: that enum lives
+	// in WW3D2 and the game layer reaches the visualizations through Display, which is
+	// device independent on purpose. Names are what a script should use; the numbers
+	// are here so a mode added later can be reached before it is given one.
+	else if (stricmp(command, "debugvis") == 0)
+	{
+		cue.type = CUE_DEBUGVIS;
+		if (count < 3)
+		{
+			DEBUG_LOG(("CAMERA SCRIPT: %s line %d: 'debugvis' wants a mode number or name", source, line));
+			return;
+		}
+		Real val = 0.0f;
+		if (toReal(tokens[2], val))
+		{
+			cue.args[0] = val;
+		}
+		else if (stricmp(tokens[2], "off") == 0)
+		{
+			cue.args[0] = 0.0f;
+		}
+		else if (stricmp(tokens[2], "overdraw") == 0)
+		{
+			cue.args[0] = 1.0f;
+		}
+		else if (stricmp(tokens[2], "wireframe") == 0)
+		{
+			cue.args[0] = 2.0f;
+		}
+		else if (stricmp(tokens[2], "normals") == 0 || stricmp(tokens[2], "normal") == 0)
+		{
+			cue.args[0] = 3.0f;
+		}
+		else
+		{
+			DEBUG_LOG(("CAMERA SCRIPT: %s line %d: unknown debugvis mode '%s'", source, line, tokens[2]));
+			return;
+		}
 	}
 	else if (stricmp(command, "quit") == 0)
 	{
@@ -491,6 +531,17 @@ static void executeCue(const CameraCue& cue)
 				ShowControlBar();
 			else
 				HideControlBar();
+			break;
+
+		case CUE_DEBUGVIS:
+#if defined(RTS_DEBUG)
+			if (TheDisplay != nullptr)
+			{
+				TheDisplay->cycleDebugVisualization(0);
+				if (cue.args[0] > 0.0f)
+					TheDisplay->cycleDebugVisualization((Int)cue.args[0]);
+			}
+#endif
 			break;
 
 		case CUE_QUIT:

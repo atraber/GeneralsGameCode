@@ -431,6 +431,9 @@ public:
 
 #if defined(RTS_DEBUG)
 		MSG_META_DEMO_TOGGLE_AUDIODEBUG,						///< show/hide the audio debug info
+		MSG_META_DEMO_CYCLE_DEBUG_VIS,							///< next in-game debug visualization
+		MSG_META_DEMO_CYCLE_DEBUG_VIS_BACK,					///< previous in-game debug visualization
+		MSG_META_DEMO_DEBUG_VIS_OFF,								///< back to an unmodified frame
 #endif//defined(RTS_DEBUG)
 #ifdef DUMP_PERF_STATS
 		MSG_META_DEMO_PERFORM_STATISTICAL_DUMP,			///< dump performance stats for this frame to StatisticsDump.txt

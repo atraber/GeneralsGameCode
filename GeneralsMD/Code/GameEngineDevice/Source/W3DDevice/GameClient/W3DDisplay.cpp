@@ -1999,6 +1999,7 @@ AGAIN:
 				// draw all views of the world
 				drawViews();
 
+
 				// draw the user interface
 				TheInGameUI->DRAW();
 
@@ -3152,6 +3153,47 @@ void W3DDisplay::dumpModelAssets(const char *path)
 			fclose(AssetDumpFile);
 		}
 	}
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Step the in-game debug visualization, and name the mode we landed on. */
+//-------------------------------------------------------------------------------------------------
+const char *W3DDisplay::cycleDebugVisualization(Int step)
+{
+	const Int count = (Int)DEBUG_VIS_COUNT;
+	Int mode = (Int)DX8Wrapper::Get_Debug_Vis_Mode();
+
+	// step 0 is "off", not "stay where you are": it is the escape hatch bound to
+	// Ctrl+F11, so that getting back to an unmodified frame is one key press from any
+	// mode rather than however many are left in the cycle.
+	if (step == 0)
+	{
+		mode = (Int)DEBUG_VIS_OFF;
+	}
+	else
+	{
+		// Wrap in both directions. C++ leaves the sign of % on a negative operand alone,
+		// so stepping back from Off would land on -1 without the added count.
+		mode = ((mode + step) % count + count) % count;
+	}
+
+	DX8Wrapper::Set_Debug_Vis_Mode((DebugVisMode)mode);
+
+	// Name and legend on one line. The legend belongs on screen rather than in the log
+	// because the thing it decodes is on screen: a frame of flat colours with the key to
+	// them in a file somewhere is a puzzle, not a visualization.
+	const char *name = Debug_Vis_Mode_Name((DebugVisMode)mode);
+	const char *legend = Debug_Vis_Mode_Legend((DebugVisMode)mode);
+	static char s_banner[256];
+	if (legend != NULL)
+		_snprintf(s_banner, sizeof(s_banner), "Debug vis: %s -- %s", name, legend);
+	else
+		_snprintf(s_banner, sizeof(s_banner), "Debug vis: %s", name);
+	// _snprintf does not terminate on truncation.
+	s_banner[sizeof(s_banner) - 1] = 0;
+
+	DEBUG_LOG(("Debug vis: %s", name));
+	return s_banner;
 }
 #endif	//only include above code in debug and internal
 //-------------------------------------------------------------------------------------------------

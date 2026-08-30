@@ -2639,6 +2639,9 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::m_dwTerrainPS == 0) {
 		LoadAndCreateD3DShader("shaders\\terrain_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwTerrainPS);
 	}
+
+	// The in-game debug visualizations.
+	initDebugVis();
 }
 
 //=============================================================================
@@ -2666,7 +2669,51 @@ void W3DShaderManager::shutdownUnitShaders()
 		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwTerrainPS)->Release();
 		DX8Wrapper::m_dwTerrainPS = 0;
 	}
+	shutdownDebugVis();
 	DX8Wrapper::m_bUnitShaderBound = false;
+}
+
+// ---------------------------------------------------------------------------
+// In-game debug visualizations. The modes themselves live in DX8Wrapper, which is
+// where the per-draw override has to run; what belongs here is loading the shaders
+// they substitute, because this is where every other shader is loaded.
+// ---------------------------------------------------------------------------
+
+void W3DShaderManager::initDebugVis()
+{
+#ifdef RTS_DEBUG
+	if (DX8Wrapper::m_dwDebugTintPS == 0)
+		LoadAndCreateD3DShader("shaders\\debugtint_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwDebugTintPS);
+	if (DX8Wrapper::m_dwDebugNormalVS == 0)
+		LoadAndCreateD3DShader("shaders\\debugnormal_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwDebugNormalVS);
+	if (DX8Wrapper::m_dwDebugNormalPS == 0)
+		LoadAndCreateD3DShader("shaders\\debugnormal_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwDebugNormalPS);
+	// Said either way, not only on failure. A missing shader makes its mode draw nothing,
+	// which is indistinguishable from the mode working and finding nothing -- and a line
+	// that appears only when something is wrong cannot be used to confirm that the setup
+	// ran at all. This one states the outcome, so a silent log means initDebugVis was
+	// never reached rather than "everything is fine".
+	DEBUG_LOG(("Debug vis: tint %s, normals %s",
+		(DX8Wrapper::m_dwDebugTintPS != 0) ? "loaded" : "MISSING",
+		(DX8Wrapper::m_dwDebugNormalVS != 0 && DX8Wrapper::m_dwDebugNormalPS != 0)
+			? "loaded" : "MISSING"));
+#endif
+}
+
+void W3DShaderManager::shutdownDebugVis()
+{
+	if (DX8Wrapper::m_dwDebugNormalVS) {
+		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwDebugNormalVS)->Release();
+		DX8Wrapper::m_dwDebugNormalVS = 0;
+	}
+	if (DX8Wrapper::m_dwDebugNormalPS) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwDebugNormalPS)->Release();
+		DX8Wrapper::m_dwDebugNormalPS = 0;
+	}
+	if (DX8Wrapper::m_dwDebugTintPS) {
+		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwDebugTintPS)->Release();
+		DX8Wrapper::m_dwDebugTintPS = 0;
+	}
 }
 
 //=============================================================================
