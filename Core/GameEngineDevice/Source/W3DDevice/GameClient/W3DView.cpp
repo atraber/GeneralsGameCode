@@ -2148,6 +2148,7 @@ void W3DView::draw()
 		// (The depth pass forces the full square viewport itself, inside the
 		// scene's SCENE_PASS_SHADOW_MAP branch, since the camera's Apply sets a
 		// screen-sized viewport that would only fill part of the square map.)
+		FRAME_TIMING_SCOPE(PHASE_SHADOWMAP);
 		W3DShaderManager::startShadowMapRendering();
 		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_SHADOW_MAP);
 		W3DDisplay::m_3DScene->doRender(m_3DCamera);

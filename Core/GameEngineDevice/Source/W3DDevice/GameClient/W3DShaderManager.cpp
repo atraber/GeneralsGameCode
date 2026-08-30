@@ -115,6 +115,7 @@ __int64 W3DShaderManager::m_driverVersion;
 
 Bool W3DShaderManager::m_renderingToTexture = false;
 IDirect3DSurface8 *W3DShaderManager::m_oldRenderSurface=nullptr;	///<previous render target
+DWORD W3DShaderManager::m_debugShadowPS = 0;
 DWORD W3DShaderManager::m_debugBloomPS = 0;
 DWORD W3DShaderManager::m_debugShroudPS = 0;
 IDirect3DTexture8 *W3DShaderManager::m_debugBrightTexture = nullptr;
@@ -3026,6 +3027,8 @@ void W3DShaderManager::shutdownUnitShaders()
 void W3DShaderManager::initDebugVis()
 {
 #ifdef RTS_DEBUG
+	if (m_debugShadowPS == 0)
+		LoadAndCreateD3DShader("shaders\\debugshadow_ps.pso", nullptr, 0, false, &m_debugShadowPS);
 	if (m_debugBloomPS == 0)
 		LoadAndCreateD3DShader("shaders\\debugbloom_ps.pso", nullptr, 0, false, &m_debugBloomPS);
 	if (m_debugShroudPS == 0)
@@ -3041,7 +3044,8 @@ void W3DShaderManager::initDebugVis()
 	// that appears only when something is wrong cannot be used to confirm that the setup
 	// ran at all. This one states the outcome, so a silent log means initDebugVis was
 	// never reached rather than "everything is fine".
-	DEBUG_LOG(("Debug vis: bloom %s, shroud %s, tint %s, normals %s",
+	DEBUG_LOG(("Debug vis: shadow %s, bloom %s, shroud %s, tint %s, normals %s",
+		(m_debugShadowPS != 0) ? "loaded" : "MISSING",
 		(m_debugBloomPS != 0) ? "loaded" : "MISSING",
 		(m_debugShroudPS != 0) ? "loaded" : "MISSING",
 		(DX8Wrapper::m_dwDebugTintPS != 0) ? "loaded" : "MISSING",
@@ -3052,6 +3056,10 @@ void W3DShaderManager::initDebugVis()
 
 void W3DShaderManager::shutdownDebugVis()
 {
+	if (m_debugShadowPS) {
+		reinterpret_cast<IDirect3DPixelShader9*>(m_debugShadowPS)->Release();
+		m_debugShadowPS = 0;
+	}
 	if (m_debugBloomPS) {
 		reinterpret_cast<IDirect3DPixelShader9*>(m_debugBloomPS)->Release();
 		m_debugBloomPS = 0;
@@ -3146,11 +3154,32 @@ void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, 
 #endif
 }
 
+#ifdef RTS_DEBUG
+// One tile of the shadow-map inspector. `showAlpha` picks the coverage channel rather
+// than the depth.
+static HRESULT drawShadowMapTile(LPDIRECT3DDEVICE8 dev, IDirect3DTexture8 *shadowTex,
+							  DWORD ps, float x, float y, float side, Bool showAlpha)
+{
+	DX8Wrapper::Set_Pixel_Shader(ps);
+	const D3DXVECTOR4 ctl(0.0f, 1.0f, showAlpha ? 1.0f : 0.0f, 0.0f);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, ctl, 1);
+	DX8Wrapper::Set_DX8_Texture(0, shadowTex);
+	// Linear, so a 4096-wide map shrunk into a small tile shows the average of what is
+	// there rather than one texel in twelve. Point sampling here reads as a map full of
+	// holes on exactly the thin geometry -- wires, railings, rotor blades -- whose
+	// presence in the map is the thing most often in question.
+	W3DShaderManager::setLinearClampSampler(0);
+	return W3DShaderManager::drawScreenQuad(dev, x, y, side, side,
+		0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
+}
+#endif
+
 void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 {
 #ifdef RTS_DEBUG
 	const DebugVisMode mode = DX8Wrapper::Get_Debug_Vis_Mode();
-	if (mode != DEBUG_VIS_BLOOM && mode != DEBUG_VIS_SHROUD)
+	if (mode != DEBUG_VIS_BLOOM && mode != DEBUG_VIS_SHROUD &&
+		mode != DEBUG_VIS_SHADOW_MAP)
 		return;   // the remaining modes are per-draw and have already happened
 
 	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
@@ -3171,6 +3200,9 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 
 	switch (mode)
 	{
+		case DEBUG_VIS_SHADOW_MAP:
+			if (m_debugShadowPS == 0 || m_pShadowMapTexture == nullptr) return;
+			break;
 		case DEBUG_VIS_BLOOM:
 			// No copy means the bloom filter never ran a bright pass this frame -- bloom
 			// is off, or render-to-texture is unavailable. Said once, because an empty
@@ -3232,11 +3264,26 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 	const float margin = (float)screenHeight * 0.02f;
 	const float x      = (float)screenWidth - side - margin;
 
-	HRESULT hrA = S_OK;
+	HRESULT hrA = S_OK, hrB = S_OK;
 	const char *what = "";
 
 	switch (mode)
 	{
+		case DEBUG_VIS_SHADOW_MAP:
+		{
+			// Two square tiles down the right edge: the packed depth, and above it the
+			// coverage the depth pass let through. Both, not one, because they fail
+			// differently and the pair localises which -- a caster absent from the depth
+			// tile was culled before it reached the pass, while a caster present in depth
+			// but solid-white in coverage is casting its bounding quad, not its
+			// silhouette.
+			what = "shadow";
+			hrA = drawShadowMapTile(dev, m_pShadowMapTexture, m_debugShadowPS, x, margin, side, TRUE);
+			hrB = drawShadowMapTile(dev, m_pShadowMapTexture, m_debugShadowPS,
+									x, margin * 2.0f + side, side, FALSE);
+			break;
+		}
+
 		case DEBUG_VIS_BLOOM:
 		{
 			// Over the tactical viewport rather than the whole screen. The bright-pass
@@ -3291,12 +3338,13 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 	// the frame looking exactly like the mode being off, which is the one thing that must
 	// not be silent -- every one of these modes is an argument from what is and is not on
 	// screen.
-	if (FAILED(hrA))
+	if (FAILED(hrA) || FAILED(hrB))
 	{
 		static Bool s_reported = FALSE;
 		if (!s_reported)
 		{
-			DEBUG_LOG(("Debug vis: %s overlay draw failed -- 0x%08X", what, (unsigned)hrA));
+			DEBUG_LOG(("Debug vis: %s overlay draw failed -- 0x%08X / 0x%08X",
+				what, (unsigned)hrA, (unsigned)hrB));
 			s_reported = TRUE;
 		}
 	}
