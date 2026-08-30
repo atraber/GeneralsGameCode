@@ -2172,6 +2172,7 @@ void W3DView::draw()
 	// not handing back its depth buffer as something samplable.
 	if (W3DShaderManager::isSsrActive())
 	{
+		FRAME_TIMING_SCOPE(PHASE_DEPTHPREPASS);
 		W3DShaderManager::startCameraDepthRendering();
 		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_CAMERA_DEPTH);
 		W3DDisplay::m_3DScene->doRender(m_3DCamera);

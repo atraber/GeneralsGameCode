@@ -103,6 +103,7 @@ public:
 	///own shader and does nothing if it is missing.
 	static void initDebugVis();
 	static void shutdownDebugVis();
+	static DWORD m_debugDepthPS;					///<debugdepth_ps: linearises the camera depth prepass
 	static DWORD m_debugShadowPS;					///<debugshadow_ps: unpacks the shadow map for the inspector tile
 	static DWORD m_debugBloomPS;					///<debugbloom_ps: false-colours the bright-pass copy
 	static DWORD m_debugShroudPS;					///<debugshroud_ps: draws the shroud field as a tile

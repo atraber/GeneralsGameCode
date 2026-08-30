@@ -116,6 +116,7 @@ __int64 W3DShaderManager::m_driverVersion;
 Bool W3DShaderManager::m_renderingToTexture = false;
 Bool W3DShaderManager::m_sceneHistoryCaptured = false;
 IDirect3DSurface8 *W3DShaderManager::m_oldRenderSurface=nullptr;	///<previous render target
+DWORD W3DShaderManager::m_debugDepthPS = 0;
 DWORD W3DShaderManager::m_debugShadowPS = 0;
 DWORD W3DShaderManager::m_debugBloomPS = 0;
 DWORD W3DShaderManager::m_debugShroudPS = 0;
@@ -3031,6 +3032,8 @@ void W3DShaderManager::shutdownUnitShaders()
 void W3DShaderManager::initDebugVis()
 {
 #ifdef RTS_DEBUG
+	if (m_debugDepthPS == 0)
+		LoadAndCreateD3DShader("shaders\\debugdepth_ps.pso", nullptr, 0, false, &m_debugDepthPS);
 	if (m_debugShadowPS == 0)
 		LoadAndCreateD3DShader("shaders\\debugshadow_ps.pso", nullptr, 0, false, &m_debugShadowPS);
 	if (m_debugBloomPS == 0)
@@ -3048,7 +3051,8 @@ void W3DShaderManager::initDebugVis()
 	// that appears only when something is wrong cannot be used to confirm that the setup
 	// ran at all. This one states the outcome, so a silent log means initDebugVis was
 	// never reached rather than "everything is fine".
-	DEBUG_LOG(("Debug vis: shadow %s, bloom %s, shroud %s, tint %s, normals %s",
+	DEBUG_LOG(("Debug vis: depth %s, shadow %s, bloom %s, shroud %s, tint %s, normals %s",
+		(m_debugDepthPS != 0) ? "loaded" : "MISSING",
 		(m_debugShadowPS != 0) ? "loaded" : "MISSING",
 		(m_debugBloomPS != 0) ? "loaded" : "MISSING",
 		(m_debugShroudPS != 0) ? "loaded" : "MISSING",
@@ -3060,6 +3064,10 @@ void W3DShaderManager::initDebugVis()
 
 void W3DShaderManager::shutdownDebugVis()
 {
+	if (m_debugDepthPS) {
+		reinterpret_cast<IDirect3DPixelShader9*>(m_debugDepthPS)->Release();
+		m_debugDepthPS = 0;
+	}
 	if (m_debugShadowPS) {
 		reinterpret_cast<IDirect3DPixelShader9*>(m_debugShadowPS)->Release();
 		m_debugShadowPS = 0;
@@ -3183,7 +3191,7 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 #ifdef RTS_DEBUG
 	const DebugVisMode mode = DX8Wrapper::Get_Debug_Vis_Mode();
 	if (mode != DEBUG_VIS_BLOOM && mode != DEBUG_VIS_SHROUD &&
-		mode != DEBUG_VIS_SHADOW_MAP)
+		mode != DEBUG_VIS_SHADOW_MAP && mode != DEBUG_VIS_DEPTH)
 		return;   // the remaining modes are per-draw and have already happened
 
 	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
@@ -3206,6 +3214,23 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 	{
 		case DEBUG_VIS_SHADOW_MAP:
 			if (m_debugShadowPS == 0 || m_pShadowMapTexture == nullptr) return;
+			break;
+		case DEBUG_VIS_DEPTH:
+			// The camera depth target only exists when screen-space reflections are on --
+			// it is their prepass, not a buffer the renderer keeps regardless. Said once,
+			// because an absent tile otherwise reads as the mode being broken when it is
+			// the feature that supplies it being switched off.
+			if (m_debugDepthPS == 0 || m_ssrDepthTexture == nullptr)
+			{
+				static Bool s_reportedNoDepth = FALSE;
+				if (!s_reportedNoDepth)
+				{
+					DEBUG_LOG(("Debug vis: no camera depth to draw -- is SSR enabled? "
+						"(shader=%u depth=%p)", (unsigned)m_debugDepthPS, (void*)m_ssrDepthTexture));
+					s_reportedNoDepth = TRUE;
+				}
+				return;
+			}
 			break;
 		case DEBUG_VIS_BLOOM:
 			// No copy means the bloom filter never ran a bright pass this frame -- bloom
@@ -3285,6 +3310,37 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 			hrA = drawShadowMapTile(dev, m_pShadowMapTexture, m_debugShadowPS, x, margin, side, TRUE);
 			hrB = drawShadowMapTile(dev, m_pShadowMapTexture, m_debugShadowPS,
 									x, margin * 2.0f + side, side, FALSE);
+			break;
+		}
+
+		case DEBUG_VIS_DEPTH:
+		{
+			// Same corner and size as the other tiles. Point sampling: the target is
+			// screen sized, so the tile is a heavy reduction, and averaging depth across
+			// a silhouette edge invents distances that are in neither surface.
+			what = "depth";
+			DX8Wrapper::Set_Pixel_Shader(m_debugDepthPS);
+			// The projection's own depth coefficients, taken from where the depth prepass
+			// published them for the PBR shader rather than recomputed here -- two copies
+			// of this algebra would be free to disagree, and a tile that disagreed with
+			// the reflections would be worse than no tile.
+			const float *ssr = DX8Wrapper::m_ssrParams;   // {strength, maxRay, _33, _43}
+			// Saturate the ramp at the far plane this projection actually implies
+			// (ndcZ = 1), so the tile is scaled to the view rather than to a constant.
+			// Same inversion the shader and unit_pbr_ps use, abs() included -- the
+			// projection here is right-handed and the left-handed form comes out negative.
+			const float denom = ssr[2] + 1.0f;
+			const float farZ = (fabsf(denom) > 1.0e-6f) ? fabsf(ssr[3] / denom) : 1000.0f;
+			const D3DXVECTOR4 ctl(ssr[2], ssr[3], (farZ > 1.0f) ? farZ : 1000.0f, 0.0f);
+			DX8Wrapper::Set_Pixel_Shader_Constant(0, ctl, 1);
+			DX8Wrapper::Set_DX8_Texture(0, m_ssrDepthTexture);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_POINT);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			hrA = drawScreenQuad(dev, x, margin, side, side,
+				0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
 			break;
 		}
 

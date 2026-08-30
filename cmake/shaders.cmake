@@ -60,6 +60,7 @@ set(_rts_shaders
     shadowdepth_ps
     # In-game debug visualizations (RTS_DEBUG only; see WW3D2/debugvis.h)
     debugtint_ps
+    debugdepth_ps
     debugshadow_ps
     debugbloom_ps
     debugshroud_ps
