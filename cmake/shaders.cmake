@@ -56,6 +56,8 @@ set(_rts_shaders
     bloom_composite_ps
     # In-game debug visualizations (RTS_DEBUG only; see WW3D2/debugvis.h)
     debugtint_ps
+    debugbloom_ps
+    debugshroud_ps
     debugnormal_vs
     debugnormal_ps
 )

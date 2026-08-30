@@ -22,6 +22,8 @@ const char * Debug_Vis_Mode_Name(DebugVisMode mode)
 {
 	switch (mode) {
 		case DEBUG_VIS_OFF:				return "Off";
+		case DEBUG_VIS_BLOOM:			return "Bloom bright pass";
+		case DEBUG_VIS_SHROUD:			return "Shroud field";
 		case DEBUG_VIS_OVERDRAW:		return "Overdraw";
 		case DEBUG_VIS_WIREFRAME:		return "Wireframe";
 		case DEBUG_VIS_NORMALS:			return "Normals";
@@ -32,6 +34,14 @@ const char * Debug_Vis_Mode_Name(DebugVisMode mode)
 const char * Debug_Vis_Mode_Legend(DebugVisMode mode)
 {
 	switch (mode) {
+		case DEBUG_VIS_BLOOM:
+			// The threshold is not quoted because it is not fixed: the bright pass is fed a
+			// number that has to move with the scene buffer. What the tint means is constant.
+			return "blue=just over threshold  cyan/yellow=well over  white=far over  "
+				   "unpainted=does not bloom";
+		case DEBUG_VIS_SHROUD:
+			return "tile is the shroud field, map top-down; "
+				   "black=shrouded  white=clear  contours every 1/16";
 		case DEBUG_VIS_OVERDRAW:
 			// No count is quoted against a colour on purpose. The accumulation goes
 			// through the tone map like everything else in the scene, so the mapping from

@@ -115,6 +115,10 @@ __int64 W3DShaderManager::m_driverVersion;
 
 Bool W3DShaderManager::m_renderingToTexture = false;
 IDirect3DSurface8 *W3DShaderManager::m_oldRenderSurface=nullptr;	///<previous render target
+DWORD W3DShaderManager::m_debugBloomPS = 0;
+DWORD W3DShaderManager::m_debugShroudPS = 0;
+IDirect3DTexture8 *W3DShaderManager::m_debugBrightTexture = nullptr;
+IDirect3DSurface8 *W3DShaderManager::m_debugBrightSurface = nullptr;
 IDirect3DTexture8 *W3DShaderManager::m_renderTexture=nullptr;		///<texture into which rendering will be redirected.
 IDirect3DSurface8 *W3DShaderManager::m_newRenderSurface=nullptr;	///<new render target inside m_renderTexture
 IDirect3DSurface8 *W3DShaderManager::m_resolveSurface=nullptr;	///<MSAA resolve destination (m_renderTexture surface) when MSAA is on
@@ -276,7 +280,9 @@ struct BloomVtx
 	float       u1, v1;
 };
 
-static void bloomSetSampler(DWORD stage)
+///Set stage to linear filtering with clamped addressing -- what every screen-space
+///quad wants, and what none of them should be re-deriving for itself.
+void W3DShaderManager::setLinearClampSampler(DWORD stage)
 {
 	DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(stage, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
@@ -286,8 +292,13 @@ static void bloomSetSampler(DWORD stage)
 }
 
 // Draw a screen-space quad over [dx,dy]..[dx+dw,dy+dh] sampling source UVs
-// (sU0..sU1, sV0..sV1) on TEXCOORD0 and bloom UVs (bU..) on TEXCOORD1.
-static void bloomDrawQuad(LPDIRECT3DDEVICE8 dev,
+// (sU0..sU1, sV0..sV1) on TEXCOORD0 and a second set on TEXCOORD1.
+//
+// Written for the bloom chain and now shared with the debug visualizations, which is
+// why it is a member rather than a file static: two subsystems putting a rectangle on
+// screen should not each carry their own copy of the half-texel offset and the vertex
+// layout that goes with it.
+HRESULT W3DShaderManager::drawScreenQuad(LPDIRECT3DDEVICE8 dev,
 	float dx, float dy, float dw, float dh,
 	float sU0, float sV0, float sU1, float sV1,
 	float bU0, float bV0, float bU1, float bV1)
@@ -299,8 +310,14 @@ static void bloomDrawQuad(LPDIRECT3DDEVICE8 dev,
 	v[2].p = D3DXVECTOR4(ox,      oy + dh, 0.0f, 1.0f); v[2].u0 = sU0; v[2].v0 = sV1; v[2].u1 = bU0; v[2].v1 = bV1;
 	v[3].p = D3DXVECTOR4(ox,      oy,      0.0f, 1.0f); v[3].u0 = sU0; v[3].v0 = sV0; v[3].u1 = bU0; v[3].v1 = bV0;
 	v[0].color = v[1].color = v[2].color = v[3].color = 0xffffffff;
+	// Solid, always. D3DRS_FILLMODE is sticky device state that nothing else here resets,
+	// so DEBUG_VIS_WIREFRAME -- which sets it per scene draw -- otherwise leaks into the
+	// whole post-process chain, and a wireframe composite quad draws two diagonal lines
+	// instead of the frame. There is no case where a screen-space quad wants to be
+	// anything but solid, so this belongs here rather than in every caller.
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_FILLMODE, D3DFILL_SOLID);
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX2);
-	dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
+	return dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
 }
 
 class ScreenBloomFilter : public W3DFilterInterface
@@ -451,23 +468,27 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
 	DX8Wrapper::Set_Pixel_Shader(m_brightPS);
 	DX8Wrapper::Set_DX8_Texture(0, sceneTex);
-	bloomSetSampler(0);
-	bloomDrawQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, su0, sv0, su1, sv1, 0, 0, 1, 1);
+	W3DShaderManager::setLinearClampSampler(0);
+	W3DShaderManager::drawScreenQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, su0, sv0, su1, sv1, 0, 0, 1, 1);
+	// Copy it before the blurs run, for DEBUG_VIS_BLOOM. Does nothing unless that mode
+	// is on. It has to happen here: passes 2 and 3 ping-pong through this very pair of
+	// targets, so by the end of the frame neither holds the unblurred result.
+	W3DShaderManager::captureBloomBrightPass(m_surfA, m_w, m_h);
 
 	// Pass 2: horizontal blur. texA -> texB.
 	DX8Wrapper::Set_DX8_Render_Target(m_surfB, nullptr);
 	DX8Wrapper::Set_Pixel_Shader(m_blurPS);
 	DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(1.0f / (float)m_w, 0.0f, 0.0f, 0.0f), 1);
 	DX8Wrapper::Set_DX8_Texture(0, m_texA);
-	bloomSetSampler(0);
-	bloomDrawQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
+	W3DShaderManager::setLinearClampSampler(0);
+	W3DShaderManager::drawScreenQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
 
 	// Pass 3: vertical blur. texB -> texA.
 	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
 	DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(0.0f, 1.0f / (float)m_h, 0.0f, 0.0f), 1);
 	DX8Wrapper::Set_DX8_Texture(0, m_texB);
-	bloomSetSampler(0);
-	bloomDrawQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
+	W3DShaderManager::setLinearClampSampler(0);
+	W3DShaderManager::drawScreenQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
 
 	// Pass 4: composite scene + bloom -> back buffer (over the tactical rect).
 	// Bloom intensity is baked into bloom_composite_ps.hlsl.
@@ -475,9 +496,9 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	DX8Wrapper::Set_Pixel_Shader(m_compositePS);
 	DX8Wrapper::Set_DX8_Texture(0, sceneTex);
 	DX8Wrapper::Set_DX8_Texture(1, m_texA);
-	bloomSetSampler(0);
-	bloomSetSampler(1);
-	bloomDrawQuad(dev, (float)xpos, (float)ypos, (float)width, (float)height, su0, sv0, su1, sv1, 0, 0, 1, 1);
+	W3DShaderManager::setLinearClampSampler(0);
+	W3DShaderManager::setLinearClampSampler(1);
+	W3DShaderManager::drawScreenQuad(dev, (float)xpos, (float)ypos, (float)width, (float)height, su0, sv0, su1, sv1, 0, 0, 1, 1);
 
 	SAFE_RELEASE(backBuf);
 	SAFE_RELEASE(backDepth);
@@ -2990,6 +3011,10 @@ void W3DShaderManager::shutdownUnitShaders()
 void W3DShaderManager::initDebugVis()
 {
 #ifdef RTS_DEBUG
+	if (m_debugBloomPS == 0)
+		LoadAndCreateD3DShader("shaders\\debugbloom_ps.pso", nullptr, 0, false, &m_debugBloomPS);
+	if (m_debugShroudPS == 0)
+		LoadAndCreateD3DShader("shaders\\debugshroud_ps.pso", nullptr, 0, false, &m_debugShroudPS);
 	if (DX8Wrapper::m_dwDebugTintPS == 0)
 		LoadAndCreateD3DShader("shaders\\debugtint_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwDebugTintPS);
 	if (DX8Wrapper::m_dwDebugNormalVS == 0)
@@ -3001,7 +3026,9 @@ void W3DShaderManager::initDebugVis()
 	// that appears only when something is wrong cannot be used to confirm that the setup
 	// ran at all. This one states the outcome, so a silent log means initDebugVis was
 	// never reached rather than "everything is fine".
-	DEBUG_LOG(("Debug vis: tint %s, normals %s",
+	DEBUG_LOG(("Debug vis: bloom %s, shroud %s, tint %s, normals %s",
+		(m_debugBloomPS != 0) ? "loaded" : "MISSING",
+		(m_debugShroudPS != 0) ? "loaded" : "MISSING",
 		(DX8Wrapper::m_dwDebugTintPS != 0) ? "loaded" : "MISSING",
 		(DX8Wrapper::m_dwDebugNormalVS != 0 && DX8Wrapper::m_dwDebugNormalPS != 0)
 			? "loaded" : "MISSING"));
@@ -3010,6 +3037,19 @@ void W3DShaderManager::initDebugVis()
 
 void W3DShaderManager::shutdownDebugVis()
 {
+	if (m_debugBloomPS) {
+		reinterpret_cast<IDirect3DPixelShader9*>(m_debugBloomPS)->Release();
+		m_debugBloomPS = 0;
+	}
+	if (m_debugShroudPS) {
+		reinterpret_cast<IDirect3DPixelShader9*>(m_debugShroudPS)->Release();
+		m_debugShroudPS = 0;
+	}
+	// Released here as well as at device reset: this is a D3DPOOL_DEFAULT render target,
+	// and one of those outliving a Reset() is exactly the leak that pinned the device
+	// shut on alt-tab once already.
+	SAFE_RELEASE(m_debugBrightSurface);
+	SAFE_RELEASE(m_debugBrightTexture);
 	if (DX8Wrapper::m_dwDebugNormalVS) {
 		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwDebugNormalVS)->Release();
 		DX8Wrapper::m_dwDebugNormalVS = 0;
@@ -3022,6 +3062,235 @@ void W3DShaderManager::shutdownDebugVis()
 		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwDebugTintPS)->Release();
 		DX8Wrapper::m_dwDebugTintPS = 0;
 	}
+}
+
+void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, Int width, Int height)
+{
+#ifdef RTS_DEBUG
+	if (DX8Wrapper::Get_Debug_Vis_Mode() != DEBUG_VIS_BLOOM || brightSurface == nullptr)
+		return;
+
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	// Create on first use, in the bright target's own format, and recreate if that target
+	// has been resized under us. The format is taken from the source rather than assumed,
+	// because StretchRect between differing formats is where this would quietly start
+	// failing. The copy target is created on first use and released with the rest, so a
+	// session that never enters the mode pays nothing for it.
+	D3DSURFACE_DESC sd;
+	if (FAILED(brightSurface->GetDesc(&sd)))
+		return;
+	if (m_debugBrightTexture != nullptr)
+	{
+		D3DSURFACE_DESC have;
+		if (FAILED(m_debugBrightSurface->GetDesc(&have)) ||
+			have.Width != sd.Width || have.Height != sd.Height || have.Format != sd.Format)
+		{
+			SAFE_RELEASE(m_debugBrightSurface);
+			SAFE_RELEASE(m_debugBrightTexture);
+		}
+	}
+	if (m_debugBrightTexture == nullptr)
+	{
+		if (FAILED(dev->CreateTexture(sd.Width, sd.Height, 1, D3DUSAGE_RENDERTARGET,
+				sd.Format, D3DPOOL_DEFAULT, &m_debugBrightTexture)) || m_debugBrightTexture == nullptr)
+		{
+			m_debugBrightTexture = nullptr;
+			return;
+		}
+		if (FAILED(m_debugBrightTexture->GetSurfaceLevel(0, &m_debugBrightSurface)))
+		{
+			SAFE_RELEASE(m_debugBrightTexture);
+			return;
+		}
+	}
+
+	// Checked, and loudly. A failed copy leaves the texture holding whatever the driver
+	// allocated -- which in practice is not black -- and the inspector then paints the
+	// whole viewport as "everything blooms", the most confidently wrong answer it could
+	// give.
+	HRESULT hr = dev->StretchRect(brightSurface, nullptr, m_debugBrightSurface, nullptr, D3DTEXF_NONE);
+	if (FAILED(hr))
+	{
+		static Bool s_reported = FALSE;
+		if (!s_reported)
+		{
+			DEBUG_LOG(("Debug vis: bright-pass copy failed (0x%08X) -- bloom inspector disabled",
+				(unsigned)hr));
+			s_reported = TRUE;
+		}
+		// Drop the target rather than show it. The mode reports having nothing to draw,
+		// which is true and is a different statement from a screen full of false positives.
+		SAFE_RELEASE(m_debugBrightSurface);
+		SAFE_RELEASE(m_debugBrightTexture);
+	}
+#else
+	(void)brightSurface; (void)width; (void)height;
+#endif
+}
+
+void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
+{
+#ifdef RTS_DEBUG
+	const DebugVisMode mode = DX8Wrapper::Get_Debug_Vis_Mode();
+	if (mode != DEBUG_VIS_BLOOM && mode != DEBUG_VIS_SHROUD)
+		return;   // the remaining modes are per-draw and have already happened
+
+	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
+	if (dev == nullptr)
+		return;
+
+	// What each mode wants to look at, resolved before any state is touched so that a
+	// mode with nothing to show costs nothing and leaves the pipeline alone.
+	IDirect3DTexture8 *shroudTex = nullptr;
+	if (mode == DEBUG_VIS_SHROUD)
+	{
+		W3DShroud *shroud = (TheTerrainRenderObject != nullptr)
+			? TheTerrainRenderObject->getShroud() : nullptr;
+		TextureClass *tex = (shroud != nullptr) ? shroud->getShroudTexture() : nullptr;
+		if (tex != nullptr)
+			shroudTex = tex->Peek_D3D_Texture();
+	}
+
+	switch (mode)
+	{
+		case DEBUG_VIS_BLOOM:
+			// No copy means the bloom filter never ran a bright pass this frame -- bloom
+			// is off, or render-to-texture is unavailable. Said once, because an empty
+			// screen here is otherwise indistinguishable from "nothing in this scene
+			// blooms", which is a completely different answer.
+			if (m_debugBloomPS == 0 || m_debugBrightTexture == nullptr)
+			{
+				static Bool s_reportedNoBloom = FALSE;
+				if (!s_reportedNoBloom)
+				{
+					DEBUG_LOG(("Debug vis: bloom inspector has nothing to draw -- "
+						"is the bloom filter active? (shader=%u copy=%p)",
+						(unsigned)m_debugBloomPS, (void*)m_debugBrightTexture));
+					s_reportedNoBloom = TRUE;
+				}
+				return;
+			}
+			break;
+		case DEBUG_VIS_SHROUD:
+			if (m_debugShroudPS == 0 || shroudTex == nullptr) return;
+			break;
+		default:
+			return;
+	}
+
+	// Shared setup.
+	//
+	// The depth and blend rules come from a ShaderClass preset rather than from
+	// Set_DX8_Render_State calls here, and that is not a style preference: everything
+	// this function sets is applied by Apply_Render_State_Changes below, which runs
+	// ShaderClass::Apply, which writes D3DRS_ALPHABLENDENABLE, D3DRS_SRCBLEND and
+	// D3DRS_DESTBLEND itself from the bound preset. Blend states set *before* that call
+	// are simply overwritten. The bloom overlay was written that way first and drew the
+	// whole viewport opaque black -- its "leave this pixel alone" output composited with
+	// blending switched back off.
+	//
+	// Both presets are the 2D ones, which read and write no depth: an inspector is not
+	// part of the scene and must not be occluded by it.
+	VertexMaterialClass *vmat = VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
+	DX8Wrapper::Set_Material(vmat);
+	REF_PTR_RELEASE(vmat);
+	// The tile overwrites what is under it; the bloom overlay blends, because it is an
+	// annotation *of* the scene and hiding the scene would defeat it.
+	DX8Wrapper::Set_Shader((mode == DEBUG_VIS_BLOOM)
+		? ShaderClass::_PresetAlpha2DShader
+		: ShaderClass::_PresetOpaque2DShader);
+	DX8Wrapper::Set_Texture(0, nullptr);
+	// Colour only. Destination alpha in the back buffer is live data -- the cross-fade's
+	// framebuffer-mask mode and the soft water edge both read it back -- so a debug
+	// overlay that scribbled alpha over the frame would change how the *next* effect
+	// composites, which is a visualization altering what it visualizes.
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,
+		D3DCOLORWRITEENABLE_RED|D3DCOLORWRITEENABLE_GREEN|D3DCOLORWRITEENABLE_BLUE);
+	DX8Wrapper::Apply_Render_State_Changes();
+
+	// Tile geometry, in the corner, so later inspectors can land in the same place and be
+	// compared by flicking between them.
+	const float side   = (float)screenHeight * 0.25f;
+	const float margin = (float)screenHeight * 0.02f;
+	const float x      = (float)screenWidth - side - margin;
+
+	HRESULT hrA = S_OK;
+	const char *what = "";
+
+	switch (mode)
+	{
+		case DEBUG_VIS_BLOOM:
+		{
+			// Over the tactical viewport rather than the whole screen. The bright-pass
+			// copy only ever covered that sub-rect -- the bloom chain samples the scene
+			// through it -- so stretching it over the control bar would be inventing
+			// coverage the data does not have.
+			what = "bloom";
+			Int xpos, ypos;
+			TheTacticalView->getOrigin(&xpos, &ypos);
+			const float vw = (float)TheTacticalView->getWidth();
+			const float vh = (float)TheTacticalView->getHeight();
+			DX8Wrapper::Set_Pixel_Shader(m_debugBloomPS);
+			DX8Wrapper::Set_DX8_Texture(0, m_debugBrightTexture);
+			// Point sampling on purpose. The copy is quarter resolution, and a bilinear
+			// tap would spread each blooming texel over its neighbours -- which is
+			// precisely the confusion between "this pixel bloomed" and "a pixel near it
+			// did" that this mode exists to remove.
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_POINT);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			hrA = drawScreenQuad(dev, (float)xpos, (float)ypos, vw, vh,
+				0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
+			break;
+		}
+
+		case DEBUG_VIS_SHROUD:
+		{
+			// One tile in the corner. The field is small (a texel per terrain cell), so it
+			// is magnified rather than reduced here -- point sampling, so the cell grid
+			// stays visible and a field that varies per cell cannot be mistaken for a
+			// smooth one.
+			what = "shroud";
+			DX8Wrapper::Set_Pixel_Shader(m_debugShroudPS);
+			DX8Wrapper::Set_DX8_Texture(0, shroudTex);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_POINT);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_POINT);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			hrA = drawScreenQuad(dev, x, margin, side, side,
+				0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
+			break;
+		}
+
+		default:
+			break;
+	}
+
+	// Said once if the overlay ever stops reaching the screen. A failed draw here leaves
+	// the frame looking exactly like the mode being off, which is the one thing that must
+	// not be silent -- every one of these modes is an argument from what is and is not on
+	// screen.
+	if (FAILED(hrA))
+	{
+		static Bool s_reported = FALSE;
+		if (!s_reported)
+		{
+			DEBUG_LOG(("Debug vis: %s overlay draw failed -- 0x%08X", what, (unsigned)hrA));
+			s_reported = TRUE;
+		}
+	}
+
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE, 0x0000000F);
+	DX8Wrapper::Set_Pixel_Shader(0);
+#else
+	(void)screenWidth; (void)screenHeight;
+#endif
 }
 
 //=============================================================================
