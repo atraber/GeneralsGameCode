@@ -732,6 +732,14 @@ void GameEngine::init()
 			}
 		}
 
+		if (TheGlobalData->m_initialReplayFile.isEmpty() == FALSE)
+		{
+			TheWritableGlobalData->m_shellMapOn = FALSE;
+			TheWritableGlobalData->m_playIntro = FALSE;
+			TheWritableGlobalData->m_playSizzle = FALSE;
+			// Playback itself is started at the end of init(), after resetSubsystems(). See below.
+		}
+
 		//
 		if (TheMapCache && TheGlobalData->m_shellMapOn)
 		{
@@ -769,6 +777,15 @@ void GameEngine::init()
 	resetSubsystems();
 
 	HideControlBar();
+
+	// Start replay playback only once the subsystems have been reset. TheRecorder is a registered
+	// subsystem, so resetting it here would close the replay file, clear the slot list parsed from
+	// the replay header and drop the recorder out of playback mode. The queued MSG_NEW_GAME would
+	// then be picked up by updateRecord() instead, starting an empty game with no players in it.
+	if (TheGlobalData->m_initialReplayFile.isEmpty() == FALSE)
+	{
+		TheRecorder->playbackFile(TheGlobalData->m_initialReplayFile);
+	}
 }
 
 /** -----------------------------------------------------------------------------------------------
