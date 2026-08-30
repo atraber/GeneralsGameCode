@@ -93,6 +93,7 @@ static void drawFramerateBar();
 #include "WW3D2/part_emt.h"
 #include "WW3D2/part_ldr.h"
 #include "WW3D2/dx8caps.h"
+#include "WW3D2/gputimer.h"
 #include "WW3D2/ww3dformat.h"
 #include "WW3D2/agg_def.h"
 #include "WW3D2/render2dsentence.h"
@@ -1734,6 +1735,34 @@ void W3DDisplay::step()
 /** Draw the entire W3D Display */
 //=============================================================================
 //DECLARE_PERF_TIMER(W3DDisplay_draw)
+#if defined(RTS_DEBUG)
+// TheSuperHackers @feature andytraber 30/08/2026 GPU-side timing for the render phases.
+//
+// Only the sibling render phases are bracketed. Bracketing PHASE_LOGIC or PHASE_WAIT would
+// time whatever the GPU happened to be chewing on during that CPU window -- a number that
+// looks like data and is not. PHASE_DRAW is left out too, because it encloses the others and
+// the frame-wide span already covers it.
+static void frameTimingGpuBracket( FrameTiming::Phase phase, Bool begin )
+{
+	int slot;
+	switch (phase)
+	{
+		case FrameTiming::PHASE_SHADOWMAP:		slot = FrameTiming::PHASE_SHADOWMAP; break;
+		case FrameTiming::PHASE_DEPTHPREPASS:	slot = FrameTiming::PHASE_DEPTHPREPASS; break;
+		case FrameTiming::PHASE_SCENE:			slot = FrameTiming::PHASE_SCENE; break;
+		case FrameTiming::PHASE_POSTFX:			slot = FrameTiming::PHASE_POSTFX; break;
+		case FrameTiming::PHASE_UI:				slot = FrameTiming::PHASE_UI; break;
+		default:								return;
+	}
+
+	if (begin)
+		GpuTimer::Begin_Slot(slot);
+	else
+		GpuTimer::End_Slot(slot);
+}
+#endif // defined(RTS_DEBUG)
+
+
 void W3DDisplay::draw()
 {
 	//USE_PERF_TIMER(W3DDisplay_draw)
@@ -1741,6 +1770,19 @@ void W3DDisplay::draw()
 	// and are subtracted from it, so what is left here is the part of the frame belonging to
 	// no named pass -- clears, the letterbox, the video buffer, the debug overlays.
 	FRAME_TIMING_SCOPE(PHASE_DRAW);
+
+#if defined(RTS_DEBUG)
+	// Installed from here rather than from init() so it is impossible for a frame to be
+	// drawn with the hook missing, whatever order the subsystems come up in.
+	{
+		static Bool s_gpuHookInstalled = FALSE;
+		if (!s_gpuHookInstalled)
+		{
+			s_gpuHookInstalled = TRUE;
+			FrameTiming::setPhaseBracketHook(frameTimingGpuBracket);
+		}
+	}
+#endif
 
 	extern HWND ApplicationHWnd;
 	if (ApplicationHWnd && ::IsIconic(ApplicationHWnd)) {
@@ -1917,6 +1959,28 @@ AGAIN:
 					continue;
 				}
 				couldRender = true;
+
+#if defined(RTS_DEBUG)
+				// Open the GPU frame inside the render block, so it brackets exactly the work
+				// that Begin_Render/End_Render bracket. Resolving here rather than after
+				// End_Frame is deliberate: the frame just submitted is still in flight, and
+				// waiting for it is the one thing this must never do -- so what gets read is
+				// whichever older frame has already landed.
+				GpuTimer::Begin_Frame();
+				{
+					float gpuSlots[GpuTimer::MAX_SLOTS];
+					float gpuTotal = 0.0f;
+					if (GpuTimer::Resolve(gpuSlots, gpuTotal))
+					{
+						Real phaseMs[FrameTiming::PHASE_COUNT];
+						for (Int i = 0; i < FrameTiming::PHASE_COUNT; ++i)
+							phaseMs[i] = (i < GpuTimer::MAX_SLOTS) ? gpuSlots[i] : 0.0f;
+						FrameTiming::submitGpuFrame(phaseMs, gpuTotal);
+					}
+					FrameTiming::setGpuStatus(GpuTimer::Is_Supported(),
+											  GpuTimer::Get_Disjoint_Count());
+				}
+#endif
 				// add the number of verts/polygons drawn before the main scene
 				if (numRenderTargetPolygons || numRenderTargetVertices)
 					Debug_Statistics::Record_DX8_Polys_And_Vertices(numRenderTargetPolygons,numRenderTargetVertices,ShaderClass::_PresetOpaqueShader);
@@ -2036,6 +2100,9 @@ AGAIN:
 				// Attributed as "gpuwait" in the readout rather than as the cost of
 				// presenting: the driver queues several frames deep, so a GPU that is behind
 				// stalls here whichever pass actually put it behind.
+#if defined(RTS_DEBUG)
+				GpuTimer::End_Frame();
+#endif
 				{
 					FRAME_TIMING_SCOPE(PHASE_PRESENT);
 					WW3D::End_Render();

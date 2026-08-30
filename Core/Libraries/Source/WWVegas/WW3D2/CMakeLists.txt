@@ -127,6 +127,8 @@ set(WW3D2_SRC
     #meshmdl.cpp
     #meshmdl.h
     #meshmdlio.cpp
+    gputimer.cpp
+    gputimer.h
     meshshadowname.h
     meshtechnique.cpp
     meshtechnique.h

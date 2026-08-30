@@ -31,7 +31,7 @@
 #if defined(RTS_DEBUG)
 
 
-enum { NUM_TIMING_LINES = 3 };
+enum { NUM_TIMING_LINES = 4 };
 
 static DisplayString*	s_lines[NUM_TIMING_LINES] = { nullptr };
 static UnsignedInt		s_lastTextUpdate = 0;
@@ -207,6 +207,37 @@ void drawFrameTimingOverlay( Int topY )
 			snap.phaseMs[FrameTiming::PHASE_UI],
 			snap.phaseMs[FrameTiming::PHASE_PRESENT]);
 		s_lines[2]->setText(phases);
+
+		// The GPU line refuses to show a number more often than it shows one, and that is the
+		// point. A timestamp figure taken under the frame rate cap on this machine has already
+		// been confidently, reproducibly backwards -- see WW3D2/gputimer.h -- so the readout
+		// says why it is withholding rather than printing something that will be believed.
+		UnicodeString gpu;
+		if (!snap.gpuSupported)
+		{
+			gpu.format(L"gpu  n/a -- device has no timestamp queries");
+		}
+		else if (!snap.gpuMeasurable)
+		{
+			gpu.format(L"gpu  n/a -- uncap the fps limit to measure (the GPU clocks down under it)");
+		}
+		else if (snap.gpuSampleCount == 0)
+		{
+			gpu.format(L"gpu  waiting for a clean frame (%u discarded as disjoint)",
+				snap.gpuDisjointFrames);
+		}
+		else
+		{
+			gpu.format(L"gpu %.2fms  shadow %.2f  depth %.2f  scene %.2f  postfx %.2f  ui %.2f  (n=%d, %u disjoint)",
+				snap.gpuTotalMs,
+				snap.gpuPhaseMs[FrameTiming::PHASE_SHADOWMAP],
+				snap.gpuPhaseMs[FrameTiming::PHASE_DEPTHPREPASS],
+				snap.gpuPhaseMs[FrameTiming::PHASE_SCENE],
+				snap.gpuPhaseMs[FrameTiming::PHASE_POSTFX],
+				snap.gpuPhaseMs[FrameTiming::PHASE_UI],
+				snap.gpuSampleCount, snap.gpuDisjointFrames);
+		}
+		s_lines[3]->setText(gpu);
 	}
 
 	const Color textColor = GameMakeColor(255, 255, 255, 255);
