@@ -41,6 +41,7 @@
 
 #include "Common/BuildAssistant.h"
 #include "Common/FramePacer.h"
+#include "Common/FrameTiming.h"
 #include "Common/GameUtility.h"
 #include "Common/GlobalData.h"
 #include "Common/Module.h"
@@ -1851,7 +1852,10 @@ void W3DView::draw()
 			m_viewFilter < FT_MAX)
 	{
 		// Most likely will redirect rendering to a texture.
-		preRenderResult=W3DShaderManager::filterPreRender(m_viewFilter, skipRender, customScenePassMode);
+		{
+			FRAME_TIMING_SCOPE(PHASE_POSTFX);
+			preRenderResult=W3DShaderManager::filterPreRender(m_viewFilter, skipRender, customScenePassMode);
+		}
 		if (!skipRender && getCameraLock())
 		{
 			Object* cameraLockObj = TheGameLogic->findObjectByID(getCameraLock());
@@ -1865,6 +1869,7 @@ void W3DView::draw()
 
 	if (!skipRender)
 	{
+		FRAME_TIMING_SCOPE(PHASE_SCENE);
 		// Render 3D scene from our camera
 		W3DDisplay::m_3DScene->setCustomPassMode(customScenePassMode);
 		if (m_isWireFrameEnabled)
@@ -1882,7 +1887,10 @@ void W3DView::draw()
 		calcDeltaScroll(deltaScroll);
 		Bool continueTheEffect = false;
 		if (preRenderResult)	//if prerender passed, do the post render.
+		{
+			FRAME_TIMING_SCOPE(PHASE_POSTFX);
 			continueTheEffect = W3DShaderManager::filterPostRender(m_viewFilter, m_viewFilterMode, deltaScroll,doExtraRender);
+		}
 		if (!skipRender && getCameraLock())
 		{
 			Object* cameraLockObj = TheGameLogic->findObjectByID(getCameraLock());

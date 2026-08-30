@@ -239,6 +239,7 @@ static const LookupListRec GameMessageMetaTypeNames[] =
 	{ "DEMO_CYCLE_DEBUG_VIS",											GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS },
 	{ "DEMO_CYCLE_DEBUG_VIS_BACK",								GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS_BACK },
 	{ "DEMO_DEBUG_VIS_OFF",												GameMessage::MSG_META_DEMO_DEBUG_VIS_OFF },
+	{ "DEMO_TOGGLE_FRAME_TIMING",							GameMessage::MSG_META_DEMO_TOGGLE_FRAME_TIMING },
 	{ "DEMO_LOD_DECREASE",												GameMessage::MSG_META_DEMO_LOD_DECREASE },
 	{ "DEMO_LOD_INCREASE",												GameMessage::MSG_META_DEMO_LOD_INCREASE },
 	{ "DEMO_TOGGLE_SHADOW_VOLUMES",								GameMessage::MSG_META_DEMO_TOGGLE_SHADOW_VOLUMES },
@@ -1015,21 +1016,30 @@ void MetaMap::generateMetaMap()
 			map->m_usableIn = COMMANDUSABLE_GAME;
 		}
 	}
-	// In-game debug visualizations (see WW3D2/debugvis.h), on F11 and its modifiers.
+	// In-game debug visualizations (see WW3D2/debugvis.h) and the frame timing readout
+	// (see GameClient/FrameTimingDisplay.h), all on F10 and its modifiers.
 	//
-	// F11 is the one function key nothing already claims: F1-F9 are the demo scripts in
-	// Data\INI\CommandMapDebug, F12 and Ctrl+F12 take screenshots (above), and F10 opens
-	// the window menu when the game is not fullscreen. Sitting next to the screenshot key
-	// is convenient rather than accidental -- cycle to the view, then capture it.
+	// F10 is the only function key no command map claims. Everything else is spoken for:
+	// F1-F8 are VIEW_VIEW1..8 and F9 is TOGGLE_CONTROL_BAR in CommandMap.ini, F12 is
+	// TAKE_SCREENSHOT, and CommandMapDebug takes F11 outright -- DEMO_TOGGLE_BEHIND_BUILDINGS
+	// bare, DEMO_TOGGLE_AVI on shift, DEMO_TOGGLE_RED_VIEW on ctrl. These defaults used to sit
+	// on F11 and so fired alongside all three of those, because generateMetaMap only checks
+	// whether the *action* is unbound and never whether the *key* is already taken.
 	//
-	// Like every default here these are only filled in where CommandMap.ini left the
-	// action unbound, so a player or a localised command map that wants F11 for something
-	// else simply wins, and these end up unbound rather than in conflict.
+	// Ctrl+F10 is left alone: DEMO_TOGGLE_BW_VIEW has it.
+	//
+	// F10 was historically avoided because it opened the window menu in windowed mode. It no
+	// longer does -- the window proc swallows SC_KEYMENU unconditionally (see WinMain.cpp),
+	// a fix made for the Alt key that takes F10 with it.
+	//
+	// Like every default here these are only filled in where the command maps left the action
+	// unbound, so a player who wants F10 for something else simply wins and these end up
+	// unbound rather than in conflict.
 	{
 		MetaMapRec *map = getMetaMapRec(GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS);
 		if (map->m_key == MK_NONE)
 		{
-			map->m_key = MK_F11;
+			map->m_key = MK_F10;
 			map->m_transition = DOWN;
 			map->m_modState = NONE;
 			map->m_usableIn = COMMANDUSABLE_GAME;
@@ -1039,19 +1049,31 @@ void MetaMap::generateMetaMap()
 		MetaMapRec *map = getMetaMapRec(GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS_BACK);
 		if (map->m_key == MK_NONE)
 		{
-			map->m_key = MK_F11;
+			map->m_key = MK_F10;
 			map->m_transition = DOWN;
 			map->m_modState = SHIFT;
 			map->m_usableIn = COMMANDUSABLE_GAME;
 		}
 	}
 	{
+		// Straight back to an unmodified frame. On alt because ctrl is taken and the cycle
+		// itself already passes through Off -- this is the shortcut, not the only way there.
 		MetaMapRec *map = getMetaMapRec(GameMessage::MSG_META_DEMO_DEBUG_VIS_OFF);
 		if (map->m_key == MK_NONE)
 		{
-			map->m_key = MK_F11;
+			map->m_key = MK_F10;
 			map->m_transition = DOWN;
-			map->m_modState = CTRL;
+			map->m_modState = ALT;
+			map->m_usableIn = COMMANDUSABLE_GAME;
+		}
+	}
+	{
+		MetaMapRec *map = getMetaMapRec(GameMessage::MSG_META_DEMO_TOGGLE_FRAME_TIMING);
+		if (map->m_key == MK_NONE)
+		{
+			map->m_key = MK_F10;
+			map->m_transition = DOWN;
+			map->m_modState = SHIFT_CTRL;
 			map->m_usableIn = COMMANDUSABLE_GAME;
 		}
 	}

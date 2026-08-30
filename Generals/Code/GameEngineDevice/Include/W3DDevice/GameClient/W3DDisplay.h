@@ -158,8 +158,8 @@ protected:
 	void init3DScene();									///< init 3D scene for WW3D
 	void init2DScene();									///< init 2D scene for WW3D
 	void gatherDebugStats();						///< compute debug stats
-	void drawDebugStats();							///< display debug stats
-	void drawCurrentDebugDisplay();			///< draws current debug display
+	Int drawDebugStats();								///< display debug stats; returns the y below the last line
+	Int drawCurrentDebugDisplay();			///< draws current debug display; returns the y below it
 	void calculateTerrainLOD();						///< Calculate terrain LOD.
 	void renderLetterBox(UnsignedInt time);							///< draw letter box border
 	void updateAverageFPS();	///< calculate the average fps over the last 30 frames.

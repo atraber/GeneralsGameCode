@@ -42,6 +42,7 @@ static void drawFramerateBar();
 
 // USER INCLUDES //////////////////////////////////////////////////////////////
 #include "Common/FramePacer.h"
+#include "Common/FrameTiming.h"
 #include "Common/ThingFactory.h"
 #include "Common/GlobalData.h"
 #include "Common/UnattendedRun.h"
@@ -57,6 +58,7 @@ static void drawFramerateBar();
 
 #include "GameClient/Drawable.h"
 #include "GameClient/GameText.h"
+#include "GameClient/FrameTimingDisplay.h"
 #include "GameClient/GraphDraw.h"
 #include "GameClient/Line2D.h"
 #include "GameClient/Mouse.h"
@@ -386,6 +388,10 @@ W3DDisplay::~W3DDisplay()
 	// delete the display strings
 	for (int i = 0; i < DisplayStringCount; i++)
 		TheDisplayStringManager->freeDisplayString(m_displayStrings[i]);
+
+#if defined(RTS_DEBUG)
+	shutdownFrameTimingOverlay();
+#endif
 
 	// TheSuperHackers @fix Mauller/Tomsons26 28/04/2025 Free benchmark display string
 	if( m_benchmarkDisplayString ) {
@@ -1544,7 +1550,7 @@ void W3DDisplay::gatherDebugStats()
 // W3DDisplay::drawDebugStats =================================================
 /** Draw debug statistics */
 //=============================================================================
-void W3DDisplay::drawDebugStats()
+Int W3DDisplay::drawDebugStats()
 {
 	Int	x = 3;
 	Int	y = 30;
@@ -1569,6 +1575,7 @@ void W3DDisplay::drawDebugStats()
 		y += h;
 	}
 
+	return y;
 }
 
 // W3DDisplay::drawFPSStats =================================================
@@ -1599,20 +1606,23 @@ void StatDebugDisplay( DebugDisplayInterface *, void *, FILE *fp )
 // W3DDisplay::drawCurrentDebugDisplay =================================================
 /** Draw current debug display */
 //=============================================================================
-void W3DDisplay::drawCurrentDebugDisplay()
+Int W3DDisplay::drawCurrentDebugDisplay()
 {
 	if (m_debugDisplayCallback == StatDebugDisplay)
 	{
-		drawDebugStats();
+		return drawDebugStats();
 	}
-	else
+
+	if ( m_debugDisplay && m_debugDisplayCallback )
 	{
-		if ( m_debugDisplay && m_debugDisplayCallback )
-		{
-			m_debugDisplay->reset();
-			m_debugDisplayCallback( m_debugDisplay, m_debugDisplayUserData, nullptr );
-		}
+		m_debugDisplay->reset();
+		m_debugDisplayCallback( m_debugDisplay, m_debugDisplayUserData, nullptr );
 	}
+
+	// Only the stats block reports a real extent; every other debug display draws through
+	// DebugDisplayInterface and owns its own layout, so anything stacking below it starts
+	// where the stats block would have.
+	return 30;
 }
 
 // W3DDisplay::calculateTerrainLOD =================================================
@@ -1727,6 +1737,10 @@ void W3DDisplay::step()
 void W3DDisplay::draw()
 {
 	//USE_PERF_TIMER(W3DDisplay_draw)
+	// TheSuperHackers @feature andytraber 29/08/2026 The render phases nest inside this one
+	// and are subtracted from it, so what is left here is the part of the frame belonging to
+	// no named pass -- clears, the letterbox, the video buffer, the debug overlays.
+	FRAME_TIMING_SCOPE(PHASE_DRAW);
 
 	extern HWND ApplicationHWnd;
 	if (ApplicationHWnd && ::IsIconic(ApplicationHWnd)) {
@@ -1912,13 +1926,16 @@ AGAIN:
 
 
 				// draw the user interface
-				TheInGameUI->DRAW();
+				{
+					FRAME_TIMING_SCOPE(PHASE_UI);
+					TheInGameUI->DRAW();
 
-				TheGameClient->DRAW();
+					TheGameClient->DRAW();
 
-				// draw the mouse
-				if( TheMouse )
-					TheMouse->DRAW();
+					// draw the mouse
+					if( TheMouse )
+						TheMouse->DRAW();
+				}
 
 				if ( m_videoStream && m_videoBuffer )
 				{
@@ -1958,11 +1975,23 @@ AGAIN:
 					m_cinematicTextFrames--;
 				}
 
+				Int debugDisplayBottomY = 30;
 				if ( m_debugDisplayCallback )
 				{
 					// draw the current debug display
-					drawCurrentDebugDisplay();
+					debugDisplayBottomY = drawCurrentDebugDisplay();
 				}
+
+#if defined(RTS_DEBUG)
+				// TheSuperHackers @feature andytraber 30/08/2026 The frame timing readout has
+				// its own toggle (F10) and is drawn independently of the debug display above,
+				// so both can be on at once -- stacked below the counters when they are up,
+				// in their place when they are not.
+				if (isFrameTimingOverlayEnabled())
+				{
+					drawFrameTimingOverlay(debugDisplayBottomY);
+				}
+#endif
 
 #if defined(RTS_DEBUG)
 				if (TheGlobalData->m_benchmarkTimer > 0)
@@ -1995,7 +2024,13 @@ AGAIN:
 				W3D_UpdateFrameDump(getUnattendedRunFrame());
 
 				// render is all done!
-				WW3D::End_Render();
+				// Attributed as "gpuwait" in the readout rather than as the cost of
+				// presenting: the driver queues several frames deep, so a GPU that is behind
+				// stalls here whichever pass actually put it behind.
+				{
+					FRAME_TIMING_SCOPE(PHASE_PRESENT);
+					WW3D::End_Render();
+				}
 			}
 			else
 			{
