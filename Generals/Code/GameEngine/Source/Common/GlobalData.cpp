@@ -1002,6 +1002,7 @@ GlobalData::GlobalData()
 
 	m_frameDumpFrames.clear();
 	m_frameDumpEvery = -1;
+	m_frameDumpShadowMap = FALSE;
 
 	m_cameraScriptFile.clear();
 	m_cameraScriptText.clear();

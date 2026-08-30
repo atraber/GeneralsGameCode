@@ -363,6 +363,7 @@ public:
 	Int m_quitAtFrame;								///< Quit to desktop at this logic frame, or -1
 
 	AsciiString m_frameDumpFrames;		///< Comma separated logic frames to capture the back buffer at
+	Bool m_frameDumpShadowMap;				///< Also write the shadow map beside each captured frame
 	Int m_frameDumpEvery;							///< Capture the back buffer every this many logic frames, or -1
 
 	AsciiString m_cameraScriptFile;		///< Camera script to drive the camera of an unattended run with

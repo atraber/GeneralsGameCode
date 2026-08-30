@@ -1956,6 +1956,23 @@ void DX8Wrapper::Request_Post_Scene_Callback(PostSceneCallbackFunc func, void* u
 	s_postSceneCallbackData = userData;
 }
 
+// Outside the debug block for the same reason the callback above is: the header
+// declares it unconditionally, so a definition inside RTS_DEBUG would leave the
+// release build with a use and no definition.
+bool DX8Wrapper::Dump_Shadow_Map(const char* pathname)
+{
+	if (m_pShadowMap == nullptr)
+		return false;
+
+	IDirect3DSurface8* surface = nullptr;
+	if (FAILED(((IDirect3DTexture8*)m_pShadowMap)->GetSurfaceLevel(0, &surface)) || surface == nullptr)
+		return false;
+
+	const bool ok = SUCCEEDED(D3DXSaveSurfaceToFileA(pathname, D3DXIFF_PNG, surface, nullptr, nullptr));
+	surface->Release();
+	return ok;
+}
+
 DebugVisMode					DX8Wrapper::m_debugVisMode = DEBUG_VIS_OFF;
 DWORD							DX8Wrapper::m_dwDebugTintPS = 0;
 DWORD							DX8Wrapper::m_dwDebugNormalVS = 0;

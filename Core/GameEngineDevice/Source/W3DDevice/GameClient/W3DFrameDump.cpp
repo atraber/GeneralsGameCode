@@ -110,6 +110,15 @@ static void frameDumpCallback(void* /*userData*/)
 	ensureRunDirectory();
 
 	W3D_TakeCompressedScreenshotNamed(SCREENSHOT_PNG, 0, s_runDirectory, s_pendingLeafname, FALSE);
+
+	if (TheGlobalData->m_frameDumpShadowMap)
+	{
+		char pathname[_MAX_PATH];
+		sprintf(pathname, "%s%s%s_shadowmap.png",
+			TheGlobalData->getPath_UserData().str(), s_runDirectory, s_pendingLeafname);
+		if (!DX8Wrapper::Dump_Shadow_Map(pathname))
+			DEBUG_LOG(("FRAME DUMP: no shadow map to write for %s", s_pendingLeafname));
+	}
 }
 
 void W3D_UpdateFrameDump(UnsignedInt runFrame)
