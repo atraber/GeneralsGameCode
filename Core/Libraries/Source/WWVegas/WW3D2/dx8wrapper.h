@@ -826,6 +826,13 @@ public:
 		SHADER_ROUTE_OFF           = 1 << 4,   // no mesh routing at all (fixed function)
 		SHADER_ROUTE_ADDITIVE      = 1 << 6,   // additive effect passes too (diagnostic; see below)
 		SHADER_ROUTE_PBR           = 1 << 5,   // metallic-roughness shading where an ORM map exists
+		// PBR on house-coloured meshes as well. Normally they are held back, because a
+		// procedurally generated ORM reads their bright white base texture as
+		// near-metallic and PBR then renders dark metal where a team tint belongs. That
+		// reasoning is about *generated* maps: an authored ORM whose metallic is
+		// deliberate wants to be obeyed, and since every player-owned unit carries a team
+		// tint, the exclusion otherwise keeps PBR off all of them.
+		SHADER_ROUTE_PBR_TEAMCOLOR = 1 << 7,
 	};
 	static DWORD						m_shaderRoutingMask;
 	// PBR (metallic-roughness, SM3) variant of the unit shader. Bound in place of
