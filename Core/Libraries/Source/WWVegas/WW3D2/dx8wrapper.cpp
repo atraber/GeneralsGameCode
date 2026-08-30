@@ -3115,8 +3115,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// Off unless SHADER_ROUTE_PBR is selected, so the default build renders
 			// exactly what the milestone before it did and PBR can be A/B'd in game.
 			const bool pbrRoutingOn = (m_shaderRoutingMask & SHADER_ROUTE_PBR) != 0;
+			// The house-colour exclusion above is about procedurally generated ORM maps
+			// misreading a white team-colour texture as metal. Where the map was authored
+			// on purpose it should be obeyed instead -- and since every player-owned unit
+			// carries a team tint, the exclusion otherwise keeps those maps off all of them,
+			// which leaves it applying to almost nothing anyone looks at.
+			const bool pbrTeamColour = (m_shaderRoutingMask & SHADER_ROUTE_PBR_TEAMCOLOR) != 0;
 			TextureBaseClass* ormTex = nullptr;
-			if (pbrRoutingOn && !houseColoured && singleTexture && !texgenActive &&
+			if (pbrRoutingOn && (!houseColoured || pbrTeamColour) &&
+				singleTexture && !texgenActive &&
 				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0 && s_ormResolver != nullptr) {
 				ormTex = s_ormResolver(render_state.Textures[0]);
 			}
