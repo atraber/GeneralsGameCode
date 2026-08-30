@@ -177,6 +177,16 @@ public:
 
 #if defined(RTS_DEBUG)
 	virtual void dumpModelAssets(const char *path) = 0;	///< dump all used models/textures to a file.
+	/// Step the in-game debug visualization: +1 next, -1 previous, 0 straight to off.
+	/// Returns a one-line description of the mode now active -- its name, and its colour
+	/// legend where it has one -- for the caller to put on screen. The string is owned by
+	/// the display and stays valid until the next call.
+	///
+	/// The mode itself belongs to the renderer, not to TheGlobalData, so this is how the
+	/// message handler reaches it -- the same shape as dumpModelAssets above, and for the
+	/// same reason: the device layer owns the thing, and the command translator is
+	/// device-independent and must not include a D3D header to say "next mode please".
+	virtual const char *cycleDebugVisualization(Int step) = 0;
 #endif
 	virtual void preloadModelAssets( AsciiString model ) = 0;	///< preload model asset
 	virtual void preloadTextureAssets( AsciiString texture ) = 0;	///< preload texture asset

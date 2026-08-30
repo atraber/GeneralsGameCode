@@ -1767,6 +1767,149 @@ void DX8Wrapper::Request_Post_Scene_Callback(PostSceneCallbackFunc func, void* u
 	s_postSceneCallbackData = userData;
 }
 
+DebugVisMode					DX8Wrapper::m_debugVisMode = DEBUG_VIS_OFF;
+DWORD							DX8Wrapper::m_dwDebugTintPS = 0;
+DWORD							DX8Wrapper::m_dwDebugNormalVS = 0;
+DWORD							DX8Wrapper::m_dwDebugNormalPS = 0;
+
+void DX8Wrapper::Set_Debug_Vis_Mode(DebugVisMode mode)
+{
+	if (mode == m_debugVisMode) return;
+	const DebugVisMode previous = m_debugVisMode;
+	m_debugVisMode = mode;
+
+	// DEBUG_VIS_OVERDRAW writes texture-stage state directly, behind ShaderClass's back.
+	// ShaderClass only re-issues those when it believes the shader has changed, so on the
+	// way out of such a mode it would skip the stages they overwrote and the whole scene
+	// would stay flat-shaded until something else happened to change shader. Marking it
+	// dirty makes the next Apply rewrite all of them, which is exactly the repair.
+	//
+	// Done on entry as well as exit, and unconditionally rather than only for the modes
+	// that need it: the cost is one redundant state re-apply on a key press.
+	ShaderClass::Invalidate();
+
+	// The fill mode has to be put back by hand. ShaderClass does not set D3DRS_FILLMODE,
+	// so unlike everything else the wireframe mode touches, invalidating the shader does
+	// not undo it -- leaving the entire game wireframe for the rest of the session.
+	// Written straight to the device rather than through the tracked setter because the
+	// tracked value may already read SOLID from before the mode was entered, in which
+	// case the setter would consider the write redundant and skip it.
+	if (previous == DEBUG_VIS_WIREFRAME && _Get_D3D_Device8() != nullptr) {
+		_Get_D3D_Device8()->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+		Invalidate_Cached_Render_States();
+	}
+}
+
+// Replace this draw's shading to say something about the draw. See debugvis.h.
+//
+// Everything here runs at the very end of Apply_Render_State_Changes, which is what makes
+// it able to override at all: ShaderClass::Apply has already run by this point, so the
+// blend, depth and stage state written here is the last word for this draw.
+//
+// Each mode has to work on both pipelines, and they do not take instruction the same way:
+// a programmable draw has its pixel shader swapped, a fixed-function draw is steered
+// through TFACTOR with the texture stages collapsed onto it. Where a mode cannot express
+// itself on a given draw it leaves that draw alone rather than approximating, so what is
+// on screen is never a guess.
+void DX8Wrapper::Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal,
+										   bool onMeshPath)
+{
+	switch (m_debugVisMode) {
+
+		case DEBUG_VIS_WIREFRAME:
+			// Lines only, in one colour. Depth is left exactly as the draw set it, so
+			// this is a solid wireframe rather than an x-ray one: what is behind a hill
+			// stays behind it, and the density on screen is the density actually being
+			// rasterised for this view.
+			//
+			// The fill mode itself is set by the caller, which sees the excluded passes
+			// this function never runs for -- see the note there on why they need it set
+			// too rather than merely left alone.
+			Debug_Flat_Shade(0xFF90FF90, fixedFunction);
+			break;
+
+		case DEBUG_VIS_OVERDRAW: {
+			// Count layers by adding a small constant per draw and letting the frame
+			// accumulate.
+			//
+			// Depth is left exactly as each draw set it, and that choice is the whole
+			// character of the mode. Forcing the test off would count every fragment the
+			// rasteriser ever produced, which sounds like the truer measure of fill and
+			// is not a picture: with nothing occluding anything, every wall, floor and
+			// terrain chunk in the level composites on top of every other, and the result
+			// is a bright mess with no spatial structure left to point at. Tried first,
+			// and unreadable.
+			//
+			// What this counts instead is the layers that survive depth -- which is the
+			// number worth acting on anyway. Opaque geometry is depth-tested and mostly
+			// costs one layer; the fill that actually hurts is the translucent pile
+			// (smoke, dust, glows, decals, the sorted pass) and none of that writes depth,
+			// so all of it still accumulates in full.
+			//
+			// The colour is not grey. Adding a constant with unequal channels makes the
+			// channels clip at different counts, so the sum walks red -> orange -> yellow
+			// -> white on its own as the layers pile up, and a single additive draw does
+			// the work a separate ramp pass would otherwise be needed for.
+			Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE, TRUE);
+			Set_DX8_Render_State(D3DRS_SRCBLEND,  D3DBLEND_ONE);
+			Set_DX8_Render_State(D3DRS_DESTBLEND, D3DBLEND_ONE);
+			Debug_Flat_Shade(0xFF140A03, fixedFunction);
+			break;
+		}
+
+		case DEBUG_VIS_NORMALS:
+			// The one mode that cannot cover the whole frame, and it declines rather than
+			// invents. It needs a vertex normal in the stream, and it needs this draw to
+			// have routed to the mesh shaders -- because it substitutes for unit_vs and
+			// reads the matrices unit_vs was handed, which mean something else entirely
+			// in the terrain pass. Everything else is flat grey, and the legend says so.
+			if (m_dwDebugNormalVS != 0 && m_dwDebugNormalPS != 0 && hasNormal && onMeshPath) {
+				Set_Vertex_Shader(m_dwDebugNormalVS);
+				Set_Pixel_Shader(m_dwDebugNormalPS);
+			} else {
+				Debug_Flat_Shade(0xFF606060, fixedFunction);
+			}
+			break;
+
+		default:
+			break;
+	}
+}
+
+// Make this draw come out one flat colour, whichever pipeline is drawing it.
+void DX8Wrapper::Debug_Flat_Shade(unsigned color, bool fixedFunction)
+{
+	if (!fixedFunction) {
+		// Missing shader: leave the draw shaded normally rather than guessing. Half a
+		// visualization that silently omits the programmable draws would read as
+		// "everything is fixed function", which is the exact wrong conclusion.
+		if (m_dwDebugTintPS == 0) return;
+		const float inv = 1.0f / 255.0f;
+		const float rgba[4] = {
+			((color >> 16) & 0xFF) * inv,
+			((color >>  8) & 0xFF) * inv,
+			( color        & 0xFF) * inv,
+			((color >> 24) & 0xFF) * inv
+		};
+		Set_Pixel_Shader_Constant(DEBUG_TINT_PS_REGISTER, rgba, 1);
+		Set_Pixel_Shader(m_dwDebugTintPS);
+		return;
+	}
+
+	// Fixed function. Stage 0 selects the constant outright and stage 1 is switched
+	// off, so no texture, vertex colour or material reaches the result -- if a
+	// fixed-function draw were tinted by modulating what it already produced, the ones
+	// drawing something nearly black would come out nearly black and the mode would
+	// hide precisely the draws it exists to find.
+	Set_DX8_Render_State(D3DRS_TEXTUREFACTOR, color);
+	Set_DX8_Texture_Stage_State(0, D3DTSS_COLOROP,   D3DTOP_SELECTARG1);
+	Set_DX8_Texture_Stage_State(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
+	Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAOP,   D3DTOP_SELECTARG1);
+	Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
+	Set_DX8_Texture_Stage_State(1, D3DTSS_COLOROP,   D3DTOP_DISABLE);
+	Set_DX8_Texture_Stage_State(1, D3DTSS_ALPHAOP,   D3DTOP_DISABLE);
+}
+
 void DX8Wrapper::End_Scene(bool flip_frames)
 {
 	DX8_THREAD_ASSERT();
@@ -3040,6 +3183,36 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			}
 			m_bUnitShaderBound = false;
 		}
+
+		// Debug visualization overrides, last of all: everything above has finished
+		// deciding and binding, so what this recolours a draw by is what the device is
+		// actually about to do.
+		//
+		// The 2D pass is excluded, and the fill mode is stated for it rather than left
+		// alone: D3DRS_FILLMODE is device state, not per-draw state, so an excluded pass
+		// does not merely miss the override -- it *inherits* whatever the last scene draw
+		// left. Without this the control bar and the on-screen text draw in wireframe too,
+		// and the banner naming the mode becomes unreadable.
+		//
+		// Identified by D3DFVF_XYZRHW, which is what every screen-space draw in the frame
+		// still carries. That is a property of the interface being fixed function, so this
+		// test is only correct for as long as that is true.
+		//
+		// Debug builds only: there is no reason to carry a per-draw branch into a release
+		// build for a mode it can never enter.
+#ifdef RTS_DEBUG
+		if (m_debugVisMode != DEBUG_VIS_OFF) {
+			const bool transformedPass = (curFVF & D3DFVF_XYZRHW) == D3DFVF_XYZRHW;
+			if (m_debugVisMode == DEBUG_VIS_WIREFRAME)
+				Set_DX8_Render_State(D3DRS_FILLMODE,
+					transformedPass ? D3DFILL_SOLID : D3DFILL_WIREFRAME);
+			if (!transformedPass) {
+				const bool onMeshPath = useUnitShader;
+				Apply_Debug_Draw_Override(!useUnitShader && !useTerrainShader,
+					(curFVF & D3DFVF_NORMAL) != 0, onMeshPath);
+			}
+		}
+#endif
 	}
 
 	render_state_changed&=((unsigned)WORLD_IDENTITY|(unsigned)VIEW_IDENTITY);

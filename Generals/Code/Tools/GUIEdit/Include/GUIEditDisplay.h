@@ -117,6 +117,7 @@ public:
 	virtual void enableLetterBox(Bool enable) override {}
 #if defined(RTS_DEBUG)
 	virtual void dumpModelAssets(const char *path) override {}
+	virtual const char *cycleDebugVisualization(Int step) override { return ""; }
 #endif
 	virtual void doSmartAssetPurgeAndPreload(const char* usageFileName) override {}
 #if defined(RTS_DEBUG)

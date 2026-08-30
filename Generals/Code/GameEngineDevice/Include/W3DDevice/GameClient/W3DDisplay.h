@@ -136,6 +136,7 @@ public:
 	virtual void setBorderShroudLevel(UnsignedByte level) override;	///<color that will appear in unused border terrain.
 #if defined(RTS_DEBUG)
 	virtual void dumpModelAssets(const char *path) override;	///< dump all used models/textures to a file.
+	virtual const char *cycleDebugVisualization(Int step) override;	///< step the in-game debug visualization
 #endif
 	virtual void preloadModelAssets( AsciiString model ) override;			///< preload model asset
 	virtual void preloadTextureAssets( AsciiString texture ) override;	///< preload texture asset

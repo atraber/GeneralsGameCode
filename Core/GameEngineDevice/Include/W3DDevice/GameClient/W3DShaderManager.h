@@ -77,6 +77,10 @@ public:
 
 	// Programmable (D3D9) unit render path.
 	static void initUnitShaders();	///<create the vertex declaration and load the unit vertex/pixel shaders.
+	///Load the debug-visualization shaders. Failure is not fatal: each mode checks its
+	///own shader and does nothing if it is missing.
+	static void initDebugVis();
+	static void shutdownDebugVis();
 	static void shutdownUnitShaders();	///<release the unit shaders and vertex declaration.
 	static void getCloudOffset(float& x, float& y); ///<current scrolling cloud-overlay offset.
 

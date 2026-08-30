@@ -48,6 +48,7 @@
 #include "statistics.h"
 #include "WWLib/wwstring.h"
 #include "WW3D2/lightenvironment.h"
+#include "WW3D2/debugvis.h"
 #include "WW3D2/shader.h"
 #include "WWMath/vector4.h"
 #include "WWLib/cpudetect.h"
@@ -308,6 +309,49 @@ public:
 	*/
 	static void Begin_Scene();
 	static void End_Scene(bool flip_frame = true);
+
+	// ---------------------------------------------------------------------------
+	// In-game debug visualization (see debugvis.h). The mode is held here because it
+	// is applied by Apply_Render_State_Changes, which nothing above this layer can
+	// reach into, while the game layer switches it through Display::
+	// cycleDebugVisualization. One owner, so the two cannot disagree about which
+	// mode is on.
+	//
+	// Set_Debug_Vis_Mode invalidates the cached shader states, and it must:
+	// DEBUG_VIS_OVERDRAW writes texture-stage state that ShaderClass believes it has
+	// already applied, so without the invalidate the flat colour survives the mode
+	// being switched off, for as long as the same shader stays current.
+	static DebugVisMode					m_debugVisMode;
+	static void Set_Debug_Vis_Mode(DebugVisMode mode);
+	static DebugVisMode Get_Debug_Vis_Mode() { return m_debugVisMode; }
+	// The flat-shading pixel shader the tinting modes bind in place of whatever a
+	// programmable draw would otherwise have used. Zero if it failed to load, in which
+	// case programmable draws are left alone and only fixed-function ones are tinted.
+	static DWORD						m_dwDebugTintPS;
+	// DEBUG_VIS_NORMALS substitutes this pair for unit_vs/unit_ps. A vertex shader of
+	// its own is unavoidable: unit_vs lights per vertex and forwards the result, so the
+	// normal no longer exists by the pixel stage. See debugnormal_vs.hlsl, which
+	// deliberately declares the same matrix registers as unit_vs so the substitution
+	// needs no upload.
+	static DWORD						m_dwDebugNormalVS;
+	static DWORD						m_dwDebugNormalPS;
+	// Constant register the tint colour is handed over in. Well above every register any
+	// real pixel shader here declares, so setting it cannot disturb a shader that is
+	// about to be replaced anyway -- or one that is not, when the tint shader is missing.
+	enum { DEBUG_TINT_PS_REGISTER = 31 };
+	// Replace this draw's shading to say something about the draw. Called at the very end
+	// of Apply_Render_State_Changes, after routing has bound everything, so that what it
+	// reports is what the frame is really about to do rather than what it was asked to
+	// do -- and so that ShaderClass::Apply, which runs earlier inside that function,
+	// cannot overwrite the blend and depth state these modes depend on.
+	//
+	// `fixedFunction` is the routing's own verdict for this draw; `hasNormal` and
+	// `onMeshPath` are what DEBUG_VIS_NORMALS needs to decide whether it can say
+	// anything about this draw at all.
+	static void Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal, bool onMeshPath);
+	// Make one draw come out a single flat colour on whichever pipeline is drawing it.
+	// 0xAARRGGBB; the alpha reaches the shader and is left to the draw's own blend.
+	static void Debug_Flat_Shade(unsigned color, bool fixedFunction);
 
 	// TheSuperHackers @feature andytraber 17/08/2026
 	// A callback run once, at the one instant in the frame where the finished back buffer

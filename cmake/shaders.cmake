@@ -48,6 +48,10 @@ set(_rts_shaders
     unit_detail_ps
     terrain_vs
     terrain_ps
+    # In-game debug visualizations (RTS_DEBUG only; see WW3D2/debugvis.h)
+    debugtint_ps
+    debugnormal_vs
+    debugnormal_ps
 )
 
 file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")

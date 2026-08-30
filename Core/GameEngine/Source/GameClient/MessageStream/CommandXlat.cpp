@@ -4401,6 +4401,34 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
 		//------------------------------------------------------------------------------- DEMO MESSAGES
 		//-----------------------------------------------------------------------------------------
+		// Step the in-game debug visualization. F11 / Shift+F11 / Ctrl+F11 by default;
+		// see MetaMap::generateMetaMap for why those keys and WW3D2/debugvis.h for the
+		// modes themselves.
+		//
+		// Purely a client-side view change: it alters nothing the logic can observe and
+		// the message is destroyed here, so it is safe to press during a replay or a
+		// network game -- which is the point, since the frames worth inspecting are the
+		// ones a replay can be made to reproduce.
+		case GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS:
+		case GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS_BACK:
+		case GameMessage::MSG_META_DEMO_DEBUG_VIS_OFF:
+		{
+			Int step = 1;
+			if (t == GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS_BACK)
+				step = -1;
+			else if (t == GameMessage::MSG_META_DEMO_DEBUG_VIS_OFF)
+				step = 0;
+
+			const char *banner = TheDisplay->cycleDebugVisualization(step);
+			TheInGameUI->message( TheGameText->FETCH_OR_SUBSTITUTE_FORMAT(
+				"GUI:DebugVisualization", L"%hs", banner) );
+
+			disp = DESTROY_MESSAGE;
+			break;
+		}
+
+		//------------------------------------------------------------------------------- DEMO MESSAGES
+		//-----------------------------------------------------------------------------------------
 		case GameMessage::MSG_META_DEMO_TOGGLE_SHADOW_VOLUMES:
 		{
 			TheWritableGlobalData->m_useShadowVolumes = !TheGlobalData->m_useShadowVolumes;

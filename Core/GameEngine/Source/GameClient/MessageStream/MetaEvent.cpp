@@ -236,6 +236,9 @@ static const LookupListRec GameMessageMetaTypeNames[] =
 	{ "DEMO_TOGGLE_THREATDEBUG",									GameMessage::MSG_META_DEMO_TOGGLE_THREATDEBUG },
 	{ "DEMO_TOGGLE_VISIONDEBUG",									GameMessage::MSG_META_DEMO_TOGGLE_VISIONDEBUG },
 	{ "DEMO_TOGGLE_PROJECTILEDEBUG",							GameMessage::MSG_META_DEMO_TOGGLE_PROJECTILEDEBUG },
+	{ "DEMO_CYCLE_DEBUG_VIS",											GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS },
+	{ "DEMO_CYCLE_DEBUG_VIS_BACK",								GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS_BACK },
+	{ "DEMO_DEBUG_VIS_OFF",												GameMessage::MSG_META_DEMO_DEBUG_VIS_OFF },
 	{ "DEMO_LOD_DECREASE",												GameMessage::MSG_META_DEMO_LOD_DECREASE },
 	{ "DEMO_LOD_INCREASE",												GameMessage::MSG_META_DEMO_LOD_INCREASE },
 	{ "DEMO_TOGGLE_SHADOW_VOLUMES",								GameMessage::MSG_META_DEMO_TOGGLE_SHADOW_VOLUMES },
@@ -1008,6 +1011,46 @@ void MetaMap::generateMetaMap()
 		{
 			map->m_key = MK_COMMA;
 			map->m_transition = UP;
+			map->m_modState = CTRL;
+			map->m_usableIn = COMMANDUSABLE_GAME;
+		}
+	}
+	// In-game debug visualizations (see WW3D2/debugvis.h), on F11 and its modifiers.
+	//
+	// F11 is the one function key nothing already claims: F1-F9 are the demo scripts in
+	// Data\INI\CommandMapDebug, F12 and Ctrl+F12 take screenshots (above), and F10 opens
+	// the window menu when the game is not fullscreen. Sitting next to the screenshot key
+	// is convenient rather than accidental -- cycle to the view, then capture it.
+	//
+	// Like every default here these are only filled in where CommandMap.ini left the
+	// action unbound, so a player or a localised command map that wants F11 for something
+	// else simply wins, and these end up unbound rather than in conflict.
+	{
+		MetaMapRec *map = getMetaMapRec(GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS);
+		if (map->m_key == MK_NONE)
+		{
+			map->m_key = MK_F11;
+			map->m_transition = DOWN;
+			map->m_modState = NONE;
+			map->m_usableIn = COMMANDUSABLE_GAME;
+		}
+	}
+	{
+		MetaMapRec *map = getMetaMapRec(GameMessage::MSG_META_DEMO_CYCLE_DEBUG_VIS_BACK);
+		if (map->m_key == MK_NONE)
+		{
+			map->m_key = MK_F11;
+			map->m_transition = DOWN;
+			map->m_modState = SHIFT;
+			map->m_usableIn = COMMANDUSABLE_GAME;
+		}
+	}
+	{
+		MetaMapRec *map = getMetaMapRec(GameMessage::MSG_META_DEMO_DEBUG_VIS_OFF);
+		if (map->m_key == MK_NONE)
+		{
+			map->m_key = MK_F11;
+			map->m_transition = DOWN;
 			map->m_modState = CTRL;
 			map->m_usableIn = COMMANDUSABLE_GAME;
 		}
