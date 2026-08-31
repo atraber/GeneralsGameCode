@@ -708,6 +708,8 @@ def main():
     #unify_move_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/linegrp.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/linegrp.h")
     #unify_move_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/linegrp.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/linegrp.cpp")
 
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/w3d_file.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/w3d_file.h")
+
     return
 
 

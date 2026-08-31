@@ -215,7 +215,7 @@ set(WW3D2_SRC
     #visrasterizer.h
     #w3d_dep.cpp
     #w3d_dep.h
-    w3d_file.h
+#    w3d_file.h
     #w3d_obsolete.h
     #w3d_util.cpp
     #w3d_util.h
