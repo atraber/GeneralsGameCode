@@ -170,8 +170,8 @@ set(WW3D2_SRC
     #segline.h
     #seglinerenderer.cpp
     #seglinerenderer.h
-    shader.cpp
-    shader.h
+#    shader.cpp
+#    shader.h
     #shattersystem.cpp
     #shattersystem.h
     #snappts.cpp
