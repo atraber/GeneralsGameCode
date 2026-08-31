@@ -619,6 +619,9 @@ def main():
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DVolumetricShadow.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DVolumetricShadow.h")
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp")
 
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DProjectedShadow.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DProjectedShadow.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DProjectedShadow.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DProjectedShadow.cpp")
+
     return
 
 

@@ -56,7 +56,7 @@ set(GAMEENGINEDEVICE_SRC
 #    Include/W3DDevice/GameClient/W3DParticleSys.h
 #    Include/W3DDevice/GameClient/W3DPoly.h
     Include/W3DDevice/GameClient/W3DProfilerFrameCapture.h
-#    Include/W3DDevice/GameClient/W3DProjectedShadow.h
+    Include/W3DDevice/GameClient/W3DProjectedShadow.h
     Include/W3DDevice/GameClient/W3DPropBuffer.h
 #    Include/W3DDevice/GameClient/W3DRoadBuffer.h
 #    Include/W3DDevice/GameClient/W3DScene.h
@@ -137,7 +137,7 @@ set(GAMEENGINEDEVICE_SRC
 #    Source/W3DDevice/GameClient/GUI/W3DGameWindowManager.cpp
     Source/W3DDevice/GameClient/HeightMap.cpp
 #    Source/W3DDevice/GameClient/Shadow/W3DBufferManager.cpp
-#    Source/W3DDevice/GameClient/Shadow/W3DProjectedShadow.cpp
+    Source/W3DDevice/GameClient/Shadow/W3DProjectedShadow.cpp
 #    Source/W3DDevice/GameClient/Shadow/W3DShadow.cpp
     Source/W3DDevice/GameClient/Shadow/W3DVolumetricShadow.cpp
     Source/W3DDevice/GameClient/TerrainTex.cpp
