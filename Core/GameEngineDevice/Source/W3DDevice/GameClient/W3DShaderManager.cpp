@@ -2182,6 +2182,13 @@ void W3DShaderManager::initUnitShaders()
 	if (DX8Wrapper::m_dwUnitPrelitVS == 0) {
 		LoadAndCreateD3DShader("shaders\\unit_prelit_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwUnitPrelitVS);
 	}
+	// Variant for geometry whose stage 1 samples the mesh's *second* coordinate set --
+	// the sorted detail passes, which were the last group left on fixed function.
+	// Separate for the same reason as the pre-lit one, in the other direction: this
+	// shader declares an input a one-coordinate-set format does not supply.
+	if (DX8Wrapper::m_dwUnitUv2VS == 0) {
+		LoadAndCreateD3DShader("shaders\\unit_uv2_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwUnitUv2VS);
+	}
 	if (DX8Wrapper::m_dwUnitPS == 0) {
 		LoadAndCreateD3DShader("shaders\\unit_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwUnitPS);
 	}

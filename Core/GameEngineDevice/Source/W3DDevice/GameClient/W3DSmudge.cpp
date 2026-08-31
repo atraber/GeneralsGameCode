@@ -424,6 +424,14 @@ Bool W3DSmudgeManager::testHardwareSupport()
 
 		LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
 
+		// Both draws in this function stay on fixed function on purpose. This is not the
+		// render path -- it is the hardware probe that decides whether the smudge feature
+		// works at all, and it works by drawing a known quad, reading the pixels back and
+		// comparing them against a reference it computed itself. What it is testing is
+		// that the device can render to a texture and that the texture can be read back;
+		// binding a shader over it would make the answer depend on the shader, which is
+		// the one thing the test must not measure. Two draws, once, at startup.
+		//
 		//draw polygons like this is very inefficient but for only 2 triangles, it's
 		//not worth bothering with index/vertex buffers.
 		DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);

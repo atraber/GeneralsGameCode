@@ -44,6 +44,8 @@ set(RTS_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders" CACHE INTERNAL "Compiled sh
 # output extension) is derived from the "_vs"/"_ps" suffix of each name.
 set(_rts_shaders
     unit_vs
+    # Same body as unit_vs, declaring the mesh's second coordinate set as well
+    unit_uv2_vs
     unit_prelit_vs
     unit_ps
     unit_detail_ps

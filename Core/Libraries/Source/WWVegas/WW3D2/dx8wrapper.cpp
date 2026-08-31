@@ -192,6 +192,7 @@ unsigned long DX8Wrapper::FrameCount = 0;
 // Programmable (D3D9) unit render path
 DWORD							DX8Wrapper::m_dwUnitVS = 0;
 DWORD							DX8Wrapper::m_dwUnitPrelitVS = 0;
+DWORD							DX8Wrapper::m_dwUnitUv2VS = 0;
 DWORD							DX8Wrapper::m_dwUnitPS = 0;
 DWORD							DX8Wrapper::m_dwUnitDetailPS = 0;
 DWORD							DX8Wrapper::m_shaderRoutingMask = DX8Wrapper::SHADER_ROUTE_BASELINE;
@@ -209,6 +210,68 @@ DWORD							DX8Wrapper::m_dwTerrainPS = 0;
 // the fixed-function traffic that no longer happens, and a zero here is the claim being
 // made -- a zero in the census would instead mean the instrument stopped being reached.
 static unsigned s_ffFlushedWrites = 0;
+
+// ...and who they were flushed for. The total on its own says how much fixed-function
+// state still reaches the device but not which draw wanted it, which is the only form
+// of the number a conversion can be aimed at: "176400 words somewhere" is not a piece
+// of work, "the shroud pass asks for 4 stage words a draw" is. Keyed on the declaration
+// scope in force at the flush, since that is what names the drawing subsystem.
+enum { MAX_FF_FLUSH_SITES = 24 };
+struct FFFlushSite { const char* who; unsigned writes; unsigned vertexFF; unsigned pixelFF; };
+static FFFlushSite s_ffFlushSites[MAX_FF_FLUSH_SITES];
+static int s_ffFlushSiteCount = 0;
+static unsigned s_ffFlushDropped = 0;
+// Set for the duration of a direct drawer's flush, so its own name is used rather than
+// whatever declaration scope happens to enclose it.
+static const char* s_ffFlushSiteOverride = nullptr;
+
+// Which state words the flush is actually sending. The site says which pass wants
+// fixed-function state; the word says which subsystem wrote it, and between them there
+// is something to go and convert. Same idea as NoteUnattributedWord below.
+// Wide enough for all 17 deferred stage words plus the ten deferred render states and
+// the material, so a full re-send after an invalidation is reported whole rather than
+// truncated at whichever words happened to be seen first.
+enum { MAX_FF_FLUSH_WORDS = 32 };
+struct FFFlushWord { unsigned isStage; unsigned state; unsigned count; };
+static FFFlushWord s_ffFlushWords[MAX_FF_FLUSH_WORDS];
+static int s_ffFlushWordCount = 0;
+
+static void NoteFlushedWord(unsigned isStage, unsigned state)
+{
+	for (int i = 0; i < s_ffFlushWordCount; ++i) {
+		if (s_ffFlushWords[i].isStage == isStage && s_ffFlushWords[i].state == state) {
+			++s_ffFlushWords[i].count; return;
+		}
+	}
+	if (s_ffFlushWordCount >= MAX_FF_FLUSH_WORDS) return;
+	s_ffFlushWords[s_ffFlushWordCount].isStage = isStage;
+	s_ffFlushWords[s_ffFlushWordCount].state = state;
+	s_ffFlushWords[s_ffFlushWordCount].count = 1;
+	++s_ffFlushWordCount;
+}
+
+static void NoteFlushedWrite(const char* who)
+{
+	if (who == nullptr) who = DX8Wrapper::Debug_Current_Pass_Name();
+	// Which half of the pipeline made this a fixed-function draw. They are separate
+	// failures with separate fixes -- no pixel shader means the combine still decides
+	// the colour, an FVF where a vertex shader belongs means the transform, the lighting
+	// and the texgen are all still the device's -- and a site can be either or both.
+	const unsigned v = DX8Wrapper::Is_Fixed_Function_Vertex_Draw() ? 1u : 0u;
+	const unsigned p = DX8Wrapper::Is_Fixed_Function_Pixel_Draw() ? 1u : 0u;
+	FFFlushSite* e = nullptr;
+	for (int i = 0; i < s_ffFlushSiteCount; ++i) {
+		if (s_ffFlushSites[i].who == who) { e = &s_ffFlushSites[i]; break; }
+	}
+	if (e == nullptr) {
+		if (s_ffFlushSiteCount >= MAX_FF_FLUSH_SITES) { ++s_ffFlushDropped; return; }
+		e = &s_ffFlushSites[s_ffFlushSiteCount++];
+		e->who = who; e->writes = 0; e->vertexFF = 0; e->pixelFF = 0;
+	}
+	++e->writes;
+	e->vertexFF += v;
+	e->pixelFF += p;
+}
 #endif
 
 //-----------------------------------------------------------------------------
@@ -274,7 +337,10 @@ void DX8Wrapper::Flush_Fixed_Function_State()
 			FFDeviceMaterial = CurrentMaterial;
 			DX8CALL(SetMaterial(&CurrentMaterial));
 #ifdef RTS_DEBUG
+			NoteFlushedWord(2, 0);
 			++s_ffFlushedWrites;
+			NoteFlushedWrite(s_ffFlushSiteOverride != nullptr
+				? s_ffFlushSiteOverride : s_declarationSite);
 #endif
 		}
 	}
@@ -295,7 +361,10 @@ void DX8Wrapper::Flush_Fixed_Function_State()
 			FFDeviceStage[stage][bit] = value;
 			DX8CALL(SetTextureStageState(stage, (D3DTEXTURESTAGESTATETYPE)bit, value));
 #ifdef RTS_DEBUG
+			NoteFlushedWord(1, bit);
 			++s_ffFlushedWrites;
+			NoteFlushedWrite(s_ffFlushSiteOverride != nullptr
+				? s_ffFlushSiteOverride : s_declarationSite);
 #endif
 		}
 	}
@@ -312,7 +381,10 @@ void DX8Wrapper::Flush_Fixed_Function_State()
 			FFDeviceRender[state] = value;
 			DX8CALL(SetRenderState((D3DRENDERSTATETYPE)state, value));
 #ifdef RTS_DEBUG
+			NoteFlushedWord(0, state);
 			++s_ffFlushedWrites;
+			NoteFlushedWrite(s_ffFlushSiteOverride != nullptr
+				? s_ffFlushSiteOverride : s_declarationSite);
 #endif
 		}
 	}
@@ -326,7 +398,15 @@ void DX8Wrapper::Prepare_Direct_Draw(const char * site)
 	// Draw() makes. A direct drawer that bound both a vertex and a pixel shader needs none
 	// of this state.
 	if (Is_Fixed_Function_Draw()) {
+#ifdef RTS_DEBUG
+		// Attribute what this costs to the drawer, not to whatever declaration scope
+		// happens to enclose it.
+		s_ffFlushSiteOverride = site;
+#endif
 		Flush_Fixed_Function_State();
+#ifdef RTS_DEBUG
+		s_ffFlushSiteOverride = nullptr;
+#endif
 	}
 
 	// Everything this drawer bound at the device, the wrapper does not know about -- and
@@ -886,6 +966,56 @@ void DX8Wrapper::Debug_Report_FF_Sites()
 		totalWrites, s_ffSiteCount,
 		s_ffSiteDropped ? "  -- TABLE FULL, some writes uncounted" : "",
 		s_ffFlushedWrites));
+	// Which draws the device writes were actually made for. This is the number the
+	// burn-down is finished on -- the census above counts what callers asked for, and
+	// most of that is the routing block's input language rather than device traffic.
+	if (s_ffFlushSiteCount > 0) {
+		WWDEBUG_SAY(("  of those %u, by the draw that needed them%s:", s_ffFlushedWrites,
+			s_ffFlushDropped ? " -- TABLE FULL" : ""));
+		for (int rank = 0; rank < s_ffFlushSiteCount; ++rank) {
+			int best = -1;
+			unsigned bestWrites = 0;
+			for (int i = 0; i < s_ffFlushSiteCount; ++i) {
+				if (s_ffFlushSites[i].writes > bestWrites) {
+					bestWrites = s_ffFlushSites[i].writes; best = i;
+				}
+			}
+			if (best < 0) break;
+			WWDEBUG_SAY(("    %-32s %8u words  (FF-vertex %u, FF-pixel %u)",
+				s_ffFlushSites[best].who, s_ffFlushSites[best].writes,
+				s_ffFlushSites[best].vertexFF, s_ffFlushSites[best].pixelFF));
+			s_ffFlushSites[best].writes = 0;
+		}
+	}
+	else if (s_ffFlushedWrites == 0) {
+		WWDEBUG_SAY(("  no fixed-function state reached the device at all this window."));
+	}
+	if (s_ffFlushWordCount > 0) {
+		WWDEBUG_SAY(("    ...and the words themselves, which name their writer:"));
+		for (int rank = 0; rank < s_ffFlushWordCount; ++rank) {
+			int best = -1;
+			unsigned bestCount = 0;
+			for (int i = 0; i < s_ffFlushWordCount; ++i) {
+				if (s_ffFlushWords[i].count > bestCount) {
+					bestCount = s_ffFlushWords[i].count; best = i;
+				}
+			}
+			if (best < 0) break;
+			const FFFlushWord& w = s_ffFlushWords[best];
+			WWDEBUG_SAY(("      %-36s x%u",
+				w.isStage == 2 ? "SetMaterial"
+					: (w.isStage
+						? Get_DX8_Texture_Stage_State_Name((D3DTEXTURESTAGESTATETYPE)w.state)
+						: Get_DX8_Render_State_Name((D3DRENDERSTATETYPE)w.state)),
+				w.count));
+			s_ffFlushWords[best].count = 0;
+		}
+	}
+	s_ffFlushWordCount = 0;
+	s_ffFlushSiteCount = 0;
+	s_ffFlushDropped = 0;
+	s_ffFlushedWrites = 0;
+
 	WWDEBUG_SAY(("  the rest stopped at the tracked state the routing block reads, which is "
 				 "where the work that is left is: a site still here still describes its "
 				 "draws in fixed function, and needs a declared technique to stop."));
@@ -898,7 +1028,6 @@ void DX8Wrapper::Debug_Report_FF_Sites()
 				 "and VertexMaterialClass::Apply write *is* the description the shader path "
 				 "translates -- it is this census's input language, not its backlog. They "
 				 "shrink only if the combine comes to be expressed some other way."));
-	s_ffFlushedWrites = 0;
 	// Descending by writes, then by calls, so the top of the list is where the work goes.
 	for (int rank = 0; rank < s_ffSiteCount; ++rank) {
 		int best = -1;
@@ -934,6 +1063,18 @@ void DX8Wrapper::Debug_Report_FF_Sites()
 
 	s_ffSiteCount = 0;
 	s_ffSiteDropped = 0;
+}
+
+const char* DX8Wrapper::Debug_Current_Pass_Name()
+{
+	if (m_bShadowDepthPass)     return "(shadow depth pass)";
+	if (m_bTerrainShaderPass)   return "(terrain pass)";
+	if (m_bRoadShaderPass)      return "(road pass)";
+	if (m_bWaterShaderPass)     return "(water pass)";
+	if (m_bMaskPass)            return "(alpha mask pass)";
+	if (render_state_changed & (unsigned)VIEW_IDENTITY) return "(2D / identity view)";
+	if (s_debugMeshName != nullptr) return "(mesh renderer, no technique)";
+	return "(undeclared 3D)";
 }
 
 void DX8Wrapper::Debug_Note_Routed_Draw()
@@ -4366,16 +4507,27 @@ static bool Map_Texture_Stage_Arg(DWORD arg, D3DXVECTOR4& selector)
 // ----------------------------------------------------------------------------
 // Classify a texture stage's coordinate source for the unit vertex shader. Returns
 // false for generation modes the shader does not implement, so those draws stay on the
-// fixed-function path. The mode values match Select_TexGen_Source in unit_vs.hlsl.
+// fixed-function path. The mode values match Select_TexGen_Source in unit_vs_body.hlsli.
 // ----------------------------------------------------------------------------
+// uvSetCount is how many coordinate sets the vertex format in the stream actually
+// supplies. It is not a formality: the mode this returns decides which input register
+// the vertex shader reads, and a shader may only read what the declaration provides.
+// Asking for set 1 of a one-set format is undefined, and undefined here would look
+// like a detail texture wrapped by plausible-but-wrong coordinates rather than like
+// an error -- so the format, not the stage state, has the last word.
 static bool Map_Texture_Coord_Source(DWORD coordIndex, DWORD transformFlags,
-									 float& mode, bool& usesMatrix)
+									 unsigned uvSetCount, float& mode, bool& usesMatrix)
 {
 	switch (coordIndex & 0xFFFF0000u) {
 		case D3DTSS_TCI_PASSTHRU:
-			// Only the mesh's first coordinate set is carried by the shader.
-			if ((coordIndex & 0x0000FFFFu) != 0) return false;
-			mode = 0.0f;
+			switch (coordIndex & 0x0000FFFFu) {
+				case 0: mode = 0.0f; break;
+				// The mesh's second set, carried by unit_uv2_vs. Every sorted draw is
+				// built on dynamic_fvf_type, which is D3DFVF_TEX2, so the passes that
+				// want this have the data -- what they lacked was a shader declaring it.
+				case 1: if (uvSetCount < 2) return false; mode = 4.0f; break;
+				default: return false;   // no shader carries a third set
+			}
 			break;
 		case D3DTSS_TCI_CAMERASPACEPOSITION:         mode = 1.0f; break;
 		case D3DTSS_TCI_CAMERASPACENORMAL:           mode = 2.0f; break;
@@ -4639,14 +4791,25 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// Stage 1's coordinate state is only meaningful when stage 1 has a texture; for a
 		// single-texture draw it holds whatever a previous draw left behind, so requiring
 		// it to map would wrongly reject the draw.
+		//
+		// How many coordinate sets the format in the stream carries. curFVF is read off
+		// the bound vertex buffer, so it describes the data the shader will actually be
+		// handed rather than what some earlier draw asked the device for.
+		const unsigned uvSetCount =
+			(curFVF & D3DFVF_TEXCOUNT_MASK) >> D3DFVF_TEXCOUNT_SHIFT;
 		const bool texGenSupported =
 			Map_Texture_Coord_Source(TextureStageStates[0][D3DTSS_TEXCOORDINDEX],
 									 TextureStageStates[0][D3DTSS_TEXTURETRANSFORMFLAGS],
-									 texGenMode0, texGenMatrix0) &&
+									 uvSetCount, texGenMode0, texGenMatrix0) &&
 			(render_state.Textures[1] == nullptr ||
 			 Map_Texture_Coord_Source(TextureStageStates[1][D3DTSS_TEXCOORDINDEX],
 									  TextureStageStates[1][D3DTSS_TEXTURETRANSFORMFLAGS],
-									  texGenMode1, texGenMatrix1));
+									  uvSetCount, texGenMode1, texGenMatrix1));
+
+		// A draw that reads the mesh's second coordinate set has to be given the shader
+		// that declares one. This is a property of the *format*, so it is decided here
+		// and every later gate reads the same answer.
+		const bool needsUvSet1 = (texGenMode0 > 3.5f) || (texGenMode1 > 3.5f);
 
 		// Only solid geometry belongs in a shadow map. A soft blended overlay has no
 		// silhouette to cast and, being drawn a hair above the surface it decorates,
@@ -4916,10 +5079,11 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		float s1CScale = 1.0f;
 		bool detailCombineSupported = false;
 
-		// The shader carries only the mesh's first coordinate set and applies no texture
-		// matrix, so stage 1 must want exactly that: coordinate set 0, passed through
-		// (no camera-space generation), untransformed. Generated coordinates belong to
-		// the texgen work, not here.
+		// Stage 1 must want coordinates a bound shader can produce. The plain case is
+		// coordinate set 0 passed straight through; everything else -- camera-space
+		// generation, a texture matrix, and now the mesh's second coordinate set -- goes
+		// through the texgen resolution above, which has already checked the format
+		// really carries what the stage asks for.
 		const bool s1CoordsCarried =
 			(s1CoordSet == 0 && s1CoordGen == D3DTSS_TCI_PASSTHRU && s1XformFlags == D3DTTFF_DISABLE) ||
 			(texgenRoutingOn && texGenSupported);
@@ -5016,6 +5180,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Vertex_Shader >= 0x10000 &&
 			Vertex_Shader != m_dwUnitVS &&
 			Vertex_Shader != m_dwUnitPrelitVS &&
+			Vertex_Shader != m_dwUnitUv2VS &&
 			Vertex_Shader != m_dwUnitPbrVS &&
 			Vertex_Shader != m_dwTerrainVS &&
 			Vertex_Shader != m_dwRoadVS &&
@@ -5053,6 +5218,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// reproduces, so the state does not have to be off for this to be safe.
 		const bool prelitNoNormal =
 			!hasNormal && m_dwUnitPrelitVS != 0 && !texGenNeedsNormal;
+
+		// The two-coordinate-set variant. Only the lit shader has one: a pass wanting
+		// set 1 on geometry with no normal would need a pre-lit variant that does not
+		// exist, and inventing the coordinates rather than declining the draw is exactly
+		// the silent-wrong-output failure the format check upstream exists to prevent.
+		// No such draw appears in any measured scene; if one does it stays on fixed
+		// function and the census names it.
+		const bool useUv2Shader =
+			needsUvSet1 && hasNormal && uvSetCount >= 2 && m_dwUnitUv2VS != 0;
 
 		// Soft-blended geometry -- blending on, no alpha test -- stays on fixed function
 		// unless it belongs to a mesh that also has a depth-writing pass.
@@ -5154,6 +5328,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			(routeEverything ||
 			 ((render_state.Textures[0] != nullptr || untexturedDiffuseOnly) &&
 			  (singleTexture || detailCombineSupported) &&
+			  (!needsUvSet1 || useUv2Shader) &&
 			  (!texgenActive || (texgenRoutingOn && texGenSupported))));
 
 
@@ -5980,6 +6155,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				pbrKindAllows &&
 				render_state.Textures[0] != nullptr &&
 				singleTexture && !texgenActive &&
+				// unit_pbr_vs carries one coordinate set, like unit_vs. A stage reading
+				// the mesh's second one is not a surface this shader can shade.
+				!needsUvSet1 &&
 				(curFVF & D3DFVF_NORMAL) != 0 &&
 				!additiveBlend && !softBlendedOverlay &&
 				m_dwUnitPbrVS != 0 && m_dwUnitPbrPS != 0;
@@ -6009,10 +6187,13 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// faction units and buildings to have actually moved).
 			diagCensusCat = usePbr ? (ormTex != nullptr ? 3u : (houseColoured ? 5u : 4u))
 								   : (useDetailShader ? 2u : 1u);
-			// Geometry with no normal takes the pre-lit variant, whose declared inputs
-			// match what its FVF actually supplies.
+			// The vertex shader is chosen by what the FVF supplies, not by what the draw
+			// would like: geometry with no normal takes the pre-lit variant, a pass
+			// reading the mesh's second coordinate set takes the two-set variant, and
+			// each declares exactly the inputs its format provides.
 			Set_Vertex_Shader(usePbr ? m_dwUnitPbrVS
-									 : (hasNormal ? m_dwUnitVS : m_dwUnitPrelitVS));
+									 : (useUv2Shader ? m_dwUnitUv2VS
+													 : (hasNormal ? m_dwUnitVS : m_dwUnitPrelitVS)));
 			Set_Pixel_Shader(usePbr ? m_dwUnitPbrPS
 								    : (useDetailShader ? m_dwUnitDetailPS : m_dwUnitPS));
 

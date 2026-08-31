@@ -315,6 +315,22 @@ flush_particles:
 			Debug_Statistics::Record_DX8_Polys_And_Vertices(numberInBatch*2,numberInBatch*4,ShaderClass::_PresetOpaqueShader);
 			// Drawn on the device, so it inherits whatever the wrapper last bound. See
 			// Force_Fixed_Function_Pipeline.
+			//
+			// This one stays on fixed function, deliberately, and is the only draw in the
+			// engine of which that is still true. A point sprite is expanded to a quad by
+			// the rasteriser under D3DRS_POINTSPRITEENABLE, and there is no programmable
+			// equivalent: a vertex shader is handed one vertex and must emit one vertex,
+			// so the expansion cannot happen in it. (D3D11 has the same hole, and closes
+			// it with a geometry shader.)
+			//
+			// Nothing is lost by leaving it. renderAsQuads below is the same snowfall
+			// built out of real quads on the CPU, drawn through DX8Wrapper::Draw_Triangles
+			// like everything else, and it is already what runs whenever the hardware or
+			// TheWeatherSetting->m_usePointSprites says no. Converting this path would not
+			// add a capability, it would delete the cheaper of two ways to draw the same
+			// snow -- so the honest move is to keep both and say why, and let the point
+			// sprite path simply stop being offered if the fixed-function pipeline ever
+			// goes away entirely.
 			DX8Wrapper::Force_Fixed_Function_Pipeline();
 			DX8Wrapper::Prepare_Direct_Draw("snow");
 			DX8Wrapper::_Get_D3D_Device8()->DrawPrimitive( D3DPT_POINTLIST, m_dwBase, numberInBatch);

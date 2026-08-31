@@ -948,6 +948,7 @@ public:
 	// as the vertex declaration, so no explicit declaration is needed.
 	static DWORD						m_dwUnitVS;
 	static DWORD						m_dwUnitPrelitVS;   // meshes with no NORMAL (roads, tracks)
+	static DWORD						m_dwUnitUv2VS;      // stage 1 on the mesh's 2nd UV set
 	static DWORD						m_dwUnitPS;
 	static DWORD						m_dwUnitDetailPS;   // base + detail (stage 1) variant
 
@@ -1062,6 +1063,10 @@ public:
 								   bool viewIdentity, unsigned ffReason);
 	static void Debug_Note_Routed_Draw();   // the control: a draw a shader claimed
 	static void Debug_Note_Suppressed_Draw();   // a draw dropped before submission
+	// Which pass of the frame is being drawn, for a draw that declared no technique
+	// scope of its own. Same fallback chain the fixed-function draw census uses, so the
+	// two tables name the same things.
+	static const char* Debug_Current_Pass_Name();
 	static void Debug_Report_FF_Draws();
 	// The blind spot in the census above, made visible. A caller that applies state and
 	// then issues DrawIndexedPrimitive/DrawPrimitiveUP against the device itself never
