@@ -659,6 +659,27 @@ def main():
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DScene.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DScene.h")
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DScene.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DScene.cpp")
 
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/hrawanim.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/hrawanim.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/hmorphanim.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/hmorphanim.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/hanimmgr.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/hanimmgr.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/htreemgr.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/htreemgr.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/htreemgr.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/htreemgr.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/motchan.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/motchan.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/motchan.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/motchan.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/animobj.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/animobj.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/hlod.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/hlod.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/assetmgr.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/assetmgr.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/nullrobj.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/nullrobj.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/boxrobj.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/boxrobj.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/camera.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/camera.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/ww3d.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/ww3d.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/light.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/light.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/lightenvironment.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/lightenvironment.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/lightenvironment.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/lightenvironment.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/scene.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/scene.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/scene.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/scene.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/rinfo.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/rinfo.cpp")
+
     return
 
 

@@ -7,9 +7,9 @@ set(WW3D2_SRC
     #agg_def.h
     #animatedsoundmgr.cpp
     #animatedsoundmgr.h
-    animobj.cpp
+#    animobj.cpp
 #    animobj.h
-    assetmgr.cpp
+#    assetmgr.cpp
 #    assetmgr.h
     #assetstatus.cpp
     #assetstatus.h
@@ -17,11 +17,11 @@ set(WW3D2_SRC
     #bitmaphandler.h
     #bmp2d.cpp
     #bmp2d.h
-    boxrobj.cpp
+#    boxrobj.cpp
 #    boxrobj.h
     #bwrender.cpp
     #bwrender.h
-    camera.cpp
+#    camera.cpp
 #    camera.h
     #classid.h
     #collect.cpp
@@ -74,22 +74,22 @@ set(WW3D2_SRC
     #framgrab.h
     #hanim.cpp
     #hanim.h
-    hanimmgr.cpp
+#    hanimmgr.cpp
 #    hanimmgr.h
     #hcanim.cpp
     #hcanim.h
-    hlod.cpp
+#    hlod.cpp
 #    hlod.h
     #hmdldef.cpp
     #hmdldef.h
-    hmorphanim.cpp
+#    hmorphanim.cpp
 #    hmorphanim.h
-    hrawanim.cpp
+#    hrawanim.cpp
 #    hrawanim.h
     #htree.cpp
     #htree.h
-    htreemgr.cpp
-    htreemgr.h
+#    htreemgr.cpp
+#    htreemgr.h
     #intersec.cpp
     #intersec.h
     #intersec.inl
@@ -97,9 +97,9 @@ set(WW3D2_SRC
     #layer.cpp
     #layer.h
 #    light.cpp
-    light.h
-    lightenvironment.cpp
-    lightenvironment.h
+#    light.h
+#    lightenvironment.cpp
+#    lightenvironment.h
     #line3d.cpp
     #line3d.h
     linegrp.cpp
@@ -129,9 +129,9 @@ set(WW3D2_SRC
     #metalmap.h
     #missingtexture.cpp
     #missingtexture.h
-    motchan.cpp
-    motchan.h
-    nullrobj.cpp
+#    motchan.cpp
+#    motchan.h
+#    nullrobj.cpp
 #    nullrobj.h
     part_buf.cpp
     part_buf.h
@@ -163,13 +163,13 @@ set(WW3D2_SRC
     #renderobjectrecycler.h
     #rendobj.cpp
     #rendobj.h
-    rinfo.cpp
+#    rinfo.cpp
 #    rinfo.h
     #ringobj.cpp
     #ringobj.h
     #robjlist.h
-    scene.cpp
-    scene.h
+#    scene.cpp
+#    scene.h
     #segline.cpp
     #segline.h
     #seglinerenderer.cpp
@@ -225,7 +225,7 @@ set(WW3D2_SRC
     #w3derr.h
     #w3dexclusionlist.cpp
     #w3dexclusionlist.h
-    ww3d.cpp
+#    ww3d.cpp
 #    ww3d.h
     #ww3dformat.cpp
     #ww3dformat.h
