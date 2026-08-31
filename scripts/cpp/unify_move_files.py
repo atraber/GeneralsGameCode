@@ -656,6 +656,9 @@ def main():
     #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/shader.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/shader.h")
     #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/shader.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/shader.cpp")
 
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DScene.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DScene.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DScene.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DScene.cpp")
+
     return
 
 

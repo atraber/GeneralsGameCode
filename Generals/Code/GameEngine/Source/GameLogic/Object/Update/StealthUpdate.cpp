@@ -220,7 +220,7 @@ void StealthUpdate::hintDetectableWhileUnstealthed()
 		{
 			Drawable *selfDraw = self->getDrawable();
 			if ( selfDraw )
-				selfDraw->setHeatVisionOpacity( 1.0f );
+				selfDraw->setSecondMaterialPassOpacity( 1.0f );
 		}
 	}
 }

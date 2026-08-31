@@ -80,7 +80,7 @@
 
 #include "ww3d.h"
 
-#define VERY_TRANSPARENT_HEATVISION (0.001f)
+#define VERY_TRANSPARENT_MATERIAL_PASS_OPACITY (0.001f)
 #define HEATVISION_FADE_SCALAR (0.8f)
 
 static const char *const TheDrawableIconNames[] =
@@ -395,7 +395,7 @@ Drawable::Drawable( const ThingTemplate *thingTemplate, DrawableStatusBits statu
 
 	m_hidden = false;
 	m_hiddenByStealth = false;
-	m_heatVisionOpacity = 0.0f;
+	m_secondMaterialPassOpacity = 0.0f;
 	m_drawableFullyObscuredByShroud = false;
 
 	m_ambientSoundEnabled = TRUE;
@@ -2070,7 +2070,7 @@ void Drawable::setStealthLook(StealthLookType look)
 		{
 			case STEALTHLOOK_NONE:
 				m_hiddenByStealth = false;
-				m_heatVisionOpacity = 0.0f;
+				m_secondMaterialPassOpacity = 0.0f;
 				break;
 
 			case STEALTHLOOK_VISIBLE_FRIENDLY:
@@ -2108,16 +2108,16 @@ void Drawable::setStealthLook(StealthLookType look)
 			/** @todo srj -- evil hack here... this whole heat-vision thing is fucked.
 				don't want it on mines but no good way to do that. hack for now. */
 				if (look == STEALTHLOOK_VISIBLE_FRIENDLY_DETECTED && !isKindOf(KINDOF_MINE))
-					m_heatVisionOpacity = 1.0f;
+					m_secondMaterialPassOpacity = 1.0f;
 				else
-					m_heatVisionOpacity = 0.0f;
+					m_secondMaterialPassOpacity = 0.0f;
 
 				break;
 			}
 
 			case STEALTHLOOK_DISGUISED_ENEMY:
 				m_hiddenByStealth = false;
-				m_heatVisionOpacity = 0.0f;
+				m_secondMaterialPassOpacity = 0.0f;
 				break;
 
 			// this is for the non-controllingplayer that can see me anyway
@@ -2126,14 +2126,14 @@ void Drawable::setStealthLook(StealthLookType look)
 				/** @todo srj -- evil hack here... this whole heat-vision thing is fucked.
 					don't want it on mines but no good way to do that. hack for now. */
 				if (isKindOf(KINDOF_MINE))
-					m_heatVisionOpacity = 0.0f;
+					m_secondMaterialPassOpacity = 0.0f;
 				else
-					m_heatVisionOpacity = 1.0f;// Draw() will fade until it is set to 1 again
+					m_secondMaterialPassOpacity = 1.0f;// Draw() will fade until it is set to 1 again
 				break;
 
 			case STEALTHLOOK_INVISIBLE:
 				m_hiddenByStealth = true;
-				m_heatVisionOpacity = 0.0f;
+				m_secondMaterialPassOpacity = 0.0f;
 				break;
 		}
 		m_stealthLook = look;
@@ -2150,9 +2150,9 @@ void Drawable::draw()
 	if ( getObject() && getObject()->isEffectivelyDead() )
 	{
 		//dead folks don't stealth anyway
-		m_heatVisionOpacity = 0.0f;
+		m_secondMaterialPassOpacity = 0.0f;
 	}
-	else if ( m_heatVisionOpacity > VERY_TRANSPARENT_HEATVISION )
+	else if ( m_secondMaterialPassOpacity > VERY_TRANSPARENT_MATERIAL_PASS_OPACITY )
 	{
 		// keep fading any added material unless something has set it to zero
 		// TheSuperHackers @tweak The stealth opacity fade time step is now decoupled from the render update.
@@ -2160,11 +2160,11 @@ void Drawable::draw()
 
 		const Real timeScale = TheFramePacer->getActualLogicTimeScaleOverFpsRatio();
 		const Real fadeScalar = 1.0f - (1.0f - HEATVISION_FADE_SCALAR) * timeScale;
-		m_heatVisionOpacity *= fadeScalar;
+		m_secondMaterialPassOpacity *= fadeScalar;
 	}
 	else
 	{
-		m_heatVisionOpacity = 0.0f;
+		m_secondMaterialPassOpacity = 0.0f;
 	}
 
 	if (m_hidden || m_hiddenByStealth || getFullyObscuredByShroud())
@@ -4505,7 +4505,7 @@ void Drawable::xfer( Xfer *xfer )
 	xfer->xferBool( &m_hiddenByStealth );
 
 	// heat vision opacity
-	xfer->xferReal( &m_heatVisionOpacity );
+	xfer->xferReal( &m_secondMaterialPassOpacity );
 
 	// instance is identity
 	xfer->xferBool( &m_instanceIsIdentity );

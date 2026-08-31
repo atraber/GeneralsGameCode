@@ -287,7 +287,7 @@ UpdateSleepTime StealthDetectorUpdate::update()
 			Drawable *theirDraw = them->getDrawable();
 			if ( theirDraw && !them->isKindOf(KINDOF_MINE))
 			{
-				theirDraw->setHeatVisionOpacity( 1.0f );
+				theirDraw->setSecondMaterialPassOpacity( 1.0f );
 			}
 
 			const ParticleSystemTemplate *gridTemplate = data->m_IRGridParticleSysTmpl;
