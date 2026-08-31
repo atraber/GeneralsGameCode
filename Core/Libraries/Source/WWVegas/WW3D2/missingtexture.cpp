@@ -49,6 +49,8 @@ IDirect3DSurface8* MissingTexture::_Create_Missing_Surface()
 	IDirect3DSurface8 *surface = nullptr;
 	DX8_Assert();
 	HRESULT hr = DX8Wrapper::D3D9_CreateImageSurface_Helper(
+		// Needs the device itself: D3DX takes one to create a texture with. No render
+		// state is touched, so nothing here can desynchronise the tracked state.
 		DX8Wrapper::_Get_D3D_Device8(),
 		texture_surface_desc.Width,
 		texture_surface_desc.Height,

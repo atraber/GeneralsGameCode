@@ -1406,9 +1406,13 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 			v[i].v = ((v[i].v-center.y)*factor) + center.y;
 		}
 	}
-	pDev->SetTextureStageState(0,D3DTSS_ALPHAARG1, D3DTA_CURRENT);
-	pDev->SetTextureStageState(0,D3DTSS_ALPHAARG2, D3DTA_TEXTURE);
-	pDev->SetTextureStageState(0,D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	// Through the wrapper, so the combine this draw wants is in the tracked state the
+	// routing block reads rather than only on the device. Deferred, and the
+	// Prepare_Direct_Draw below is what sends it: this draw binds an FVF rather than a
+	// vertex shader, so it is a fixed-function draw and the flush fires.
+	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAARG1, D3DTA_CURRENT);
+	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAARG2, D3DTA_TEXTURE);
+	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
 	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE,true);
@@ -3179,12 +3183,21 @@ static void deriveEnvColors(const float sunColor[3], const float ambient[3],
 static const int SHADOW_MAP_SIZE = DX8Wrapper::SHADOW_MAP_SIZE;
 
 // Render states the depth pass overrides, saved across it so none of them escape.
+//
+// D3DRS_ZBIAS used to be a tenth entry and is deliberately not one now. It is not a
+// D3D9 render state at all -- d3d9_compat.h maps it to dummy slot 224 -- so the device
+// neither stores it nor returns it, and saving and restoring it was moving a value that
+// did not exist. Harmless while both halves went straight to the device and D3D9 refused
+// them both; not harmless the moment the restore goes through the wrapper, because
+// Set_DX8_Render_State is the one place that *does* understand D3DRS_ZBIAS and turns it
+// into a real D3DRS_DEPTHBIAS. Restoring an uninitialised read that way applied a depth
+// bias of about -15000 to the whole frame and every mesh in it vanished, which is how
+// this was found. The wrapper sets ZBIAS to 0 through its own API where it matters.
 static const DWORD s_shadowSavedStateIds[W3DShaderManager::NUM_SHADOW_SAVED_STATES] =
 {
 	D3DRS_COLORWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_ZENABLE,
 	D3DRS_ZWRITEENABLE,     D3DRS_ZFUNC,            D3DRS_SRCBLEND,
 	D3DRS_CULLMODE,         D3DRS_FILLMODE,         D3DRS_STENCILENABLE,
-	D3DRS_ZBIAS,
 };
 
 void W3DShaderManager::initShadowMap()
@@ -3824,6 +3837,12 @@ void W3DShaderManager::startCameraDepthRendering()
 		SAFE_RELEASE(m_shadowSavedDepth);
 		return;
 	}
+	// Read off the device, deliberately, and one of the few places that is the right
+	// source. Invalidate_Cached_Render_States poisons the tracked value of every
+	// non-deferred render state with a sentinel to force the next write through, and
+	// COLORWRITEENABLE is one nothing in a normal scene ever sets again -- so the tracked
+	// value here may well be the sentinel rather than what the scene is drawing with.
+	// Saving that and restoring it would put a poison value on the device.
 	for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
 		dev->GetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], &m_shadowSavedStates[i]);
 
@@ -3917,6 +3936,12 @@ void W3DShaderManager::startShadowMapRendering()
 	// never touches COLORWRITEENABLE. An unroutable draw masks colour and z to keep
 	// itself out of the map, and that mask would then follow the pass out and quietly
 	// blank whatever drew next. Put back exactly what was here.
+	// Read off the device, deliberately, and one of the few places that is the right
+	// source. Invalidate_Cached_Render_States poisons the tracked value of every
+	// non-deferred render state with a sentinel to force the next write through, and
+	// COLORWRITEENABLE is one nothing in a normal scene ever sets again -- so the tracked
+	// value here may well be the sentinel rather than what the scene is drawing with.
+	// Saving that and restoring it would put a poison value on the device.
 	LPDIRECT3DDEVICE8 stateDev = dev;
 	for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
 		stateDev->GetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], &m_shadowSavedStates[i]);
@@ -3938,17 +3963,22 @@ void W3DShaderManager::endShadowMapRendering()
 		SAFE_RELEASE(m_shadowSavedRT);
 		SAFE_RELEASE(m_shadowSavedDepth);
 	}
-	// Put the render states back before the cache is invalidated, so both the device and
-	// the cache end up holding what the scene had. Nothing the depth pass forced --
-	// least of all the colour/z mask that keeps unroutable draws out of the map -- may
-	// outlive it.
-	if (LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8())
-	{
-		for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
-			dev->SetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], m_shadowSavedStates[i]);
-	}
-
+	// Put the render states back *after* the cache is invalidated, and through the
+	// wrapper. Nothing the depth pass forced -- least of all the colour/z mask that keeps
+	// unroutable draws out of the map -- may outlive it.
+	//
+	// The order is the whole point and it used to be the other way round. Restoring at the
+	// device and then invalidating left the device holding the right value and the wrapper
+	// believing a poison sentinel, so the wrapper's idea of the device was wrong for every
+	// one of these ten states from here until something happened to set them again -- and
+	// the comment on the save below is that for COLORWRITEENABLE nothing ever does.
+	// Invalidating first and restoring through Set_DX8_Render_State leaves both correct:
+	// the sentinel cannot match, so each write goes through and is recorded as it goes.
 	DX8Wrapper::Invalidate_Cached_Render_States();
+
+	for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
+		DX8Wrapper::Set_DX8_Render_State((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i],
+										 m_shadowSavedStates[i]);
 }
 
 void W3DShaderManager::initEnvMap()

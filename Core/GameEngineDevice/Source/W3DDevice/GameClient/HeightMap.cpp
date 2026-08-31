@@ -2266,10 +2266,20 @@ void HeightMapRenderObjClass::renderTerrainPass(CameraClass *pCamera)
 	{
 		const float slopeBias = 0.0f;
 		const float constBias = -1.0e-5f;
+		// Read off the device, written through the wrapper. The asymmetry is deliberate:
+		// the device holds the value this pass has to put back, while the wrapper's tracked
+		// copy may be the poison sentinel Invalidate_Cached_Render_States leaves behind. The
+		// writes go through the wrapper so that what the device holds and what the wrapper
+		// believes it holds stay the same statement -- a bias set behind its back is one the
+		// next caller asking for that value is told it already has.
+		//
+		// Safe for these two where it was not for D3DRS_ZBIAS: both are real D3D9 render
+		// states that Set_DX8_Render_State passes straight through, so the device's units
+		// and the wrapper's are the same. See s_shadowSavedStateIds in W3DShaderManager.
 		shroudDev->GetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, &oldSlopeBias);
 		shroudDev->GetRenderState(D3DRS_DEPTHBIAS, &oldConstBias);
-		shroudDev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD*>(&slopeBias));
-		shroudDev->SetRenderState(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD*>(&constBias));
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD*>(&slopeBias));
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD*>(&constBias));
 	}
 
 	for (Int j=0; j<m_numVBTilesY; j++)
@@ -2300,8 +2310,8 @@ void HeightMapRenderObjClass::renderTerrainPass(CameraClass *pCamera)
 
 	if (shroudDev)
 	{	//restore the depth bias so nothing else in the frame is affected
-		shroudDev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, oldSlopeBias);
-		shroudDev->SetRenderState(D3DRS_DEPTHBIAS, oldConstBias);
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_SLOPESCALEDEPTHBIAS, oldSlopeBias);
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_DEPTHBIAS, oldConstBias);
 	}
 }
 

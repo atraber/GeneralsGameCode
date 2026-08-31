@@ -98,7 +98,9 @@ namespace
 		if (!s_supported)
 			return false;
 
-		IDirect3DDevice9* dev = DX8Wrapper::_Get_D3D_Device8();
+		// Needs the device itself: a D3D query is a device object with no wrapper state
+	// behind it, so there is nothing here the tracked state could fall out of step with.
+	IDirect3DDevice9* dev = DX8Wrapper::_Get_D3D_Device8();
 		if (dev == nullptr)
 			return false;
 

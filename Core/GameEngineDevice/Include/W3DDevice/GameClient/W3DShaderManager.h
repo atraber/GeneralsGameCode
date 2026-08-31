@@ -154,7 +154,7 @@ public:
 	static void captureSceneHistoryFromBackBuffer();	///<same, straight off the back buffer, for when the filter chain did not capture.
 	static Bool sceneHistoryCaptured() { return m_sceneHistoryCaptured; }	///<true once this frame's scene colour has been copied to the history.
 	static void resetSceneHistoryCaptured() { m_sceneHistoryCaptured = false; }	///<call once per frame before the scene is drawn.
-	enum { NUM_SHADOW_SAVED_STATES = 10 };	///<render states saved across the shadow depth pass
+	enum { NUM_SHADOW_SAVED_STATES = 9 };	///<render states saved across the shadow depth pass
 
 	static ChipsetType getChipset();	///<return current device chipset.
 	static GraphicsVenderID getCurrentVendor() {return m_currentVendor;}	///<return current card vendor.
