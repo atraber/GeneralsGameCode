@@ -646,6 +646,13 @@ def main():
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h")
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DBridgeBuffer.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DBridgeBuffer.cpp")
 
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/mapper.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/mapper.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/mapper.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/mapper.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/matrixmapper.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/matrixmapper.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/matrixmapper.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/matrixmapper.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/vertmaterial.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/vertmaterial.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/vertmaterial.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/vertmaterial.cpp")
+
     return
 
 
