@@ -269,7 +269,10 @@ Int ScreenDefaultFilter::set(FilterModes mode)
 void ScreenDefaultFilter::reset()
 {
 	DX8Wrapper::Set_DX8_Texture(0,nullptr);	//previously rendered frame inside this texture
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// This filter wrote z, blend, a stage combine or a pixel shader of its own, so
+	// ShaderClass no longer describes the device; nothing it did reached the device
+	// behind the wrapper, so nothing has to be forgotten.
+	DX8Wrapper::Invalidate_Cached_Shader();
 }
 
 /// Exposure fed to the tone curve, applied to the linear scene before it. Fixed rather
@@ -600,7 +603,10 @@ void ScreenBloomFilter::reset()
 		DX8Wrapper::Set_DX8_Texture(0, nullptr);
 		DX8Wrapper::Set_DX8_Texture(1, nullptr);
 	}
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// This filter wrote z, blend, a stage combine or a pixel shader of its own, so
+	// ShaderClass no longer describes the device; nothing it did reached the device
+	// behind the wrapper, so nothing has to be forgotten.
+	DX8Wrapper::Invalidate_Cached_Shader();
 }
 
 /*=========  ScreenBWFilter	=============================================================*/
@@ -811,7 +817,10 @@ void ScreenBWFilter::reset()
 {
 	DX8Wrapper::Set_DX8_Texture(0,nullptr);	//previously rendered frame inside this texture
 	DX8Wrapper::Set_Pixel_Shader(0);	//turn off pixel shader
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// This filter wrote z, blend, a stage combine or a pixel shader of its own, so
+	// ShaderClass no longer describes the device; nothing it did reached the device
+	// behind the wrapper, so nothing has to be forgotten.
+	DX8Wrapper::Invalidate_Cached_Shader();
 }
 
 Int ScreenBWFilter::shutdown()
@@ -997,7 +1006,10 @@ Int ScreenBWFilterDOT3::set(FilterModes mode)
 void ScreenBWFilterDOT3::reset()
 {
 	DX8Wrapper::Set_DX8_Texture(0,nullptr);	//previously rendered frame inside this texture
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// This filter wrote z, blend, a stage combine or a pixel shader of its own, so
+	// ShaderClass no longer describes the device; nothing it did reached the device
+	// behind the wrapper, so nothing has to be forgotten.
+	DX8Wrapper::Invalidate_Cached_Shader();
 }
 
 Int ScreenBWFilterDOT3::shutdown()
@@ -1239,7 +1251,10 @@ void ScreenCrossFadeFilter::reset()
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLOROP,   D3DTOP_DISABLE );
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_ALPHAOP,   D3DTOP_DISABLE );
 	DX8Wrapper::Set_DX8_Texture(0,nullptr);	//previously rendered frame inside this texture
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// This filter wrote z, blend, a stage combine or a pixel shader of its own, so
+	// ShaderClass no longer describes the device; nothing it did reached the device
+	// behind the wrapper, so nothing has to be forgotten.
+	DX8Wrapper::Invalidate_Cached_Shader();
 }
 
 Int ScreenCrossFadeFilter::shutdown()
@@ -1516,7 +1531,10 @@ Int ScreenMotionBlurFilter::set(FilterModes mode)
 void ScreenMotionBlurFilter::reset()
 {
 	DX8Wrapper::Set_DX8_Texture(0,nullptr);	//previously rendered frame inside this texture
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// This filter wrote z, blend, a stage combine or a pixel shader of its own, so
+	// ShaderClass no longer describes the device; nothing it did reached the device
+	// behind the wrapper, so nothing has to be forgotten.
+	DX8Wrapper::Invalidate_Cached_Shader();
 }
 
 Int ScreenMotionBlurFilter::shutdown()
@@ -2748,10 +2766,11 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE, 0x0000000F);
 	DX8Wrapper::Set_Pixel_Shader(0);
 	DX8Wrapper::Set_DX8_Texture(0, nullptr);
-	// The quad binds its own stream, FVF and vertex shader straight at the device now
-	// (see Prepare_Direct_Draw), so the wrapper's idea of what the device holds is stale
-	// from here on. Every other post-process site ends this way for the same reason.
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// The quad binds its own stream, FVF and vertex shader straight at the device (see
+	// Prepare_Direct_Draw) -- but that is a binding, and Prepare_Direct_Draw already
+	// records it as one. The render states this wrote are the wrapper's own, and only
+	// ShaderClass has to be told they are no longer the shader's.
+	DX8Wrapper::Invalidate_Cached_Shader();
 #else
 	(void)screenWidth; (void)screenHeight;
 #endif
@@ -3733,7 +3752,9 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 
 		DX8Wrapper::Set_Pixel_Shader(0);
 		DX8Wrapper::Set_DX8_Texture(0, nullptr);
-		DX8Wrapper::Invalidate_Cached_Render_States();
+		// z, blend and the sampler above were written past ShaderClass, not past the
+		// wrapper. Only the first of those has to be undone.
+		DX8Wrapper::Invalidate_Cached_Shader();
 	}
 
 	// Said once if it ever stops working. A tone map that fails leaves m_renderTexture
@@ -3963,22 +3984,28 @@ void W3DShaderManager::endShadowMapRendering()
 		SAFE_RELEASE(m_shadowSavedRT);
 		SAFE_RELEASE(m_shadowSavedDepth);
 	}
-	// Put the render states back *after* the cache is invalidated, and through the
-	// wrapper. Nothing the depth pass forced -- least of all the colour/z mask that keeps
-	// unroutable draws out of the map -- may outlive it.
+	// Put the render states back through the wrapper. Nothing the depth pass forced --
+	// least of all the colour/z mask that keeps unroutable draws out of the map -- may
+	// outlive it.
 	//
-	// The order is the whole point and it used to be the other way round. Restoring at the
-	// device and then invalidating left the device holding the right value and the wrapper
-	// believing a poison sentinel, so the wrapper's idea of the device was wrong for every
-	// one of these ten states from here until something happened to set them again -- and
-	// the comment on the save below is that for COLORWRITEENABLE nothing ever does.
-	// Invalidating first and restoring through Set_DX8_Render_State leaves both correct:
-	// the sentinel cannot match, so each write goes through and is recorded as it goes.
-	DX8Wrapper::Invalidate_Cached_Render_States();
-
+	// This used to be preceded by Invalidate_Cached_Render_States, so that the poison
+	// sentinel would defeat Set_DX8_Render_State's redundancy check and force all nine
+	// writes through. That was the whole of the fixed-function traffic the census still
+	// reported: two invalidations a frame, each re-sending 147 words -- eight stages of
+	// combine plus the material -- that the device already held. The redundancy check
+	// does not need defeating: the depth pass's own overrides go through this same
+	// setter, so the tracked value at this point *is* what the depth pass left, and a
+	// restore to something else is never skipped. Verified against the device: over both
+	// shadow configurations this site read the device back 3468 times and found it
+	// holding exactly what the wrapper expected every time.
 	for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
 		DX8Wrapper::Set_DX8_Render_State((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i],
 										 m_shadowSavedStates[i]);
+
+	// The nine states above are ShaderClass's, and it has a cache the wrapper cannot see:
+	// it would consider the next draw's shader already applied and leave the depth pass's
+	// description of them standing.
+	DX8Wrapper::Invalidate_Cached_Shader();
 }
 
 void W3DShaderManager::initEnvMap()

@@ -1184,8 +1184,10 @@ void W3DBridgeBuffer::drawBridges(CameraClass * camera, Bool wireframe)
 	//Render shroud pass over all the bridges
 	if (!wireframe && TheTerrainRenderObject->getShroud())
 	{
-		//Reset to a known shader.
-		DX8Wrapper::Invalidate_Cached_Render_States();
+		//Reset to a known shader. Set_Shader alone will not do it: it and ShaderClass
+		//both skip a shader they think is already applied, and the bridge pass above
+		//wrote shader-owned states by hand.
+		DX8Wrapper::Invalidate_Cached_Shader();
 		DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);
 		DX8Wrapper::Set_Material(m_vertexMaterial);
 		DX8Wrapper::Set_Index_Buffer(m_indexBridge,0);

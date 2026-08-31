@@ -1191,8 +1191,10 @@ void W3DBridgeBuffer::drawBridges(CameraClass * camera, Bool wireframe)
 	// It puts a caller name on these draws in the fixed-function census, which would
 	// otherwise file them as an anonymous "(undeclared 3D)" group.
 	DeclaredTechniqueClass labelDraws(MESH_TECHNIQUE_UNCLASSIFIED, "bridgeShroudPass");
-		//Reset to a known shader.
-		DX8Wrapper::Invalidate_Cached_Render_States();
+		//Reset to a known shader. Set_Shader alone will not do it: it and ShaderClass
+		//both skip a shader they think is already applied, and the bridge pass above
+		//wrote shader-owned states by hand.
+		DX8Wrapper::Invalidate_Cached_Shader();
 		DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);
 		DX8Wrapper::Set_Material(m_vertexMaterial);
 		DX8Wrapper::Set_Index_Buffer(m_indexBridge,0);

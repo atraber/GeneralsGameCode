@@ -1276,7 +1276,13 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 	// Set stencil states
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_STENCILENABLE, TRUE );
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZENABLE, TRUE );
-	DWORD	oldColorWriteEnable=0x12345678;
+	// A value and a flag, kept apart -- this was one DWORD initialised to 0x12345678 and
+	// tested against it to mean "there was nothing to save", which is also the value
+	// Invalidate_Cached_Render_States poisons tracked state with. The same overload in
+	// the volumetric shadow cost every shadow in the frame once, invisibly, when the
+	// read moved from the device to the tracked word and landed on the poison.
+	DWORD	oldColorWriteEnable = 0;
+	bool	haveOldColorWriteEnable = false;
 	if (clear)
 	{
 		//we want to clear the stencil buffer to some known value wherever a player index is stored
@@ -1294,6 +1300,7 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 		if (DX8Wrapper::Get_Current_Caps()->Get_DX8_Caps().PrimitiveMiscCaps & D3DPMISCCAPS_COLORWRITEENABLE)
 		{
 			DX8Wrapper::_Get_D3D_Device8()->GetRenderState(D3DRS_COLORWRITEENABLE, &oldColorWriteEnable);
+			haveOldColorWriteEnable = true;
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,0);
 		}
 		else
@@ -1333,7 +1340,7 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_DESTBLEND, D3DBLEND_ZERO );
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC, D3DCMP_ALWAYS);
 
-	if (oldColorWriteEnable != 0x12345678)
+	if (haveOldColorWriteEnable)
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,oldColorWriteEnable);
 
 }

@@ -2026,7 +2026,13 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
 	//Clean up after any pixel shaders.
 	//Force render state apply so that the null texture gets applied to D3D, thus releasing shroud reference count.
 	DX8Wrapper::Apply_Render_State_Changes();
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// The water passes above set z, blend and cull straight through the wrapper and ran
+	// custom W3DShaderManager shaders over the top, so what is stale is ShaderClass's
+	// idea of the bound shader, not the wrapper's idea of the device. The texture
+	// unbinding that used to come with the full invalidation is the Apply above; the
+	// one place a D3D reference genuinely has to be gone -- a device reset -- still
+	// invalidates in full.
+	DX8Wrapper::Invalidate_Cached_Shader();
 
 	if (m_waterTrackSystem)
 		m_waterTrackSystem->flush(rinfo);
@@ -2274,7 +2280,9 @@ void WaterRenderObjClass::drawSea(RenderInfoClass & rinfo)
 	DX8Wrapper::Set_Pixel_Shader(0);	//turn off pixel shader
 	DX8Wrapper::Set_Vertex_Shader(DX8_FVF_XYZDUV1);	//turn off custom vertex shader
 
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	// Everything undone above went through the wrapper; the shader pair and the stage
+	// combine did not go through ShaderClass.
+	DX8Wrapper::Invalidate_Cached_Shader();
 
 	if (TheTerrainRenderObject->getShroud())
 	{
@@ -3028,7 +3036,19 @@ Real WaterRenderObjClass::getWaterHeight(Real x, Real y)
 //-------------------------------------------------------------------------------------------------
 void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
 {
-	DX8Wrapper::Invalidate_Cached_Render_States();	///@todo: Figure out why rivers don't draw without reset of all states.
+	// The last render-path caller of the full invalidation, and it stays because it has
+	// not been measured. Every other one was retired on evidence: the device read back,
+	// at that site, holding exactly what the wrapper expected. This site never ran --
+	// neither gla_midgame nor mines has a river polygon trigger, so renderWater's river
+	// branch was reached zero times in either shadow configuration -- and the note below
+	// is somebody recording that removing it once stopped rivers drawing without ever
+	// finding out why. Converting it would be changing untested code on the strength of
+	// a measurement taken somewhere else.
+	//
+	// To retire it: play a replay on a map with a river, confirm this site appears in the
+	// DEVICE STATE AUDIT with zero wrong words, then swap it for Invalidate_Cached_Shader
+	// and check the river still draws.
+	DX8Wrapper::Invalidate_Cached_Render_States("drawRiverWater");	///@todo: Figure out why rivers don't draw without reset of all states.
 
 	Int rectangleCount = pTrig->getNumPoints()/2;
 	rectangleCount--;

@@ -1123,7 +1123,14 @@ WW3DErrorType WW3D::End_Render(bool flip_frame)
 	// (gth) I've found some cases where its not safe to rely on our "shadow" copy (of
 	// matrices for example) across multiple frames.  So even though this is slightly
 	// less "optimal", lets just reset the caches each frame.
-	DX8Wrapper::Invalidate_Cached_Render_States();
+	//
+	// The matrix half of that is void: the redundancy check the matrix shadow existed
+	// for is #if 0'd out in _Set_DX8_Transform, so every transform write goes through
+	// regardless and nothing is relied on across a frame. What a frame does leave
+	// behind is a shader nobody re-describes, so that is what is reset. The device
+	// state itself is audited here every frame instead of being forgotten -- see
+	// DX8Wrapper::Debug_Audit_Frame_End.
+	DX8Wrapper::Invalidate_Cached_Shader();
 
 	return WW3D_ERROR_OK;
 }

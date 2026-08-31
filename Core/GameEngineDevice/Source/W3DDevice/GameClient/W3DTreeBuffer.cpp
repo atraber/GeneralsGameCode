@@ -1807,7 +1807,10 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 
 	DX8Wrapper::Set_Vertex_Shader(DX8_FVF_XYZNDUV1);
 	DX8Wrapper::Set_Pixel_Shader(0);
-	DX8Wrapper::Invalidate_Cached_Render_States();	//code above mucks around with W3D states so make sure we reset
+	// The code above mucks around with W3D states -- but all of it through the wrapper,
+	// which is the part that changed. What it does not go through is ShaderClass, whose
+	// idea of the bound shader the tree shader pair has just invalidated.
+	DX8Wrapper::Invalidate_Cached_Shader();
 
 }
 

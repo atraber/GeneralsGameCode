@@ -781,7 +781,31 @@ public:
 	static const char* Get_DX8_Debug_Monitor_Token_Name(unsigned value);
 	static const char* Get_DX8_Blend_Op_Name(unsigned value);
 
-	static void Invalidate_Cached_Render_States();
+	// Forget everything the wrapper knows about the device, because the device no longer
+	// holds it: it has been created, reset, or written straight at by something that does
+	// not go through here. Nothing in the render path qualifies -- see the note above the
+	// definition, and Invalidate_Cached_Shader below for what those callers actually want.
+	//
+	// The site name is the audit's; it says which caller asked to forget, so "was anything
+	// actually written behind the wrapper's back here" can be answered per caller rather
+	// than in aggregate. See Debug_Audit_Invalidation.
+	static void Invalidate_Cached_Render_States(const char * site = nullptr);
+
+	// The caller has written render states that ShaderClass believes it owns -- a
+	// W3DShaderManager custom shader, a post-process filter's own z and blend, the shadow
+	// depth pass's colour mask -- so render_state.shader no longer describes the device.
+	// Re-describe it on the next draw.
+	//
+	// This is the narrow half of what the render path used to ask
+	// Invalidate_Cached_Render_States for, and the only half of it that was ever load
+	// bearing there. ShaderClass keeps a cache of its own (CurrentShader), so re-setting
+	// the same shader value is otherwise skipped and the custom states stay on the device;
+	// that cache is a level above the tracked render states and no device read-back can
+	// see it going stale. The wide half -- forgetting what the *device* holds -- was
+	// warranted at none of those sites: measured over gla_midgame in both shadow
+	// configurations, 28650 invalidations found the device disagreeing with the wrapper
+	// zero times.
+	static void Invalidate_Cached_Shader();
 
 	static void Set_Draw_Polygon_Low_Bound_Limit(unsigned n) { DrawPolygonLowBoundLimit=n; }
 
@@ -1122,6 +1146,13 @@ public:
 	static const char* Debug_Get_FF_Site();
 	static void Debug_Note_FF_State_Write(unsigned isTextureStage, unsigned state);
 	static void Debug_Report_FF_Sites();
+	// Does the wrapper's model of the device still match the device? Reads every word it
+	// claims to know back off D3D and counts the ones it has wrong. Returns that count.
+	// Called on a timer, and from what is left of Invalidate_Cached_Render_States.
+	static unsigned Debug_Audit_Invalidation(const char * site);
+	// The once-a-frame check, plus the positive control that keeps its zero meaningful.
+	static void Debug_Audit_Frame_End();
+	static void Debug_Report_Invalidations();
 
 #endif
 	// Programmable road path. Roads are decals on the terrain and want the terrain's

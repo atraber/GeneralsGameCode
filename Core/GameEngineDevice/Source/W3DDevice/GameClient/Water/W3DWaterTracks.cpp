@@ -1299,8 +1299,9 @@ void TestWaterUpdate()
 				Real ydiff=terrainPointEnd.y - terrainPointStart.y;
 				if (sqrt (xdiff * xdiff + ydiff * ydiff) <= waveTypeInfo[currentWaveType].m_finalWidth)
 				{	TheDisplay->drawLine(mouseAnchor.x, mouseAnchor.y, screenPoint.x, screenPoint.y,1,0xffccccff);
-					DX8Wrapper::Invalidate_Cached_Render_States();
-					ShaderClass::Invalidate();
+					// drawLine leaves the 2D shader behind; the two calls this replaces said
+					// the same thing twice.
+					DX8Wrapper::Invalidate_Cached_Shader();
 				}
 
 //			char buffer[64];

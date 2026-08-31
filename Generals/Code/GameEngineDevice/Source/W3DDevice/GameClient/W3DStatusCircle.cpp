@@ -337,6 +337,12 @@ void W3DStatusCircle::Render(RenderInfoClass & rinfo)
 		DX8Wrapper::Set_Material(m_vertexMaterialClass);
 		DX8Wrapper::Set_Shader(m_shaderClass);
 		DX8Wrapper::Set_Texture(0, nullptr);
+		// ...and stage 1, which this drawer does not use. Saying so is not tidiness: the
+		// routing block reads the bound stage-1 texture to decide whether a draw wants a
+		// detail combine, so a stage this caller never mentions is answered by whoever
+		// drew before it. That used to be hidden by Invalidate_Cached_Render_States,
+		// which nulled every stage twice a frame on its way past.
+		DX8Wrapper::Set_Texture(1, nullptr);
 		DX8Wrapper::Set_Index_Buffer(m_indexBuffer,0);
 		DX8Wrapper::Set_Vertex_Buffer(m_vertexBufferCircle);
 		setIndex = true;
@@ -360,6 +366,7 @@ void W3DStatusCircle::Render(RenderInfoClass & rinfo)
 		DX8Wrapper::Set_Material(m_vertexMaterialClass);
 		DX8Wrapper::Set_Index_Buffer(m_indexBuffer,0);
 		DX8Wrapper::Set_Texture(0, nullptr);
+		DX8Wrapper::Set_Texture(1, nullptr);
 	}
 
 	tm.Make_Identity();

@@ -3507,7 +3507,17 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 		DX8Wrapper::Set_DX8_Texture(0,nullptr);
 		DX8Wrapper::Set_DX8_Texture(1,nullptr);
 
-		DWORD oldColorWriteEnable=0x12345678;
+		// A value and a flag, kept apart. This used to be one DWORD initialised to
+		// 0x12345678 and tested against it below to mean "there was nothing to save" --
+		// the same value Invalidate_Cached_Render_States poisons tracked state with, so
+		// the two could collide. They did: moving this read from the device to the
+		// tracked word landed it on the poison, skipped the restore, and left colour
+		// writes off for the rest of the shadow render -- every shadow in the frame
+		// gone, and no census could see it because the draws were still submitted. The
+		// render path no longer poisons anything, but a sentinel a caller can also
+		// produce is a trap whether or not it is currently armed.
+		DWORD oldColorWriteEnable = 0;
+		bool  haveOldColorWriteEnable = false;
 
 	#ifdef SV_DEBUG
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE , TRUE);
@@ -3518,14 +3528,14 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 	#else
 		//disable writes to color buffer
 		if (DX8Wrapper::Get_Current_Caps()->Get_DX8_Caps().PrimitiveMiscCaps & D3DPMISCCAPS_COLORWRITEENABLE)
-		{	// Read off the device, deliberately, and this one is worth stating because getting it
-			// wrong costs the shadows. The tracked word is not a substitute: Invalidate_Cached_Render_States
-			// poisons it with 0x12345678, which is the same value the restore below treats as "there
-			// was nothing to save" -- so a tracked read lands on the poison, the restore is skipped,
-			// colour writes stay off past the stencil passes and the shadow fill draws nothing at all.
-			// The device always holds a real value. Same shape as the D3DRS_ZBIAS trap: a raw value
-			// and a tracked value are not always the same quantity.
+		{	// Read off the device, deliberately, and this one is worth stating because getting
+			// it wrong costs the shadows. It could now be read from the tracked word --
+			// nothing in the render path poisons state any more, and COLORWRITEENABLE has no
+			// unit translation the way D3DRS_ZBIAS does -- but that is a second change riding
+			// on the first, in the one place where getting it wrong is invisible to every
+			// census. It stays on the device until somebody has a reason to move it.
 			DX8Wrapper::_Get_D3D_Device8()->GetRenderState(D3DRS_COLORWRITEENABLE, &oldColorWriteEnable);
+			haveOldColorWriteEnable = true;
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,0);
 		}
 		else
@@ -3643,7 +3653,7 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 		//m_pDev->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID);
 
 
-		if (oldColorWriteEnable != 0x12345678)
+		if (haveOldColorWriteEnable)
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,oldColorWriteEnable);
 
 		//
@@ -3658,7 +3668,9 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE , FALSE);
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_LIGHTING, FALSE);
 
-		DX8Wrapper::Invalidate_Cached_Render_States();
+		// The stencil passes wrote shade mode, blend, cull and the stencil ops through
+		// the wrapper but past ShaderClass, so only ShaderClass has to be told.
+		DX8Wrapper::Invalidate_Cached_Shader();
 	}
 	else
 	if (forceStencilFill)
@@ -3675,7 +3687,7 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 
 		renderStencilShadows();
 
-		DX8Wrapper::Invalidate_Cached_Render_States();
+		DX8Wrapper::Invalidate_Cached_Shader();
 	}
 
 }

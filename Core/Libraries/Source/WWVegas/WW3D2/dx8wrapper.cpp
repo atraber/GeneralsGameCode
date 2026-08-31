@@ -232,19 +232,25 @@ static const char* s_ffFlushSiteOverride = nullptr;
 // the material, so a full re-send after an invalidation is reported whole rather than
 // truncated at whichever words happened to be seen first.
 enum { MAX_FF_FLUSH_WORDS = 32 };
-struct FFFlushWord { unsigned isStage; unsigned state; unsigned count; };
+// The stage is part of the identity, not decoration. Once the residue is down to a
+// couple of words a frame, "a COLOROP" is not something anybody can go and look at and
+// "stage 1's COLOROP" is -- it says which pass of which draw is still describing itself
+// in fixed function.
+struct FFFlushWord { unsigned isStage; unsigned stage; unsigned state; unsigned count; };
 static FFFlushWord s_ffFlushWords[MAX_FF_FLUSH_WORDS];
 static int s_ffFlushWordCount = 0;
 
-static void NoteFlushedWord(unsigned isStage, unsigned state)
+static void NoteFlushedWord(unsigned isStage, unsigned stage, unsigned state)
 {
 	for (int i = 0; i < s_ffFlushWordCount; ++i) {
-		if (s_ffFlushWords[i].isStage == isStage && s_ffFlushWords[i].state == state) {
+		if (s_ffFlushWords[i].isStage == isStage && s_ffFlushWords[i].stage == stage &&
+			s_ffFlushWords[i].state == state) {
 			++s_ffFlushWords[i].count; return;
 		}
 	}
 	if (s_ffFlushWordCount >= MAX_FF_FLUSH_WORDS) return;
 	s_ffFlushWords[s_ffFlushWordCount].isStage = isStage;
+	s_ffFlushWords[s_ffFlushWordCount].stage = stage;
 	s_ffFlushWords[s_ffFlushWordCount].state = state;
 	s_ffFlushWords[s_ffFlushWordCount].count = 1;
 	++s_ffFlushWordCount;
@@ -337,7 +343,7 @@ void DX8Wrapper::Flush_Fixed_Function_State()
 			FFDeviceMaterial = CurrentMaterial;
 			DX8CALL(SetMaterial(&CurrentMaterial));
 #ifdef RTS_DEBUG
-			NoteFlushedWord(2, 0);
+			NoteFlushedWord(2, 0, 0);
 			++s_ffFlushedWrites;
 			NoteFlushedWrite(s_ffFlushSiteOverride != nullptr
 				? s_ffFlushSiteOverride : s_declarationSite);
@@ -361,7 +367,7 @@ void DX8Wrapper::Flush_Fixed_Function_State()
 			FFDeviceStage[stage][bit] = value;
 			DX8CALL(SetTextureStageState(stage, (D3DTEXTURESTAGESTATETYPE)bit, value));
 #ifdef RTS_DEBUG
-			NoteFlushedWord(1, bit);
+			NoteFlushedWord(1, stage, bit);
 			++s_ffFlushedWrites;
 			NoteFlushedWrite(s_ffFlushSiteOverride != nullptr
 				? s_ffFlushSiteOverride : s_declarationSite);
@@ -381,7 +387,7 @@ void DX8Wrapper::Flush_Fixed_Function_State()
 			FFDeviceRender[state] = value;
 			DX8CALL(SetRenderState((D3DRENDERSTATETYPE)state, value));
 #ifdef RTS_DEBUG
-			NoteFlushedWord(0, state);
+			NoteFlushedWord(0, 0, state);
 			++s_ffFlushedWrites;
 			NoteFlushedWrite(s_ffFlushSiteOverride != nullptr
 				? s_ffFlushSiteOverride : s_declarationSite);
@@ -948,6 +954,260 @@ void DX8Wrapper::Debug_Note_FF_State_Write(unsigned isTextureStage, unsigned sta
 	if (isTextureStage) ++g->stageWrites; else ++g->renderWrites;
 }
 
+//-----------------------------------------------------------------------------
+// Device-state audit.
+//
+// The wrapper's whole claim is that it knows what the device holds. This checks it:
+// every word the wrapper claims to know is read back off D3D and compared with what
+// the wrapper believes the device holds. Any disagreement is somebody writing the
+// device behind its back, and the word that disagrees names the writer -- the same
+// trick the fixed-function census uses.
+//
+// It began as an audit of Invalidate_Cached_Render_States, which asserts exactly the
+// opposite: "forget what you knew, it is no longer true". Over gla_midgame in both
+// shadow configurations, 28650 invalidations from the render path found the device
+// disagreeing zero times, which is what retired them. What is left of the call is the
+// device-lifetime path, where the disagreement is real and total -- a reset caught mid
+// run reported 109 wrong words -- and the check now runs on a timer instead, where a
+// new escape shows up as it appears rather than wherever the next invalidation is.
+//
+// What "the wrapper believes the device holds" is two different arrays. For the
+// deferred fixed-function words it is FFDeviceRender / FFDeviceStage /
+// FFDeviceMaterial, which are only written at a flush. For everything else the
+// tracked array *is* the belief, because those writes go straight through.
+//
+// Words whose tracked value is still the sentinel are skipped: the wrapper is not
+// claiming anything about them, so there is nothing to be wrong about. So are the
+// seven D3D8-only render states the compatibility layer parks in slots 220..226,
+// which the device does not store at all -- the ZBIAS trap, in instrument form.
+//-----------------------------------------------------------------------------
+namespace {
+	struct InvalidateSite {
+		const char* who;
+		unsigned    calls;        // times this site asked to invalidate
+		unsigned    wrongCalls;   // ...of which found the device holding something else
+		unsigned    wrongWords;   // and how many words over all of them
+	};
+	enum { MAX_INVALIDATE_SITES = 32 };
+	InvalidateSite s_invSites[MAX_INVALIDATE_SITES];
+	int      s_invSiteCount = 0;
+	unsigned s_invDropped = 0;
+	int      s_invFrames = 0;
+	// How many words the positive control's deliberate desynchronisation was seen as.
+	// -1 means it did not get to run this window.
+	int      s_invControlSaw = -1;
+
+	// kind: 0 render state, 1 texture stage state, 2 material
+	struct InvWord { unsigned kind; unsigned state; unsigned count; };
+	enum { MAX_INV_WORDS = 32 };
+	InvWord  s_invWords[MAX_INV_WORDS];
+	int      s_invWordCount = 0;
+	unsigned s_invWordDropped = 0;
+
+	void NoteInvWord(unsigned kind, unsigned state)
+	{
+		for (int i = 0; i < s_invWordCount; ++i) {
+			if (s_invWords[i].kind == kind && s_invWords[i].state == state) {
+				++s_invWords[i].count; return;
+			}
+		}
+		if (s_invWordCount >= MAX_INV_WORDS) { ++s_invWordDropped; return; }
+		s_invWords[s_invWordCount].kind = kind;
+		s_invWords[s_invWordCount].state = state;
+		s_invWords[s_invWordCount].count = 1;
+		++s_invWordCount;
+	}
+
+	InvalidateSite* FindOrAddInvSite(const char* who)
+	{
+		for (int i = 0; i < s_invSiteCount; ++i) {
+			if (s_invSites[i].who == who) return &s_invSites[i];
+		}
+		if (s_invSiteCount >= MAX_INVALIDATE_SITES) return nullptr;
+		InvalidateSite& g = s_invSites[s_invSiteCount++];
+		g.who = who; g.calls = 0; g.wrongCalls = 0; g.wrongWords = 0;
+		return &g;
+	}
+
+	// The ten D3D8 stage states the compatibility layer turns into D3D9 sampler states.
+	// Reading one back has to go the same way it was written or it is a different word.
+	bool InvSamplerRemap(unsigned state, D3DSAMPLERSTATETYPE& out)
+	{
+		switch (state) {
+			case D3DTSS_ADDRESSU:      out = D3DSAMP_ADDRESSU;      return true;
+			case D3DTSS_ADDRESSV:      out = D3DSAMP_ADDRESSV;      return true;
+			case D3DTSS_ADDRESSW:      out = D3DSAMP_ADDRESSW;      return true;
+			case D3DTSS_BORDERCOLOR:   out = D3DSAMP_BORDERCOLOR;   return true;
+			case D3DTSS_MAGFILTER:     out = D3DSAMP_MAGFILTER;     return true;
+			case D3DTSS_MINFILTER:     out = D3DSAMP_MINFILTER;     return true;
+			case D3DTSS_MIPFILTER:     out = D3DSAMP_MIPFILTER;     return true;
+			case D3DTSS_MIPMAPLODBIAS: out = D3DSAMP_MIPMAPLODBIAS; return true;
+			case D3DTSS_MAXMIPLEVEL:   out = D3DSAMP_MAXMIPLEVEL;   return true;
+			case D3DTSS_MAXANISOTROPY: out = D3DSAMP_MAXANISOTROPY; return true;
+			default: return false;
+		}
+	}
+}
+
+unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
+{
+	if (site == nullptr) site = "(unnamed)";
+	InvalidateSite* g = FindOrAddInvSite(site);
+	if (g == nullptr) { ++s_invDropped; return 0; }
+	++g->calls;
+
+	IDirect3DDevice8* dev = _Get_D3D_Device8();
+	if (dev == nullptr) return 0;
+
+	unsigned wrong = 0;
+
+	for (unsigned a = 0; a < sizeof(RenderStates)/sizeof(unsigned); ++a) {
+		if (RenderStates[a] == 0x12345678) continue;      // wrapper claims nothing
+		if (a >= 220 && a <= 226) continue;               // compatibility-layer dummies
+		const bool deferred = Is_Deferred_FF_Render_State(a);
+		const unsigned believed = deferred ? FFDeviceRender[a] : RenderStates[a];
+		if (believed == 0x12345678) continue;
+		DWORD actual = 0;
+		if (FAILED(dev->GetRenderState((D3DRENDERSTATETYPE)a, &actual))) continue;
+		if ((unsigned)actual == believed) continue;
+		++wrong;
+		NoteInvWord(0, a);
+	}
+
+	for (unsigned stage = 0; stage < MAX_TEXTURE_STAGES; ++stage) {
+		for (unsigned b = 1; b < 32; ++b) {
+			if (TextureStageStates[stage][b] == 0x12345678) continue;
+			const bool deferred = Is_Deferred_FF_Stage_State(b);
+			const unsigned believed = deferred ? FFDeviceStage[stage][b] : TextureStageStates[stage][b];
+			if (believed == 0x12345678) continue;
+			DWORD actual = 0;
+			D3DSAMPLERSTATETYPE samp;
+			if (InvSamplerRemap(b, samp)) {
+				if (FAILED(dev->GetSamplerState(stage, samp, &actual))) continue;
+			} else {
+				if (FAILED(dev->GetTextureStageState(stage, (D3DTEXTURESTAGESTATETYPE)b, &actual))) continue;
+			}
+			if ((unsigned)actual == believed) continue;
+			++wrong;
+			NoteInvWord(1, b);
+		}
+	}
+
+	// The material is only meaningful once something has flushed one; Power is set to
+	// -1.0f by the poison and by nothing real.
+	if (FFDeviceMaterial.Power >= 0.0f) {
+		D3DMATERIAL8 actual;
+		if (SUCCEEDED(dev->GetMaterial(&actual))) {
+			if (memcmp(&actual, &FFDeviceMaterial, sizeof(D3DMATERIAL8)) != 0) {
+				++wrong;
+				NoteInvWord(2, 0);
+			}
+		}
+	}
+
+	if (wrong) { ++g->wrongCalls; g->wrongWords += wrong; }
+	return wrong;
+}
+
+void DX8Wrapper::Debug_Audit_Frame_End()
+{
+	// The positive control, and the reason the zero above is worth reading. A zero from a
+	// device read-back means the same thing whether the wrapper's model is right or the
+	// instrument has quietly stopped being reached, so once per reporting window one word
+	// is written straight at the device behind the wrapper's back and the audit is asked
+	// whether it noticed.
+	//
+	// D3DRS_FILLMODE, and here: this runs after EndScene, so no draw can see the wrong
+	// value, and it is put back from the tracked value on the next line. If the control
+	// ever reports 0 the instrument is broken and every other number on this report is
+	// worthless.
+	if (s_invFrames + 1 >= 600 && _Get_D3D_Device8() != nullptr &&
+		RenderStates[D3DRS_FILLMODE] != 0x12345678)
+	{
+		const unsigned real = RenderStates[D3DRS_FILLMODE];
+		const unsigned wrong = (real == D3DFILL_POINT) ? D3DFILL_WIREFRAME : D3DFILL_POINT;
+		_Get_D3D_Device8()->SetRenderState(D3DRS_FILLMODE, wrong);
+		s_invControlSaw = (int)Debug_Audit_Invalidation("(control -- one word poked at the device)");
+		_Get_D3D_Device8()->SetRenderState(D3DRS_FILLMODE, real);
+	}
+
+	// Every thirtieth frame, not every frame. The check is ~300 device reads, each a
+	// round trip, and at 30 Hz that was enough to cost the debug build a third of its
+	// frame rate -- which matters beyond the frame rate itself, because the cloud map
+	// scrolls on wall time, so two runs at different speeds photograph the terrain under
+	// different cloud shadows and no frame dump can be compared with another. Nothing it
+	// looks for happens once: a write that escapes the wrapper escapes it every frame.
+	if ((s_invFrames % 30) == 0)
+		Debug_Audit_Invalidation("(frame end)");
+}
+
+void DX8Wrapper::Debug_Report_Invalidations()
+{
+	if (++s_invFrames < 600) return;
+	s_invFrames = 0;
+
+	unsigned totalCalls = 0, totalWrongCalls = 0, totalWrongWords = 0;
+	for (int i = 0; i < s_invSiteCount; ++i) {
+		totalCalls += s_invSites[i].calls;
+		totalWrongCalls += s_invSites[i].wrongCalls;
+		totalWrongWords += s_invSites[i].wrongWords;
+	}
+
+	WWDEBUG_SAY(("DEVICE STATE AUDIT over 600 frames: %u checks from %d sites%s -- %u of "
+				 "them found the device holding something the wrapper did not "
+				 "expect, over %u words",
+		totalCalls, s_invSiteCount, s_invDropped ? "  -- TABLE FULL" : "",
+		totalWrongCalls, totalWrongWords));
+	if (s_invControlSaw > 0) {
+		WWDEBUG_SAY(("  control: one word written at the device behind the wrapper's back "
+					 "was seen, so a zero above is the wrapper being right and not the "
+					 "instrument being unreachable."));
+	} else if (s_invControlSaw == 0) {
+		WWDEBUG_SAY(("  CONTROL FAILED: a word written at the device behind the wrapper's "
+					 "back was NOT seen. Every number on this report is worthless."));
+	} else {
+		WWDEBUG_SAY(("  control did not run this window; the zeroes above are unqualified."));
+	}
+	s_invControlSaw = -1;
+
+	for (int rank = 0; rank < s_invSiteCount; ++rank) {
+		int best = -1;
+		unsigned bestCalls = 0;
+		for (int i = 0; i < s_invSiteCount; ++i) {
+			if (s_invSites[i].calls > bestCalls) { bestCalls = s_invSites[i].calls; best = i; }
+		}
+		if (best < 0) break;
+		WWDEBUG_SAY(("    %-40s x%-8u  %u checks wrong, %u words",
+			s_invSites[best].who, s_invSites[best].calls,
+			s_invSites[best].wrongCalls, s_invSites[best].wrongWords));
+		s_invSites[best].calls = 0;
+	}
+	if (s_invWordCount > 0) {
+		WWDEBUG_SAY(("  the words the device disagreed on%s, which name their writer:",
+			s_invWordDropped ? " -- TABLE FULL" : ""));
+		for (int rank = 0; rank < s_invWordCount; ++rank) {
+			int best = -1;
+			unsigned bestCount = 0;
+			for (int i = 0; i < s_invWordCount; ++i) {
+				if (s_invWords[i].count > bestCount) { bestCount = s_invWords[i].count; best = i; }
+			}
+			if (best < 0) break;
+			const InvWord& w = s_invWords[best];
+			WWDEBUG_SAY(("      %-36s x%u",
+				w.kind == 2 ? "SetMaterial"
+					: (w.kind == 1
+						? Get_DX8_Texture_Stage_State_Name((D3DTEXTURESTAGESTATETYPE)w.state)
+						: Get_DX8_Render_State_Name((D3DRENDERSTATETYPE)w.state)),
+				w.count));
+			s_invWords[best].count = 0;
+		}
+	}
+	s_invSiteCount = 0;
+	s_invWordCount = 0;
+	s_invDropped = 0;
+	s_invWordDropped = 0;
+}
+
 void DX8Wrapper::Debug_Report_FF_Sites()
 {
 	if (++s_ffSiteFrames < 600) return;
@@ -1002,12 +1262,16 @@ void DX8Wrapper::Debug_Report_FF_Sites()
 			}
 			if (best < 0) break;
 			const FFFlushWord& w = s_ffFlushWords[best];
-			WWDEBUG_SAY(("      %-36s x%u",
-				w.isStage == 2 ? "SetMaterial"
-					: (w.isStage
-						? Get_DX8_Texture_Stage_State_Name((D3DTEXTURESTAGESTATETYPE)w.state)
-						: Get_DX8_Render_State_Name((D3DRENDERSTATETYPE)w.state)),
-				w.count));
+			if (w.isStage == 1) {
+				WWDEBUG_SAY(("      stage %u  %-30s x%u", w.stage,
+					Get_DX8_Texture_Stage_State_Name((D3DTEXTURESTAGESTATETYPE)w.state),
+					w.count));
+			} else {
+				WWDEBUG_SAY(("      %-37s x%u",
+					w.isStage == 2 ? "SetMaterial"
+						: Get_DX8_Render_State_Name((D3DRENDERSTATETYPE)w.state),
+					w.count));
+			}
 			s_ffFlushWords[best].count = 0;
 		}
 	}
@@ -2070,7 +2334,9 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 	WWDEBUG_SAY(("Reset DX8Wrapper statistics"));
 	Reset_Statistics();
 
-	Invalidate_Cached_Render_States();
+	// There is no device yet, so nothing the wrapper might remember about one can be
+	// true. This is the base case the sentinel exists for.
+	Invalidate_Cached_Render_States("DX8Wrapper::Init");
 
 	if (!lite) {
 		D3D8Lib = LoadLibrary("d3d9.dll");
@@ -2196,9 +2462,42 @@ void DX8Wrapper::Set_Default_Global_Render_States()
 	// Set dither mode here?
 }
 
-void DX8Wrapper::Invalidate_Cached_Render_States()
+void DX8Wrapper::Invalidate_Cached_Shader()
 {
-	render_state_changed=0;
+	// Two caches, one statement. ShaderClass::Apply compares the shader it is asked for
+	// against CurrentShader and writes nothing when they match; DX8Wrapper::Set_Shader
+	// does not even call Apply when the value matches render_state.shader. A caller that
+	// wrote a shader-owned render state by hand has to defeat both, or the next draw
+	// asking for the shader it already had gets the hand-written states instead.
+	ShaderClass::Invalidate();
+	render_state_changed |= (unsigned)SHADER_CHANGED;
+}
+
+void DX8Wrapper::Invalidate_Cached_Render_States(const char * site)
+{
+#ifdef RTS_DEBUG
+	// Before anything is poisoned: was there anything here to invalidate?
+	Debug_Audit_Invalidation(site);
+#else
+	(void)site;
+#endif
+	// Everything, not nothing. This line used to read render_state_changed=0, which says
+	// the next draw needs no shader bound, no texture applied, no material and no
+	// transform -- on the strength of a record that was about to be thrown away. It is the
+	// exact opposite of what has just happened: the device is about to be declared unknown,
+	// so every sub-apply has to run again.
+	//
+	// The two identity bits are not change flags. They say the world/view *is* the identity
+	// matrix, which is how the routing block tells a 2D draw from a 3D one, and
+	// Apply_Render_State_Changes deliberately preserves them across a draw for that reason.
+	// Clearing them told the routing block that the menu it was about to draw was a mesh.
+	render_state_changed =
+		(render_state_changed & ((unsigned)WORLD_IDENTITY | (unsigned)VIEW_IDENTITY)) |
+		(unsigned)WORLD_CHANGED | (unsigned)VIEW_CHANGED |
+		(unsigned)LIGHTS_CHANGED | (unsigned)TEXTURES_CHANGED |
+		(unsigned)MATERIAL_CHANGED | (unsigned)SHADER_CHANGED |
+		(unsigned)VERTEX_BUFFER_CHANGED | (unsigned)INDEX_BUFFER_CHANGED |
+		(unsigned)TEXGEN_STATE_CHANGED;
 
 	int a;
 	for (a=0;a<sizeof(RenderStates)/sizeof(unsigned);++a) {
@@ -2267,25 +2566,22 @@ void DX8Wrapper::Invalidate_Cached_Render_States()
 	memset(Vertex_Shader_Constants, 0xFF, sizeof(Vertex_Shader_Constants));
 	memset(Pixel_Shader_Constants, 0xFF, sizeof(Pixel_Shader_Constants));
 
-	// The transform shadows were just zeroed, but render_state still holds the
-	// correct world/view. Mark them changed so the next Apply_Render_State_Changes
-	// re-uploads them. The fixed-function terrain used to re-touch these every pass;
-	// the programmable terrain shader instead carries the view in its WVP constant
-	// and never re-applies D3DTS_VIEW, so without this a later fixed-function pass
-	// that reads the cached view -- the shroud builds its projection from
-	// inverse(D3DTS_VIEW) -- would read a zero matrix and swim with the camera.
-	render_state_changed |= (unsigned)WORLD_CHANGED | (unsigned)VIEW_CHANGED;
+	// The transform shadows were just zeroed, but render_state still holds the correct
+	// world/view, and WORLD_CHANGED|VIEW_CHANGED are already up from the head of the
+	// function. The fixed-function terrain used to re-touch these every pass; the
+	// programmable terrain shader instead carries the view in its WVP constant and never
+	// re-applies D3DTS_VIEW, so without them a later fixed-function pass that reads the
+	// cached view -- the shroud builds its projection from inverse(D3DTS_VIEW) -- would
+	// read a zero matrix and swim with the camera.
 
-	// The shader's states have to be re-applied for the same reason. RenderStates was just
-	// filled with the sentinel, but ShaderClass::Apply only runs when the shader actually
-	// changes -- so a run of draws sharing one shader would read blend, z and alpha-test
-	// values that are now sentinels rather than what the device holds. That is not merely
-	// a redundant-write question: the routing predicate reads those same entries to decide
-	// whether a draw can be reproduced, so it would decline draws over a blend mode they
-	// do not have. This only started to matter once something invalidated mid-frame -- the
-	// shadow depth pass does, at the end of every frame's pass.
-	render_state_changed |= (unsigned)SHADER_CHANGED;
-
+	// SHADER_CHANGED is up from the head of the function for the same reason, and
+	// ShaderClass::Invalidate above defeats the second of the two shader caches.
+	// RenderStates was just filled with the sentinel, and ShaderClass::Apply only runs
+	// when the shader actually changes -- so without both, a run of draws sharing one
+	// shader would read blend, z and alpha-test values that are sentinels rather than
+	// what the device holds. That is not merely a redundant-write question: the routing
+	// predicate reads those same entries to decide whether a draw can be reproduced, so
+	// it would decline draws over a blend mode they do not have.
 }
 
 void DX8Wrapper::Do_Onetime_Device_Dependent_Shutdowns()
@@ -2562,7 +2858,11 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 				m_pCleanupHook->ReAcquireResources();
 			}
 		}
-		Invalidate_Cached_Render_States();
+		// The device has just been reset. It holds none of its former render state, none of
+		// its former texture bindings and none of its former shader constants, and no
+		// amount of asking it will get them back -- this is the one place the whole
+		// forget-everything path is describing what actually happened.
+		Invalidate_Cached_Render_States("Reset_Device");
 		Set_Default_Global_Render_States();
 		SHD_INIT_SHADERS;
 		WWDEBUG_SAY(("Device reset completed"));
@@ -3653,7 +3953,10 @@ void DX8Wrapper::Set_Debug_Vis_Mode(DebugVisMode mode)
 	// case the setter would consider the write redundant and skip it.
 	if (previous == DEBUG_VIS_WIREFRAME && _Get_D3D_Device8() != nullptr) {
 		_Get_D3D_Device8()->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
-		Invalidate_Cached_Render_States();
+		// ...and the line above is the only write in the game that goes straight at the
+		// device past the wrapper, so it is the only one that leaves the wrapper's record
+		// of the device wrong. Once per debug-view cycle, on a key press.
+		Invalidate_Cached_Render_States("debugVisWireframeExit");
 	}
 }
 
@@ -3816,6 +4119,8 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Routing_Census();
 	Debug_Report_FF_Draws();
 	Debug_Report_FF_Sites();
+	Debug_Audit_Frame_End();
+	Debug_Report_Invalidations();
 	Debug_Report_Unclassified_Draws();
 	Debug_Report_Direct_Draws();
 	Debug_Report_Technique_Check();
