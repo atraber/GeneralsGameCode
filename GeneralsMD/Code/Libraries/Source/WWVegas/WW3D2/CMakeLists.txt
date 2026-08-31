@@ -8,9 +8,9 @@ set(WW3D2_SRC
     #animatedsoundmgr.cpp
     #animatedsoundmgr.h
     animobj.cpp
-    animobj.h
+#    animobj.h
     assetmgr.cpp
-    assetmgr.h
+#    assetmgr.h
     #assetstatus.cpp
     #assetstatus.h
     #bitmaphandler.cpp
@@ -18,11 +18,11 @@ set(WW3D2_SRC
     #bmp2d.cpp
     #bmp2d.h
     boxrobj.cpp
-    boxrobj.h
+#    boxrobj.h
     #bwrender.cpp
     #bwrender.h
     camera.cpp
-    camera.h
+#    camera.h
     #classid.h
     #collect.cpp
     #collect.h
@@ -35,9 +35,9 @@ set(WW3D2_SRC
     dazzle.cpp
     dazzle.h
     ddsfile.cpp
-    ddsfile.h
+#    ddsfile.h
     decalmsh.cpp
-    decalmsh.h
+#    decalmsh.h
     #decalsys.cpp
     #decalsys.h
     #distlod.cpp
@@ -75,17 +75,17 @@ set(WW3D2_SRC
     #hanim.cpp
     #hanim.h
     hanimmgr.cpp
-    hanimmgr.h
+#    hanimmgr.h
     #hcanim.cpp
     #hcanim.h
     hlod.cpp
-    hlod.h
+#    hlod.h
     #hmdldef.cpp
     #hmdldef.h
     hmorphanim.cpp
-    hmorphanim.h
+#    hmorphanim.h
     hrawanim.cpp
-    hrawanim.h
+#    hrawanim.h
     #htree.cpp
     #htree.h
     htreemgr.cpp
@@ -96,7 +96,7 @@ set(WW3D2_SRC
     #inttest.h
     #layer.cpp
     #layer.h
-    light.cpp
+#    light.cpp
     light.h
     lightenvironment.cpp
     lightenvironment.h
@@ -114,14 +114,14 @@ set(WW3D2_SRC
     matrixmapper.h
     mesh.cpp
     mesh.h
-    meshbuild.cpp
+#    meshbuild.cpp
     meshbuild.h
     #meshdam.cpp
     #meshdam.h
     meshgeometry.cpp
     meshgeometry.h
     meshmatdesc.cpp
-    meshmatdesc.h
+#    meshmatdesc.h
     meshmdl.cpp
     meshmdl.h
     meshmdlio.cpp
@@ -132,7 +132,7 @@ set(WW3D2_SRC
     motchan.cpp
     motchan.h
     nullrobj.cpp
-    nullrobj.h
+#    nullrobj.h
     part_buf.cpp
     part_buf.h
     part_emt.cpp
@@ -164,7 +164,7 @@ set(WW3D2_SRC
     #rendobj.cpp
     #rendobj.h
     rinfo.cpp
-    rinfo.h
+#    rinfo.h
     #ringobj.cpp
     #ringobj.h
     #robjlist.h
@@ -226,7 +226,7 @@ set(WW3D2_SRC
     #w3dexclusionlist.cpp
     #w3dexclusionlist.h
     ww3d.cpp
-    ww3d.h
+#    ww3d.h
     #ww3dformat.cpp
     #ww3dformat.h
     #ww3dids.h

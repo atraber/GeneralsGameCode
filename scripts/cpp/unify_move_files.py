@@ -622,6 +622,23 @@ def main():
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DProjectedShadow.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DProjectedShadow.h")
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DProjectedShadow.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/Shadow/W3DProjectedShadow.cpp")
 
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/animobj.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/animobj.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/assetmgr.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/assetmgr.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/boxrobj.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/boxrobj.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/camera.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/camera.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/ddsfile.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/ddsfile.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/decalmsh.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/decalmsh.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/hanimmgr.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/hanimmgr.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/hlod.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/hlod.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/hmorphanim.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/hmorphanim.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/hrawanim.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/hrawanim.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/light.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/light.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshbuild.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshbuild.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshmatdesc.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshmatdesc.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/nullrobj.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/nullrobj.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/rinfo.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/rinfo.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/ww3d.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/ww3d.h")
+
     return
 
 
