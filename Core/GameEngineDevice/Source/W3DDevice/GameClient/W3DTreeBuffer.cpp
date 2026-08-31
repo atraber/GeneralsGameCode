@@ -1085,6 +1085,8 @@ void W3DTreeBuffer::freeTreeBuffers()
 	}
 
 	if (m_dwTreePixelShader)
+		// Needs the device itself: releasing shader handles is resource lifetime. The
+		// tree pass sets its render state through the wrapper.
 		DX8Wrapper::_Get_D3D_Device8()->DeletePixelShader(m_dwTreePixelShader);
 	m_dwTreePixelShader = 0;
 

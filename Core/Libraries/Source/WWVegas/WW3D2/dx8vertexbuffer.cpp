@@ -442,6 +442,9 @@ void DX8VertexBufferClass::Create_Vertex_Buffer(UsageType usage)
 		usage_flags|=D3DUSAGE_SOFTWAREPROCESSING;
 	}
 
+	// Needs the device itself: creating a vertex buffer and evicting managed
+	// resources are resource lifetime, not render state, so nothing here can fall
+	// out of step with the tracked state.
 	HRESULT ret=DX8Wrapper::_Get_D3D_Device8()->CreateVertexBuffer(
 		FVF_Info().Get_FVF_Size()*VertexCount,
 		usage_flags,

@@ -297,6 +297,8 @@ DX8IndexBufferClass::DX8IndexBufferClass(unsigned short index_count_,UsageType u
 		usage_flags|=D3DUSAGE_SOFTWAREPROCESSING;
 	}
 
+	// Needs the device itself: index buffer creation is resource lifetime, not
+	// render state.
 	HRESULT ret=DX8Wrapper::_Get_D3D_Device8()->CreateIndexBuffer(
 		sizeof(WORD)*index_count,
 		usage_flags,

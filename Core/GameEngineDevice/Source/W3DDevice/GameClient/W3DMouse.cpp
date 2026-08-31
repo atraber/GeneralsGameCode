@@ -108,6 +108,8 @@ W3DMouse::W3DMouse()
 
 W3DMouse::~W3DMouse()
 {
+	// Needs the device itself: the hardware cursor is a device property with no
+	// render state behind it, and the wrapper tracks nothing about it.
 	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	if (m_pDev)
