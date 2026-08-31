@@ -1,8 +1,8 @@
 set(WW3D2_SRC
     #aabtree.cpp
     #aabtree.h
-    aabtreebuilder.cpp
-    aabtreebuilder.h
+#    aabtreebuilder.cpp
+#    aabtreebuilder.h
     #agg_def.cpp
     #agg_def.h
     #animatedsoundmgr.cpp
@@ -36,7 +36,7 @@ set(WW3D2_SRC
     dazzle.h
     ddsfile.cpp
 #    ddsfile.h
-    decalmsh.cpp
+#    decalmsh.cpp
 #    decalmsh.h
     #decalsys.cpp
     #decalsys.h
@@ -62,8 +62,8 @@ set(WW3D2_SRC
     #dx8webbrowser.h
 #    dx8wrapper.cpp
 #    dx8wrapper.h
-    #dynamesh.cpp
-    #dynamesh.h
+#    #dynamesh.cpp
+#    #dynamesh.h
     #font3d.cpp
     #font3d.h
     #formconv.cpp
@@ -108,19 +108,19 @@ set(WW3D2_SRC
     #matpass.h
 ##    matrixmapper.cpp
 ##    matrixmapper.h
-    mesh.cpp
-    mesh.h
+#    mesh.cpp
+#    mesh.h
 #    meshbuild.cpp
-    meshbuild.h
+#    meshbuild.h
     #meshdam.cpp
     #meshdam.h
-    meshgeometry.cpp
-    meshgeometry.h
-    meshmatdesc.cpp
+#    meshgeometry.cpp
+#    meshgeometry.h
+#    meshmatdesc.cpp
 #    meshmatdesc.h
-    meshmdl.cpp
-    meshmdl.h
-    meshmdlio.cpp
+#    meshmdl.cpp
+#    meshmdl.h
+#    meshmdlio.cpp
     #metalmap.cpp
     #metalmap.h
     #missingtexture.cpp

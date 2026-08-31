@@ -680,6 +680,19 @@ def main():
     #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/scene.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/scene.cpp")
     #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/rinfo.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/rinfo.cpp")
 
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshbuild.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshbuild.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/mesh.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/mesh.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/mesh.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/mesh.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshgeometry.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshgeometry.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshgeometry.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshgeometry.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshmdl.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshmdl.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshmdl.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshmdl.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshmdlio.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshmdlio.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/meshmatdesc.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/meshmatdesc.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/decalmsh.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/decalmsh.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/aabtreebuilder.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/aabtreebuilder.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/aabtreebuilder.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/aabtreebuilder.cpp")
+
     return
 
 
