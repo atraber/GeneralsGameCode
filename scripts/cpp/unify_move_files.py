@@ -757,6 +757,26 @@ def main():
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameLogic/W3DGameLogic.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameLogic/W3DGameLogic.cpp")
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/Win32Device/Common/Win32OSDisplay.cpp", Game.CORE, "GameEngineDevice/Source/Win32Device/Common/Win32OSDisplay.cpp")
 
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DDynamicLight.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DDynamicLight.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DBufferManager.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DBufferManager.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DDebugDisplay.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DDebugDisplay.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DDisplayString.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DDisplayString.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DPoly.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DPoly.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DPoly.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DPoly.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameLogic/W3DTerrainLogic.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameLogic/W3DTerrainLogic.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameLogic/W3DGhostObject.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameLogic/W3DGhostObject.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DDisplay.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DDisplay.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DDisplay.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DRoadBuffer.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DRoadBuffer.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DRoadBuffer.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DRoadBuffer.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/Win32Device/Common/Win32GameEngine.cpp", Game.CORE, "GameEngineDevice/Source/Win32Device/Common/Win32GameEngine.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DBibBuffer.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DBibBuffer.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DAssetManager.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DAssetManager.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DAssetManager.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DParticleSys.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DParticleSys.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DFileSystem.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DFileSystem.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3dWaypointBuffer.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3dWaypointBuffer.cpp")
+
     return
 
 
