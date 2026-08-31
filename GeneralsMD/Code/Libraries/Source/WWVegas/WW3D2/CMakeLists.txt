@@ -32,9 +32,9 @@ set(WW3D2_SRC
     #coltype.h
     #composite.cpp
     #composite.h
-    dazzle.cpp
-    dazzle.h
-    ddsfile.cpp
+#    dazzle.cpp
+#    dazzle.h
+#    ddsfile.cpp
 #    ddsfile.h
 #    decalmsh.cpp
 #    decalmsh.h
@@ -102,8 +102,8 @@ set(WW3D2_SRC
 #    lightenvironment.h
     #line3d.cpp
     #line3d.h
-    linegrp.cpp
-    linegrp.h
+#    linegrp.cpp
+#    linegrp.h
 #    mapper.cpp
 #    mapper.h
     #matinfo.cpp
@@ -133,12 +133,12 @@ set(WW3D2_SRC
 #    motchan.h
 #    nullrobj.cpp
 #    nullrobj.h
-    part_buf.cpp
-    part_buf.h
-    part_emt.cpp
-    part_emt.h
-    part_ldr.cpp
-    part_ldr.h
+#    part_buf.cpp
+#    part_buf.h
+#    part_emt.cpp
+#    part_emt.h
+#    part_ldr.cpp
+#    part_ldr.h
     #pivot.cpp
     #pivot.h
     #pointgr.cpp
@@ -155,8 +155,8 @@ set(WW3D2_SRC
     #proto.h
     #proxy.h
     #rddesc.h
-    render2d.cpp
-    render2d.h
+#    render2d.cpp
+#    render2d.h
     #render2dsentence.cpp
     #render2dsentence.h
     #renderobjectrecycler.cpp

@@ -693,6 +693,21 @@ def main():
     #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/aabtreebuilder.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/aabtreebuilder.h")
     #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/aabtreebuilder.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/aabtreebuilder.cpp")
 
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/part_ldr.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/part_ldr.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/part_ldr.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/part_ldr.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/part_emt.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/part_emt.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/part_emt.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/part_emt.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/part_buf.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/part_buf.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/part_buf.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/part_buf.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/render2d.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/render2d.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/render2d.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/render2d.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/dazzle.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/dazzle.h")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/dazzle.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/dazzle.cpp")
+    #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/ddsfile.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/ddsfile.cpp")
+
+    #unify_move_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/linegrp.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/linegrp.h")
+    #unify_move_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/linegrp.cpp", Game.CORE, "Libraries/Source/WWVegas/WW3D2/linegrp.cpp")
+
     return
 
 
