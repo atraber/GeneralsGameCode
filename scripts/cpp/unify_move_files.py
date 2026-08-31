@@ -777,6 +777,8 @@ def main():
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DFileSystem.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DFileSystem.cpp")
     #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3dWaypointBuffer.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3dWaypointBuffer.cpp")
 
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/Common/Thing/W3DModuleFactory.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/Common/Thing/W3DModuleFactory.cpp")
+
     return
 
 

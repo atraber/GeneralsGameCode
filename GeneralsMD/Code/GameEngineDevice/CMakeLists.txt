@@ -91,7 +91,7 @@ set(GAMEENGINEDEVICE_SRC
 #    Source/VideoDevice/Bink/BinkVideoPlayer.cpp
 #    Source/W3DDevice/Common/System/W3DFunctionLexicon.cpp
 #    Source/W3DDevice/Common/System/W3DRadar.cpp
-    Source/W3DDevice/Common/Thing/W3DModuleFactory.cpp
+#    Source/W3DDevice/Common/Thing/W3DModuleFactory.cpp
 #    Source/W3DDevice/Common/Thing/W3DThingFactory.cpp
 #    Source/W3DDevice/Common/W3DConvert.cpp
 #    Source/W3DDevice/GameClient/BaseHeightMap.cpp
