@@ -639,6 +639,13 @@ def main():
     #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/rinfo.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/rinfo.h")
     #unify_file_lib(Game.ZEROHOUR, "Libraries/Source/WWVegas/WW3D2/ww3d.h", Game.CORE, "Libraries/Source/WWVegas/WW3D2/ww3d.h")
 
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DCustomEdging.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DCustomEdging.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DCustomEdging.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DCustomEdging.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DStatusCircle.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DStatusCircle.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DStatusCircle.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DStatusCircle.cpp")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h", Game.CORE, "GameEngineDevice/Include/W3DDevice/GameClient/W3DBridgeBuffer.h")
+    #unify_file(Game.ZEROHOUR, "GameEngineDevice/Source/W3DDevice/GameClient/W3DBridgeBuffer.cpp", Game.CORE, "GameEngineDevice/Source/W3DDevice/GameClient/W3DBridgeBuffer.cpp")
+
     return
 
 

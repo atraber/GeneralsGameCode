@@ -27,9 +27,9 @@ set(GAMEENGINEDEVICE_SRC
     Include/W3DDevice/GameClient/W3DAssetManager.h
     Include/W3DDevice/GameClient/W3DAssetManagerExposed.h
     Include/W3DDevice/GameClient/W3DBibBuffer.h
-    Include/W3DDevice/GameClient/W3DBridgeBuffer.h
+#    Include/W3DDevice/GameClient/W3DBridgeBuffer.h
     Include/W3DDevice/GameClient/W3DBufferManager.h
-    Include/W3DDevice/GameClient/W3DCustomEdging.h
+#    Include/W3DDevice/GameClient/W3DCustomEdging.h
     Include/W3DDevice/GameClient/W3DCustomScene.h
     Include/W3DDevice/GameClient/W3DDebugDisplay.h
     Include/W3DDevice/GameClient/W3DDebugIcons.h
@@ -55,7 +55,7 @@ set(GAMEENGINEDEVICE_SRC
 #    Include/W3DDevice/GameClient/W3DShaderManager.h
     Include/W3DDevice/GameClient/W3DShadow.h
     Include/W3DDevice/GameClient/W3DShroud.h
-    Include/W3DDevice/GameClient/W3DStatusCircle.h
+#    Include/W3DDevice/GameClient/W3DStatusCircle.h
 #    Include/W3DDevice/GameClient/W3DTerrainTracks.h
 #    Include/W3DDevice/GameClient/W3DTerrainVisual.h
 #    Include/W3DDevice/GameClient/W3DTreeBuffer.h
@@ -133,8 +133,8 @@ set(GAMEENGINEDEVICE_SRC
     Source/W3DDevice/GameClient/W3DAssetManager.cpp
     Source/W3DDevice/GameClient/W3DAssetManagerExposed.cpp
     Source/W3DDevice/GameClient/W3DBibBuffer.cpp
-    Source/W3DDevice/GameClient/W3DBridgeBuffer.cpp
-    Source/W3DDevice/GameClient/W3DCustomEdging.cpp
+#    Source/W3DDevice/GameClient/W3DBridgeBuffer.cpp
+#    Source/W3DDevice/GameClient/W3DCustomEdging.cpp
     Source/W3DDevice/GameClient/W3DDebugDisplay.cpp
     Source/W3DDevice/GameClient/W3DDebugIcons.cpp
     Source/W3DDevice/GameClient/W3DDisplay.cpp
@@ -151,7 +151,7 @@ set(GAMEENGINEDEVICE_SRC
     Source/W3DDevice/GameClient/W3DScene.cpp
 #    Source/W3DDevice/GameClient/W3DShaderManager.cpp
     Source/W3DDevice/GameClient/W3DShroud.cpp
-    Source/W3DDevice/GameClient/W3DStatusCircle.cpp
+#    Source/W3DDevice/GameClient/W3DStatusCircle.cpp
 #    Source/W3DDevice/GameClient/W3DTerrainTracks.cpp
 #    Source/W3DDevice/GameClient/W3DTerrainVisual.cpp
 #    Source/W3DDevice/GameClient/W3DTreeBuffer.cpp
