@@ -79,7 +79,6 @@ class W3DProjectedShadowManager	: public ProjectedShadowManager
 		void flushDecals(W3DShadowTexture *texture, ShadowType type);	///<empty queue by rendering all decals with given texture
 
 	private:
-		Int renderProjectedTerrainShadow(W3DProjectedShadow *shadow, AABoxClass &box);	///<render shadow on map terrain.
 		void updateShadowNumbers(ShadowType shadowType, Int addNum);
 
 	private:

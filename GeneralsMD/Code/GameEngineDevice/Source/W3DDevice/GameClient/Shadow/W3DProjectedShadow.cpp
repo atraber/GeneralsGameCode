@@ -76,16 +76,6 @@ Maybe project onto a deformed terrain patch that molds to trays/bibs.
 
 W3DProjectedShadowManager *TheW3DProjectedShadowManager=nullptr;	//global singleton
 ProjectedShadowManager	*TheProjectedShadowManager;				//global singleton with simpler interface.
-extern const FrustumClass *shadowCameraFrustum;	//defined in W3DShadow.
-///@todo: Externs from volumetric shadow renderer - these need to be moved into W3DBufferManager
-extern LPDIRECT3DVERTEXBUFFER8 shadowVertexBufferD3D;		///<D3D vertex buffer
-extern LPDIRECT3DINDEXBUFFER8	shadowIndexBufferD3D;	///<D3D index buffer
-extern int nShadowVertsInBuf;	//model vetices in vertex buffer
-extern int nShadowStartBatchVertex;
-extern int nShadowIndicesInBuf;	//model vetices in vertex buffer
-extern int nShadowStartBatchIndex;
-extern int SHADOW_VERTEX_SIZE;
-extern int SHADOW_INDEX_SIZE;
 
 //Global streaming vertex buffer with x,y,z,u,v type.
 struct SHADOW_DECAL_VERTEX	//vertex structure passed to D3D
@@ -339,197 +329,6 @@ void W3DProjectedShadowManager::updateRenderTargetTextures()
 	}
 }
 
-///Renders shadow on part of terrain covered by world-space bounding box.
-Int W3DProjectedShadowManager::renderProjectedTerrainShadow(W3DProjectedShadow *shadow, AABoxClass &box)
-{
-	FF_SITE("W3DProjectedShadow::renderProjTerrainShadow");
-	static	Matrix4x4 mWorld(true);	//initialize to identity matrix
-	struct SHADOW_VOLUME_VERTEX	//vertex structure passed to D3D
-	{
-		float x,y,z;
-	};
-
-	Int i,j,k;
-	UnsignedByte alpha[4];
-	float UA[4], VA[4];
-	Bool flipForBlend;
-
-
-	#define SHADOW_VOLUME_FVF	D3DFVF_XYZ
-
-	if (TheTerrainRenderObject)
-	{
-		WorldHeightMap *hmap=TheTerrainRenderObject->getMap();
-
-		//Find size of heightmap sub-rectangle affected by shadow
-		Real cx=box.Center.X;
-		Real cy=box.Center.Y;
-		Real dx=box.Extent.X;
-		Real dy=box.Extent.Y;
-		Real mapScaleInv=1.0f/MAP_XY_FACTOR;
-		SHADOW_VOLUME_VERTEX* pvVertices;
-		UnsignedShort *pvIndices;
-		LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
-
-		if (!m_pDev)	return 0;
-
-		//Get terrain cell index for area with shadow
-		Int startX=REAL_TO_INT_FLOOR(((cx - dx)*mapScaleInv));
-		Int endX=REAL_TO_INT_CEIL(((cx + dx)*mapScaleInv));
-		Int	startY=REAL_TO_INT_FLOOR(((cy - dy)*mapScaleInv));
-		Int endY=REAL_TO_INT_CEIL(((cy + dy)*mapScaleInv));
-
-		//clip bounds to extents of heightmap
-		startX = __max(startX,0);
-		endX = __min(endX,hmap->getXExtent()-1);
-		startY = __max(startY,0);
-		endY = __min(endY,hmap->getYExtent()-1);
-
-		Int vertsPerRow=endX - startX+1;	//number of cells +1
-		Int vertsPerColumn=endY-startY+1;	//number of cells +1
-
-		if (vertsPerRow == 1 || vertsPerColumn == 1)
-			return 0;	//nothing to render
-
-		Int numVerts = vertsPerRow *vertsPerColumn;	//number of terrain vertices
-
-		if (nShadowVertsInBuf > (SHADOW_VERTEX_SIZE-numVerts))	//check if room for model verts
-		{	//flush the buffer by drawing the contents and re-locking again
-			if (shadowVertexBufferD3D->Lock(0,numVerts*sizeof(SHADOW_VOLUME_VERTEX),DX8_LOCK_CAST(&pvVertices),D3DLOCK_DISCARD) != D3D_OK)
-				return 0;
-			nShadowVertsInBuf=0;
-			nShadowStartBatchVertex=0;
-		}
-		else
-		{	if (shadowVertexBufferD3D->Lock(nShadowVertsInBuf*sizeof(SHADOW_VOLUME_VERTEX),numVerts*sizeof(SHADOW_VOLUME_VERTEX), DX8_LOCK_CAST(&pvVertices),D3DLOCK_NOOVERWRITE) != D3D_OK)
-				return 0;
-		}
-
-		if(pvVertices)
-		{
-			//insert each cell's bottom/left edge vertex
-			for (j=startY; j <= endY; j++)
-			{
-				float ycoord = (float)j * MAP_XY_FACTOR;
-
-				for (i=startX; i <= endX; i++)
-				{
-					pvVertices->x=(float)i*MAP_XY_FACTOR;
-					pvVertices->y=ycoord;
-					pvVertices->z=(float)hmap->getHeight(i,j)*MAP_HEIGHT_SCALE;
-					pvVertices++;
-				}
-			}
-		}
-
-		shadowVertexBufferD3D->Unlock();
-
-		Int numIndex=(endX - startX) * (endY-startY)*6;	//6 indices per terrain cell (2 triangles).
-
-		if (nShadowIndicesInBuf > (SHADOW_INDEX_SIZE-numIndex))	//check if room for model verts
-		{	//flush the buffer by drawing the contents and re-locking again
-			if (shadowIndexBufferD3D->Lock(0,numIndex*sizeof(short),DX8_LOCK_CAST(&pvIndices),D3DLOCK_DISCARD) != D3D_OK)
-				return 0;
-			nShadowIndicesInBuf=0;
-			nShadowStartBatchIndex=0;
-		}
-		else
-		{	if (shadowIndexBufferD3D->Lock(nShadowIndicesInBuf*sizeof(short),numIndex*sizeof(short), DX8_LOCK_CAST(&pvIndices),D3DLOCK_NOOVERWRITE) != D3D_OK)
-				return 0;
-		}
-
-		if(pvIndices)
-		{		//fill each cell's vertex indices
-				Int rowStart;
-				for (j=startY,rowStart=0; j<endY; j++,rowStart+=vertsPerRow)
-				{
-					for (i=rowStart,k=startX; k<endX; i++,k++)
-					{	///@todo: Fix this to deal with flipped triangles
-						hmap->getAlphaUVData(k, j, UA, VA, alpha, &flipForBlend);
-/*						if (flipForBlend)
-						{	pvIndices[0]=i;
-							pvIndices[1]=i+1;
-							pvIndices[2]=i+vertsPerRow;
-							pvIndices[3]=i+vertsPerRow;
-							pvIndices[4]=i+1;
-							pvIndices[5]=i+vertsPerRow+1;
-						}
-						else
-						{	pvIndices[0]=i+vertsPerRow;
-							pvIndices[4]=pvIndices[1]=i;
-							pvIndices[3]=pvIndices[2]=i+vertsPerRow+1;
-							pvIndices[5]=i+1;
-						}*/
-						///@todo: fix the winding order in heightmap to be in strip order like above!
-						if (flipForBlend)
-						{	pvIndices[0]=i+1;
-							pvIndices[1]=i+vertsPerRow;
-							pvIndices[2]=i;
-							pvIndices[3]=i+1;
-							pvIndices[4]=i+1+vertsPerRow;
-							pvIndices[5]=i+vertsPerRow;
-						}
-						else
-						{	pvIndices[0]=i;
-							pvIndices[1]=i+1+vertsPerRow;
-							pvIndices[2]=i+vertsPerRow;
-							pvIndices[3]=i;
-							pvIndices[4]=i+1;
-							pvIndices[5]=i+1+vertsPerRow;
-						}
-						pvIndices += 6;
-					}
-				}
-		}
-
-		shadowIndexBufferD3D->Unlock();
-
-		m_pDev->SetIndices(shadowIndexBufferD3D,nShadowStartBatchVertex);
-
-		m_pDev->SetTransform(D3DTS_WORLD,(_D3DMATRIX *)&mWorld);
-
-		m_pDev->SetStreamSource(0,shadowVertexBufferD3D,sizeof(SHADOW_VOLUME_VERTEX));
-		m_pDev->SetVertexShader(SHADOW_VOLUME_FVF);
-
-		Int numPolys = (endX - startX)*(endY - startY)*2;	//2 triangles per cell
-
-		m_pDev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);	//should reject background pixels
-		m_pDev->SetRenderState( D3DRS_STENCILENABLE, TRUE );
-		m_pDev->SetRenderState( D3DRS_STENCILFUNC,     D3DCMP_ALWAYS );
-		m_pDev->SetRenderState( D3DRS_STENCILREF,      0x1 );
-		m_pDev->SetRenderState( D3DRS_STENCILMASK,     0xffffffff );
-		m_pDev->SetRenderState( D3DRS_STENCILWRITEMASK,0xffffffff );
-		m_pDev->SetRenderState( D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP );
-		m_pDev->SetRenderState( D3DRS_STENCILFAIL,  D3DSTENCILOP_KEEP );
-		m_pDev->SetRenderState( D3DRS_STENCILPASS,  D3DSTENCILOP_INCR );
-
-//    m_pDev->SetRenderState( D3DRS_ALPHABLENDENABLE, FALSE );	//useful to see bounds
-		m_pDev->SetRenderState( D3DRS_LIGHTING, FALSE);
-		m_pDev->SetRenderState( D3DRS_SRCBLEND,  D3DBLEND_DESTCOLOR);
-		m_pDev->SetRenderState( D3DRS_DESTBLEND, D3DBLEND_ZERO );
-
-
-		if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
-		{
-			Debug_Statistics::Record_DX8_Polys_And_Vertices(numPolys,numVerts,ShaderClass::_PresetOpaqueShader);
-			DX8Wrapper::Prepare_Direct_Draw("projectedTerrainShadow");
-			m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,nShadowStartBatchIndex,numPolys);
-		}
-
-		m_pDev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);	//should reject background pixels
-		m_pDev->SetRenderState( D3DRS_STENCILENABLE, FALSE );
-//    m_pDev->SetRenderState( D3DRS_ALPHABLENDENABLE, TRUE );
-		m_pDev->SetRenderState( D3DRS_LIGHTING, TRUE);
-
-		nShadowVertsInBuf += numVerts;
-		nShadowStartBatchVertex=nShadowVertsInBuf;
-
-		nShadowIndicesInBuf += numIndex;
-		nShadowStartBatchIndex=nShadowIndicesInBuf;
-		return 1;
-	}
-	return 0;
-}
 
 #if 0
 
@@ -762,7 +561,15 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 
 
 	m_pDev->SetIndices(shadowDecalIndexBufferD3D,nShadowDecalStartBatchVertex);
-	m_pDev->SetTransform(D3DTS_WORLD,(_D3DMATRIX *)&mWorld);
+	// The wrapper's own idea of the world rather than a write straight at the device.
+	// Apply_Render_State_Changes re-sends D3DTS_WORLD only under WORLD_CHANGED, and a
+	// device write does not raise it -- so the device held this identity while the tracked
+	// matrix still said something else, and the next fixed-function draw that did not set
+	// its own world drew at identity. That is the shape that lost the mines and the rotor
+	// discs. Nothing reads the device's world on the routed path below, where the matrix
+	// travels as a vertex-shader constant instead; the fallback branch puts it back for the
+	// one case that still needs it.
+	DX8Wrapper::Set_World_Identity();
 
 	m_pDev->SetStreamSource(0,shadowDecalVertexBufferD3D,sizeof(SHADOW_DECAL_VERTEX));
 
@@ -795,6 +602,10 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 		// it returns early because no render state changed. Two consecutive decal batches
 		// sharing a texture, material and shader do exactly that.
 		DX8Wrapper::Force_Fixed_Function_Pipeline();
+		// ...and with no vertex shader bound, D3DTS_WORLD is consulted again. This draw never
+		// reaches an Apply, so the identity Set_World_Identity recorded has to be put on the
+		// device here, or the decal is transformed by whatever mesh drew last.
+		DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD, decalWorld);
 	}
 
 //Hard Shadows using stencil
@@ -1406,8 +1217,6 @@ Int W3DProjectedShadowManager::renderShadows(RenderInfoClass & rinfo, Bool decal
 		return	projectionCount;	//there are no shadows to render.
 
 	W3DProjectedShadow *shadow;
-	static AABoxClass aaBox;
-	static SphereClass sphere;
 
 	//According to Nvidia there's a D3D bug that happens if you don't start with a
 	//new dynamic VB each frame - so we force a DISCARD by overflowing the counter.
@@ -1449,82 +1258,30 @@ Int W3DProjectedShadowManager::renderShadows(RenderInfoClass & rinfo, Bool decal
 					continue;
 				}
 
-				//First test if shadow is visible on screen
-				sphere=shadow->m_shadowTexture[0]->getBoundingSphere();
-				sphere.Center += shadow->m_robj->Get_Position();
-
-				CollisionMath::OverlapType result=CollisionMath::Overlap_Test(*shadowCameraFrustum,sphere);
-				if (result == CollisionMath::OVERLAPPED)
-				{	//do a more accurate test against bounding box.
-					aaBox=shadow->m_shadowTexture[0]->getBoundingBox();
-					aaBox.Translate(shadow->m_robj->Get_Position());	//translate bounding box to world space.
-					if (CollisionMath::Overlap_Test(*shadowCameraFrustum,aaBox) == CollisionMath::OUTSIDE)
-						continue;
-				}
-				else
-				if (result == CollisionMath::OUTSIDE)
-					continue;
-
-				//Shadow is visible on screen.  Figure out which visible objects it may affect.
-
-				//Check if bounding sphere was inside so bounding box never initialized
-				if (result == CollisionMath::INSIDE)
-				{		aaBox=shadow->m_shadowTexture[0]->getBoundingBox();
-						aaBox.Translate(shadow->m_robj->Get_Position());	//translate bounding box to world space.
-				}
-
+				// SHADOW_PROJECTION used to be handled here: the caster's silhouette was projected
+				// onto the terrain through a stencil pass, and onto every object the projection
+				// touched. It was the last stencil code in this file and the last of its calls
+				// straight at the device -- none of which any replay could reach, because nothing
+				// declares the type. Scanning every .big in the install finds SHADOW_VOLUME 1244
+				// times and SHADOW_DECAL 283, and SHADOW_PROJECTION not once, in object INIs or in
+				// map INIs. Converting a path that cannot be observed is how the D3DRS_ZBIAS
+				// regression happened; deleting it is the version of that decision that can be
+				// checked, because the check is that nothing changes.
+				//
+				// addShadow upstream still accepts the type and still builds the shadow texture, so
+				// say so once rather than dropping the shadow silently if a mod ever asks for one.
+#ifdef RTS_DEBUG
 				if (shadow->m_type == SHADOW_PROJECTION)
 				{
-					//build inverse camera/view transforms needed for projection
-					shadow->updateProjectionParameters(rinfo.Camera.Get_Transform());
-					TexProjectClass *projector=shadow->getShadowProjector();
-
-					//terrain is always visible and affected by all shadows so must render
-					projector->Peek_Material_Pass()->Install_Materials();
-					DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
-					if (renderProjectedTerrainShadow(shadow, aaBox))
-						projectionCount++;
-					projector->Peek_Material_Pass()->UnInstall_Materials();
-
-					SimpleObjectIterator *iter;
-					Object *obj;
-
-					iter = ThePartitionManager->iterateObjectsInRange((const Coord3D*)&sphere.Center,sphere.Radius, FROM_CENTER_3D);
-					MemoryPoolObjectHolder hold( iter );
-
-					AABoxIntersectionTestClass boxtest(aaBox,COLL_TYPE_ALL);
-
-					for( obj = iter->first(); obj; obj = iter->next() )
+					static Bool reportedProjection = FALSE;
+					if (!reportedProjection)
 					{
-							Drawable *draw = obj->getDrawable();
-
-							for (DrawModule ** dm = draw->getDrawModules(); *dm; ++dm)
-							{
-								const ObjectDrawInterface* di = (*dm)->getObjectDrawInterface();
-								if (di)
-								{
-									W3DModelDraw *w3dDraw= (W3DModelDraw *)di;
-									RenderObjClass *robj=nullptr;
-
-									///@todo: don't apply shadows to translcuent objects unless they are MOBILE - hack to get tanks to work.
-									if ((robj=w3dDraw->getRenderObject()) != nullptr && (!robj->Is_Alpha() || !obj->isKindOf(KINDOF_IMMOBILE)) && robj != shadow->m_robj && robj->Is_Really_Visible())
-									{
-											//do a more accurate test against W3D render bounding boxes.
-											if (robj->Intersect_AABox(boxtest))
-											{
-												//Shadow reached a visible object so it needs to be rendered with shadow applied.
-												rinfo.Push_Material_Pass(projector->Peek_Material_Pass());
-												rinfo.Push_Override_Flags(RenderInfoClass::RINFO_OVERRIDE_ADDITIONAL_PASSES_ONLY);
-												robj->Render(rinfo);	//WW3D::Render(*robj,rinfo);
-												rinfo.Pop_Override_Flags();
-												rinfo.Pop_Material_Pass();
-												projectionCount++;	//keep track of number of shadow projections
-											}
-									}
-								}
-							}
+						reportedProjection = TRUE;
+						WWDEBUG_SAY(("SHADOW_PROJECTION asked for by %s -- the projection renderer was removed, so no shadow is drawn.",
+							shadow->m_robj ? shadow->m_robj->Get_Name() : "(no render object)"));
 					}
 				}
+#endif
 			}
 		}
 
