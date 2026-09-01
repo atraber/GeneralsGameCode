@@ -3036,19 +3036,23 @@ Real WaterRenderObjClass::getWaterHeight(Real x, Real y)
 //-------------------------------------------------------------------------------------------------
 void WaterRenderObjClass::drawRiverWater(PolygonTrigger *pTrig)
 {
-	// The last render-path caller of the full invalidation, and it stays because it has
-	// not been measured. Every other one was retired on evidence: the device read back,
-	// at that site, holding exactly what the wrapper expected. This site never ran --
-	// neither gla_midgame nor mines has a river polygon trigger, so renderWater's river
-	// branch was reached zero times in either shadow configuration -- and the note below
-	// is somebody recording that removing it once stopped rivers drawing without ever
-	// finding out why. Converting it would be changing untested code on the strength of
-	// a measurement taken somewhere else.
+	// Measured 2026-09-01 and converted. The full invalidation was the last one left in
+	// the render path, kept only because no scene had ever executed this site: rivers are
+	// a per-trigger map property (PolygonTrigger::isRiver), and neither gla_midgame's
+	// Manic Aggression nor mines' Golden Oasis has one. Homeland Alliance has twelve, so
+	// civ_buildings.rep reaches here -- 20124 and 12528 calls over the two 600-frame
+	// windows -- and the DEVICE STATE AUDIT found the device holding exactly what the
+	// wrapper expected on every one of them: 0 checks wrong, 0 words, with the audit's
+	// own control passing in both windows. So there was nothing here to forget.
 	//
-	// To retire it: play a replay on a map with a river, confirm this site appears in the
-	// DEVICE STATE AUDIT with zero wrong words, then swap it for Invalidate_Cached_Shader
-	// and check the river still draws.
-	DX8Wrapper::Invalidate_Cached_Render_States("drawRiverWater");	///@todo: Figure out why rivers don't draw without reset of all states.
+	// The ///@todo it replaces recorded somebody finding that removing it stopped rivers
+	// drawing, and never finding out why. That is still the risk this change carries, so
+	// it is a frame check and not a formality: frame 900 of civ_buildings.rep frames two
+	// river segments square on, and they have to survive.
+	//
+	// What is kept is the half that was ever load-bearing: the next draw has to re-apply
+	// its shader, because this function goes on to set render states behind Apply's back.
+	DX8Wrapper::Invalidate_Cached_Shader();
 
 	Int rectangleCount = pTrig->getNumPoints()/2;
 	rectangleCount--;
