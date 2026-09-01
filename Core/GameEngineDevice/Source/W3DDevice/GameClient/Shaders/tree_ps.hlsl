@@ -13,6 +13,8 @@
 // The blend state around it is unchanged and still does the work it always did: SRCBLEND_ONE
 // / DSTBLEND_ZERO with the alpha test enabled, i.e. opaque with a cutout.
 
+#include "alphatest.hlsli"
+
 sampler2D TreeSampler   : register(s0);
 sampler2D ShroudSampler : register(s1);
 
@@ -39,5 +41,17 @@ float4 main(float4 color    : COLOR0,
     // touch it -- the fixed-function setup selected CURRENT for stage 1's alpha op. That
     // matters more than it looks: the alpha test runs on this value, so letting the shroud
     // into it would dissolve the leaves of every tree standing in fog.
-    return float4(tex.rgb * color.rgb * shroud, tex.a * color.a);
+    float outAlpha = tex.a * color.a;
+
+    // The cutout that makes a tree a tree rather than a rectangle. W3DTreeBuffer draws
+    // with ALPHATEST_ENABLE (SC_ALPHA_DETAIL), so this stage is what does that work.
+    //
+    // Added on the strength of that declared shader state rather than of a measured
+    // draw: no tree draw appeared in the alpha census on either map measured, which is
+    // unresolved and written up in the Phase 2 alpha test and fog investigation. The clip is a
+    // no-op whenever the constant says discard-nothing, so covering a shader that turns
+    // out never to be alpha-tested costs one instruction, while missing one that is
+    // costs soft-edged foliage that nobody notices.
+    AlphaTest(outAlpha);
+    return float4(tex.rgb * color.rgb * shroud, outAlpha);
 }

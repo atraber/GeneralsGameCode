@@ -5,6 +5,8 @@
 // sampleable, so the lit shaders unpack this instead. Matching unpack lives in the
 // unit / terrain pixel shaders.
 
+#include "alphatest.hlsli"
+
 sampler BaseSampler : register(s0);   // the caster's own texture, for its alpha
 
 // x = alpha below which a texel casts nothing.
@@ -96,6 +98,20 @@ float4 main(PS_INPUT input) : COLOR
 
     // clip() discards only on a negative argument, so a cutoff of 0 discards nothing.
     clip(texAlpha - ShadowCastParams.x);
+
+    // ...and the *scene's* alpha test, which this pass has until now left to the
+    // hardware -- which is exactly what the note on the return value below describes,
+    // and why a cut-out caster works today with ShadowCastParams.x at 0.
+    //
+    // It is also why this pass would have broken first on D3D11, where nothing performs
+    // that stage: a tree billboard would cast its whole rectangle, a wall of shadow
+    // instead of a canopy. This shader has had that failure once already. 143060 draws
+    // in the largest measured window arrive here with the hardware test enabled.
+    //
+    // Tested against texAlpha because that is what the return below writes to alpha, and
+    // the hardware stage tests what the shader wrote. The dithered branch above returns
+    // 1.0 and deliberately does not take part -- see its own note.
+    AlphaTest(texAlpha);
     // Alpha out is the caster's texture alpha, and the depth pass leaves the scene's
     // alpha test alone, so the hardware discards the transparent texels of a cut-out
     // exactly as it does in the visible pass. Writing 1.0 here made a tree billboard

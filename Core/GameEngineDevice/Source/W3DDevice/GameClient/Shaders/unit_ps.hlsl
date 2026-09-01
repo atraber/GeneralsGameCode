@@ -7,6 +7,7 @@
 
 #include "constants.hlsli"
 #include "shadow.hlsli"
+#include "alphatest.hlsli"
 
 sampler BaseSampler : register(s0);
 
@@ -191,5 +192,12 @@ float4 main(PS_INPUT input) : COLOR
     // scaling alpha alone would not dim them. Scale both; for a normal blend the colour
     // scale is harmless because the alpha already governs the result.
     float soft = softParticleFade(input.screenPos);
-    return float4(rgb * soft, texAlpha * diffAlpha * soft);
+
+    // The alpha test, against the alpha this shader is about to write rather than
+    // against the sampled texture alpha -- the hardware stage tests what the shader
+    // returned, so anything else is a different test, and the two would disagree
+    // exactly at the cutout edge where it shows. See alphatest.hlsli.
+    float outAlpha = texAlpha * diffAlpha * soft;
+    AlphaTest(outAlpha);
+    return float4(rgb * soft, outAlpha);
 }

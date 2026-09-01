@@ -20,6 +20,7 @@
 
 #include "constants.hlsli"
 #include "shadow.hlsli"
+#include "alphatest.hlsli"
 
 sampler2D   AlbedoSampler : register(s0);
 sampler2D   OrmSampler    : register(s1);
@@ -700,6 +701,11 @@ float4 main(PS_INPUT input) : COLOR
     // terrain_ps and unit_ps do -- see the note on SHADOW_MIN above for why the space
     // matters as much as the constant. The cloud shade rides along with it, for the
     // same reason and in the same space as the ground it has to agree with.
+    // The alpha test, against the alpha written below. After the PBR_DEBUG_MODE
+    // returns above rather than before them, on purpose: those are diagnostic views and
+    // cutting holes in one would take pixels out of its own legend.
+    float outAlpha = albedoTex.a * diffAlpha;
+    AlphaTest(outAlpha);
     return float4(LinearToSrgb(color) * shadowFill * cloudShade(input.worldPos),
-                  albedoTex.a * diffAlpha);
+                  outAlpha);
 }

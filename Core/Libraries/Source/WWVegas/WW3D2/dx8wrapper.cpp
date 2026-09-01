@@ -4764,6 +4764,40 @@ void DX8Wrapper::Draw(
 	Debug_Note_Alpha_Fog_Draw();
 #endif
 
+	// The alpha test, for the shaders that perform it themselves. See alphatest.hlsli
+	// for the encoding and for why a disabled test is a cutoff that discards nothing
+	// rather than a separate shader permutation.
+	//
+	// Uploaded here rather than in ShaderClass::Apply, which is where the render states
+	// it mirrors are written, for three reasons that each on their own would be enough.
+	// Apply runs only when the shader bits actually changed. The reference is written
+	// from outside it as well -- dx8renderer.cpp scales it by the mesh's alpha override,
+	// after Apply has already run. And a caller that applies its own state and then
+	// draws skips the body of Apply_Render_State_Changes altogether, which is exactly
+	// how the first version of the census came to report no tree draws at all.
+	//
+	// Reading the tracked states at the draw makes every writer of them correct by
+	// construction, with no call-site enumeration to keep up to date. The cost is a
+	// 16-byte memcmp per draw on the unchanged path -- Set_Pixel_Shader_Constant's
+	// shadow cache suppresses the device call.
+	{
+		const bool alphaOn = RenderStates[D3DRS_ALPHATESTENABLE] != 0;
+		const unsigned func = RenderStates[D3DRS_ALPHAFUNC];
+		// Anything this encoding cannot express -- NOTEQUAL, and the compares nothing
+		// sets -- falls through as "discard nothing" and is left to the hardware stage,
+		// which is still enabled. That is a deliberate silent fallback rather than an
+		// assert: it is the safe direction (the shader defers, it does not guess), and
+		// the census is what says whether it is ever taken.
+		const bool expressible = alphaOn &&
+			(func == D3DCMP_GREATEREQUAL || func == D3DCMP_LESSEQUAL);
+		Vector4 alphaTestCtl(0.0f, 1.0f, 0.0f, 0.0f);
+		if (expressible) {
+			alphaTestCtl.X = (float)RenderStates[D3DRS_ALPHAREF] * (1.0f / 255.0f);
+			alphaTestCtl.Y = (func == D3DCMP_GREATEREQUAL) ? 1.0f : -1.0f;
+		}
+		Set_Pixel_Shader_Constant((int)ALPHA_TEST_PS_CONSTANT, &alphaTestCtl, 1);
+	}
+
 	// The one place fixed-function state still has to reach the device: a draw with no
 	// pixel shader on it is a fixed-function draw, and it renders from the combine, the
 	// texgen, the lighting and the material its caller asked for -- all of which have

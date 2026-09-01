@@ -18,6 +18,7 @@
 
 #include "constants.hlsli"
 #include "shadow.hlsli"
+#include "alphatest.hlsli"
 
 sampler BaseSampler   : register(s0);
 sampler DetailSampler : register(s1);
@@ -203,5 +204,10 @@ float4 main(PS_INPUT input) : COLOR
     // See the note in unit_ps: both colour and alpha are scaled so the fade reaches
     // additive draws as well as blended ones.
     float soft = softParticleFade(input.screenPos);
-    return float4(max(rgb, 0.0) * soft, saturate(a) * soft);
+
+    // See the note in unit_ps: tested against the alpha actually written, which here is
+    // the second stage's alpha combine result rather than the base texture's.
+    float outAlpha = saturate(a) * soft;
+    AlphaTest(outAlpha);
+    return float4(max(rgb, 0.0) * soft, outAlpha);
 }

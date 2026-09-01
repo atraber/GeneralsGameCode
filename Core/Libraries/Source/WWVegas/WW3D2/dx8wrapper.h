@@ -80,6 +80,19 @@ const unsigned MAX_VERTEX_SHADER_CONSTANTS=96;
 // keep it above the highest register any pixel shader writes, or
 // Set_Pixel_Shader_Constant memcpys past the array and corrupts adjacent statics.
 const unsigned MAX_PIXEL_SHADER_CONSTANTS=32;
+
+// Alpha test reference and compare direction, for the shaders that do their own cutout.
+// Written once per draw by DX8Wrapper::Draw out of the tracked render states; read by
+// every pixel shader that includes alphatest.hlsli, which declares the matching
+// register. The two have to agree, so change them together.
+//
+// c28 was chosen because it is one of only three registers (c28, c29, c30) that no
+// pixel shader already claims: unit_pbr_ps reaches c25, water_ps c27 and debugtint_ps
+// c31, counting the four registers a float4x4 occupies rather than the one it is
+// declared at. It is inside MAX_PIXEL_SHADER_CONSTANTS, which is what keeps the shadow
+// cache from being written past -- see the warning above.
+const unsigned ALPHA_TEST_PS_CONSTANT=28;
+
 const unsigned MAX_SHADOW_MAPS=1;
 
 enum {
