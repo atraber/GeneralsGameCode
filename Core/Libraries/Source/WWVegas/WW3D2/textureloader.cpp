@@ -505,7 +505,7 @@ IDirect3DTexture8* TextureLoader::Load_Thumbnail(const StringClass& filename, co
 		dest_format,
 		TextureBaseClass::MIP_LEVELS_ALL,
 		D3DPOOL_DEFAULT);
-	DX8CALL(UpdateTexture(sysmem_texture,d3d_texture));
+	GFXCALL(Update_Texture((GfxTexture*)sysmem_texture,(GfxTexture*)d3d_texture));
 	sysmem_texture->Release();
 
 	WWDEBUG_SAY(("Created non-managed texture (%s)",filename));
@@ -1685,7 +1685,7 @@ void TextureLoadTaskClass::Unlock_Surfaces()
 
 #ifndef USE_MANAGED_TEXTURES
 	IDirect3DTexture8* tex = DX8Wrapper::_Create_DX8_Texture(Width, Height, Format, Texture->MipLevelCount,D3DPOOL_DEFAULT);
-	DX8CALL(UpdateTexture(Peek_D3D_Texture(),tex));
+	GFXCALL(Update_Texture((GfxTexture*)Peek_D3D_Texture(),(GfxTexture*)tex));
 	Peek_D3D_Texture()->Release();
 	D3DTexture=tex;
 	WWDEBUG_SAY(("Created non-managed texture (%s)",Texture->Get_Full_Path()));
@@ -2072,7 +2072,7 @@ void CubeTextureLoadTaskClass::Unlock_Surfaces()
 		Texture->MipLevelCount,
 		D3DPOOL_DEFAULT
 	);
-	DX8CALL(UpdateTexture(Peek_D3D_Volume_Texture(),tex));
+	GFXCALL(Update_Texture((GfxTexture*)Peek_D3D_Volume_Texture(),(GfxTexture*)tex));
 	Peek_D3D_Volume_Texture()->Release();
 	D3DTexture=tex;
 	WWDEBUG_SAY(("Created non-managed texture (%s)",Texture->Get_Full_Path()));
@@ -2378,7 +2378,7 @@ void VolumeTextureLoadTaskClass::Unlock_Surfaces()
 
 #ifndef USE_MANAGED_TEXTURES
 	IDirect3DTexture8* tex = DX8Wrapper::_Create_DX8_Volume_Texture(Width, Height, Depth, Format, Texture->MipLevelCount,D3DPOOL_DEFAULT);
-	DX8CALL(UpdateTexture(Peek_D3D_Volume_Texture(),tex));
+	GFXCALL(Update_Texture((GfxTexture*)Peek_D3D_Volume_Texture(),(GfxTexture*)tex));
 	Peek_D3D_Volume_Texture()->Release();
 	D3DTexture=tex;
 	WWDEBUG_SAY(("Created non-managed texture (%s)",Texture->Get_Full_Path()));

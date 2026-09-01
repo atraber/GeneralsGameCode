@@ -805,26 +805,25 @@ WW3DErrorType WW3D::Begin_Render(bool clear,bool clearz,const Vector3 & color, f
 
 	WWPROFILE("WW3D::Begin_Render");
 	WWASSERT(IsInitted);
-	HRESULT hr;
 
 	SNAPSHOT_SAY(("=========================================="));
 	SNAPSHOT_SAY(("========== WW3D::Begin_Render ============"));
 	SNAPSHOT_SAY(("==========================================\n"));
 
-	if (DX8Wrapper::_Get_D3D_Device8() && (hr=DX8Wrapper::_Get_D3D_Device8()->TestCooperativeLevel()) != D3D_OK)
+	if (DX8Wrapper::Gfx != nullptr)
 	{
-        // If the device was lost, do not render until we get it back
-        if( D3DERR_DEVICELOST == hr )
-            return WW3D_ERROR_GENERIC;	//other app has the device
-
-        // Check if the device needs to be reset
-        if( D3DERR_DEVICENOTRESET == hr )
-        {
-            WWDEBUG_SAY(("WW3D::Begin_Render is resetting the device."));
-            DX8Wrapper::Reset_Device();
-        }
-
-		return WW3D_ERROR_GENERIC;
+		const GfxDeviceStatus status = DX8Wrapper::Gfx->Get_Device_Status();
+		if (status != GFX_DEVICE_OK)
+		{
+			// Lost means another application has it; there is nothing to do but wait.
+			// Needs-reset means it can be taken back now.
+			if (status == GFX_DEVICE_NEEDS_RESET)
+			{
+				WWDEBUG_SAY(("WW3D::Begin_Render is resetting the device."));
+				DX8Wrapper::Reset_Device();
+			}
+			return WW3D_ERROR_GENERIC;
+		}
 	}
 
 	// Memory allocation statistics

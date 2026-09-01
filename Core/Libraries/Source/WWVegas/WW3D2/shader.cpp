@@ -998,16 +998,19 @@ void ShaderClass::Apply()
 				DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1);
 				DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAARG1,tex_arg);
 
-				// set stage 2 to do the diffuse op
-				// bypass the wrapper since it only supports 2 texture stages
-				DX8CALL(SetTextureStageState(2,D3DTSS_COLOROP,PricOp));
-				DX8CALL(SetTextureStageState(2,D3DTSS_COLORARG1,D3DTA_CURRENT));
-				DX8CALL(SetTextureStageState(2,D3DTSS_COLORARG2,D3DTA_DIFFUSE));
-				DX8CALL(SetTextureStageState(2,D3DTSS_ALPHAOP,PriaOp));
-				DX8CALL(SetTextureStageState(2,D3DTSS_ALPHAARG1,D3DTA_CURRENT));
-				DX8CALL(SetTextureStageState(2,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE));
-				DX8CALL(SetTextureStageState(2,D3DTSS_TEXCOORDINDEX,D3DTSS_TCI_PASSTHRU));
-				DX8CALL(SetTexture(2,nullptr));
+				// Set stage 2 to do the diffuse op, without tracking it: the two blocks
+				// here are the last fixed-function combiner writes in the engine that do
+				// not go through the tracked setter, and making them tracked would defer
+				// them behind a flush that no draw asks for any more. Through the backend
+				// rather than at a device, which is all this change is.
+				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLOROP,PricOp));
+				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLORARG1,D3DTA_CURRENT));
+				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLORARG2,D3DTA_DIFFUSE));
+				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAOP,PriaOp));
+				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAARG1,D3DTA_CURRENT));
+				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE));
+				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_TEXCOORDINDEX,D3DTSS_TCI_PASSTHRU));
+				GFXCALL(Set_Texture(2,nullptr));
 				kill_stage_2=false;
 				ShaderDirty=true;
 			}
@@ -1049,16 +1052,16 @@ void ShaderClass::Apply()
 	// bypass the wrapper since it only supports 2 texture stages
 	if (voodoo3 && kill_stage_2) {
 		if ((SeccOp!=D3DTOP_DISABLE)&&(SecaOp!=D3DTOP_DISABLE)) {
-			DX8CALL(SetTextureStageState(2,D3DTSS_COLOROP,D3DTOP_SELECTARG1));
-			DX8CALL(SetTextureStageState(2,D3DTSS_COLORARG1,D3DTA_CURRENT));
-			DX8CALL(SetTextureStageState(2,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1));
-			DX8CALL(SetTextureStageState(2,D3DTSS_ALPHAARG1,D3DTA_CURRENT));
+			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLOROP,D3DTOP_SELECTARG1));
+			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLORARG1,D3DTA_CURRENT));
+			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1));
+			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAARG1,D3DTA_CURRENT));
 		} else {
-			DX8CALL(SetTextureStageState(2,D3DTSS_COLOROP,D3DTOP_DISABLE));
-			DX8CALL(SetTextureStageState(2,D3DTSS_ALPHAOP,D3DTOP_DISABLE));
+			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLOROP,D3DTOP_DISABLE));
+			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAOP,D3DTOP_DISABLE));
 		}
-		DX8CALL(SetTextureStageState(2,D3DTSS_TEXCOORDINDEX,D3DTSS_TCI_PASSTHRU));
-		DX8CALL(SetTexture(2,nullptr));
+		GFXCALL(Set_Texture_Stage_State(2,D3DTSS_TEXCOORDINDEX,D3DTSS_TCI_PASSTHRU));
+		GFXCALL(Set_Texture(2,nullptr));
 	}
 
 	if(!diff)

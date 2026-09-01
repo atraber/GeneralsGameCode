@@ -195,7 +195,7 @@ Bool W3DSmudgeManager::captureBackground(SurfaceClass *sceneSurface)
 	if (FAILED(tex->GetSurfaceLevel(0, &dst)) || dst == nullptr)
 		return FALSE;
 
-	const HRESULT hr = dev->StretchRect(src, nullptr, dst, nullptr, D3DTEXF_NONE);
+	const HRESULT hr = DX8Wrapper::Copy_DX8_Surface(src, dst) ? S_OK : E_FAIL;
 	dst->Release();
 
 	if (FAILED(hr))
@@ -269,7 +269,7 @@ Int copyRect(unsigned char *buf, Int bufSize, int oX, int oY, int width, int hei
 	if (!m_pDev)
 		goto error;
 
- 	m_pDev->GetRenderTarget(0,&surface);
+ 	surface = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 
 	if (!surface)
 		goto error;
@@ -422,8 +422,6 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		v[2].color = UNIQUE_COLOR;
 		v[3].color = UNIQUE_COLOR;
 
-		LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
-
 		// Both draws in this function stay on fixed function on purpose. This is not the
 		// render path -- it is the hardware probe that decides whether the smudge feature
 		// works at all, and it works by drawing a known quad, reading the pixels back and
@@ -440,7 +438,7 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		// Force_Fixed_Function_Pipeline.
 		DX8Wrapper::Force_Fixed_Function_Pipeline();
 		DX8Wrapper::Prepare_Direct_Draw("smudge");
-		pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+		DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 		DWORD refData[BLOCK_SIZE*BLOCK_SIZE];
 		memset(refData,0,sizeof(refData));
@@ -487,7 +485,7 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		// Force_Fixed_Function_Pipeline.
 		DX8Wrapper::Force_Fixed_Function_Pipeline();
 		DX8Wrapper::Prepare_Direct_Draw("smudge");
-		pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+		DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 		bufSize=copyRect((unsigned char *)testData,sizeof(testData),0,0,BLOCK_SIZE,BLOCK_SIZE);
 
 		DX8Wrapper::Set_DX8_Texture(0,nullptr);

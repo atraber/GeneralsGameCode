@@ -131,7 +131,7 @@ IDirect3DSurface8 *W3DShaderManager::m_pShadowMapSurface=nullptr;
 IDirect3DSurface8 *W3DShaderManager::m_pShadowMapDepthSurface=nullptr;
 IDirect3DSurface8 *W3DShaderManager::m_shadowSavedRT=nullptr;
 IDirect3DSurface8 *W3DShaderManager::m_shadowSavedDepth=nullptr;
-DWORD W3DShaderManager::m_shadowSavedStates[W3DShaderManager::NUM_SHADOW_SAVED_STATES]={0};
+unsigned W3DShaderManager::m_shadowSavedStates[W3DShaderManager::NUM_SHADOW_SAVED_STATES]={0};
 /*===========================================================================================*/
 /*=========      Screen Shaders	=============================================================*/
 /*===========================================================================================*/
@@ -206,7 +206,6 @@ Bool ScreenDefaultFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
 	if (!tex) return false;
 	if (!set(mode)) return false;
 
-	LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	struct _TRANS_LIT_TEX_VERTEX {
 		D3DXVECTOR4 p;
@@ -244,7 +243,7 @@ Bool ScreenDefaultFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
 	return true;
@@ -370,7 +369,8 @@ HRESULT W3DShaderManager::drawScreenQuad(LPDIRECT3DDEVICE8 dev,
 	if (!DX8Wrapper::Bind_Screen_Quad_Shader())
 		return E_FAIL;   // no vertex shader means no post-process; the caller skips the pass
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	return dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
+	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
+	return S_OK;
 }
 
 class ScreenBloomFilter : public W3DFilterInterface
@@ -495,8 +495,8 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	// Capture the restored back buffer + depth so the composite can return to them
 	// after bouncing through the reduced-resolution bloom targets.
 	IDirect3DSurface8 *backBuf = nullptr, *backDepth = nullptr;
-	dev->GetRenderTarget(0, &backBuf);
-	dev->GetDepthStencilSurface(&backDepth);
+	backBuf = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	backDepth = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 
 	// Scene occupies the tactical viewport sub-rect of its (back-buffer-sized) texture.
 	Int xpos, ypos, width, height;
@@ -676,7 +676,6 @@ Bool ScreenBWFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doE
 	if (!tex) return false;
 	if (!set(mode)) return false;
 
-	LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	struct _TRANS_LIT_TEX_VERTEX {
 		D3DXVECTOR4 p;
@@ -714,7 +713,7 @@ Bool ScreenBWFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doE
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
 	return true;
@@ -868,7 +867,6 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 	if (!tex) return false;
 	if (!set(mode)) return false;
 
-	LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	struct _TRANS_LIT_TEX_VERTEX {
 		D3DXVECTOR4 p;
@@ -930,7 +928,7 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 	DX8Wrapper::Set_DX8_Texture(0,tex);	//previously rendered frame inside this texture
 
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	//Draw normal view blended by current fade level
 	ShaderClass::Invalidate();	//reset DOT3 blend from above.
@@ -942,7 +940,7 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
 
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
 	return true;
@@ -1135,7 +1133,6 @@ Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bo
 	if (!tex) return false;
 	if (!set(mode)) return false;
 
-	LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	struct _TRANS_LIT_TEX_VERTEX {
 		D3DXVECTOR4 p;
@@ -1201,7 +1198,7 @@ Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bo
 //		m_pDev->SetTextureStageState(0,D3DTSS_MINFILTER,D3DTEXF_POINT);
 
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
 	return true;
@@ -1311,7 +1308,6 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 	if (!tex) return false;
 	if (!set(mode)) return false;
 
-	LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	Bool continueEffect = true;
 	struct _TRANS_LIT_TEX_VERTEX {
@@ -1429,7 +1425,7 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAARG2, D3DTA_TEXTURE);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE,true);
 
 	DX8Wrapper::Apply_Render_State_Changes();
@@ -1458,7 +1454,7 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 				}
 			}
 			DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-			pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+			DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 		}
 	}
@@ -2081,7 +2077,8 @@ void W3DShaderManager::init()
 		W3DShaderManager::initUnitShaders();
 
 		//Some of our effects require an offscreen render target, so try creating it here.
-		HRESULT hr=DX8Wrapper::_Get_D3D_Device8()->GetRenderTarget(0,&m_oldRenderSurface);
+		m_oldRenderSurface = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+		HRESULT hr = m_oldRenderSurface ? S_OK : E_FAIL;
 
 		if (hr != S_OK || !m_oldRenderSurface)
 			return;
@@ -2124,7 +2121,8 @@ void W3DShaderManager::init()
 			SAFE_RELEASE(m_renderTexture);
 			SAFE_RELEASE(m_oldRenderSurface);
 		} else {
-			hr = dev->GetDepthStencilSurface(&m_oldDepthSurface);
+			m_oldDepthSurface = DX8Wrapper::Get_DX8_Depth_Target_Surface();
+			hr = m_oldDepthSurface ? S_OK : E_FAIL;
 			if (hr != S_OK)
 			{
 				SAFE_RELEASE(m_resolveSurface);
@@ -2500,7 +2498,7 @@ void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, 
 	// allocated -- which in practice is not black -- and the inspector then paints the
 	// whole viewport as "everything blooms", the most confidently wrong answer it could
 	// give.
-	HRESULT hr = dev->StretchRect(brightSurface, nullptr, m_debugBrightSurface, nullptr, D3DTEXF_NONE);
+	HRESULT hr = DX8Wrapper::Copy_DX8_Surface(brightSurface, m_debugBrightSurface) ? S_OK : E_FAIL;
 	if (FAILED(hr))
 	{
 		static Bool s_reported = FALSE;
@@ -3409,8 +3407,8 @@ void W3DShaderManager::initSsr()
 		return;
 	}
 
-	IDirect3DSurface8 *rt = nullptr;
-	if (FAILED(dev->GetRenderTarget(0, &rt)) || rt == nullptr)
+	IDirect3DSurface8 *rt = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	if (rt == nullptr)
 	{
 		DEBUG_LOG(("SSR: disabled -- no render target to take the screen size from\n"));
 		return;
@@ -3447,8 +3445,8 @@ void W3DShaderManager::initSsr()
 	// the "is the history still black" check never fires to say so.
 	IDirect3DSurface8 *savedRT = nullptr;
 	IDirect3DSurface8 *savedDS = nullptr;
-	dev->GetRenderTarget(0, &savedRT);
-	dev->GetDepthStencilSurface(&savedDS);
+	savedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	savedDS = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_ssrDepthSurface, m_ssrDepthStencil)))
 		DX8Wrapper::Clear(true, true, Vector3(1.0f, 0.0f, 0.0f), 1.0f, 1.0f);   // red = far
 	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_sceneHistorySurface, nullptr)))
@@ -3486,8 +3484,8 @@ void W3DShaderManager::initRefraction()
 	if (dev == nullptr)
 		return;
 
-	IDirect3DSurface8 *rt = nullptr;
-	if (FAILED(dev->GetRenderTarget(0, &rt)) || rt == nullptr)
+	IDirect3DSurface8 *rt = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	if (rt == nullptr)
 		return;
 	D3DSURFACE_DESC desc;
 	rt->GetDesc(&desc);
@@ -3518,8 +3516,8 @@ void W3DShaderManager::initRefraction()
 	// that memory, which is the failure mode the SSR history hit.
 	IDirect3DSurface8 *savedRT = nullptr;
 	IDirect3DSurface8 *savedDS = nullptr;
-	dev->GetRenderTarget(0, &savedRT);
-	dev->GetDepthStencilSurface(&savedDS);
+	savedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	savedDS = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_refractionSurface, nullptr)))
 		DX8Wrapper::Clear(true, false, Vector3(0.0f, 0.0f, 0.0f), 1.0f, 1.0f);
 	DX8Wrapper::Set_DX8_Render_Target(savedRT, savedDS);
@@ -3709,8 +3707,8 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 
 	IDirect3DSurface8 *savedRT = nullptr;
 	IDirect3DSurface8 *savedDS = nullptr;
-	dev->GetRenderTarget(0, &savedRT);
-	dev->GetDepthStencilSurface(&savedDS);
+	savedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	savedDS = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 
 	// No depth buffer: this is a full-surface blit and depth would only constrain it. Setting
 	// the target also resets the viewport to the whole surface, which is what the quad below
@@ -3805,10 +3803,10 @@ void W3DShaderManager::captureRefraction()
 	// Whatever is the render target right now -- the back buffer normally, the filter
 	// chain's texture when bloom is running. Both are correct: it is the surface the
 	// water's own blend is about to read.
-	IDirect3DSurface8 *src = nullptr;
-	if (SUCCEEDED(dev->GetRenderTarget(0, &src)) && src != nullptr)
+	IDirect3DSurface8 *src = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	if (src != nullptr)
 	{
-		dev->StretchRect(src, nullptr, m_refractionSurface, nullptr, D3DTEXF_NONE);
+		DX8Wrapper::Copy_DX8_Surface(src, m_refractionSurface);
 		src->Release();
 	}
 }
@@ -3843,8 +3841,8 @@ void W3DShaderManager::startCameraDepthRendering()
 	// two that could drift apart.
 	m_shadowSavedRT = nullptr;
 	m_shadowSavedDepth = nullptr;
-	dev->GetRenderTarget(0, &m_shadowSavedRT);
-	dev->GetDepthStencilSurface(&m_shadowSavedDepth);
+	m_shadowSavedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	m_shadowSavedDepth = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 
 	if (FAILED(DX8Wrapper::Set_DX8_Render_Target(m_ssrDepthSurface, m_ssrDepthStencil)))
 	{
@@ -3865,7 +3863,7 @@ void W3DShaderManager::startCameraDepthRendering()
 	// value here may well be the sentinel rather than what the scene is drawing with.
 	// Saving that and restoring it would put a poison value on the device.
 	for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
-		dev->GetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], &m_shadowSavedStates[i]);
+		DX8Wrapper::Get_DX8_Render_State(s_shadowSavedStateIds[i], m_shadowSavedStates[i]);
 
 	DX8Wrapper::Set_Shadow_Depth_Pass(true);
 	DX8Wrapper::Set_Depth_Prepass(true);
@@ -3898,7 +3896,7 @@ void W3DShaderManager::captureSceneHistory()
 	IDirect3DSurface8 *src = nullptr;
 	if (SUCCEEDED(m_renderTexture->GetSurfaceLevel(0, &src)) && src != nullptr)
 	{
-		dev->StretchRect(src, nullptr, m_sceneHistorySurface, nullptr, D3DTEXF_NONE);
+		DX8Wrapper::Copy_DX8_Surface(src, m_sceneHistorySurface);
 		src->Release();
 		m_sceneHistoryCaptured = true;
 	}
@@ -3922,10 +3920,10 @@ void W3DShaderManager::captureSceneHistoryFromBackBuffer()
 	if (dev == nullptr)
 		return;
 
-	IDirect3DSurface8 *back = nullptr;
-	if (SUCCEEDED(dev->GetRenderTarget(0, &back)) && back != nullptr)
+	IDirect3DSurface8 *back = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	if (back != nullptr)
 	{
-		dev->StretchRect(back, nullptr, m_sceneHistorySurface, nullptr, D3DTEXF_NONE);
+		DX8Wrapper::Copy_DX8_Surface(back, m_sceneHistorySurface);
 		back->Release();
 		m_sceneHistoryCaptured = true;
 	}
@@ -3941,8 +3939,8 @@ void W3DShaderManager::startShadowMapRendering()
 
 	m_shadowSavedRT = nullptr;
 	m_shadowSavedDepth = nullptr;
-	dev->GetRenderTarget(0, &m_shadowSavedRT);
-	dev->GetDepthStencilSurface(&m_shadowSavedDepth);
+	m_shadowSavedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	m_shadowSavedDepth = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 
 	if (FAILED(DX8Wrapper::Set_DX8_Render_Target(m_pShadowMapSurface, m_pShadowMapDepthSurface)))
 	{
@@ -3963,9 +3961,8 @@ void W3DShaderManager::startShadowMapRendering()
 	// COLORWRITEENABLE is one nothing in a normal scene ever sets again -- so the tracked
 	// value here may well be the sentinel rather than what the scene is drawing with.
 	// Saving that and restoring it would put a poison value on the device.
-	LPDIRECT3DDEVICE8 stateDev = dev;
 	for (Int i = 0; i < NUM_SHADOW_SAVED_STATES; ++i)
-		stateDev->GetRenderState((D3DRENDERSTATETYPE)s_shadowSavedStateIds[i], &m_shadowSavedStates[i]);
+		DX8Wrapper::Get_DX8_Render_State(s_shadowSavedStateIds[i], m_shadowSavedStates[i]);
 
 	DX8Wrapper::Set_Shadow_Depth_Pass(true);
 	// Clear colour so untouched texels read as far (unpack -> depth 1.0 -> lit). R is the
@@ -4207,7 +4204,6 @@ Bool W3DShaderManager::filterSetup(FilterTypes filter, FilterModes mode)
 /*Draws 2 triangles covering the viewport given the current render states*/
 void W3DShaderManager::drawViewport(Int color)
 {
-	LPDIRECT3DDEVICE8 pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	// Untransformed, and carrying the second coordinate set screenquad_vs declares. Both
 	// follow from replacing D3DFVF_XYZRHW: a transformed position is fixed-function only, and
@@ -4256,7 +4252,7 @@ void W3DShaderManager::drawViewport(Int color)
 		return;   // no vertex shader means this pass cannot be drawn at all
 
 	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
-	pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREEN_QUAD_VERTEX));
+	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREEN_QUAD_VERTEX));
 }
 
 // W3DShaderManager::startRenderToTexture =======================================================
@@ -4347,11 +4343,11 @@ IDirect3DTexture8 *W3DShaderManager::endRenderToTexture()
 			// mapped down into m_renderTexture -- which is what every consumer past this
 			// point reads, and which none of them can read in floating point.
 			if (m_hdrResolveSurface != nullptr)
-				DX8Wrapper::_Get_D3D_Device8()->StretchRect(m_hdrRenderSurface, nullptr, m_hdrResolveSurface, nullptr, D3DTEXF_NONE);
+				DX8Wrapper::Copy_DX8_Surface(m_hdrRenderSurface, m_hdrResolveSurface);
 			toneMapSceneToRenderTexture();
 		}
 		else if (m_resolveSurface != nullptr)
-			DX8Wrapper::_Get_D3D_Device8()->StretchRect(m_newRenderSurface, nullptr, m_resolveSurface, nullptr, D3DTEXF_NONE);
+			DX8Wrapper::Copy_DX8_Surface(m_newRenderSurface, m_resolveSurface);
 
 		//assume render target texture will be in stage 0.  Most hardware has "conditional" support for
 		//non-power-of-2 textures so we must force some required states:

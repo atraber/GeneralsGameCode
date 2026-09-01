@@ -1046,12 +1046,10 @@ void RTS3DScene::Render(RenderInfoClass & rinfo)
 			// The camera's Apply set a screen-sized (16:9) viewport; override it to cover
 			// the whole square shadow map, otherwise geometry only fills the top
 			// ~1080 rows and the rest stays cleared (which mis-aligns the sampling).
-			IDirect3DDevice8 *smDev = DX8Wrapper::_Get_D3D_Device8();
-			if (smDev)
 			{
-				D3DVIEWPORT9 smVp = { 0, 0, DX8Wrapper::SHADOW_MAP_SIZE,
+				D3DVIEWPORT8 smVp = { 0, 0, DX8Wrapper::SHADOW_MAP_SIZE,
 									  DX8Wrapper::SHADOW_MAP_SIZE, 0.0f, 1.0f };
-				smDev->SetViewport(&smVp);
+				DX8Wrapper::Set_Viewport(&smVp);
 			}
 			Customized_Render(rinfo);
 			Flush(rinfo);
@@ -1374,7 +1372,7 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 	// Invalidate_Cached_Render_States poisons tracked state with. The same overload in
 	// the volumetric shadow cost every shadow in the frame once, invisibly, when the
 	// read moved from the device to the tracked word and landed on the poison.
-	DWORD	oldColorWriteEnable = 0;
+	unsigned	oldColorWriteEnable = 0;
 	bool	haveOldColorWriteEnable = false;
 	if (clear)
 	{
@@ -1392,7 +1390,7 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 		//disable writes to color buffer
 		if (DX8Wrapper::Get_Current_Caps()->Get_DX8_Caps().PrimitiveMiscCaps & D3DPMISCCAPS_COLORWRITEENABLE)
 		{
-			DX8Wrapper::_Get_D3D_Device8()->GetRenderState(D3DRS_COLORWRITEENABLE, &oldColorWriteEnable);
+			DX8Wrapper::Get_DX8_Render_State(D3DRS_COLORWRITEENABLE, oldColorWriteEnable);
 			haveOldColorWriteEnable = true;
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,0);
 		}
@@ -1423,7 +1421,7 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
 		DX8Wrapper::Prepare_Direct_Draw("sceneOverlayQuad");
-		m_pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREENVERTEX));
+		DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREENVERTEX));
 	}
 
 	// turn off the stencil buffer

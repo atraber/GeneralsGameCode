@@ -2234,8 +2234,8 @@ void HeightMapRenderObjClass::renderTerrainPass(CameraClass *pCamera)
 	// standing on it. There is deliberately no slope-scaled term: it was the larger half of
 	// the punch-through (it grows without bound as a surface turns edge-on to the viewer,
 	// which is exactly when a bridge is seen along its length) and nothing needs it.
-	LPDIRECT3DDEVICE8 shroudDev = DX8Wrapper::_Get_D3D_Device8();
-	DWORD oldSlopeBias = 0, oldConstBias = 0;
+	const bool shroudDev = (DX8Wrapper::Gfx != nullptr);
+	unsigned oldSlopeBias = 0, oldConstBias = 0;
 	if (shroudDev)
 	{
 		const float slopeBias = 0.0f;
@@ -2250,8 +2250,8 @@ void HeightMapRenderObjClass::renderTerrainPass(CameraClass *pCamera)
 		// Safe for these two where it was not for D3DRS_ZBIAS: both are real D3D9 render
 		// states that Set_DX8_Render_State passes straight through, so the device's units
 		// and the wrapper's are the same. See s_shadowSavedStateIds in W3DShaderManager.
-		shroudDev->GetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, &oldSlopeBias);
-		shroudDev->GetRenderState(D3DRS_DEPTHBIAS, &oldConstBias);
+		DX8Wrapper::Get_DX8_Render_State(D3DRS_SLOPESCALEDEPTHBIAS, oldSlopeBias);
+		DX8Wrapper::Get_DX8_Render_State(D3DRS_DEPTHBIAS, oldConstBias);
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_SLOPESCALEDEPTHBIAS, *reinterpret_cast<const DWORD*>(&slopeBias));
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_DEPTHBIAS, *reinterpret_cast<const DWORD*>(&constBias));
 	}

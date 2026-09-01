@@ -560,7 +560,7 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 */
 
 
-	m_pDev->SetIndices(shadowDecalIndexBufferD3D,nShadowDecalStartBatchVertex);
+	DX8Wrapper::Set_DX8_Indices(shadowDecalIndexBufferD3D,nShadowDecalStartBatchVertex);
 	// The wrapper's own idea of the world rather than a write straight at the device.
 	// Apply_Render_State_Changes re-sends D3DTS_WORLD only under WORLD_CHANGED, and a
 	// device write does not raise it -- so the device held this identity while the tracked
@@ -571,7 +571,7 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	// one case that still needs it.
 	DX8Wrapper::Set_World_Identity();
 
-	m_pDev->SetStreamSource(0,shadowDecalVertexBufferD3D,sizeof(SHADOW_DECAL_VERTEX));
+	DX8Wrapper::Set_DX8_Stream_Source(0,shadowDecalVertexBufferD3D,sizeof(SHADOW_DECAL_VERTEX));
 
 	// Through the wrapper rather than at the device, so its idea of what is bound stays
 	// true -- Prepare_Direct_Draw below reads it to decide whether fixed-function state has
@@ -649,7 +649,7 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	{
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(nShadowDecalPolysInBatch,nShadowDecalVertsInBatch,ShaderClass::_PresetOpaqueShader);
 		DX8Wrapper::Prepare_Direct_Draw("shadowDecalFlush");
-		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,nShadowDecalVertsInBatch,nShadowDecalStartBatchIndex,nShadowDecalPolysInBatch);
+		DX8Wrapper::Draw_DX8_Indexed_Primitive(D3DPT_TRIANGLELIST,nShadowDecalStartBatchVertex,0,nShadowDecalVertsInBatch,nShadowDecalStartBatchIndex,nShadowDecalPolysInBatch);
 	}
 
 //	m_pDev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);	//should reject background pixels

@@ -465,7 +465,7 @@ void DX8VertexBufferClass::Create_Vertex_Buffer(UsageType usage)
 	// Invalidate the mesh cache
 	WW3D::_Invalidate_Mesh_Cache();
 
-	ret = DX8Wrapper::_Get_D3D_Device8()->EvictManagedResources();
+	DX8Wrapper::Flush_DX8_Resource_Manager();
 
 	// Try again...
 	ret=DX8Wrapper::_Get_D3D_Device8()->CreateVertexBuffer(

@@ -1373,7 +1373,7 @@ void W3DVolumetricShadow::RenderMeshVolume(Int meshIndex, Int lightIndex, const 
 		return;
 	if (vbSlot->m_VB->m_DX8VertexBuffer->Get_DX8_Vertex_Buffer() != lastActiveVertexBuffer)
 	{	lastActiveVertexBuffer=vbSlot->m_VB->m_DX8VertexBuffer->Get_DX8_Vertex_Buffer();
-		m_pDev->SetStreamSource(0,lastActiveVertexBuffer,
+		DX8Wrapper::Set_DX8_Stream_Source(0,lastActiveVertexBuffer,
 			vbSlot->m_VB->m_DX8VertexBuffer->FVF_Info().Get_FVF_Size());	//12 bytes per vertex.
 	}
 
@@ -1385,13 +1385,13 @@ void W3DVolumetricShadow::RenderMeshVolume(Int meshIndex, Int lightIndex, const 
 
 	DEBUG_ASSERTCRASH(ibSlot->m_size >= numIndex,("Overflowing Shadow Index Buffer Slot"));
 
-	m_pDev->SetIndices(ibSlot->m_IB->m_DX8IndexBuffer->Get_DX8_Index_Buffer(),vbSlot->m_start);
+	DX8Wrapper::Set_DX8_Indices(ibSlot->m_IB->m_DX8IndexBuffer->Get_DX8_Index_Buffer(),vbSlot->m_start);
 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(numPolys,numVerts,ShaderClass::_PresetOpaqueShader);
 		DX8Wrapper::Prepare_Direct_Draw("volumetricShadow");
-		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,ibSlot->m_start,numPolys);
+		DX8Wrapper::Draw_DX8_Indexed_Primitive(D3DPT_TRIANGLELIST,vbSlot->m_start,0,numVerts,ibSlot->m_start,numPolys);
 	}
 
 }
@@ -1482,7 +1482,7 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 
 	shadowIndexBufferD3D->Unlock();
 
-	m_pDev->SetIndices(shadowIndexBufferD3D,nShadowStartBatchVertex);
+	DX8Wrapper::Set_DX8_Indices(shadowIndexBufferD3D,nShadowStartBatchVertex);
 
 	D3DMATRIX dxmWorld = To_D3DMATRIX(*meshXform);
 	// Tracked and device both: Apply_Render_State_Changes re-sends D3DTS_WORLD only under
@@ -1494,7 +1494,7 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 	DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD,dxmWorld);
 
 	if (shadowVertexBufferD3D != lastActiveVertexBuffer)
-	{	m_pDev->SetStreamSource(0,shadowVertexBufferD3D,sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX));
+	{	DX8Wrapper::Set_DX8_Stream_Source(0,shadowVertexBufferD3D,sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX));
 		lastActiveVertexBuffer = shadowVertexBufferD3D;
 	}
 
@@ -1502,7 +1502,7 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 	{
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(numPolys,numVerts,ShaderClass::_PresetOpaqueShader);
 		DX8Wrapper::Prepare_Direct_Draw("volumetricShadow");
-		m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,nShadowStartBatchIndex,numPolys);
+		DX8Wrapper::Draw_DX8_Indexed_Primitive(D3DPT_TRIANGLELIST,nShadowStartBatchVertex,0,numVerts,nShadowStartBatchIndex,numPolys);
 	}
 
 	nShadowVertsInBuf += numVerts;
@@ -1645,7 +1645,7 @@ void W3DVolumetricShadow::RenderMeshVolumeBounds(Int meshIndex, Int lightIndex, 
 
 	shadowIndexBufferD3D->Unlock();
 
-	m_pDev->SetIndices(shadowIndexBufferD3D,nShadowStartBatchVertex);
+	DX8Wrapper::Set_DX8_Indices(shadowIndexBufferD3D,nShadowStartBatchVertex);
 
 
 	//todo: replace this with mesh transform
@@ -1659,11 +1659,11 @@ void W3DVolumetricShadow::RenderMeshVolumeBounds(Int meshIndex, Int lightIndex, 
 	DX8Wrapper::Set_Transform(D3DTS_WORLD,dxmWorld);
 	DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD,dxmWorld);
 
-	m_pDev->SetStreamSource(0,shadowVertexBufferD3D,sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX));
+	DX8Wrapper::Set_DX8_Stream_Source(0,shadowVertexBufferD3D,sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX));
 	DX8Wrapper::Set_Vertex_Shader(SHADOW_DYNAMIC_VOLUME_FVF);
 
 	DX8Wrapper::Prepare_Direct_Draw("volumetricShadow");
-	m_pDev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST,0,numVerts,nShadowStartBatchIndex,numPolys);
+	DX8Wrapper::Draw_DX8_Indexed_Primitive(D3DPT_TRIANGLELIST,nShadowStartBatchVertex,0,numVerts,nShadowStartBatchIndex,numPolys);
 
 	nShadowVertsInBuf += numVerts;
 	nShadowStartBatchVertex=nShadowVertsInBuf;
@@ -3429,7 +3429,7 @@ void W3DVolumetricShadowManager::renderStencilShadows()
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
 		DX8Wrapper::Prepare_Direct_Draw("volumetricShadow");
-		m_pDev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANSLITVERTEX));
+		DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANSLITVERTEX));
 	}
 
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);
@@ -3516,7 +3516,7 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 		// gone, and no census could see it because the draws were still submitted. The
 		// render path no longer poisons anything, but a sentinel a caller can also
 		// produce is a trap whether or not it is currently armed.
-		DWORD oldColorWriteEnable = 0;
+		unsigned oldColorWriteEnable = 0;
 		bool  haveOldColorWriteEnable = false;
 
 	#ifdef SV_DEBUG
@@ -3534,7 +3534,7 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 			// unit translation the way D3DRS_ZBIAS does -- but that is a second change riding
 			// on the first, in the one place where getting it wrong is invisible to every
 			// census. It stays on the device until somebody has a reason to move it.
-			DX8Wrapper::_Get_D3D_Device8()->GetRenderState(D3DRS_COLORWRITEENABLE, &oldColorWriteEnable);
+			DX8Wrapper::Get_DX8_Render_State(D3DRS_COLORWRITEENABLE, oldColorWriteEnable);
 			haveOldColorWriteEnable = true;
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,0);
 		}

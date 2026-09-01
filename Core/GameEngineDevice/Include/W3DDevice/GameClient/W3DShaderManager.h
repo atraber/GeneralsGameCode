@@ -231,7 +231,7 @@ protected:
 	static IDirect3DSurface8 *m_pShadowMapDepthSurface;	///<the shadow map's own depth buffer
 	static IDirect3DSurface8 *m_shadowSavedRT;		///<render target saved across the shadow depth pass
 	static IDirect3DSurface8 *m_shadowSavedDepth;	///<depth surface saved across the shadow depth pass
-	static DWORD m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
+	static unsigned m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
 	// Screen-space reflections. The depth target is the shadow map's arrangement at
 	// screen size and from the camera; the history texture is last frame's scene, which
 	// is what the rays actually read (this frame's is the live render target).

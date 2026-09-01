@@ -461,6 +461,47 @@ public:
 	static void Set_DX8_Clip_Plane(DWORD Index, CONST float* pPlane);
 	static void Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURESTAGESTATETYPE state, unsigned value);
 	static void Set_DX8_Texture(unsigned int stage, IDirect3DBaseTexture8* texture);
+
+	/*
+	** The direct drawers' entry points.
+	**
+	** A handful of subsystems build their own vertex and index buffers and submit them
+	** themselves -- the water grid, the shadow volumes, the shadow decal batch, the
+	** screen-space filters, the snow. They announce it with Prepare_Direct_Draw, and they
+	** are not going to stop, because what they draw does not fit the mesh path. What they
+	** must not do is reach around the wrapper to a device, which is a hole in the seam and
+	** is also how the base-vertex-index and stream-binding regressions happened. These are
+	** the same submissions, through the same backend as every other draw in the game.
+	*/
+	static void Set_DX8_Stream_Source(unsigned stream, IDirect3DVertexBuffer8* buffer, unsigned stride);
+	static void Set_DX8_Indices(IDirect3DIndexBuffer8* buffer, int base_vertex_index);
+	static void Draw_DX8_Indexed_Primitive(unsigned primitive_type, int base_vertex_index,
+					unsigned min_vertex_index, unsigned vertex_count,
+					unsigned start_index, unsigned primitive_count);
+	static void Draw_DX8_Primitive(unsigned primitive_type, unsigned start_vertex,
+					unsigned primitive_count);
+	static void Draw_DX8_Primitive_UP(unsigned primitive_type, unsigned primitive_count,
+					const void* vertex_data, unsigned vertex_stride);
+
+	/*
+	** Device reads for the callers that genuinely need one. A tracked read is not a device
+	** read -- see the colour-write and ZBIAS traps in device-escape-classification -- so
+	** these stay reads, they just stop being reads of a D3D device in particular.
+	*/
+	static bool Get_DX8_Render_State(unsigned state, unsigned& value);
+	static IDirect3DSurface8* Get_DX8_Render_Target_Surface(unsigned index);
+	static IDirect3DSurface8* Get_DX8_Depth_Target_Surface();
+	static bool Get_DX8_Viewport(D3DVIEWPORT8& viewport);
+	static bool Copy_DX8_Surface(IDirect3DSurface8* source, IDirect3DSurface8* dest);
+
+	/*
+	** Whether the backend is in a state to be drawn to. Four subsystems check this before
+	** touching the terrain, the shroud or a view, and all four used to ask a D3D9 device
+	** whether it had been taken away by another application. That question has a
+	** D3D9-shaped answer and a general one, and this is the general one: false means do
+	** not draw this frame.
+	*/
+	static bool Is_Device_Ready() { return Gfx != nullptr && Gfx->Get_Device_Status() == GFX_DEVICE_OK; }
 	static void Set_Light_Environment(LightEnvironmentClass* light_env);
 	static LightEnvironmentClass* Get_Light_Environment() { return Light_Environment; }
 	static void Set_Fog(bool enable, const Vector3 &color, float start, float end);
@@ -1964,6 +2005,73 @@ WWINLINE void DX8Wrapper::Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigne
 		GFXCALL(Set_Render_State( (unsigned)state, value ));
 	}
 	DX8_RECORD_RENDER_STATE_CHANGE();
+}
+
+WWINLINE void DX8Wrapper::Set_DX8_Stream_Source(unsigned stream, IDirect3DVertexBuffer8* buffer, unsigned stride)
+{
+	GFXCALL(Set_Vertex_Stream(stream, (GfxVertexBuffer*)buffer, stride));
+}
+
+WWINLINE void DX8Wrapper::Set_DX8_Indices(IDirect3DIndexBuffer8* buffer, int base_vertex_index)
+{
+	GFXCALL(Set_Index_Buffer((GfxIndexBuffer*)buffer, base_vertex_index));
+}
+
+WWINLINE void DX8Wrapper::Draw_DX8_Indexed_Primitive(unsigned primitive_type, int base_vertex_index,
+	unsigned min_vertex_index, unsigned vertex_count, unsigned start_index, unsigned primitive_count)
+{
+	GFXCALL(Draw_Indexed(primitive_type, base_vertex_index, min_vertex_index, vertex_count,
+		start_index, primitive_count));
+}
+
+WWINLINE void DX8Wrapper::Draw_DX8_Primitive(unsigned primitive_type, unsigned start_vertex,
+	unsigned primitive_count)
+{
+	GFXCALL(Draw(primitive_type, start_vertex, primitive_count));
+}
+
+WWINLINE void DX8Wrapper::Draw_DX8_Primitive_UP(unsigned primitive_type, unsigned primitive_count,
+	const void* vertex_data, unsigned vertex_stride)
+{
+	GFXCALL(Draw_Up(primitive_type, primitive_count, vertex_data, vertex_stride));
+}
+
+WWINLINE bool DX8Wrapper::Get_DX8_Render_State(unsigned state, unsigned& value)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Get_Render_State(state, value);
+}
+
+WWINLINE IDirect3DSurface8* DX8Wrapper::Get_DX8_Render_Target_Surface(unsigned index)
+{
+	if (Gfx == nullptr) return nullptr;
+	return (IDirect3DSurface8*)Gfx->Get_Render_Target(index);
+}
+
+WWINLINE IDirect3DSurface8* DX8Wrapper::Get_DX8_Depth_Target_Surface()
+{
+	if (Gfx == nullptr) return nullptr;
+	return (IDirect3DSurface8*)Gfx->Get_Depth_Target();
+}
+
+WWINLINE bool DX8Wrapper::Copy_DX8_Surface(IDirect3DSurface8* source, IDirect3DSurface8* dest)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Copy_Surface((GfxSurface*)source, nullptr, (GfxSurface*)dest, nullptr);
+}
+
+WWINLINE bool DX8Wrapper::Get_DX8_Viewport(D3DVIEWPORT8& viewport)
+{
+	if (Gfx == nullptr) return false;
+	GfxViewport vp;
+	if (!Gfx->Get_Viewport(vp)) return false;
+	viewport.X = vp.X;
+	viewport.Y = vp.Y;
+	viewport.Width = vp.Width;
+	viewport.Height = vp.Height;
+	viewport.MinZ = vp.MinZ;
+	viewport.MaxZ = vp.MaxZ;
+	return true;
 }
 
 WWINLINE void DX8Wrapper::Set_DX8_Clip_Plane(DWORD Index, CONST float* pPlane)

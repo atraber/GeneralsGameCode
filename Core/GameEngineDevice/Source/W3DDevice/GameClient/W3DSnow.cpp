@@ -333,7 +333,7 @@ flush_particles:
 			// goes away entirely.
 			DX8Wrapper::Force_Fixed_Function_Pipeline();
 			DX8Wrapper::Prepare_Direct_Draw("snow");
-			DX8Wrapper::_Get_D3D_Device8()->DrawPrimitive( D3DPT_POINTLIST, m_dwBase, numberInBatch);
+			DX8Wrapper::Draw_DX8_Primitive( D3DPT_POINTLIST, m_dwBase, numberInBatch);
 			totalPart -= numberInBatch;
 			m_dwBase += numberInBatch;
 		}
@@ -451,7 +451,7 @@ void W3DSnowManager::render(RenderInfoClass &rinfo)
     DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSCALE_B,  FtoDW(0.00f) );
     DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSCALE_C,  FtoDW(1.00f) );
 
-	DX8Wrapper::_Get_D3D_Device8()->SetStreamSource( 0, m_VertexBufferD3D, sizeof(POINTVERTEX) );
+	DX8Wrapper::Set_DX8_Stream_Source( 0, m_VertexBufferD3D, sizeof(POINTVERTEX) );
     DX8Wrapper::Set_Vertex_Shader( D3DFVF_POINTVERTEX );
 	m_dwBase = SNOW_BUFFER_SIZE;	//start with a new vertex buffer each frame.
 
