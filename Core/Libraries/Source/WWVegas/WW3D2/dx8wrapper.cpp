@@ -1576,6 +1576,7 @@ static unsigned s_alphaOff = 0;
 static unsigned s_fogOn = 0;
 static unsigned s_fogOff = 0;
 static unsigned s_fogGlobalOn = 0;
+static unsigned s_fogUnknown = 0;
 static int s_alphaFogFrames = 0;
 
 void DX8Wrapper::Debug_Note_Alpha_Fog_Draw()
@@ -1584,7 +1585,15 @@ void DX8Wrapper::Debug_Note_Alpha_Fog_Draw()
 	// census of what the renderer asked the hardware to do, and the tracked array is
 	// where ShaderClass::Apply put it. Whether the device agrees is a different question
 	// and already has its own instrument (Debug_Audit_Invalidation).
-	if (RenderStates[D3DRS_FOGENABLE]) ++s_fogOn; else ++s_fogOff;
+	// 0x12345678 is Invalidate_Cached_Render_States' "the wrapper claims nothing about
+	// this word" sentinel, not a value. Reading it as a boolean makes it true, and this
+	// census duly reported fog enabled on 100% of draws the moment the write that kept
+	// the word fresh was deleted. A tracked read is not a device read; see
+	// the device escape classification.
+	const unsigned fogWord = RenderStates[D3DRS_FOGENABLE];
+	if (fogWord == 0x12345678) ++s_fogUnknown;
+	else if (fogWord) ++s_fogOn;
+	else ++s_fogOff;
 	if (FogEnable) ++s_fogGlobalOn;
 
 	const bool on = RenderStates[D3DRS_ALPHATESTENABLE] != 0;
@@ -1654,10 +1663,11 @@ void DX8Wrapper::Debug_Report_Alpha_Fog()
 	// control rather than a table. The global flag is reported beside the render state
 	// because they can disagree: ShaderClass::Apply gates the state on the flag, so a
 	// nonzero global with a zero state would mean the caps check turned it off.
-	const unsigned allFog = s_fogOn + s_fogOff;
-	WWDEBUG_SAY(("FOG CENSUS over 600 frames: %u of %u draws had D3DRS_FOGENABLE set; "
-				 "DX8Wrapper's global fog flag was on for %u of them",
-		s_fogOn, allFog, s_fogGlobalOn));
+	const unsigned allFog = s_fogOn + s_fogOff + s_fogUnknown;
+	WWDEBUG_SAY(("FOG CENSUS over 600 frames: %u of %u draws had D3DRS_FOGENABLE set "
+				 "(%u more the wrapper claimed nothing about); DX8Wrapper's global fog "
+				 "flag was on for %u of them",
+		s_fogOn, allFog, s_fogUnknown, s_fogGlobalOn));
 
 	s_alphaGroupCount = 0;
 	s_alphaDropped = 0;
@@ -1666,6 +1676,7 @@ void DX8Wrapper::Debug_Report_Alpha_Fog()
 	s_fogOn = 0;
 	s_fogOff = 0;
 	s_fogGlobalOn = 0;
+	s_fogUnknown = 0;
 }
 
 void DX8Wrapper::Debug_Report_Frame_Timing()
@@ -2614,6 +2625,23 @@ void DX8Wrapper::Set_Default_Global_Render_States()
 	Set_DX8_Render_State(D3DRS_RANGEFOGENABLE, (caps.RasterCaps & D3DPRASTERCAPS_FOGRANGE) ? TRUE : FALSE);
 	Set_DX8_Render_State(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
 	Set_DX8_Render_State(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
+	// ...and fog itself off, which nothing else says any more.
+	//
+	// ShaderClass::Apply used to write this on every shader change, and that is what
+	// re-established it after Invalidate_Cached_Render_States poisoned the tracked word:
+	// the poison does not compare equal to FALSE, so the write reached the device. That
+	// block is gone -- fog is dead, see the note there -- and without this line the
+	// device's fog state would rest on the D3D9 default rather than on anything the
+	// engine said. The default is FALSE, so nothing moved; but the three states above
+	// have been asserted here since the port and it makes no sense for the one that
+	// decides whether any of them matter to be the one left to chance.
+	//
+	// Here rather than in the invalidation, which was the first attempt: this function
+	// runs once per device with the device up, whereas the invalidation is reached from
+	// DX8Wrapper::Init before the device exists (where the same write null-dereferenced)
+	// and otherwise only from Reset_Device. Note DX8Wrapper::Apply_Default_State, which
+	// looks like it does this job, has no callers at all.
+	Set_DX8_Render_State(D3DRS_FOGENABLE, FALSE);
 	Set_DX8_Render_State(D3DRS_SPECULARMATERIALSOURCE, D3DMCS_MATERIAL);
 	Set_DX8_Render_State(D3DRS_COLORVERTEX, TRUE);
 	Set_DX8_Render_State(D3DRS_ZBIAS,0);

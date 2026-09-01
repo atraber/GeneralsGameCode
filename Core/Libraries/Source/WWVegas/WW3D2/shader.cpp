@@ -541,44 +541,40 @@ void ShaderClass::Apply()
 			return;
 	}
 
+	// FOG -- deleted rather than ported to the shaders.
+	//
+	// Fixed-function fog is the other D3D9 stage with no D3D11 equivalent: D3D9 applies
+	// it downstream of the pixel shader, so it fogged programmable output too, and on
+	// D3D11 every pixel shader would have had to fog itself. That is the same shape of
+	// work as the alpha test and the same silent failure mode.
+	//
+	// It turned out not to be work at all. Measured before touching anything, over six
+	// 600-frame windows on two scenes and both shadow configurations -- 5.4M draws --
+	// **not one draw had D3DRS_FOGENABLE set**, and DX8Wrapper's global fog flag was
+	// never on either. See the Phase 2 alpha test and fog investigation for the numbers.
+	//
+	// The reason is one level up and nothing to do with the render states: SceneClass::
+	// Set_Fog_Enable has no callers in the game, so SceneClass::FogEnabled is false from
+	// its constructor onward and RTS3DScene::Render passes false into DX8Wrapper::Set_Fog
+	// once per scene. This block therefore always took its else branch and wrote
+	// FOGENABLE FALSE. That one write is kept, moved to where it belongs:
+	// DX8Wrapper::Set_Default_Global_Render_States, beside the three other fog states
+	// the port already asserts once per device.
+	//
+	// Worth stating because the obvious guess is wrong: the fog machinery *is* fully
+	// configured. dx8wrapper.cpp sets D3DRS_FOGVERTEXMODE to D3DFOG_LINEAR and
+	// D3DRS_RANGEFOGENABLE from caps at device init, and Set_Fog writes FOGSTART and
+	// FOGEND. Nothing is missing except somebody asking for fog.
+	//
+	// The ShaderClass fog *bits* stay. They are read out of W3D material chunks
+	// (meshmdlio.cpp sets FOG_ENABLE and FOG_SCALE_FRAGMENT for one material
+	// configuration) and are part of how an asset is interpreted on disk. They are now
+	// inert, which is what they already were in effect.
+	//
+	// The mask is still cleared here so that a shader differing only in its fog bits
+	// still short-circuits the rest of Apply, exactly as it did before.
 	if(diff & (ShaderClass::MASK_FOG))
 	{
-		// Whenever fog is enabled or disabled, the entire shader is invalidated. This is why we
-		// can defer the "fog enabled" check inside the "fog settings changed" check.
-		if (DX8Wrapper::Get_Current_Caps()->Is_Fog_Allowed() && DX8Wrapper::Get_Fog_Enable()) {
-
-			BOOL fm = FALSE;
-			D3DCOLOR fogColor = DX8Wrapper::Get_Fog_Color();
-
-			switch(Get_Fog_Func())
-			{
-			case ShaderClass::FOG_ENABLE:
-				fm = TRUE;
-				break;
-			case ShaderClass::FOG_SCALE_FRAGMENT:
-				fogColor = 0;
-				fm = TRUE;
-				break;
-			case ShaderClass::FOG_WHITE:
-				fogColor = 0xffffff;
-				fm = TRUE;
-				break;
-			case ShaderClass::FOG_DISABLE:
-				fm = FALSE;
-				break;
-			}
-
-			DX8Wrapper::Set_DX8_Render_State(D3DRS_FOGENABLE,fm);
-
-			if(fm)
-			{
-				DX8Wrapper::Set_DX8_Render_State(D3DRS_FOGCOLOR,fogColor);
-			}
-
-		} else {
-			DX8Wrapper::Set_DX8_Render_State(D3DRS_FOGENABLE,FALSE);
-		}
-
 		diff &= ~(ShaderClass::MASK_FOG);
 		if(!diff)
 			return;
