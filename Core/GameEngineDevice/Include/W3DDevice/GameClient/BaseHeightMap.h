@@ -54,8 +54,6 @@ class GeometryInfo;
 
 #define no_TIMING_TESTS	1
 
-#define no_PRE_TRANSFORM_VERTEX // Don't do this, not a performance win.  jba.
-
 typedef struct {
 	Int minX, maxX;
 	Int minY, maxY;
