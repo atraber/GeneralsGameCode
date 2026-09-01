@@ -72,6 +72,9 @@ set(WW3D2_SRC
     font3d.h
     formconv.cpp
     formconv.h
+    gfxdevice.h
+    gfxdevice_d3d9.cpp
+    gfxdevice_d3d9.h
     FramGrab.cpp
     framgrab.h
     hanim.cpp
