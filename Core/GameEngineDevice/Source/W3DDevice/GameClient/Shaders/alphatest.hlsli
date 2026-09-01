@@ -22,10 +22,11 @@
 // nothing. Same convention shadowdepth_ps's ShadowCastParams.x already used, and for the
 // same reason.
 //
-// NOTEQUAL cannot be expressed this way. It is set by W3DCustomEdging and by W3DWater's
-// legacy clip-plane path, neither of which reached a shader-routed draw in any scene
+// NOTEQUAL cannot be expressed this way. The only caller left that sets it is W3DWater's
+// legacy clip-plane path, which has not reached a shader-routed draw in any scene
 // measured (see the Phase 2 alpha test and fog investigation), so those draws are left to the
-// hardware stage. If one ever routes, this is the constant that has to grow a mode.
+// hardware stage. W3DCustomEdging used to set it too; it was unreachable code and is
+// gone. If the water path ever routes, this is the constant that has to grow a mode.
 
 #ifndef RTS_SHADER_ALPHATEST_HLSLI
 #define RTS_SHADER_ALPHATEST_HLSLI
