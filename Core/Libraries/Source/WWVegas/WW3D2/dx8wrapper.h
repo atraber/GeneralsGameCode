@@ -1925,6 +1925,26 @@ WWINLINE void DX8Wrapper::Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigne
 	} else if (state == D3DRS_ZBIAS) {
 		float bias = (float)value * -0.000005f;
 		DX8CALL(SetRenderState(D3DRS_DEPTHBIAS, *(DWORD*)&bias));
+	} else if (state == D3DRS_ALPHATESTENABLE || state == D3DRS_ALPHAFUNC ||
+	           state == D3DRS_ALPHAREF) {
+		// Tracked, deliberately not sent. The alpha test is done by the shaders now --
+		// alphatest.hlsli, from AlphaTestCtl, which DX8Wrapper::Draw derives from these
+		// three tracked words at every draw. So they must go on being written and read;
+		// they just stop reaching the device, whose own stage D3D11 does not have.
+		//
+		// Suppressing it here rather than at the call sites is what makes it complete.
+		// Every live writer goes through this function -- ShaderClass::Apply twice,
+		// dx8renderer's alpha-override scaling of the reference, W3DVolumetricShadow, and
+		// W3DWater's legacy clip-plane path -- and editing five call sites would have left
+		// the sixth to be found later, with the state sticky in between: nothing would
+		// have turned the device's test back off.
+		//
+		// The one test this loses is W3DWater's NOTEQUAL, which the (ref, sign) encoding
+		// cannot express and which therefore falls through as "discard nothing". That path
+		// is WATER_TYPE_1_FB_REFLECTION, and WaterType = 0 is the only value present
+		// anywhere in shipped content -- GameData.ini, no map.ini, no patch INI -- so no
+		// shipped map can reach it. It is gated on a setting rather than structurally dead,
+		// which is why the code stays; if it is ever wanted, AlphaTestCtl grows a mode.
 	} else if (state == D3DRS_LINEPATTERN || state == D3DRS_ZVISIBLE || state == D3DRS_PATCHSEGMENTS || state == D3DRS_EDGEANTIALIAS || state == D3DRS_PATCHEDGESTYLE) {
 		// Ignore legacy D3D8-only render states that have no direct D3D9 equivalent or are not used/supported in D3D9
 	} else {

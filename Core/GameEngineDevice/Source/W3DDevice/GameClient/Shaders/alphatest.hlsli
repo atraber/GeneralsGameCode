@@ -1,9 +1,11 @@
 // The alpha test, as a shader stage.
 //
-// D3D9 does this in hardware, *after* the pixel shader has run: D3DRS_ALPHATESTENABLE
+// D3D9 did this in hardware, *after* the pixel shader had run: D3DRS_ALPHATESTENABLE
 // with a compare function and an 8-bit reference, applied to the alpha the shader
 // returned. It is what cuts out foliage, fences, ladders, tree billboards and the
-// transparent parts of a cast shadow.
+// transparent parts of a cast shadow. As of 2026-09-01 that stage is off: the three
+// alpha render states are still tracked, and still read here, but DX8Wrapper no
+// longer forwards them to the device. This is the alpha test now.
 //
 // D3D11 has no such stage at all. Every shader that can receive an alpha-tested draw has
 // to do it itself with clip(), and the failure mode if one is missed is silent: the
@@ -22,11 +24,13 @@
 // nothing. Same convention shadowdepth_ps's ShadowCastParams.x already used, and for the
 // same reason.
 //
-// NOTEQUAL cannot be expressed this way. The only caller left that sets it is W3DWater's
-// legacy clip-plane path, which has not reached a shader-routed draw in any scene
-// measured (see the Phase 2 alpha test and fog investigation), so those draws are left to the
-// hardware stage. W3DCustomEdging used to set it too; it was unreachable code and is
-// gone. If the water path ever routes, this is the constant that has to grow a mode.
+// NOTEQUAL cannot be expressed this way, and with the hardware stage off there is
+// nothing behind it: an inexpressible compare discards nothing. The only caller that
+// sets one is W3DWater's WATER_TYPE_1_FB_REFLECTION path, and WaterType = 0 is the
+// only value present anywhere in shipped content, so no shipped map can select it.
+// W3DCustomEdging used to set NOTEQUAL too; it was code that could not be built at
+// all and is gone. If the water path is ever wanted, this is the constant that has
+// to grow a mode -- the census is what would say so.
 
 #ifndef RTS_SHADER_ALPHATEST_HLSLI
 #define RTS_SHADER_ALPHATEST_HLSLI

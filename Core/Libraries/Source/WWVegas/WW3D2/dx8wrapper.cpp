@@ -1064,6 +1064,12 @@ unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
 	for (unsigned a = 0; a < sizeof(RenderStates)/sizeof(unsigned); ++a) {
 		if (RenderStates[a] == 0x12345678) continue;      // wrapper claims nothing
 		if (a >= 220 && a <= 226) continue;               // compatibility-layer dummies
+		// The three alpha-test words are tracked but never sent (see Set_DX8_Render_State),
+		// so the wrapper is not claiming anything about the device here either -- the same
+		// category as the dummies above, reached a different way. Without this the audit
+		// would report them wrong on every check and drown any real finding.
+		if (a == D3DRS_ALPHATESTENABLE || a == D3DRS_ALPHAFUNC || a == D3DRS_ALPHAREF)
+			continue;
 		const bool deferred = Is_Deferred_FF_Render_State(a);
 		const unsigned believed = deferred ? FFDeviceRender[a] : RenderStates[a];
 		if (believed == 0x12345678) continue;
@@ -1630,8 +1636,10 @@ void DX8Wrapper::Debug_Report_Alpha_Fog()
 	s_alphaFogFrames = 0;
 
 	const unsigned allDraws = s_alphaOn + s_alphaOff;
-	WWDEBUG_SAY(("ALPHA TEST CENSUS over 600 frames: %u of %u draws had "
-				 "D3DRS_ALPHATESTENABLE set, in %d (compare, ref, pixel shader) groups%s",
+	// "asked for", not "set on the device": the three alpha words are tracked but no
+	// longer forwarded, so what this counts is the test the shader was told to do.
+	WWDEBUG_SAY(("ALPHA TEST CENSUS over 600 frames: %u of %u draws asked for an alpha "
+				 "test, in %d (compare, ref, pixel shader) groups%s",
 		s_alphaOn, allDraws, s_alphaGroupCount,
 		s_alphaDropped ? "  -- TABLE FULL" : ""));
 	if (allDraws == 0) {
@@ -2642,6 +2650,14 @@ void DX8Wrapper::Set_Default_Global_Render_States()
 	// and otherwise only from Reset_Device. Note DX8Wrapper::Apply_Default_State, which
 	// looks like it does this job, has no callers at all.
 	Set_DX8_Render_State(D3DRS_FOGENABLE, FALSE);
+	// ...and the hardware alpha test off for the life of the device, never to be turned
+	// back on. Every shader that can receive an alpha-tested draw now does the test
+	// itself from AlphaTestCtl, and Set_DX8_Render_State no longer forwards the three
+	// alpha words to the device at all -- which is exactly why this one is sent straight
+	// at it. D3D9's own default for this state is already FALSE, so nothing moves; the
+	// point is that the device's test rests on something the engine said, and keeps
+	// resting on it across a reset, which also comes through here.
+	DX8CALL(SetRenderState(D3DRS_ALPHATESTENABLE, FALSE));
 	Set_DX8_Render_State(D3DRS_SPECULARMATERIALSOURCE, D3DMCS_MATERIAL);
 	Set_DX8_Render_State(D3DRS_COLORVERTEX, TRUE);
 	Set_DX8_Render_State(D3DRS_ZBIAS,0);
@@ -4784,10 +4800,13 @@ void DX8Wrapper::Draw(
 		const bool alphaOn = RenderStates[D3DRS_ALPHATESTENABLE] != 0;
 		const unsigned func = RenderStates[D3DRS_ALPHAFUNC];
 		// Anything this encoding cannot express -- NOTEQUAL, and the compares nothing
-		// sets -- falls through as "discard nothing" and is left to the hardware stage,
-		// which is still enabled. That is a deliberate silent fallback rather than an
-		// assert: it is the safe direction (the shader defers, it does not guess), and
-		// the census is what says whether it is ever taken.
+		// sets -- falls through as "discard nothing". There is no longer a hardware
+		// stage behind it to catch that: the three alpha words stop at the tracked
+		// array now. The only writer of an inexpressible compare is W3DWater's
+		// WATER_TYPE_1_FB_REFLECTION path, which no shipped map can select (WaterType
+		// = 0 everywhere), and the census over gla_midgame and civ_buildings has never
+		// once shown a group that is not GREATEREQUAL at 0x60. If one ever appears,
+		// this is the constant that has to grow a mode.
 		const bool expressible = alphaOn &&
 			(func == D3DCMP_GREATEREQUAL || func == D3DCMP_LESSEQUAL);
 		Vector4 alphaTestCtl(0.0f, 1.0f, 0.0f, 0.0f);
