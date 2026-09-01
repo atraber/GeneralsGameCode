@@ -1154,6 +1154,27 @@ public:
 	static void Debug_Audit_Frame_End();
 	static void Debug_Report_Invalidations();
 
+	// Alpha test and fog: the two fixed-function *stages* that have no D3D11 equivalent
+	// at all. Both run after the pixel shader, so a shader can be entirely correct and
+	// still lose them, and both fail silently -- soft-edged foliage, an unfogged scene.
+	//
+	// This counts the draws each stage is actually live on before anything is ported.
+	// Alpha test is grouped by the (compare function, reference, pixel shader) triple,
+	// which is at once the design input for the shader-side constant and the list of
+	// shaders that need a clip(). Fog is a straight count, because the question there is
+	// only whether it does anything at all.
+	//
+	// Each number carries its own control -- the draws where the stage was off -- so a
+	// zero reads as "nobody asked for it" rather than "the instrument was not reached".
+	static void Debug_Note_Alpha_Fog_Draw();
+	static void Debug_Report_Alpha_Fog();
+	// Handle -> name for every shader loaded through W3DShaderManager, so the census
+	// above can say "tree_ps" instead of a device handle. Shaders created by a direct
+	// CreatePixelShader call are not in the table and report as unregistered.
+	static void Debug_Register_Shader_Name(unsigned handle, const char* path);
+	static const char* Debug_Shader_Name(unsigned handle);
+	static void Debug_Report_Shader_Names();
+
 #endif
 	// Programmable road path. Roads are decals on the terrain and want the terrain's
 	// shading -- cloud, noise and, the reason this exists, cast shadows. Their own

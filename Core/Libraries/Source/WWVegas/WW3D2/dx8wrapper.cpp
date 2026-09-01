@@ -1502,6 +1502,172 @@ namespace {
 	}
 }
 
+// ----------------------------------------------------------------------------
+// Alpha test and fog census. See the note in dx8wrapper.h for what it is for.
+// ----------------------------------------------------------------------------
+
+#define MAX_SHADER_NAMES 64
+
+struct ShaderNameEntry { unsigned handle; const char* name; };
+static ShaderNameEntry s_shaderNames[MAX_SHADER_NAMES];
+static int s_shaderNameCount = 0;
+static char s_shaderNamePool[MAX_SHADER_NAMES][32];
+
+void DX8Wrapper::Debug_Register_Shader_Name(unsigned handle, const char* path)
+{
+	if (handle == 0 || path == nullptr) return;
+	for (int i = 0; i < s_shaderNameCount; ++i) {
+		if (s_shaderNames[i].handle == handle) return;
+	}
+	if (s_shaderNameCount >= MAX_SHADER_NAMES) return;
+	// "shaders\tree_ps.pso" -> "tree_ps". Copied into a pool rather than kept by
+	// pointer: some callers pass a literal and some a temporary, and the table outlives
+	// the call either way.
+	const char* base = path;
+	for (const char* p = path; *p != '\0'; ++p) {
+		if (*p == '\\' || *p == '/') base = p + 1;
+	}
+	char* out = s_shaderNamePool[s_shaderNameCount];
+	int n = 0;
+	while (base[n] != '\0' && base[n] != '.' && n < 31) { out[n] = base[n]; ++n; }
+	out[n] = '\0';
+	s_shaderNames[s_shaderNameCount].handle = handle;
+	s_shaderNames[s_shaderNameCount].name = out;
+	++s_shaderNameCount;
+}
+
+const char* DX8Wrapper::Debug_Shader_Name(unsigned handle)
+{
+	if (handle == 0) return "(fixed function)";
+	for (int i = 0; i < s_shaderNameCount; ++i) {
+		if (s_shaderNames[i].handle == handle) return s_shaderNames[i].name;
+	}
+	// Named by value rather than by a bare "(unregistered)": a shader created by a direct
+	// CreatePixelShader call still has an identity, and two of them in one table are
+	// distinguishable only by the handle.
+	static char unknown[24];
+	sprintf(unknown, "(ps %08x)", handle);
+	return unknown;
+}
+
+// The registry itself, said once. A census that names shaders is only as good as this
+// table, and "the shader did not appear" and "the shader is not in the table" look
+// identical from the report.
+void DX8Wrapper::Debug_Report_Shader_Names()
+{
+	static bool reported = false;
+	if (reported || s_shaderNameCount == 0) return;
+	reported = true;
+	WWDEBUG_SAY(("SHADER NAME REGISTRY: %d shaders loaded through W3DShaderManager",
+		s_shaderNameCount));
+	for (int i = 0; i < s_shaderNameCount; ++i) {
+		WWDEBUG_SAY(("    %08x  %s", s_shaderNames[i].handle, s_shaderNames[i].name));
+	}
+}
+
+#define MAX_ALPHA_GROUPS 96
+
+struct AlphaGroup { unsigned func; unsigned ref; unsigned ps; unsigned count; bool on; };
+static AlphaGroup s_alphaGroups[MAX_ALPHA_GROUPS];
+static int s_alphaGroupCount = 0;
+static unsigned s_alphaDropped = 0;
+static unsigned s_alphaOn = 0;
+static unsigned s_alphaOff = 0;
+static unsigned s_fogOn = 0;
+static unsigned s_fogOff = 0;
+static unsigned s_fogGlobalOn = 0;
+static int s_alphaFogFrames = 0;
+
+void DX8Wrapper::Debug_Note_Alpha_Fog_Draw()
+{
+	// Read out of the tracked state rather than off the device, deliberately: this is a
+	// census of what the renderer asked the hardware to do, and the tracked array is
+	// where ShaderClass::Apply put it. Whether the device agrees is a different question
+	// and already has its own instrument (Debug_Audit_Invalidation).
+	if (RenderStates[D3DRS_FOGENABLE]) ++s_fogOn; else ++s_fogOff;
+	if (FogEnable) ++s_fogGlobalOn;
+
+	const bool on = RenderStates[D3DRS_ALPHATESTENABLE] != 0;
+	if (on) ++s_alphaOn; else ++s_alphaOff;
+
+	// The draws with the test *off* are grouped by shader too, and not as a courtesy:
+	// a shader that appears only in the off table is one whose geometry is cut out by
+	// something other than this stage, and a shader that appears in both is one where
+	// the cutout is a per-draw property. Either answer changes what has to be ported.
+	const unsigned func = on ? RenderStates[D3DRS_ALPHAFUNC] : 0;
+	const unsigned ref = on ? RenderStates[D3DRS_ALPHAREF] : 0;
+	const unsigned ps = Pixel_Shader;
+	for (int i = 0; i < s_alphaGroupCount; ++i) {
+		if (s_alphaGroups[i].func == func && s_alphaGroups[i].ref == ref &&
+			s_alphaGroups[i].ps == ps && s_alphaGroups[i].on == on) {
+			++s_alphaGroups[i].count;
+			return;
+		}
+	}
+	if (s_alphaGroupCount >= MAX_ALPHA_GROUPS) { ++s_alphaDropped; return; }
+	AlphaGroup& g = s_alphaGroups[s_alphaGroupCount++];
+	g.func = func;
+	g.ref = ref;
+	g.ps = ps;
+	g.count = 1;
+	g.on = on;
+}
+
+void DX8Wrapper::Debug_Report_Alpha_Fog()
+{
+	// Same 600-frame window as every other census here, so the numbers can be read
+	// against each other.
+	if (++s_alphaFogFrames < 600) return;
+	s_alphaFogFrames = 0;
+
+	const unsigned allDraws = s_alphaOn + s_alphaOff;
+	WWDEBUG_SAY(("ALPHA TEST CENSUS over 600 frames: %u of %u draws had "
+				 "D3DRS_ALPHATESTENABLE set, in %d (compare, ref, pixel shader) groups%s",
+		s_alphaOn, allDraws, s_alphaGroupCount,
+		s_alphaDropped ? "  -- TABLE FULL" : ""));
+	if (allDraws == 0) {
+		WWDEBUG_SAY(("  CONTROL FAILED: no draws reached this census at all, so the "
+					 "count above is not a measurement of anything."));
+	}
+	for (int rank = 0; rank < s_alphaGroupCount; ++rank) {
+		int best = -1;
+		unsigned bestCount = 0;
+		for (int i = 0; i < s_alphaGroupCount; ++i) {
+			if (s_alphaGroups[i].count > bestCount) {
+				bestCount = s_alphaGroups[i].count;
+				best = i;
+			}
+		}
+		if (best < 0) break;
+		const AlphaGroup& g = s_alphaGroups[best];
+		if (g.on) {
+			WWDEBUG_SAY(("    ON   %-20s ref 0x%02x  %-26s x%u",
+				Get_DX8_Cmp_Func_Name(g.func), g.ref, Debug_Shader_Name(g.ps), g.count));
+		} else {
+			WWDEBUG_SAY(("    off  %-31s %-26s x%u",
+				"", Debug_Shader_Name(g.ps), g.count));
+		}
+		s_alphaGroups[best].count = 0;
+	}
+
+	// The fog question is only "does it do anything", so this is a count and its
+	// control rather than a table. The global flag is reported beside the render state
+	// because they can disagree: ShaderClass::Apply gates the state on the flag, so a
+	// nonzero global with a zero state would mean the caps check turned it off.
+	const unsigned allFog = s_fogOn + s_fogOff;
+	WWDEBUG_SAY(("FOG CENSUS over 600 frames: %u of %u draws had D3DRS_FOGENABLE set; "
+				 "DX8Wrapper's global fog flag was on for %u of them",
+		s_fogOn, allFog, s_fogGlobalOn));
+
+	s_alphaGroupCount = 0;
+	s_alphaDropped = 0;
+	s_alphaOn = 0;
+	s_alphaOff = 0;
+	s_fogOn = 0;
+	s_fogOff = 0;
+	s_fogGlobalOn = 0;
+}
+
 void DX8Wrapper::Debug_Report_Frame_Timing()
 {
 	if (s_tickToMs == 0.0) {
@@ -4125,6 +4291,8 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Direct_Draws();
 	Debug_Report_Technique_Check();
 	Debug_Report_Particle_Shadows();
+	Debug_Report_Alpha_Fog();
+	Debug_Report_Shader_Names();
 	Mesh_Technique_Report_Registrations();
 #endif
 
@@ -4553,6 +4721,20 @@ void DX8Wrapper::Draw(
 	// previous caster and the test came out false for exactly the draws it was meant to
 	// catch. It suppressed 21048 of the 46444 it should have.
 	if (m_bSuppressDraw) return;
+
+#ifdef RTS_DEBUG
+	// Alpha test and fog, counted for every draw regardless of which pipeline claimed
+	// it -- both are hardware stages downstream of the shader, so a routed draw is
+	// exactly as exposed to them as a fixed-function one.
+	//
+	// Counted here rather than inside Apply_Render_State_Changes, which is where the
+	// other per-draw censuses live, because that function returns early on
+	// !render_state_changed. A caller that applies its own state and then draws --
+	// W3DTreeBuffer does, three times -- hits that early return on the way through
+	// Draw and never reaches the body. The first version of this census sat there and
+	// reported no tree draw at all, on a frame that drew 6400 tree triangles.
+	Debug_Note_Alpha_Fog_Draw();
+#endif
 
 	// The one place fixed-function state still has to reach the device: a draw with no
 	// pixel shader on it is a fixed-function draw, and it renders from the combine, the

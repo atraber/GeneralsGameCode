@@ -4544,6 +4544,12 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 			OutputDebugString( "Failed to create shader\n ");
 			return E_FAIL;
 		}
+
+#ifdef RTS_DEBUG
+		// Every shader the engine loads passes through here, so this is the one place
+		// that can give the per-draw censuses a name for a device handle.
+		DX8Wrapper::Debug_Register_Shader_Name((unsigned)*pHandle, strFilePath);
+#endif
 	}
 	catch(...)
 	{
