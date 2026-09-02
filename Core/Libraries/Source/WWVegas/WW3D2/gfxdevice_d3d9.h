@@ -118,6 +118,32 @@ public:
 	// was not created dynamic -- legal under D3D9, a failed Map under D3D11.
 	static void				Report_Nondynamic_Discards();
 
+	// ---- textures and surfaces -------------------------------------------
+
+	virtual GfxTexture *	Create_Texture(unsigned width, unsigned height, unsigned levels,
+								WW3DFormat format, unsigned usage);
+	virtual GfxTexture *	Create_Cube_Texture(unsigned edge_length, unsigned levels,
+								WW3DFormat format, unsigned usage);
+	virtual void			Release_Texture(GfxTexture * texture);
+	virtual GfxSurface *	Create_Render_Target_Surface(unsigned width, unsigned height,
+								WW3DFormat format, WW3DMultiSampleType multisample);
+	virtual GfxSurface *	Create_Depth_Stencil_Surface(unsigned width, unsigned height,
+								WW3DZFormat format, WW3DMultiSampleType multisample);
+	virtual GfxSurface *	Create_Offscreen_Surface(unsigned width, unsigned height,
+								WW3DFormat format);
+	virtual void			Release_Surface(GfxSurface * surface);
+	virtual unsigned		Get_Texture_Level_Count(GfxTexture * texture);
+	virtual GfxSurface *	Get_Texture_Surface_Level(GfxTexture * texture, unsigned level);
+	virtual bool			Map_Texture(GfxTexture * texture, unsigned level,
+								const GfxRect * rect, GfxMapMode mode, GfxMappedRect & mapped);
+	virtual void			Unmap_Texture(GfxTexture * texture, unsigned level);
+	virtual bool			Map_Surface(GfxSurface * surface, const GfxRect * rect,
+								GfxMapMode mode, GfxMappedRect & mapped);
+	virtual void			Unmap_Surface(GfxSurface * surface);
+	virtual bool			Map_Volume_Texture(GfxTexture * texture, unsigned level,
+								GfxMapMode mode, GfxMappedBox & mapped);
+	virtual void			Unmap_Volume_Texture(GfxTexture * texture, unsigned level);
+
 	virtual bool			Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc);
 	virtual bool			Describe_Texture_Level(GfxTexture * texture, unsigned level,
 								WW3DSurfaceDescription & desc);

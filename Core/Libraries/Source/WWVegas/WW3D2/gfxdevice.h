@@ -112,7 +112,9 @@ enum GfxResourceUsage
 	GFX_USAGE_DYNAMIC = 1,				// rewritten by the CPU every frame or oftener
 	GFX_USAGE_SOFTWARE_PROCESSING = 2,	// vertices are transformed on the CPU
 	GFX_USAGE_NPATCHES = 4,				// will be fed to a tessellator
-	GFX_USAGE_POINT_SPRITES = 8			// each vertex is expanded into a screen-facing quad
+	GFX_USAGE_POINT_SPRITES = 8,		// each vertex is expanded into a screen-facing quad
+	GFX_USAGE_RENDER_TARGET = 16,		// the GPU will draw into it
+	GFX_USAGE_DYNAMIC_TEXTURE = 32		// the CPU rewrites its pixels while the GPU reads them
 };
 
 /*
@@ -136,6 +138,32 @@ enum GfxMapMode
 	GFX_MAP_WRITE_NO_OVERWRITE,	// append; nothing the GPU may still be reading is touched
 	GFX_MAP_READ,
 	GFX_MAP_READ_WRITE
+};
+
+/*
+** A mapped region of a texture or a surface.
+**
+** Two dimensions, not one, because a mapped image is not a flat run of bytes: the
+** distance from one row to the next is the driver's business and is routinely larger
+** than the row itself. Every caller in this engine already reasoned in exactly these
+** two numbers -- D3DLOCKED_RECT's pBits and Pitch -- so this is the same fact in a
+** name a second backend can also answer to. D3D11's MAPPED_SUBRESOURCE says RowPitch
+** and means the same thing.
+*/
+struct GfxMappedRect
+{
+	void *	Data;
+	int		Pitch;		// bytes from the start of one row to the start of the next
+};
+
+/*
+** The same for a volume texture, which has a second stride between slices.
+*/
+struct GfxMappedBox
+{
+	void *	Data;
+	int		RowPitch;
+	int		SlicePitch;
 };
 
 /*
@@ -275,6 +303,79 @@ public:
 	virtual bool			Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
 								unsigned size_in_bytes, GfxMapMode mode, void ** data) = 0;
 	virtual void			Unmap_Index_Buffer(GfxIndexBuffer * buffer) = 0;
+
+	// ---- textures and surfaces -------------------------------------------
+	//
+	// The same shape as the buffer half above, and for the same reason: creation says
+	// what the resource is for and what is in it, never where the API should put it.
+	// D3DPOOL_MANAGED, which is what a plain static texture becomes under D3D9, has no
+	// D3D11 equivalent at all -- so a pool is exactly the argument that cannot cross a
+	// seam, and the backend picks one from the usage bits.
+	//
+	// Every one of these returns nullptr on failure rather than an HRESULT. The retry
+	// ladders the engine runs when a creation fails -- free old textures, flush the mesh
+	// cache, try a smaller format -- stay on the engine side, because what they free is
+	// the engine's.
+	//
+	// Levels is a count, and zero still means "all the way down to 1x1", which is what
+	// both APIs mean by it.
+	virtual GfxTexture *	Create_Texture(unsigned width, unsigned height, unsigned levels,
+								WW3DFormat format, unsigned usage) = 0;
+	virtual GfxTexture *	Create_Cube_Texture(unsigned edge_length, unsigned levels,
+								WW3DFormat format, unsigned usage) = 0;
+	virtual void			Release_Texture(GfxTexture * texture) = 0;
+
+	// A render target and a depth target are surfaces rather than textures because
+	// that is what the engine binds: Set_Render_Target above takes two of them. Where
+	// it wants to sample the result afterwards it creates a texture with
+	// GFX_USAGE_RENDER_TARGET and asks for level 0 below.
+	virtual GfxSurface *	Create_Render_Target_Surface(unsigned width, unsigned height,
+								WW3DFormat format, WW3DMultiSampleType multisample) = 0;
+	virtual GfxSurface *	Create_Depth_Stencil_Surface(unsigned width, unsigned height,
+								WW3DZFormat format, WW3DMultiSampleType multisample) = 0;
+	// CPU-side pixels: the staging surface a readback lands in and the shroud is built
+	// in. Nothing draws from one. The two-step fallback D3D9 needs when the first pool
+	// refuses is the backend's problem, not a caller's.
+	virtual GfxSurface *	Create_Offscreen_Surface(unsigned width, unsigned height,
+								WW3DFormat format) = 0;
+	virtual void			Release_Surface(GfxSurface * surface) = 0;
+
+	// How many mip levels a texture actually has, and the surface for one of them.
+	// Get_Texture_Surface_Level hands back a reference the caller must give to
+	// Release_Surface -- the same borrowing rule the three Get_ target calls above use,
+	// and the reason those three are documented as showing the resource seam through.
+	virtual unsigned		Get_Texture_Level_Count(GfxTexture * texture) = 0;
+	virtual GfxSurface *	Get_Texture_Surface_Level(GfxTexture * texture, unsigned level) = 0;
+
+	// Mapping, with the caller's intent stated the way the buffer half states it.
+	//
+	// A null rect means the whole level, which is what every caller that passes one
+	// means by it. GFX_MAP_READ is the mode that matters here and did not matter for
+	// buffers: the staging reads in the smudge and the surface copies genuinely read
+	// pixels back, and D3D11 will not let a map read from a resource that was not
+	// created for it.
+	//
+	// D3D9's D3DLOCK_NO_DIRTY_UPDATE is absorbed here rather than named, alongside
+	// D3DLOCK_NOSYSLOCK above. It suppresses the dirty-region bookkeeping D3D9 keeps
+	// for managed textures so that an UpdateTexture does not re-upload what was
+	// touched -- and its one caller in this engine passes it to an *offscreen plain
+	// system-memory surface*, which has no managed copy, no dirty region and nothing to
+	// update. It has never done anything, and there is nothing for a second backend to
+	// do with it either.
+	virtual bool			Map_Texture(GfxTexture * texture, unsigned level,
+								const GfxRect * rect, GfxMapMode mode,
+								GfxMappedRect & mapped) = 0;
+	virtual void			Unmap_Texture(GfxTexture * texture, unsigned level) = 0;
+	virtual bool			Map_Surface(GfxSurface * surface, const GfxRect * rect,
+								GfxMapMode mode, GfxMappedRect & mapped) = 0;
+	virtual void			Unmap_Surface(GfxSurface * surface) = 0;
+	// The volume texture is one caller -- the mip upload for a 3-D texture -- and it
+	// needs the second stride. Kept apart from Map_Texture rather than folded into it
+	// because a caller that has a volume knows it has one, and a GfxMappedRect that
+	// silently dropped the slice pitch would be a correct-looking wrong answer.
+	virtual bool			Map_Volume_Texture(GfxTexture * texture, unsigned level,
+								GfxMapMode mode, GfxMappedBox & mapped) = 0;
+	virtual void			Unmap_Volume_Texture(GfxTexture * texture, unsigned level) = 0;
 
 	// ---- describing a resource -------------------------------------------
 	//

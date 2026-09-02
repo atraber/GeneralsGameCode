@@ -550,6 +550,191 @@ void GfxDeviceD3D9::Unmap_Index_Buffer(GfxIndexBuffer * buffer)
 	if (buffer != nullptr) DX8_ErrorCode(((IDirect3DIndexBuffer8*)buffer)->Unlock());
 }
 
+// ----------------------------------------------------------------------------
+// Textures and surfaces
+// ----------------------------------------------------------------------------
+
+// What a texture's usage bits become. Separate from the buffer version above and not
+// a call to it, because the two share only their names: D3DUSAGE_WRITEONLY is illegal
+// on a texture, and a render target must be created in the default pool whatever else
+// it was asked for.
+static unsigned Texture_Usage_To_D3D(unsigned usage)
+{
+	unsigned flags = 0;
+	if (usage & GFX_USAGE_RENDER_TARGET)   flags |= D3DUSAGE_RENDERTARGET;
+	if (usage & GFX_USAGE_DYNAMIC_TEXTURE) flags |= D3DUSAGE_DYNAMIC;
+	return flags;
+}
+
+static D3DPOOL Texture_Usage_To_D3D_Pool(unsigned usage)
+{
+	// A render target and a dynamic texture both have to live where the GPU writes,
+	// which under D3D9 is the default pool and nowhere else. Everything else is
+	// managed, which is what the engine has always asked for and what has no D3D11
+	// equivalent -- see the note at GfxResourceUsage.
+	if (usage & (GFX_USAGE_RENDER_TARGET | GFX_USAGE_DYNAMIC_TEXTURE)) return D3DPOOL_DEFAULT;
+	return D3DPOOL_MANAGED;
+}
+
+GfxTexture * GfxDeviceD3D9::Create_Texture(unsigned width, unsigned height, unsigned levels,
+	WW3DFormat format, unsigned usage)
+{
+	IDirect3DTexture8 * texture = nullptr;
+	HRESULT hr = m_device->CreateTexture(width, height, levels, Texture_Usage_To_D3D(usage),
+		WW3DFormat_To_D3DFormat(format), Texture_Usage_To_D3D_Pool(usage), &texture);
+	if (FAILED(hr)) return nullptr;
+	return (GfxTexture*)texture;
+}
+
+GfxTexture * GfxDeviceD3D9::Create_Cube_Texture(unsigned edge_length, unsigned levels,
+	WW3DFormat format, unsigned usage)
+{
+	IDirect3DCubeTexture8 * texture = nullptr;
+	HRESULT hr = m_device->CreateCubeTexture(edge_length, levels, Texture_Usage_To_D3D(usage),
+		WW3DFormat_To_D3DFormat(format), Texture_Usage_To_D3D_Pool(usage), &texture);
+	if (FAILED(hr)) return nullptr;
+	return (GfxTexture*)texture;
+}
+
+void GfxDeviceD3D9::Release_Texture(GfxTexture * texture)
+{
+	if (texture != nullptr) ((IDirect3DBaseTexture8*)texture)->Release();
+}
+
+GfxSurface * GfxDeviceD3D9::Create_Render_Target_Surface(unsigned width, unsigned height,
+	WW3DFormat format, WW3DMultiSampleType multisample)
+{
+	IDirect3DSurface8 * surface = nullptr;
+	// The last argument is D3D9's "lockable"; a render target the CPU can read is a
+	// different and much slower thing, and nothing here asks for one.
+	HRESULT hr = m_device->CreateRenderTarget(width, height, WW3DFormat_To_D3DFormat(format),
+		WW3DMultiSample_To_D3DMultiSample(multisample), FALSE, &surface);
+	if (FAILED(hr)) return nullptr;
+	return (GfxSurface*)surface;
+}
+
+GfxSurface * GfxDeviceD3D9::Create_Depth_Stencil_Surface(unsigned width, unsigned height,
+	WW3DZFormat format, WW3DMultiSampleType multisample)
+{
+	IDirect3DSurface8 * surface = nullptr;
+	HRESULT hr = m_device->CreateDepthStencilSurface(width, height,
+		WW3DZFormat_To_D3DFormat(format), WW3DMultiSample_To_D3DMultiSample(multisample),
+		&surface);
+	if (FAILED(hr)) return nullptr;
+	return (GfxSurface*)surface;
+}
+
+GfxSurface * GfxDeviceD3D9::Create_Offscreen_Surface(unsigned width, unsigned height,
+	WW3DFormat format)
+{
+	IDirect3DSurface8 * surface = nullptr;
+	// The two-pool ladder D3D9 needs: system memory first, because a surface there can
+	// be the source of an UpdateSurface, and scratch only if the driver refuses the
+	// format there. Scratch accepts any format but can be the source of nothing.
+	HRESULT hr = DX8Wrapper::D3D9_CreateImageSurface_Helper(m_device, width, height,
+		WW3DFormat_To_D3DFormat(format), &surface);
+	if (FAILED(hr)) return nullptr;
+	return (GfxSurface*)surface;
+}
+
+void GfxDeviceD3D9::Release_Surface(GfxSurface * surface)
+{
+	if (surface != nullptr) ((IDirect3DSurface8*)surface)->Release();
+}
+
+unsigned GfxDeviceD3D9::Get_Texture_Level_Count(GfxTexture * texture)
+{
+	if (texture == nullptr) return 0;
+	return ((IDirect3DBaseTexture8*)texture)->GetLevelCount();
+}
+
+GfxSurface * GfxDeviceD3D9::Get_Texture_Surface_Level(GfxTexture * texture, unsigned level)
+{
+	if (texture == nullptr) return nullptr;
+	// Same reasoning as Describe_Texture_Level: the handle does not say which kind of
+	// texture it is, and GetSurfaceLevel exists only on the 2-D one.
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_TEXTURE) return nullptr;
+	IDirect3DSurface8 * surface = nullptr;
+	if (FAILED(((IDirect3DTexture8*)base)->GetSurfaceLevel(level, &surface))) return nullptr;
+	return (GfxSurface*)surface;
+}
+
+bool GfxDeviceD3D9::Map_Texture(GfxTexture * texture, unsigned level, const GfxRect * rect,
+	GfxMapMode mode, GfxMappedRect & mapped)
+{
+	mapped.Data = nullptr;
+	mapped.Pitch = 0;
+	if (texture == nullptr) return false;
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_TEXTURE) return false;
+	D3DLOCKED_RECT lr;
+	HRESULT hr = ((IDirect3DTexture8*)base)->LockRect(level, &lr,
+		reinterpret_cast<const RECT*>(rect), Map_Mode_To_D3D(mode));
+	DX8_ErrorCode(hr);
+	if (FAILED(hr)) return false;
+	mapped.Data = lr.pBits;
+	mapped.Pitch = lr.Pitch;
+	return true;
+}
+
+void GfxDeviceD3D9::Unmap_Texture(GfxTexture * texture, unsigned level)
+{
+	if (texture == nullptr) return;
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_TEXTURE) return;
+	DX8_ErrorCode(((IDirect3DTexture8*)base)->UnlockRect(level));
+}
+
+bool GfxDeviceD3D9::Map_Surface(GfxSurface * surface, const GfxRect * rect,
+	GfxMapMode mode, GfxMappedRect & mapped)
+{
+	mapped.Data = nullptr;
+	mapped.Pitch = 0;
+	if (surface == nullptr) return false;
+	D3DLOCKED_RECT lr;
+	HRESULT hr = ((IDirect3DSurface8*)surface)->LockRect(&lr,
+		reinterpret_cast<const RECT*>(rect), Map_Mode_To_D3D(mode));
+	DX8_ErrorCode(hr);
+	if (FAILED(hr)) return false;
+	mapped.Data = lr.pBits;
+	mapped.Pitch = lr.Pitch;
+	return true;
+}
+
+void GfxDeviceD3D9::Unmap_Surface(GfxSurface * surface)
+{
+	if (surface != nullptr) DX8_ErrorCode(((IDirect3DSurface8*)surface)->UnlockRect());
+}
+
+bool GfxDeviceD3D9::Map_Volume_Texture(GfxTexture * texture, unsigned level,
+	GfxMapMode mode, GfxMappedBox & mapped)
+{
+	mapped.Data = nullptr;
+	mapped.RowPitch = 0;
+	mapped.SlicePitch = 0;
+	if (texture == nullptr) return false;
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_VOLUMETEXTURE) return false;
+	D3DLOCKED_BOX lb;
+	HRESULT hr = ((IDirect3DVolumeTexture8*)base)->LockBox(level, &lb, nullptr,
+		Map_Mode_To_D3D(mode));
+	DX8_ErrorCode(hr);
+	if (FAILED(hr)) return false;
+	mapped.Data = lb.pBits;
+	mapped.RowPitch = lb.RowPitch;
+	mapped.SlicePitch = lb.SlicePitch;
+	return true;
+}
+
+void GfxDeviceD3D9::Unmap_Volume_Texture(GfxTexture * texture, unsigned level)
+{
+	if (texture == nullptr) return;
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_VOLUMETEXTURE) return;
+	DX8_ErrorCode(((IDirect3DVolumeTexture8*)base)->UnlockBox(level));
+}
+
 bool GfxDeviceD3D9::Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc)
 {
 	if (surface == nullptr) return false;
