@@ -1081,6 +1081,7 @@ namespace {
 	unsigned s_lightDraws = 0;          // every draw through DX8Wrapper::Draw
 	unsigned s_lightFFDraws = 0;        // ...of which fixed function
 	unsigned s_lightFFLit = 0;          // ...with D3DRS_LIGHTING enabled at the device
+	unsigned s_lightFFLitByDefault = 0; // ...of which by D3D's default, nothing having flushed
 	unsigned s_lightFFLitWithLight = 0; // ...and at least one light enabled at the device
 	unsigned s_lightDeviceWrites = 0;   // SetLight/LightEnable calls that reached D3D
 	int      s_lightFrames = 0;
@@ -1306,8 +1307,17 @@ void DX8Wrapper::Debug_Note_Lighting_Draw()
 	// D3DRS_LIGHTING is a deferred fixed-function word, so the tracked array holds what a
 	// caller asked for and FFDeviceRender holds what the device was actually given. This
 	// runs after the flush in Draw(), so the second is the one that decides the pixel.
-	const unsigned lighting = FFDeviceRender[D3DRS_LIGHTING];
-	if (lighting == 0x12345678 || lighting == FALSE) return;
+	//
+	// The sentinel is the trap here, and reading it as "off" would invert this whole
+	// census. FFDeviceRender is poison until something flushes that word, and nothing ever
+	// has: DX8Wrapper::Init writes D3DRS_LIGHTING FALSE through Set_DX8_Render_State, which
+	// defers it like any other fixed-function word, so the value the device is actually
+	// holding is D3D9's own default -- and that default is TRUE. Poison here therefore
+	// means lighting is ON at the device, not unknown and not off. Debug_Report_Lighting
+	// reads the word back off D3D once a window rather than leaving that as an argument.
+	unsigned lighting = FFDeviceRender[D3DRS_LIGHTING];
+	if (lighting == 0x12345678) { lighting = TRUE; ++s_lightFFLitByDefault; }
+	if (lighting == FALSE) return;
 	++s_lightFFLit;
 
 	for (int i = 0; i < 4; ++i) {
@@ -1322,11 +1332,17 @@ void DX8Wrapper::Debug_Report_Lighting()
 
 	// Three nested counts, each the control for the one below it: a zero on the last line
 	// only means something if the lines above it are not zero for a different reason.
+	// Read the word back off the device rather than asserting what D3D's default is.
+	unsigned deviceLighting = 0xffffffff;
+	if (Gfx != nullptr && !Gfx->Get_Render_State(D3DRS_LIGHTING, deviceLighting))
+		deviceLighting = 0xffffffff;
 	WWDEBUG_SAY(("FIXED-FUNCTION LIGHTING CENSUS over 600 frames: %u draws, %u fixed "
-				 "function, %u of those with lighting enabled at the device, %u of those "
-				 "with a light enabled -- and %u SetLight/LightEnable calls reached D3D",
-		s_lightDraws, s_lightFFDraws, s_lightFFLit, s_lightFFLitWithLight,
-		s_lightDeviceWrites));
+				 "function, %u of those with lighting enabled at the device (%u of them "
+				 "because nothing ever flushed the word and D3D's default is on), %u of "
+				 "those with a light enabled -- and %u SetLight/LightEnable calls reached "
+				 "D3D. D3DRS_LIGHTING read back off the device now: %u",
+		s_lightDraws, s_lightFFDraws, s_lightFFLit, s_lightFFLitByDefault,
+		s_lightFFLitWithLight, s_lightDeviceWrites, deviceLighting));
 	if (s_lightDraws == 0) {
 		WWDEBUG_SAY(("  CONTROL FAILED: no draws reached this census at all, so the counts "
 					 "above are not a measurement of anything."));
@@ -1334,6 +1350,7 @@ void DX8Wrapper::Debug_Report_Lighting()
 	s_lightDraws = 0;
 	s_lightFFDraws = 0;
 	s_lightFFLit = 0;
+	s_lightFFLitByDefault = 0;
 	s_lightFFLitWithLight = 0;
 	s_lightDeviceWrites = 0;
 }
