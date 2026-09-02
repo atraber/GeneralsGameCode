@@ -93,6 +93,12 @@ enum WW3DFormat {
 	WW3D_FORMAT_DXT3,
 	WW3D_FORMAT_DXT4,
 	WW3D_FORMAT_DXT5,
+	// Sixteen bits of floating point per channel -- the format the scene is rendered into
+	// when HDR is on, which it is by default. This one breaks the "same order as D3DFORMAT"
+	// rule the list above follows, because D3DFMT_A16B16G16R16F is 113 and the conversion
+	// the other way is a table capped at 62; it is converted by name instead, the way the
+	// DXT codes already are.
+	WW3D_FORMAT_A16B16G16R16F,
 	WW3D_FORMAT_COUNT	// Used only to determine number of surface formats
 };
 
@@ -108,6 +114,37 @@ enum WW3DZFormat
 	WW3D_ZFORMAT_D24X8, // 32-bit z-buffer bit depth using 24 bits for the depth channel.
 	WW3D_ZFORMAT_D24X4S4, // 32-bit z-buffer bit depth using 24 bits for the depth channel and 4 bits for the stencil channel.
 	WW3D_ZFORMAT_COUNT
+};
+
+/*
+** How many samples a surface carries. The value *is* the sample count -- which is how
+** D3D9 numbers D3DMULTISAMPLE_TYPE and how D3D11 numbers DXGI_SAMPLE_DESC::Count -- so
+** the conversion either way is a range check and a cast, and counts this list does not
+** name still survive the round trip.
+**
+** D3D9's D3DMULTISAMPLE_NONMASKABLE (1) is the one value that is not a sample count. It
+** has no counterpart here and nothing in the engine can produce one: the only thing that
+** ever chooses a multisample mode is DX8Wrapper::Set_MSAA_Mode, from the four values
+** ww3d.cpp offers it, and the back buffer reports back whatever it was created with.
+*/
+enum WW3DMultiSampleType {
+	WW3D_MULTISAMPLE_NONE = 0,
+	WW3D_MULTISAMPLE_2X = 2,
+	WW3D_MULTISAMPLE_4X = 4,
+	WW3D_MULTISAMPLE_8X = 8,
+	WW3D_MULTISAMPLE_16X = 16
+};
+
+/*
+** What a surface is, without saying it in any graphics API's words. This is what the
+** engine is allowed to learn about a surface it did not create, and what it may hand
+** back to create another one like it.
+*/
+struct WW3DSurfaceDescription {
+	unsigned Width;
+	unsigned Height;
+	WW3DFormat Format;
+	WW3DMultiSampleType MultiSample;
 };
 
 // Utility function - not much used otherwise it would use an array.
@@ -126,6 +163,7 @@ inline bool Has_Alpha(WW3DFormat format) {
 		case WW3D_FORMAT_DXT3:
 		case WW3D_FORMAT_DXT4:
 		case WW3D_FORMAT_DXT5:
+		case WW3D_FORMAT_A16B16G16R16F:
 			return true;
 			break;
 		default:
@@ -142,6 +180,8 @@ inline int Alpha_Bits(WW3DFormat format) {
 		case WW3D_FORMAT_A8P8:
 		case WW3D_FORMAT_A8L8:
 			return 8;
+		case WW3D_FORMAT_A16B16G16R16F:
+			return 16;
 			break;
 		case WW3D_FORMAT_A4R4G4B4:
 		case WW3D_FORMAT_A4L4:
@@ -192,6 +232,7 @@ unsigned Get_Bytes_Per_Pixel(WW3DFormat format);
 unsigned ARGB_Color_To_WW3D_Color(WW3DFormat format, unsigned argb);
 
 void Get_WW3D_Format_Name(WW3DFormat format, StringClass& name);
+void Get_WW3D_MultiSample_Name(WW3DMultiSampleType type, StringClass& name);
 void Get_WW3D_ZFormat_Name(WW3DZFormat format, StringClass& name);
 
 unsigned Get_Num_Depth_Bits(WW3DZFormat zformat);

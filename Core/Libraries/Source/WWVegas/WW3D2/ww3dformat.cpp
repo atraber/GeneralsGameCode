@@ -95,6 +95,7 @@ void Get_WW3D_Format_Name(WW3DFormat format, StringClass& name)
 	case WW3D_FORMAT_DXT3: name="DXT3"; break;
 	case WW3D_FORMAT_DXT4: name="DXT4"; break;
 	case WW3D_FORMAT_DXT5: name="DXT5"; break;
+	case WW3D_FORMAT_A16B16G16R16F: name="A16B16G16R16F"; break;
 	}
 }
 
@@ -115,6 +116,17 @@ void Get_WW3D_ZFormat_Name(WW3DZFormat format, StringClass& name)
 	case WW3D_ZFORMAT_D16			: name="D16"; break; // 16-bit z-buffer bit depth.
 	case WW3D_ZFORMAT_D24X8			: name="D24X8"; break; // 32-bit z-buffer bit depth using 24 bits for the depth channel.
 	case WW3D_ZFORMAT_D24X4S4		: name="D24X4S4"; break; // 32-bit z-buffer bit depth using 24 bits for the depth channel and 4 bits for the stencil channel.
+	}
+}
+
+void Get_WW3D_MultiSample_Name(WW3DMultiSampleType type, StringClass& name)
+{
+	// The value is the sample count, so anything this list does not name still prints
+	// as a number rather than as "Unknown".
+	switch (type)
+	{
+	case WW3D_MULTISAMPLE_NONE: name="None"; break;
+	default: name.Format("%dx",(int)type); break;
 	}
 }
 
@@ -387,6 +399,8 @@ WW3DFormat Get_Valid_Texture_Format(WW3DFormat format, bool is_compression_allow
 unsigned Get_Bytes_Per_Pixel(WW3DFormat format)
 {
 	switch (format) {
+	case WW3D_FORMAT_A16B16G16R16F:
+		return 8;
 	case WW3D_FORMAT_A8R8G8B8:
 	case WW3D_FORMAT_X8R8G8B8:
 	case WW3D_FORMAT_X8L8V8U8:

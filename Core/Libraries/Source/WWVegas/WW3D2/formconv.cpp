@@ -63,7 +63,8 @@ D3DFORMAT WW3DFormatToD3DFormatConversionArray[WW3D_FORMAT_COUNT] = {
 	D3DFMT_DXT2,
 	D3DFMT_DXT3,
 	D3DFMT_DXT4,
-	D3DFMT_DXT5
+	D3DFMT_DXT5,
+	D3DFMT_A16B16G16R16F
 };
 
 // adding depth stencil format conversion
@@ -135,6 +136,8 @@ WW3DFormat D3DFormat_To_WW3DFormat(D3DFORMAT d3d_format)
 	case D3DFMT_DXT3: return WW3D_FORMAT_DXT3;
 	case D3DFMT_DXT4: return WW3D_FORMAT_DXT4;
 	case D3DFMT_DXT5: return WW3D_FORMAT_DXT5;
+	// Past the end of the conversion table, so it is named here for the same reason.
+	case D3DFMT_A16B16G16R16F: return WW3D_FORMAT_A16B16G16R16F;
 	default:
 		if (d3d_format > HIGHEST_SUPPORTED_D3DFORMAT) {
 			return WW3D_FORMAT_UNKNOWN;
@@ -175,6 +178,23 @@ WW3DZFormat D3DFormat_To_WW3DZFormat(D3DFORMAT d3d_format)
 	{
 		return D3DFormatToWW3DZFormatConversionArray[(unsigned int)d3d_format];
 	}
+}
+
+//**********************************************************************************************
+//! Multisample count conversion. The value is the sample count on both sides, so this is a
+//! range check rather than a table: counts neither enum names still survive the round trip.
+//! D3D9's D3DMULTISAMPLE_NONMASKABLE (1) is the one value that is not a count; nothing in
+//! the engine can produce one, and it converts to _NONE rather than to a fictional 1x.
+D3DMULTISAMPLE_TYPE WW3DMultiSample_To_D3DMultiSample(WW3DMultiSampleType type)
+{
+	if (type<WW3D_MULTISAMPLE_2X || type>WW3D_MULTISAMPLE_16X) return D3DMULTISAMPLE_NONE;
+	return (D3DMULTISAMPLE_TYPE)type;
+}
+
+WW3DMultiSampleType D3DMultiSample_To_WW3DMultiSample(D3DMULTISAMPLE_TYPE type)
+{
+	if (type<D3DMULTISAMPLE_2_SAMPLES || type>D3DMULTISAMPLE_16_SAMPLES) return WW3D_MULTISAMPLE_NONE;
+	return (WW3DMultiSampleType)type;
 }
 
 //**********************************************************************************************

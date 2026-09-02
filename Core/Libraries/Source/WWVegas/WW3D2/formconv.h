@@ -52,4 +52,7 @@ WW3DFormat D3DFormat_To_WW3DFormat(D3DFORMAT d3d_format);
 D3DFORMAT WW3DZFormat_To_D3DFormat(WW3DZFormat ww3d_zformat);
 WW3DZFormat D3DFormat_To_WW3DZFormat(D3DFORMAT d3d_format);
 
+D3DMULTISAMPLE_TYPE WW3DMultiSample_To_D3DMultiSample(WW3DMultiSampleType type);
+WW3DMultiSampleType D3DMultiSample_To_WW3DMultiSample(D3DMULTISAMPLE_TYPE type);
+
 void Init_D3D_To_WW3_Conversion();
