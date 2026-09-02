@@ -151,23 +151,25 @@ public:
 	// state of its own is entitled to say so.
 	virtual bool			Get_Render_State(unsigned state, unsigned & value) = 0;
 	virtual bool			Get_Texture_Stage_State(unsigned stage, unsigned state, unsigned & value) = 0;
-	virtual bool			Get_Material(void * material_desc) = 0;
+	// The render path no longer reads a transform back -- it reads the matrix the wrapper
+	// sent. This is the audit's read-back and only that, which is why it sits with the
+	// other three rather than with Set_Transform: it asks the backend what it is holding,
+	// and a backend holding no transform state of its own answers false.
+	virtual bool			Get_Transform(unsigned which, float * matrix4x4) = 0;
 
 	// ---- fixed-function residue ------------------------------------------
 	//
-	// Lights, material and the world/view/projection transforms are inputs to a
-	// transform-and-lighting stage that no draw in this game uses any more --
-	// FIXED-FUNCTION DRAWS has read 0 since the burn-down finished. They are still
-	// written to the device every frame, and they are declared here so the seam is
-	// honest about it rather than hiding it. The payloads pass opaquely on purpose:
-	// naming them would put an API type in this header for state that a second
-	// backend would not implement, it would delete.
-
-	virtual void			Set_Light(unsigned index, const void * light_desc) = 0;
-	virtual void			Disable_Light(unsigned index) = 0;
-	virtual void			Set_Material(const void * material_desc) = 0;
+	// What is left of it. Lights and the material went with the lighting stage they fed:
+	// no draw in either shadow configuration reaches the device with D3DRS_LIGHTING
+	// enabled, so nothing they described could reach a pixel.
+	//
+	// Set_Transform stays because it is not residue. The shadow volumes are genuinely
+	// fixed-function draws -- an FVF, no pixel shader, a stencil pass -- and they position
+	// themselves with D3DTS_WORLD. A backend that cannot draw from an FVF has no fixed
+	// function to feed, and can implement this as the matrix half of whatever it puts in
+	// place of one. The matrix passes as sixteen floats rather than an API type for the
+	// same reason the rest of this header names no API type.
 	virtual void			Set_Transform(unsigned which, const float * matrix4x4) = 0;
-	virtual bool			Get_Transform(unsigned which, float * matrix4x4) = 0;
 
 	// ---- bindings --------------------------------------------------------
 

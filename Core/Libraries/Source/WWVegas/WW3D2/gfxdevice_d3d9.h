@@ -58,13 +58,9 @@ public:
 
 	virtual bool			Get_Render_State(unsigned state, unsigned & value);
 	virtual bool			Get_Texture_Stage_State(unsigned stage, unsigned state, unsigned & value);
-	virtual bool			Get_Material(void * material_desc);
 
 	// ---- fixed-function residue ------------------------------------------
 
-	virtual void			Set_Light(unsigned index, const void * light_desc);
-	virtual void			Disable_Light(unsigned index);
-	virtual void			Set_Material(const void * material_desc);
 	virtual void			Set_Transform(unsigned which, const float * matrix4x4);
 	virtual bool			Get_Transform(unsigned which, float * matrix4x4);
 

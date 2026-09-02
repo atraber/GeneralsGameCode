@@ -462,7 +462,6 @@ public:
 	// matrix existed. See TEXGEN_STATE_CHANGED.
 	static void Note_Texture_Transform_Write(D3DTRANSFORMSTATETYPE transform);
 
-	static void Set_DX8_Light(int index,D3DLIGHT8* light);
 	static void Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigned value);
 	static void Set_DX8_Clip_Plane(DWORD Index, CONST float* pPlane);
 	static void Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURESTAGESTATETYPE state, unsigned value);
@@ -766,7 +765,7 @@ public:
 	// asked for. Flushed from two places, which between them cover every way to draw:
 	// Draw(), for everything that goes through the wrapper, and Prepare_Direct_Draw for the
 	// handful of subsystems that talk to the device themselves.
-	static bool Has_Pending_Fixed_Function_State() { return FFStatePending || FFMaterialPending; }
+	static bool Has_Pending_Fixed_Function_State() { return FFStatePending; }
 	static void Flush_Fixed_Function_State();
 	static bool Is_Deferred_FF_Stage_State(unsigned state);
 	static bool Is_Deferred_FF_Render_State(unsigned state);
@@ -1012,8 +1011,6 @@ protected:
 	// recover the house-colour tint and the stealth opacity, which it used to fetch back
 	// out of the device with GetMaterial once per draw.
 	static D3DMATERIAL8					CurrentMaterial;
-	static D3DMATERIAL8					FFDeviceMaterial;   // as last sent
-	static bool								FFMaterialPending;
 
 	// These fog settings are constant for all objects in a given scene,
 	// unlike the matching renderstates which vary based on shader settings.
@@ -1021,7 +1018,6 @@ protected:
 	static D3DCOLOR						FogColor;
 
 	static DX8FrameStatistics			FrameStatistics;
-	static bool								CurrentDX8LightEnables[4];
 
 	static unsigned long FrameCount;
 
@@ -1044,7 +1040,6 @@ protected:
 	static int								ZBias;
 	static float							ZNear;
 	static float							ZFar;
-	static D3DMATRIX					ProjectionMatrix;
 
 public:
 	// Programmable (D3D9) unit render path. The handles are populated by
@@ -1250,7 +1245,6 @@ public:
 	// draw still *consumes* fixed-function lighting, and that is a per-draw property, so
 	// it is counted in Draw() beside the alpha-test census rather than read back here.
 	static void Debug_Note_Device_Transform(unsigned which, const float * matrix4x4);
-	static void Debug_Note_Device_Light(unsigned index, bool enabled);
 	static void Debug_Note_Lighting_Draw();
 	static void Debug_Report_Lighting();
 
@@ -1952,9 +1946,10 @@ WWINLINE void DX8Wrapper::Set_Ambient(const Vector3& color)
 WWINLINE void DX8Wrapper::Set_DX8_Material(const D3DMATERIAL8* mat)
 {
 	WWASSERT(mat);
-	// Tracked, not sent -- a material is fixed-function vertex lighting and nothing else.
-	// The copy is what the routing block reads; the device only learns about it if some
-	// draw actually goes out on fixed function.
+	// Tracked, and no longer sent at all. A material is fixed-function vertex lighting and
+	// nothing else, and that stage is off: D3DRS_LIGHTING reads FALSE off the device and no
+	// draw turns it on, so D3D would ignore anything written here. The copy stays because
+	// the routing block reads it to build the shader's material constants.
 	//
 	// Redundant asks are dropped here, as they are for every other tracked word. This one
 	// had no such check and so counted every call as a write, which is why
@@ -1962,43 +1957,16 @@ WWINLINE void DX8Wrapper::Set_DX8_Material(const D3DMATERIAL8* mat)
 	// 857432 render words a window against 856292 calls, one apiece. The mesh renderer
 	// sets a material per pass and the great majority of consecutive passes share one.
 	//
-	// Comparing against CurrentMaterial and not against FFDeviceMaterial is the point:
-	// this is the value callers read back through Get_DX8_Material, so equality here means
-	// nothing observable changed. What the *device* holds is a separate question, answered
-	// by the compare in Flush_Fixed_Function_State, and the two must not be conflated --
-	// Invalidate_Cached_Render_States poisons FFDeviceMaterial and raises FFMaterialPending
-	// while deliberately leaving CurrentMaterial intact, so a device that has lost its
-	// material still gets one resent whether or not this early-out fires.
+	// CurrentMaterial is what callers read back through Get_DX8_Material and what the
+	// routing block reads, so equality here means nothing observable changed. There is no
+	// longer a second, device-side copy to conflate it with.
 	if (memcmp(&CurrentMaterial, mat, sizeof(D3DMATERIAL8)) == 0) return;
 	DX8_RECORD_MATERIAL_CHANGE();
 	SNAPSHOT_SAY(("DX8 - SetMaterial"));
 	CurrentMaterial = *mat;
-	FFMaterialPending = true;
 #ifdef RTS_DEBUG
 	Debug_Note_FF_State_Write(0, (unsigned)D3DRS_DIFFUSEMATERIALSOURCE);
 #endif
-}
-
-WWINLINE void DX8Wrapper::Set_DX8_Light(int index, D3DLIGHT8* light)
-{
-	if (light) {
-		DX8_RECORD_LIGHT_CHANGE();
-		GFXCALL(Set_Light(index,light));
-		CurrentDX8LightEnables[index]=true;
-#ifdef RTS_DEBUG
-		Debug_Note_Device_Light((unsigned)index,true);
-#endif
-		SNAPSHOT_SAY(("DX8 - SetLight %d",index));
-	}
-	else if (CurrentDX8LightEnables[index]) {
-		DX8_RECORD_LIGHT_CHANGE();
-		CurrentDX8LightEnables[index]=false;
-		GFXCALL(Disable_Light(index));
-#ifdef RTS_DEBUG
-		Debug_Note_Device_Light((unsigned)index,false);
-#endif
-		SNAPSHOT_SAY(("DX8 - DisableLight %d",index));
-	}
 }
 
 WWINLINE void DX8Wrapper::Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigned value)
@@ -2500,19 +2468,15 @@ WWINLINE void DX8Wrapper::Set_Projection_Transform_With_Z_Bias(const Matrix4x4& 
 {
 	ZFar=zfar;
 	ZNear=znear;
-	ProjectionMatrix=To_D3DMATRIX(matrix);
+	D3DMATRIX projection=To_D3DMATRIX(matrix);
 
 	if (!Get_Current_Caps()->Support_ZBias() && ZNear!=ZFar) {
-		D3DMATRIX tmp=ProjectionMatrix;
 		float tmp_zbias=ZBias;
 		tmp_zbias*=(1.0f/16.0f);
 		tmp_zbias*=1.0f / (ZFar - ZNear);
-		tmp.m[2][2]-=tmp_zbias*tmp.m[3][2];
-		Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,tmp);
+		projection.m[2][2]-=tmp_zbias*projection.m[3][2];
 	}
-	else {
-		Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,ProjectionMatrix);
-	}
+	Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,projection);
 }
 
 WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Matrix4x4& m)
@@ -2530,10 +2494,18 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 		break;
 	case D3DTS_PROJECTION:
 		{
-			D3DMATRIX ProjectionMatrix=To_D3DMATRIX(m);
+			// This local used to be spelled ProjectionMatrix, shadowing the static member of
+			// the same name that the routing block read to build every shader's projection.
+			// So a projection set through this overload -- render2d does it twice per 2D
+			// pass, dazzle twice more -- reached the device and left the static holding the
+			// camera's. It never showed because the routing block preferred a device
+			// read-back and only fell through to the static if that failed. Both are gone
+			// now: there is one tracked projection, DX8Transforms[D3DTS_PROJECTION], written
+			// on the way to the device and read by everything.
+			D3DMATRIX projection=To_D3DMATRIX(m);
 			ZFar=0.0f;
 			ZNear=0.0f;
-			Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,ProjectionMatrix);
+			Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,projection);
 		}
 		break;
 	default:

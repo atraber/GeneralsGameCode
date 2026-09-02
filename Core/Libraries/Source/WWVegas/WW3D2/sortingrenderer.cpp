@@ -444,35 +444,24 @@ static void Apply_Render_State(SortingNodeStruct* node)
 	DX8Wrapper::Set_Transform(D3DTS_VIEW,render_state.view);
 
 
-	if (!render_state.material->Get_Lighting())
-		return;	//no point changing lights if they are ignored.
-  //prevLight = render_state.lightsHash;
-
-	if (render_state.LightEnable[0]) {
-		DX8Wrapper::Set_DX8_Light(0,&render_state.Lights[0]);
-		if (render_state.LightEnable[1]) {
-			DX8Wrapper::Set_DX8_Light(1,&render_state.Lights[1]);
-			if (render_state.LightEnable[2]) {
-				DX8Wrapper::Set_DX8_Light(2,&render_state.Lights[2]);
-				if (render_state.LightEnable[3]) {
-					DX8Wrapper::Set_DX8_Light(3,&render_state.Lights[3]);
-				}
-				else {
-					DX8Wrapper::Set_DX8_Light(3,nullptr);
-				}
-			}
-			else {
-				DX8Wrapper::Set_DX8_Light(2,nullptr);
-			}
-		}
-		else {
-			DX8Wrapper::Set_DX8_Light(1,nullptr);
-		}
-	}
-	else {
-		DX8Wrapper::Set_DX8_Light(0,nullptr);
-	}
-
+	// The lights this draw was queued with are deliberately *not* restored, and there is a
+	// live bug hiding in that sentence which is worth stating rather than leaving for
+	// somebody to rediscover.
+	//
+	// What used to be here pushed render_state.Lights straight at the device with
+	// Set_DX8_Light -- the device setter, not DX8Wrapper::Set_Light. It therefore restored
+	// this node's lights to the fixed-function transform-and-lighting stage and never to
+	// the wrapper's tracked state, which is where the routing block reads the vertex
+	// shader's LightDir/LightDiffuse constants from. So a sorted draw that routes to a
+	// shader -- which is all of them now -- has always been lit by whichever draw last set
+	// the tracked lights, exactly the way it used to be transformed by another mesh's
+	// matrix before the two Set_Transform calls above were fixed. Deleting the device write
+	// changes nothing, because that stage draws nothing: no draw in either shadow
+	// configuration reaches the device with D3DRS_LIGHTING enabled.
+	//
+	// Restoring them into the *tracked* state would be the actual fix and would move
+	// pixels, which is why it is not bundled into a deletion whose bar is that nothing
+	// moves. See the fixed-function residue investigation.
 
 }
 

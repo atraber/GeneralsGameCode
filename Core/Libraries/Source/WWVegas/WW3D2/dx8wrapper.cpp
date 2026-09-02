@@ -151,12 +151,7 @@ D3DMATERIAL8						DX8Wrapper::CurrentMaterial = { { 1.0f, 1.0f, 1.0f, 1.0f },
 																	{ 0.0f, 0.0f, 0.0f, 0.0f },
 																	{ 0.0f, 0.0f, 0.0f, 0.0f },
 																	1.0f };
-D3DMATERIAL8						DX8Wrapper::FFDeviceMaterial = { { 0.0f, 0.0f, 0.0f, 0.0f },
-																{ 0.0f, 0.0f, 0.0f, 0.0f },
-																{ 0.0f, 0.0f, 0.0f, 0.0f },
-																{ 0.0f, 0.0f, 0.0f, 0.0f },
-																0.0f };
-bool								DX8Wrapper::FFMaterialPending = false;
+
 IDirect3DBaseTexture8 *		DX8Wrapper::Textures[MAX_TEXTURE_STAGES];
 RenderStateStruct				DX8Wrapper::render_state;
 unsigned							DX8Wrapper::render_state_changed;
@@ -174,12 +169,10 @@ IDirect3DSurface8 *			DX8Wrapper::DefaultDepthBuffer						= nullptr;
 bool								DX8Wrapper::IsRenderToTexture							= false;
 
 unsigned							DX8Wrapper::_MainThreadID								= 0;
-bool								DX8Wrapper::CurrentDX8LightEnables[4];
 bool								DX8Wrapper::IsDeviceLost;
 int								DX8Wrapper::ZBias;
 float								DX8Wrapper::ZNear;
 float								DX8Wrapper::ZFar;
-D3DMATRIX						DX8Wrapper::ProjectionMatrix;
 D3DMATRIX						DX8Wrapper::DX8Transforms[D3DTS_WORLD+1];
 
 DX8Caps*							DX8Wrapper::CurrentCaps = nullptr;
@@ -336,22 +329,12 @@ bool DX8Wrapper::Is_Deferred_FF_Render_State(unsigned state)
 
 void DX8Wrapper::Flush_Fixed_Function_State()
 {
-	if (FFMaterialPending) {
-		FFMaterialPending = false;
-		// Compared rather than sent, for the same reason as the state words: the mesh
-		// renderer sets a material per pass, so most flushes would be re-sending one the
-		// device already has.
-		if (memcmp(&FFDeviceMaterial, &CurrentMaterial, sizeof(D3DMATERIAL8)) != 0) {
-			FFDeviceMaterial = CurrentMaterial;
-			GFXCALL(Set_Material(&CurrentMaterial));
-#ifdef RTS_DEBUG
-			NoteFlushedWord(2, 0, 0);
-			++s_ffFlushedWrites;
-			NoteFlushedWrite(s_ffFlushSiteOverride != nullptr
-				? s_ffFlushSiteOverride : s_declarationSite);
-#endif
-		}
-	}
+	// The material used to be flushed here. It described a lit surface for a stage that is
+	// switched off: D3DRS_LIGHTING reads FALSE off the device and no draw in either shadow
+	// configuration turns it on, and with lighting off D3D ignores the material entirely.
+	// CurrentMaterial itself stays -- the routing block reads it to build the shader's
+	// material constants, so it is tracked-state IR like the stage words, not residue.
+
 	if (!FFStatePending) return;
 	FFStatePending = false;
 
@@ -974,9 +957,10 @@ void DX8Wrapper::Debug_Note_FF_State_Write(unsigned isTextureStage, unsigned sta
 // new escape shows up as it appears rather than wherever the next invalidation is.
 //
 // What "the wrapper believes the device holds" is two different arrays. For the
-// deferred fixed-function words it is FFDeviceRender / FFDeviceStage /
-// FFDeviceMaterial, which are only written at a flush. For everything else the
-// tracked array *is* the belief, because those writes go straight through.
+// deferred fixed-function words it is FFDeviceRender / FFDeviceStage, which are only
+// written at a flush. For everything else the tracked array *is* the belief, because
+// those writes go straight through -- and for the transforms that array is
+// DX8Transforms, which Send_Transform_To_Device fills on the way to D3D.
 //
 // Words whose tracked value is still the sentinel are skipped: the wrapper is not
 // claiming anything about them, so there is nothing to be wrong about. So are the
@@ -1078,8 +1062,6 @@ namespace {
 	unsigned s_lightFFDraws = 0;        // ...of which fixed function
 	unsigned s_lightFFLit = 0;          // ...with D3DRS_LIGHTING enabled at the device
 	unsigned s_lightFFLitByDefault = 0; // ...of which by D3D's default, nothing having flushed
-	unsigned s_lightFFLitWithLight = 0; // ...and at least one light enabled at the device
-	unsigned s_lightDeviceWrites = 0;   // SetLight/LightEnable calls that reached D3D
 	int      s_lightFrames = 0;
 }
 
@@ -1124,18 +1106,6 @@ unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
 			if (actual == believed) continue;
 			++wrong;
 			NoteInvWord(1, b);
-		}
-	}
-
-	// The material is only meaningful once something has flushed one; Power is set to
-	// -1.0f by the poison and by nothing real.
-	if (FFDeviceMaterial.Power >= 0.0f) {
-		D3DMATERIAL8 actual;
-		if (Gfx->Get_Material(&actual)) {
-			if (memcmp(&actual, &FFDeviceMaterial, sizeof(D3DMATERIAL8)) != 0) {
-				++wrong;
-				NoteInvWord(2, 0);
-			}
 		}
 	}
 
@@ -1267,7 +1237,6 @@ void DX8Wrapper::Debug_Report_Invalidations()
 			const InvWord& w = s_invWords[best];
 			WWDEBUG_SAY(("      %-36s x%u",
 				w.kind == 3 ? AuditTransformName(w.state)
-				: w.kind == 2 ? "SetMaterial"
 					: (w.kind == 1
 						? Get_DX8_Texture_Stage_State_Name((D3DTEXTURESTAGESTATETYPE)w.state)
 						: Get_DX8_Render_State_Name((D3DRENDERSTATETYPE)w.state)),
@@ -1286,12 +1255,6 @@ void DX8Wrapper::Debug_Note_Device_Transform(unsigned which, const float * matri
 	(void)matrix4x4;   // the value itself is DX8Transforms[which]; only the flag is new here
 	if (which >= AUDIT_TRANSFORM_SLOTS) return;
 	s_sentTransformValid[which] = true;
-}
-
-void DX8Wrapper::Debug_Note_Device_Light(unsigned index, bool enabled)
-{
-	(void)index; (void)enabled;
-	++s_lightDeviceWrites;
 }
 
 void DX8Wrapper::Debug_Note_Lighting_Draw()
@@ -1315,10 +1278,6 @@ void DX8Wrapper::Debug_Note_Lighting_Draw()
 	if (lighting == 0x12345678) { lighting = TRUE; ++s_lightFFLitByDefault; }
 	if (lighting == FALSE) return;
 	++s_lightFFLit;
-
-	for (int i = 0; i < 4; ++i) {
-		if (CurrentDX8LightEnables[i]) { ++s_lightFFLitWithLight; break; }
-	}
 }
 
 void DX8Wrapper::Debug_Report_Lighting()
@@ -1332,13 +1291,15 @@ void DX8Wrapper::Debug_Report_Lighting()
 	unsigned deviceLighting = 0xffffffff;
 	if (Gfx != nullptr && !Gfx->Get_Render_State(D3DRS_LIGHTING, deviceLighting))
 		deviceLighting = 0xffffffff;
+	// Nothing sends a light any more, so this is now a watch rather than a census: if the
+	// last figure is ever nonzero, some draw has turned the fixed-function lighting stage
+	// on and there are no lights in it, and it will render black rather than warn anybody.
 	WWDEBUG_SAY(("FIXED-FUNCTION LIGHTING CENSUS over 600 frames: %u draws, %u fixed "
 				 "function, %u of those with lighting enabled at the device (%u of them "
-				 "because nothing ever flushed the word and D3D's default is on), %u of "
-				 "those with a light enabled -- and %u SetLight/LightEnable calls reached "
-				 "D3D. D3DRS_LIGHTING read back off the device now: %u",
+				 "because nothing ever flushed the word and D3D's default is on). "
+				 "D3DRS_LIGHTING read back off the device now: %u",
 		s_lightDraws, s_lightFFDraws, s_lightFFLit, s_lightFFLitByDefault,
-		s_lightFFLitWithLight, s_lightDeviceWrites, deviceLighting));
+		deviceLighting));
 	if (s_lightDraws == 0) {
 		WWDEBUG_SAY(("  CONTROL FAILED: no draws reached this census at all, so the counts "
 					 "above are not a measurement of anything."));
@@ -1347,8 +1308,6 @@ void DX8Wrapper::Debug_Report_Lighting()
 	s_lightFFDraws = 0;
 	s_lightFFLit = 0;
 	s_lightFFLitByDefault = 0;
-	s_lightFFLitWithLight = 0;
-	s_lightDeviceWrites = 0;
 }
 
 void DX8Wrapper::Debug_Report_FF_Sites()
@@ -2641,7 +2600,6 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 	IsWindowed = false;
 	DX8Wrapper_IsWindowed = false;
 
-	for (int light=0;light<4;++light) CurrentDX8LightEnables[light]=false;
 
 	//old_vertex_shader; TODO
 	//old_sr_shader;
@@ -2864,8 +2822,6 @@ void DX8Wrapper::Invalidate_Cached_Render_States(const char * site)
 	// The device has been reset or taken over, so it no longer holds the material either.
 	// Power is not a colour and is never negative, so this cannot match a real material
 	// and the next flush is guaranteed to resend.
-	FFMaterialPending = true;
-	FFDeviceMaterial.Power = -1.0f;
 	for (a=0;a<MAX_TEXTURE_STAGES;++a)
 	{
 		for (int b=0; b<32;b++)
@@ -5271,39 +5227,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		else VertexMaterialClass::Apply_Null();
 	}
 
-	if (render_state_changed&LIGHTS_CHANGED)
-	{
-		unsigned mask=LIGHT0_CHANGED;
-		for (unsigned index=0;index<4;++index,mask<<=1) {
-			if (render_state_changed&mask) {
-				SNAPSHOT_SAY(("DX8 - apply light %d",index));
-				if (render_state.LightEnable[index]) {
-#ifdef MESH_RENDER_SNAPSHOT_ENABLED
-					if ( WW3D::Is_Snapshot_Activated() ) {
-						D3DLIGHT8 * light = &(render_state.Lights[index]);
-						static const char * _light_types[] = { "Unknown", "Point","Spot", "Directional" };
-						WWASSERT((light->Type >= 0) && (light->Type <= 3));
-
-						SNAPSHOT_SAY((" type = %s amb = %4.2f,%4.2f,%4.2f  diff = %4.2f,%4.2f,%4.2f spec = %4.2f, %4.2f, %4.2f",
-							_light_types[light->Type],
-							light->Ambient.r,light->Ambient.g,light->Ambient.b,
-							light->Diffuse.r,light->Diffuse.g,light->Diffuse.b,
-							light->Specular.r,light->Specular.g,light->Specular.b ));
-						SNAPSHOT_SAY((" pos = %f, %f, %f  dir = %f, %f, %f",
-							light->Position.x, light->Position.y, light->Position.z,
-							light->Direction.x, light->Direction.y, light->Direction.z ));
-					}
-#endif
-
-					Set_DX8_Light(index,&render_state.Lights[index]);
-				}
-				else {
-					Set_DX8_Light(index,nullptr);
-					SNAPSHOT_SAY((" clearing light to null"));
-				}
-			}
-		}
-	}
+	// The LIGHTS_CHANGED flag is still raised and still read, but nothing is sent: what
+	// used to be here pushed a D3DLIGHT8 at the device's transform-and-lighting stage, and
+	// that stage draws nothing. Over civ_buildings in both shadow configurations, no draw
+	// -- of 914163 on the shadow map, 493228 on the volumes -- reaches the device with
+	// D3DRS_LIGHTING enabled, and the word reads FALSE off D3D at the end of every window.
+	// The 876773 SetLight/LightEnable calls a 600-frame window was making could not reach a
+	// pixel.
+	//
+	// The flag has to stay up. Apply_Render_State_Changes returns early when nothing
+	// changed, and the routing block inside it is what reads render_state.Lights into the
+	// vertex shader's LightDir/LightDiffuse constants -- so a frame where only the lighting
+	// moved must still get here, or the shaders keep the previous frame's sun.
 
 	if (render_state_changed&WORLD_CHANGED) {
 		SNAPSHOT_SAY(("DX8 - apply world matrix"));
@@ -6221,8 +6156,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// close puts every hit test a fraction of a pixel out. Stashed so that
 				// shader is handed the very same one.
 				D3DXMATRIX camView = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-				D3DXMATRIX camProj;
-				Gfx->Get_Transform((unsigned)D3DTS_PROJECTION, (float*)&camProj);
+				const D3DXMATRIX camProj =
+					*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
 				D3DXMATRIX camVP;
 				D3DXMatrixMultiply(&camVP, &camView, &camProj);
 				memcpy(m_depthVP, &camVP, sizeof(m_depthVP));
@@ -6291,10 +6226,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 
 			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			D3DXMATRIX proj;
-			if (!Gfx->Get_Transform((unsigned)D3DTS_PROJECTION, reinterpret_cast<float*>(&proj))) {
-				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
-			}
+			const D3DXMATRIX proj =
+				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
 			D3DXMATRIX wvp;
 			D3DXMatrixMultiply(&wvp, &world, &view);
 			D3DXMatrixMultiply(&wvp, &wvp, &proj);
@@ -6330,10 +6263,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 
 			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			D3DXMATRIX proj;
-			if (!Gfx->Get_Transform((unsigned)D3DTS_PROJECTION, reinterpret_cast<float*>(&proj))) {
-				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
-			}
+			const D3DXMATRIX proj =
+				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
 			D3DXMATRIX wvp;
 			D3DXMatrixMultiply(&wvp, &world, &view);
 			D3DXMatrixMultiply(&wvp, &wvp, &proj);
@@ -6427,10 +6358,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// that a 2D drawer which does set up a projection routes here unchanged.
 			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			D3DXMATRIX proj;
-			if (!Gfx->Get_Transform((unsigned)D3DTS_PROJECTION, reinterpret_cast<float*>(&proj))) {
-				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
-			}
+			const D3DXMATRIX proj =
+				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
 			D3DXMATRIX wvp;
 			D3DXMatrixMultiply(&wvp, &world, &view);
 			D3DXMatrixMultiply(&wvp, &wvp, &proj);
@@ -6482,10 +6411,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 
 			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			D3DXMATRIX proj;
-			if (!Gfx->Get_Transform((unsigned)D3DTS_PROJECTION, reinterpret_cast<float*>(&proj))) {
-				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
-			}
+			const D3DXMATRIX proj =
+				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
 			D3DXMATRIX wvp;
 			D3DXMatrixMultiply(&wvp, &world, &view);
 			D3DXMatrixMultiply(&wvp, &wvp, &proj);
@@ -6550,10 +6477,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 
 			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			D3DXMATRIX proj;
-			if (!Gfx->Get_Transform((unsigned)D3DTS_PROJECTION, reinterpret_cast<float*>(&proj))) {
-				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
-			}
+			const D3DXMATRIX proj =
+				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
 			D3DXMATRIX wvp;
 			D3DXMatrixMultiply(&wvp, &world, &view);
 			D3DXMatrixMultiply(&wvp, &wvp, &proj);
@@ -6877,10 +6802,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// transform at c0-3 and their object -> shading space matrix at c4-7.
 			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
 			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			D3DXMATRIX proj;
-			if (!Gfx->Get_Transform((unsigned)D3DTS_PROJECTION, reinterpret_cast<float*>(&proj))) {
-				proj = *reinterpret_cast<const D3DXMATRIX*>(&ProjectionMatrix);
-			}
+			const D3DXMATRIX proj =
+				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
 			D3DXMATRIX worldView;
 			D3DXMatrixMultiply(&worldView, &world, &view);
 			D3DXMATRIX wvp;
@@ -8944,10 +8867,7 @@ void DX8Wrapper::Apply_Default_State()
 //	DX8Wrapper::Set_Material(nullptr);
 	VertexMaterialClass::Apply_Null();
 
-	for (unsigned index=0;index<4;++index) {
-		SNAPSHOT_SAY(("Clearing light %d to null",index));
-		Set_DX8_Light(index,nullptr);
-	}
+	// Lights are not sent to the device at all, so there are none here to clear.
 
 	// set up simple default TSS
 	Vector4 vconst[MAX_VERTEX_SHADER_CONSTANTS];

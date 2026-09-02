@@ -179,30 +179,13 @@ bool GfxDeviceD3D9::Get_Texture_Stage_State(unsigned stage, unsigned state, unsi
 	return true;
 }
 
-bool GfxDeviceD3D9::Get_Material(void * material_desc)
-{
-	return SUCCEEDED(m_device->GetMaterial((D3DMATERIAL8*)material_desc));
-}
 
 // ----------------------------------------------------------------------------
 // Fixed-function residue
 // ----------------------------------------------------------------------------
 
-void GfxDeviceD3D9::Set_Light(unsigned index, const void * light_desc)
-{
-	D3DCALL(SetLight(index, (const D3DLIGHT8*)light_desc));
-	D3DCALL(LightEnable(index, TRUE));
-}
 
-void GfxDeviceD3D9::Disable_Light(unsigned index)
-{
-	D3DCALL(LightEnable(index, FALSE));
-}
 
-void GfxDeviceD3D9::Set_Material(const void * material_desc)
-{
-	D3DCALL(SetMaterial((const D3DMATERIAL8*)material_desc));
-}
 
 void GfxDeviceD3D9::Set_Transform(unsigned which, const float * matrix4x4)
 {
