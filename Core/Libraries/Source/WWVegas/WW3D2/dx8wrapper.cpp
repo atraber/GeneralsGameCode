@@ -1033,6 +1033,57 @@ namespace {
 
 	// The ten D3D8 stage states the compatibility layer turns into D3D9 sampler states.
 	// Reading one back has to go the same way it was written or it is a different word.
+
+	// What the wrapper has actually sent the device for each transform, and whether it has
+	// sent one at all. This is deliberately not DX8Transforms[]: that array is written by
+	// _Set_DX8_Transform and by nothing else, while the projection and texture matrices
+	// reach the device through the Set_Transform overloads and
+	// Set_Projection_Transform_With_Z_Bias, which do not touch it. Comparing the device
+	// against DX8Transforms[] would therefore report those as wrong every check and say
+	// nothing about whether anybody is writing behind the wrapper's back, which is the
+	// question. Recorded at the device call, so it cannot drift from what was sent.
+	enum { AUDIT_TRANSFORM_SLOTS = D3DTS_WORLD + 1 };
+	D3DMATRIX s_sentTransform[AUDIT_TRANSFORM_SLOTS];
+	bool      s_sentTransformValid[AUDIT_TRANSFORM_SLOTS];
+	// -1 means the transform half of the positive control did not get to run this window.
+	int       s_invControlSawXform = -1;
+
+	// Is this a transform slot the device actually stores and we actually use? D3D9 has
+	// 256 world matrices and eight texture matrices; the engine writes world 0, the view,
+	// the projection and the texture matrices, and reading any other slot back is asking
+	// the device about a word nobody wrote.
+	bool IsAuditedTransform(unsigned which)
+	{
+		return which == D3DTS_WORLD || which == D3DTS_VIEW || which == D3DTS_PROJECTION ||
+			   (which >= D3DTS_TEXTURE0 && which <= D3DTS_TEXTURE7);
+	}
+
+	const char * AuditTransformName(unsigned which)
+	{
+		switch (which) {
+		case D3DTS_WORLD:      return "D3DTS_WORLD";
+		case D3DTS_VIEW:       return "D3DTS_VIEW";
+		case D3DTS_PROJECTION: return "D3DTS_PROJECTION";
+		case D3DTS_TEXTURE0:   return "D3DTS_TEXTURE0";
+		case D3DTS_TEXTURE1:   return "D3DTS_TEXTURE1";
+		case D3DTS_TEXTURE2:   return "D3DTS_TEXTURE2";
+		case D3DTS_TEXTURE3:   return "D3DTS_TEXTURE3";
+		case D3DTS_TEXTURE4:   return "D3DTS_TEXTURE4";
+		case D3DTS_TEXTURE5:   return "D3DTS_TEXTURE5";
+		case D3DTS_TEXTURE6:   return "D3DTS_TEXTURE6";
+		case D3DTS_TEXTURE7:   return "D3DTS_TEXTURE7";
+		default:               return "D3DTS_(other)";
+		}
+	}
+
+	// The fixed-function lighting census. Counted per draw, after the flush, so what it
+	// reads is what the device will use and not what somebody asked for earlier.
+	unsigned s_lightDraws = 0;          // every draw through DX8Wrapper::Draw
+	unsigned s_lightFFDraws = 0;        // ...of which fixed function
+	unsigned s_lightFFLit = 0;          // ...with D3DRS_LIGHTING enabled at the device
+	unsigned s_lightFFLitWithLight = 0; // ...and at least one light enabled at the device
+	unsigned s_lightDeviceWrites = 0;   // SetLight/LightEnable calls that reached D3D
+	int      s_lightFrames = 0;
 }
 
 unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
@@ -1091,6 +1142,19 @@ unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
 		}
 	}
 
+	// Transforms. Only the slots something has actually sent are read: an untouched slot
+	// holds whatever D3D defaulted it to and the wrapper is not claiming anything about
+	// it, which is the same rule the 0x12345678 sentinel enforces above.
+	for (unsigned t = 0; t < AUDIT_TRANSFORM_SLOTS; ++t) {
+		if (!s_sentTransformValid[t]) continue;
+		if (!IsAuditedTransform(t)) continue;
+		D3DMATRIX actual;
+		if (!Gfx->Get_Transform(t, (float*)&actual)) continue;
+		if (memcmp(&actual, &s_sentTransform[t], sizeof(D3DMATRIX)) == 0) continue;
+		++wrong;
+		NoteInvWord(3, t);
+	}
+
 	if (wrong) { ++g->wrongCalls; g->wrongWords += wrong; }
 	return wrong;
 }
@@ -1115,6 +1179,21 @@ void DX8Wrapper::Debug_Audit_Frame_End()
 		Gfx->Set_Render_State(D3DRS_FILLMODE, wrong);
 		s_invControlSaw = (int)Debug_Audit_Invalidation("(control -- one word poked at the device)");
 		Gfx->Set_Render_State(D3DRS_FILLMODE, real);
+	}
+
+	// The same control for the transform sweep, run separately rather than folded into the
+	// one above so that a failure names which half of the instrument went quiet. D3DTS_VIEW
+	// is poked because something writes it every frame, so the slot is always valid; the
+	// matrix put there is not a transform anything could mistake for real, and it is put
+	// back from the recorded value on the next line -- again after EndScene, so no draw can
+	// see it.
+	if (s_invFrames + 1 >= 600 && Gfx != nullptr && s_sentTransformValid[D3DTS_VIEW]) {
+		const D3DMATRIX real = s_sentTransform[D3DTS_VIEW];
+		D3DMATRIX bogus = real;
+		bogus.m[3][0] += 12345.0f;
+		Gfx->Set_Transform(D3DTS_VIEW, (const float*)&bogus);
+		s_invControlSawXform = (int)Debug_Audit_Invalidation("(control -- one transform poked at the device)");
+		Gfx->Set_Transform(D3DTS_VIEW, (const float*)&real);
 	}
 
 	// Every thirtieth frame, not every frame. The check is ~300 device reads, each a
@@ -1155,6 +1234,16 @@ void DX8Wrapper::Debug_Report_Invalidations()
 		WWDEBUG_SAY(("  control did not run this window; the zeroes above are unqualified."));
 	}
 	s_invControlSaw = -1;
+	if (s_invControlSawXform > 0) {
+		WWDEBUG_SAY(("  transform control: one matrix written at the device behind the "
+					 "wrapper's back was seen, so the transform sweep is reaching D3D."));
+	} else if (s_invControlSawXform == 0) {
+		WWDEBUG_SAY(("  TRANSFORM CONTROL FAILED: a matrix written at the device behind the "
+					 "wrapper's back was NOT seen. The transform numbers are worthless."));
+	} else {
+		WWDEBUG_SAY(("  transform control did not run this window."));
+	}
+	s_invControlSawXform = -1;
 
 	for (int rank = 0; rank < s_invSiteCount; ++rank) {
 		int best = -1;
@@ -1180,7 +1269,8 @@ void DX8Wrapper::Debug_Report_Invalidations()
 			if (best < 0) break;
 			const InvWord& w = s_invWords[best];
 			WWDEBUG_SAY(("      %-36s x%u",
-				w.kind == 2 ? "SetMaterial"
+				w.kind == 3 ? AuditTransformName(w.state)
+				: w.kind == 2 ? "SetMaterial"
 					: (w.kind == 1
 						? Get_DX8_Texture_Stage_State_Name((D3DTEXTURESTAGESTATETYPE)w.state)
 						: Get_DX8_Render_State_Name((D3DRENDERSTATETYPE)w.state)),
@@ -1192,6 +1282,60 @@ void DX8Wrapper::Debug_Report_Invalidations()
 	s_invWordCount = 0;
 	s_invDropped = 0;
 	s_invWordDropped = 0;
+}
+
+void DX8Wrapper::Debug_Note_Device_Transform(unsigned which, const float * matrix4x4)
+{
+	if (which >= AUDIT_TRANSFORM_SLOTS) return;
+	s_sentTransform[which] = *reinterpret_cast<const D3DMATRIX*>(matrix4x4);
+	s_sentTransformValid[which] = true;
+}
+
+void DX8Wrapper::Debug_Note_Device_Light(unsigned index, bool enabled)
+{
+	(void)index; (void)enabled;
+	++s_lightDeviceWrites;
+}
+
+void DX8Wrapper::Debug_Note_Lighting_Draw()
+{
+	++s_lightDraws;
+	if (!Is_Fixed_Function_Draw()) return;
+	++s_lightFFDraws;
+
+	// D3DRS_LIGHTING is a deferred fixed-function word, so the tracked array holds what a
+	// caller asked for and FFDeviceRender holds what the device was actually given. This
+	// runs after the flush in Draw(), so the second is the one that decides the pixel.
+	const unsigned lighting = FFDeviceRender[D3DRS_LIGHTING];
+	if (lighting == 0x12345678 || lighting == FALSE) return;
+	++s_lightFFLit;
+
+	for (int i = 0; i < 4; ++i) {
+		if (CurrentDX8LightEnables[i]) { ++s_lightFFLitWithLight; break; }
+	}
+}
+
+void DX8Wrapper::Debug_Report_Lighting()
+{
+	if (++s_lightFrames < 600) return;
+	s_lightFrames = 0;
+
+	// Three nested counts, each the control for the one below it: a zero on the last line
+	// only means something if the lines above it are not zero for a different reason.
+	WWDEBUG_SAY(("FIXED-FUNCTION LIGHTING CENSUS over 600 frames: %u draws, %u fixed "
+				 "function, %u of those with lighting enabled at the device, %u of those "
+				 "with a light enabled -- and %u SetLight/LightEnable calls reached D3D",
+		s_lightDraws, s_lightFFDraws, s_lightFFLit, s_lightFFLitWithLight,
+		s_lightDeviceWrites));
+	if (s_lightDraws == 0) {
+		WWDEBUG_SAY(("  CONTROL FAILED: no draws reached this census at all, so the counts "
+					 "above are not a measurement of anything."));
+	}
+	s_lightDraws = 0;
+	s_lightFFDraws = 0;
+	s_lightFFLit = 0;
+	s_lightFFLitWithLight = 0;
+	s_lightDeviceWrites = 0;
 }
 
 void DX8Wrapper::Debug_Report_FF_Sites()
@@ -4328,6 +4472,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Technique_Check();
 	Debug_Report_Particle_Shadows();
 	Debug_Report_Alpha_Fog();
+	Debug_Report_Lighting();
 	Debug_Report_Shader_Names();
 	Mesh_Technique_Report_Registrations();
 #endif
@@ -4809,6 +4954,11 @@ void DX8Wrapper::Draw(
 	if (Is_Fixed_Function_Draw() && Has_Pending_Fixed_Function_State()) {
 		Flush_Fixed_Function_State();
 	}
+
+#ifdef RTS_DEBUG
+	// After the flush, so what the census reads is what the device will draw with.
+	Debug_Note_Lighting_Draw();
+#endif
 
 #ifdef MESH_RENDER_SNAPSHOT_ENABLED
 	if (WW3D::Is_Snapshot_Activated()) {

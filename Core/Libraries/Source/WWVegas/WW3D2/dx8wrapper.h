@@ -446,6 +446,12 @@ public:
 	static void _Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, const D3DMATRIX& m);
 	static void _Get_DX8_Transform(D3DTRANSFORMSTATETYPE transform, D3DMATRIX& m);
 
+	// The one place a matrix is handed to the device. Every path that writes a transform
+	// goes through here -- _Set_DX8_Transform, the three Set_Transform overloads and
+	// Set_Projection_Transform_With_Z_Bias -- so there is a single point at which what was
+	// sent can be recorded, which is what the device-state audit compares against.
+	static void Send_Transform_To_Device(unsigned which, const D3DMATRIX& m);
+
 	// Raise TEXGEN_STATE_CHANGED when the matrix just written was a texture stage's.
 	//
 	// _Set_DX8_Transform does this itself, but the three Set_Transform overloads reach the
@@ -1229,6 +1235,25 @@ public:
 	static void Debug_Audit_Frame_End();
 	static void Debug_Report_Invalidations();
 
+	// Transforms and lights: the two categories the audit above does not cover.
+	//
+	// It compares the device against the wrapper's tracked arrays, and neither of these
+	// has one it can use. DX8Transforms[] looks like the array for transforms and is not:
+	// _Set_DX8_Transform writes it, but the three Set_Transform overloads and
+	// Set_Projection_Transform_With_Z_Bias reach the device without touching it, so a
+	// projection or texture matrix set through those is on the device and not in the
+	// array. What the audit needs is what was actually sent, so that is what this records,
+	// at the device call itself.
+	//
+	// Lights are asked a different question, because "does anything write one behind our
+	// back" is not the interesting one -- nothing does. The interesting one is whether any
+	// draw still *consumes* fixed-function lighting, and that is a per-draw property, so
+	// it is counted in Draw() beside the alpha-test census rather than read back here.
+	static void Debug_Note_Device_Transform(unsigned which, const float * matrix4x4);
+	static void Debug_Note_Device_Light(unsigned index, bool enabled);
+	static void Debug_Note_Lighting_Draw();
+	static void Debug_Report_Lighting();
+
 	// Alpha test and fog: the two fixed-function *stages* that have no D3D11 equivalent
 	// at all. Both run after the pixel shader, so a shader can be entirely correct and
 	// still lose them, and both fail silently -- soft-edged foliage, an unfogged scene.
@@ -1807,6 +1832,14 @@ WWINLINE void DX8Wrapper::Set_Pixel_Shader_Constant(int reg, const void* data, i
 }
 // shader system updates KJM ^
 
+WWINLINE void DX8Wrapper::Send_Transform_To_Device(unsigned which, const D3DMATRIX& m)
+{
+	GFXCALL(Set_Transform(which,(const float*)&m));
+#ifdef RTS_DEBUG
+	Debug_Note_Device_Transform(which,(const float*)&m);
+#endif
+}
+
 WWINLINE void DX8Wrapper::_Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, const D3DMATRIX& m)
 {
 	WWASSERT(transform<=D3DTS_WORLD);
@@ -1828,7 +1861,7 @@ WWINLINE void DX8Wrapper::_Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, co
 			m.m[1][0],m.m[1][1],m.m[1][2],m.m[1][3],
 			m.m[2][0],m.m[2][1],m.m[2][2],m.m[2][3]));
 		DX8_RECORD_MATRIX_CHANGE();
-		GFXCALL(Set_Transform((unsigned)transform,(const float*)&m));
+		Send_Transform_To_Device((unsigned)transform,m);
 	}
 }
 
@@ -1941,12 +1974,18 @@ WWINLINE void DX8Wrapper::Set_DX8_Light(int index, D3DLIGHT8* light)
 		DX8_RECORD_LIGHT_CHANGE();
 		GFXCALL(Set_Light(index,light));
 		CurrentDX8LightEnables[index]=true;
+#ifdef RTS_DEBUG
+		Debug_Note_Device_Light((unsigned)index,true);
+#endif
 		SNAPSHOT_SAY(("DX8 - SetLight %d",index));
 	}
 	else if (CurrentDX8LightEnables[index]) {
 		DX8_RECORD_LIGHT_CHANGE();
 		CurrentDX8LightEnables[index]=false;
 		GFXCALL(Disable_Light(index));
+#ifdef RTS_DEBUG
+		Debug_Note_Device_Light((unsigned)index,false);
+#endif
 		SNAPSHOT_SAY(("DX8 - DisableLight %d",index));
 	}
 }
@@ -2458,10 +2497,10 @@ WWINLINE void DX8Wrapper::Set_Projection_Transform_With_Z_Bias(const Matrix4x4& 
 		tmp_zbias*=(1.0f/16.0f);
 		tmp_zbias*=1.0f / (ZFar - ZNear);
 		tmp.m[2][2]-=tmp_zbias*tmp.m[3][2];
-		GFXCALL(Set_Transform((unsigned)D3DTS_PROJECTION,(const float*)&tmp));
+		Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,tmp);
 	}
 	else {
-		GFXCALL(Set_Transform((unsigned)D3DTS_PROJECTION,(const float*)&ProjectionMatrix));
+		Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,ProjectionMatrix);
 	}
 }
 
@@ -2483,14 +2522,14 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 			D3DMATRIX ProjectionMatrix=To_D3DMATRIX(m);
 			ZFar=0.0f;
 			ZNear=0.0f;
-			GFXCALL(Set_Transform((unsigned)D3DTS_PROJECTION,(const float*)&ProjectionMatrix));
+			Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,ProjectionMatrix);
 		}
 		break;
 	default:
 		DX8_RECORD_MATRIX_CHANGE();
 		D3DMATRIX dxm=To_D3DMATRIX(m);
 		Note_Texture_Transform_Write(transform);
-		GFXCALL(Set_Transform((unsigned)transform,(const float*)&dxm));
+		Send_Transform_To_Device((unsigned)transform,dxm);
 		break;
 	}
 }
@@ -2511,7 +2550,7 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const D3
 	default:
 		DX8_RECORD_MATRIX_CHANGE();
 		Note_Texture_Transform_Write(transform);
-		GFXCALL(Set_Transform((unsigned)transform,(const float*)&m));
+		Send_Transform_To_Device((unsigned)transform,m);
 		break;
 	}
 }
@@ -2533,7 +2572,7 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 		DX8_RECORD_MATRIX_CHANGE();
 		D3DMATRIX dxm=To_D3DMATRIX(m);
 		Note_Texture_Transform_Write(transform);
-		GFXCALL(Set_Transform((unsigned)transform,(const float*)&dxm));
+		Send_Transform_To_Device((unsigned)transform,dxm);
 		break;
 	}
 }
