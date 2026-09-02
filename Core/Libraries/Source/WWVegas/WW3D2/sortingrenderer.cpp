@@ -402,6 +402,72 @@ void SortingRendererClass::Insert_To_Sorting_Pool(SortingNodeStruct* state)
 // ----------------------------------------------------------------------------
 //static unsigned prevLight = 0xffffffff;
 
+#ifdef RTS_DEBUG
+// How often a sorted draw was being lit by somebody else's lights, and by how much.
+// Counted where the restore happens, comparing what this node queued against what the
+// tracked state was already holding -- which before the restore below was whichever draw
+// happened to trigger the flush.
+static unsigned s_sortedDraws = 0;
+static unsigned s_sortedLightsDiffer = 0;
+static unsigned s_sortedLightsEnableDiffer = 0;
+static float s_sortedWorstDirDelta = 0.0f;
+static float s_sortedWorstDiffuseDelta = 0.0f;
+
+static float Max_Component_Delta(const D3DVECTOR& a, const D3DVECTOR& b)
+{
+	float d = WWMath::Fabs(a.x-b.x);
+	float t = WWMath::Fabs(a.y-b.y); if (t>d) d=t;
+	t = WWMath::Fabs(a.z-b.z); if (t>d) d=t;
+	return d;
+}
+
+static float Max_Component_Delta(const D3DCOLORVALUE& a, const D3DCOLORVALUE& b)
+{
+	float d = WWMath::Fabs(a.r-b.r);
+	float t = WWMath::Fabs(a.g-b.g); if (t>d) d=t;
+	t = WWMath::Fabs(a.b-b.b); if (t>d) d=t;
+	return d;
+}
+
+static void Census_Sorted_Lights(const RenderStateStruct& queued)
+{
+	++s_sortedDraws;
+	bool differ = false;
+	for (unsigned i=0;i<4;++i) {
+		D3DLIGHT8 have;
+		const bool had = DX8Wrapper::Peek_Light(i,have);
+		if (had != queued.LightEnable[i]) { ++s_sortedLightsEnableDiffer; differ = true; continue; }
+		if (!had) continue;
+		const float dd = Max_Component_Delta(have.Direction, queued.Lights[i].Direction);
+		const float cd = Max_Component_Delta(have.Diffuse, queued.Lights[i].Diffuse);
+		if (dd > s_sortedWorstDirDelta) s_sortedWorstDirDelta = dd;
+		if (cd > s_sortedWorstDiffuseDelta) s_sortedWorstDiffuseDelta = cd;
+		if (dd > 0.001f || cd > 0.001f) differ = true;
+	}
+	if (differ) ++s_sortedLightsDiffer;
+}
+
+void SortingRendererClass::Debug_Report_Sorted_Lights()
+{
+	static unsigned frames = 0;
+	if (++frames < 600) return;
+	frames = 0;
+	WWDEBUG_SAY(("SORTED LIGHTING over 600 frames: %u sorted draws, %u of them were queued "
+		"with lights the tracked state was not already holding (%u differed in which lights "
+		"were on at all). Worst direction component delta %.3f, worst diffuse %.3f. These are "
+		"the draws the restore below changes; the total is the control.",
+		s_sortedDraws, s_sortedLightsDiffer, s_sortedLightsEnableDiffer,
+		s_sortedWorstDirDelta, s_sortedWorstDiffuseDelta));
+	s_sortedDraws = 0;
+	s_sortedLightsDiffer = 0;
+	s_sortedLightsEnableDiffer = 0;
+	s_sortedWorstDirDelta = 0.0f;
+	s_sortedWorstDiffuseDelta = 0.0f;
+}
+#else
+void SortingRendererClass::Debug_Report_Sorted_Lights() {}
+#endif
+
 static void Apply_Render_State(SortingNodeStruct* node)
 {
 	RenderStateStruct& render_state = node->sorting_state;
@@ -444,25 +510,30 @@ static void Apply_Render_State(SortingNodeStruct* node)
 	DX8Wrapper::Set_Transform(D3DTS_VIEW,render_state.view);
 
 
-	// The lights this draw was queued with are deliberately *not* restored, and there is a
-	// live bug hiding in that sentence which is worth stating rather than leaving for
-	// somebody to rediscover.
+	// The lights, for the same reason and with the same history as the transforms above.
 	//
 	// What used to be here pushed render_state.Lights straight at the device with
-	// Set_DX8_Light -- the device setter, not DX8Wrapper::Set_Light. It therefore restored
-	// this node's lights to the fixed-function transform-and-lighting stage and never to
-	// the wrapper's tracked state, which is where the routing block reads the vertex
-	// shader's LightDir/LightDiffuse constants from. So a sorted draw that routes to a
-	// shader -- which is all of them now -- has always been lit by whichever draw last set
-	// the tracked lights, exactly the way it used to be transformed by another mesh's
-	// matrix before the two Set_Transform calls above were fixed. Deleting the device write
-	// changes nothing, because that stage draws nothing: no draw in either shadow
-	// configuration reaches the device with D3DRS_LIGHTING enabled.
+	// Set_DX8_Light -- the device setter, not DX8Wrapper::Set_Light. That restored this
+	// node's lights to the fixed-function transform-and-lighting stage, which draws
+	// nothing, and never to the wrapper's tracked state, which is where the routing block
+	// reads the vertex shader's LightDir and LightDiffuse constants from. So every sorted
+	// draw was lit by whichever draw last set the tracked lights: a different object,
+	// elsewhere in the frame, picked by whatever happened to trigger the flush.
 	//
-	// Restoring them into the *tracked* state would be the actual fix and would move
-	// pixels, which is why it is not bundled into a deletion whose bar is that nothing
-	// moves. See the fixed-function residue investigation.
-
+	// The enable flags are followed in the same order the queued copy filled them --
+	// RenderStateStruct::operator= stops copying at the first disabled light -- so a light
+	// this node did not queue is turned off rather than left holding somebody else's.
+#ifdef RTS_DEBUG
+	Census_Sorted_Lights(render_state);
+#endif
+	for (unsigned light=0; light<4; ++light) {
+		if (render_state.LightEnable[light]) {
+			DX8Wrapper::Set_Light(light,&render_state.Lights[light]);
+		}
+		else {
+			DX8Wrapper::Set_Light(light,nullptr);
+		}
+	}
 }
 
 // ----------------------------------------------------------------------------

@@ -32,6 +32,10 @@ class SortingRendererClass
 	static void Insert_To_Sorting_Pool(SortingNodeStruct* state);
 
 public:
+	// Debug only: how often a sorted draw's queued lights differed from what the tracked
+	// state already held. Reported on the same 600-frame window as the other censuses.
+	static void Debug_Report_Sorted_Lights();
+
 	static void Insert_Triangles(
 		const SphereClass& bounding_sphere,
 		unsigned short start_index,

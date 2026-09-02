@@ -416,6 +416,9 @@ public:
 	static void Set_Index_Buffer_Index_Offset(unsigned offset);
 
 	static void Get_Render_State(RenderStateStruct& state);
+	// One tracked light, without copying the whole render state and its texture
+	// references. Used by the sorted-draw lighting census.
+	static bool Peek_Light(unsigned index, D3DLIGHT8& light);
 	static void Set_Render_State(const RenderStateStruct& state);
 	static void Release_Render_State();
 
@@ -2559,6 +2562,13 @@ WWINLINE void DX8Wrapper::Set_Alpha (const float alpha, unsigned int &color)
 WWINLINE void DX8Wrapper::Get_Render_State(RenderStateStruct& state)
 {
 	state=render_state;
+}
+
+WWINLINE bool DX8Wrapper::Peek_Light(unsigned index, D3DLIGHT8& light)
+{
+	if (index>=4 || !render_state.LightEnable[index]) return false;
+	light=render_state.Lights[index];
+	return true;
 }
 
 WWINLINE void DX8Wrapper::Get_Shader(ShaderClass& shader)
