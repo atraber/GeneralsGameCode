@@ -914,17 +914,13 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
 
 	Setting *setting=&m_settings[m_tod];
 
-	HRESULT hr;
-
 	//default setting for a dynamic vertex buffer
-	D3DPOOL pool = D3DPOOL_DEFAULT;
-	DWORD usage = D3DUSAGE_WRITEONLY | D3DUSAGE_DYNAMIC;
+	unsigned usage = GFX_USAGE_DYNAMIC;
 	DWORD fvf = WATER_MESH_FVF;
 
 	if (doStatic)
 	{	//change settings for a static vertex buffer
-		pool = D3DPOOL_MANAGED;
-		usage = D3DUSAGE_WRITEONLY;
+		usage = GFX_USAGE_STATIC;
 		fvf=0;// DX8 Docs confusing on this. Say no FVF for vertex shaders. Else DX8_FVF_XYZDUV1;
 		m_numVertices=sizeX*sizeY;
 	}
@@ -932,15 +928,9 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
 	if (m_vertexBufferD3D == nullptr)
 	{	// Create vertex buffer
 
-		if (FAILED(hr=m_pDev->CreateVertexBuffer
-		(
-			m_numVertices*vertexSize,
-			usage,
-			fvf,
-			pool,
-			&m_vertexBufferD3D
-		)))
-			return hr;
+		m_vertexBufferD3D=DX8Wrapper::Create_DX8_Vertex_Buffer(m_numVertices*vertexSize, fvf, usage);
+		if (m_vertexBufferD3D == nullptr)
+			return E_FAIL;
 	}
 
 	m_vertexBufferD3DOffset=0;
@@ -949,14 +939,9 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
 		return S_OK;	//only create the buffer, other code will fill it.
 
 	// load results into buffer
-	if (FAILED(hr=m_vertexBufferD3D->Lock
-	(
-		0,
-		m_numVertices*sizeof(SEA_PATCH_VERTEX),
-		DX8_LOCK_CAST(&pVertices),
-		0//D3DLOCK_DISCARD
-	)))
-		return hr;
+	if (!DX8Wrapper::Map_DX8_Vertex_Buffer(m_vertexBufferD3D, 0,
+			m_numVertices*sizeof(SEA_PATCH_VERTEX), GFX_MAP_WRITE, (void**)&pVertices))
+		return E_FAIL;
 
 	Int x,z;
 	for (z=0; z<sizeY; z++)
@@ -974,7 +959,7 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
 		}
 	}
 
-	if (FAILED(hr=m_vertexBufferD3D->Unlock())) return hr;
+	DX8Wrapper::Unmap_DX8_Vertex_Buffer(m_vertexBufferD3D);
 
 	return S_OK;
 }
@@ -984,8 +969,6 @@ HRESULT WaterRenderObjClass::generateVertexBuffer( Int sizeX, Int sizeY, Int ver
 //-------------------------------------------------------------------------------------------------
 HRESULT WaterRenderObjClass::generateIndexBuffer(Int sizeX, Int sizeY)
 {
-	HRESULT hr;
-
 	//Will need SizeY-1 strips, each of length SizeX*2 (2 indices per strip segment).
 	//Will also need 2 extra indices to connect each strip to next one (except last strip)
 	//Total index buffer size = (SizeY-1)*(SizeX*2+2) - 2 (drop the extra 2 indices from last strip)
@@ -997,24 +980,13 @@ HRESULT WaterRenderObjClass::generateIndexBuffer(Int sizeX, Int sizeY)
 	// Create index buffer
 	WORD* pIndices;
 
-	if (FAILED(hr=m_pDev->CreateIndexBuffer
-	(
-		(m_numIndices+2)*sizeof(WORD),
-		D3DUSAGE_WRITEONLY,
-		D3DFMT_INDEX16,
-		D3DPOOL_MANAGED,
-		&m_indexBufferD3D
-	)))
-		return hr;
+	m_indexBufferD3D=DX8Wrapper::Create_DX8_Index_Buffer(m_numIndices+2, GFX_USAGE_STATIC);
+	if (m_indexBufferD3D == nullptr)
+		return E_FAIL;
 
-	if (FAILED(hr=m_indexBufferD3D->Lock
-	(
-		0,
-		m_numIndices*sizeof(WORD),
-		DX8_LOCK_CAST(&pIndices),
-		0
-	)))
-		return hr;
+	if (!DX8Wrapper::Map_DX8_Index_Buffer(m_indexBufferD3D, 0, m_numIndices*sizeof(WORD),
+			GFX_MAP_WRITE, (void**)&pIndices))
+		return E_FAIL;
 
 	Int i,j,k;
 
@@ -1076,7 +1048,7 @@ HRESULT WaterRenderObjClass::generateIndexBuffer(Int sizeX, Int sizeY)
 		s_toggle=!s_toggle;
 	}
 */
-	if (FAILED(hr=m_indexBufferD3D->Unlock())) return hr;
+	DX8Wrapper::Unmap_DX8_Index_Buffer(m_indexBufferD3D);
 
 	return S_OK;
 }
@@ -2620,12 +2592,15 @@ void WaterRenderObjClass::renderWaterMesh()
 	MaterMeshVertexFormat *vb;
 	if (m_vertexBufferD3DOffset < m_numVertices)
 	{	//we have room in current VB, append new verts
-		if(m_vertexBufferD3D->Lock(m_vertexBufferD3DOffset*sizeof(MaterMeshVertexFormat),mx*my*sizeof(MaterMeshVertexFormat),DX8_LOCK_CAST(&vb),D3DLOCK_NOOVERWRITE) != D3D_OK)
+		if(!DX8Wrapper::Map_DX8_Vertex_Buffer(m_vertexBufferD3D,
+			m_vertexBufferD3DOffset*sizeof(MaterMeshVertexFormat),
+			mx*my*sizeof(MaterMeshVertexFormat), GFX_MAP_WRITE_NO_OVERWRITE, (void**)&vb))
 			return;
 	}
 	else
 	{	//ran out of room in last VB, request a substitute VB.
-		if(m_vertexBufferD3D->Lock(0,mx*my*sizeof(MaterMeshVertexFormat),DX8_LOCK_CAST(&vb),D3DLOCK_DISCARD) != D3D_OK)
+		if(!DX8Wrapper::Map_DX8_Vertex_Buffer(m_vertexBufferD3D, 0,
+			mx*my*sizeof(MaterMeshVertexFormat), GFX_MAP_WRITE_DISCARD, (void**)&vb))
 			return;
 		m_vertexBufferD3DOffset=0;	//reset start of page to first vertex
 	}
@@ -2693,7 +2668,7 @@ void WaterRenderObjClass::renderWaterMesh()
 		}
 	}
 
-	m_vertexBufferD3D->Unlock();
+	DX8Wrapper::Unmap_DX8_Vertex_Buffer(m_vertexBufferD3D);
 
 	DX8Wrapper::Set_Transform(D3DTS_WORLD,Transform);	//position the water surface
 	DX8Wrapper::Set_Material(m_meshVertexMaterialClass);

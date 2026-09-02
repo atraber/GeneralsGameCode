@@ -98,6 +98,47 @@ struct GfxRect
 };
 
 /*
+** What the engine will do with a resource's memory.
+**
+** A backend chooses its own storage from this; the engine never names one. This is
+** deliberately not a pool argument: D3DPOOL_MANAGED -- what GFX_USAGE_STATIC becomes
+** under D3D9 -- has no D3D11 equivalent at all, so a pool is exactly the thing that
+** cannot cross a seam. The bit values match DX8VertexBufferClass::UsageType and
+** DX8IndexBufferClass::UsageType, which are defined in terms of them.
+*/
+enum GfxResourceUsage
+{
+	GFX_USAGE_STATIC = 0,				// filled at creation, then read by the GPU
+	GFX_USAGE_DYNAMIC = 1,				// rewritten by the CPU every frame or oftener
+	GFX_USAGE_SOFTWARE_PROCESSING = 2,	// vertices are transformed on the CPU
+	GFX_USAGE_NPATCHES = 4,				// will be fed to a tessellator
+	GFX_USAGE_POINT_SPRITES = 8			// each vertex is expanded into a screen-facing quad
+};
+
+/*
+** What a caller intends to do with mapped memory, and what it promises about the part
+** it is not writing.
+**
+** D3D9's Lock takes these as hints it is free to ignore; D3D11's Map takes them as
+** rules, and a discard map against a resource that was not created dynamic fails at
+** runtime rather than at compile time. Stating the intent here is what lets a backend
+** enforce -- or at least notice -- the pairing, and the D3D9 backend does notice: see
+** the discard audit in Map_Vertex_Buffer.
+**
+** D3D9's D3DLOCK_NOSYSLOCK has no counterpart here and is deliberately absent. It says
+** whether the driver may hold the system lock, it changes nothing about what is drawn,
+** and there is nothing for a second backend to do with it.
+*/
+enum GfxMapMode
+{
+	GFX_MAP_WRITE = 0,			// write; whatever is not written stays
+	GFX_MAP_WRITE_DISCARD,		// write all of it; the previous contents are not wanted
+	GFX_MAP_WRITE_NO_OVERWRITE,	// append; nothing the GPU may still be reading is touched
+	GFX_MAP_READ,
+	GFX_MAP_READ_WRITE
+};
+
+/*
 ** What Get_Device_Status reports. D3D9's TestCooperativeLevel is three outcomes
 ** wearing one HRESULT; this names them, and a backend with no device-lost concept
 ** simply always answers GFX_DEVICE_OK.
@@ -213,6 +254,27 @@ public:
 
 	virtual void			Set_Viewport(const GfxViewport & viewport) = 0;
 	virtual bool			Get_Viewport(GfxViewport & viewport) = 0;
+
+	// ---- buffers ---------------------------------------------------------
+	//
+	// Creation says what the buffer is for, not where to put it. The retry ladder the
+	// engine runs when creation fails -- drop old textures, flush the mesh cache, try
+	// again -- stays on the engine side, because what it frees is the engine's.
+	//
+	// Map hands back a pointer into the buffer, and takes the caller's intent with it.
+
+	virtual GfxVertexBuffer * Create_Vertex_Buffer(unsigned size_in_bytes, unsigned fvf,
+								unsigned usage) = 0;
+	virtual GfxIndexBuffer *  Create_Index_Buffer(unsigned index_count, unsigned usage) = 0;
+	virtual void			Release_Vertex_Buffer(GfxVertexBuffer * buffer) = 0;
+	virtual void			Release_Index_Buffer(GfxIndexBuffer * buffer) = 0;
+
+	virtual bool			Map_Vertex_Buffer(GfxVertexBuffer * buffer, unsigned offset_in_bytes,
+								unsigned size_in_bytes, GfxMapMode mode, void ** data) = 0;
+	virtual void			Unmap_Vertex_Buffer(GfxVertexBuffer * buffer) = 0;
+	virtual bool			Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
+								unsigned size_in_bytes, GfxMapMode mode, void ** data) = 0;
+	virtual void			Unmap_Index_Buffer(GfxIndexBuffer * buffer) = 0;
 
 	// ---- describing a resource -------------------------------------------
 	//

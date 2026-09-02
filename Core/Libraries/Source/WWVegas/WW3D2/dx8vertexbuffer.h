@@ -54,6 +54,7 @@ class StringClass;
 class DX8VertexBufferClass;
 class FVFInfoClass;
 #include "d3d9_compat.h"
+#include "gfxdevice.h"
 class VertexBufferClass;
 struct VertexFormatXYZNDUV2;
 
@@ -91,7 +92,9 @@ public:
 	class WriteLockClass : public VertexBufferLockClass
 	{
 	public:
-		WriteLockClass(VertexBufferClass* vertex_buffer, int flags=0);
+		// The mode says what the caller intends -- see GfxMapMode. It used to be a raw
+		// D3DLOCK flag word, which meant every caller of this named a graphics API.
+		WriteLockClass(VertexBufferClass* vertex_buffer, GfxMapMode mode=GFX_MAP_WRITE);
 		~WriteLockClass();
 	};
 
@@ -201,11 +204,13 @@ class DX8VertexBufferClass : public VertexBufferClass
 protected:
 	virtual ~DX8VertexBufferClass() override;
 public:
+	// The engine's own words for what a buffer is for, and the seam's: these are the
+	// GfxResourceUsage bits under the names the call sites already use.
 	enum UsageType {
-		USAGE_DEFAULT=0,
-		USAGE_DYNAMIC=1,
-		USAGE_SOFTWAREPROCESSING=2,
-		USAGE_NPATCHES=4
+		USAGE_DEFAULT=GFX_USAGE_STATIC,
+		USAGE_DYNAMIC=GFX_USAGE_DYNAMIC,
+		USAGE_SOFTWAREPROCESSING=GFX_USAGE_SOFTWARE_PROCESSING,
+		USAGE_NPATCHES=GFX_USAGE_NPATCHES
 	};
 
 	DX8VertexBufferClass(unsigned FVF, unsigned short VertexCount, UsageType usage=USAGE_DEFAULT);

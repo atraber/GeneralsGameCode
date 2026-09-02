@@ -1434,13 +1434,13 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 
 	if (nShadowVertsInBuf > (SHADOW_VERTEX_SIZE-numVerts))	//check if room for model verts
 	{	//flush the buffer by drawing the contents and re-locking again
-		if (shadowVertexBufferD3D->Lock(0,numVerts*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),DX8_LOCK_CAST(&pvVertices),D3DLOCK_DISCARD) != D3D_OK)
+		if (!DX8Wrapper::Map_DX8_Vertex_Buffer(shadowVertexBufferD3D,0,numVerts*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),GFX_MAP_WRITE_DISCARD,(void**)&pvVertices))
 			return;
 		nShadowVertsInBuf=0;
 		nShadowStartBatchVertex=0;
 	}
 	else
-	{	if (shadowVertexBufferD3D->Lock(nShadowVertsInBuf*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),numVerts*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX), DX8_LOCK_CAST(&pvVertices),D3DLOCK_NOOVERWRITE) != D3D_OK)
+	{	if (!DX8Wrapper::Map_DX8_Vertex_Buffer(shadowVertexBufferD3D,nShadowVertsInBuf*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),numVerts*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),GFX_MAP_WRITE_NO_OVERWRITE,(void**)&pvVertices))
 			return;
 	}
 #ifdef SV_DEBUG
@@ -1460,17 +1460,17 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 #endif
 	}
 
-	shadowVertexBufferD3D->Unlock();
+	DX8Wrapper::Unmap_DX8_Vertex_Buffer(shadowVertexBufferD3D);
 
 	if (nShadowIndicesInBuf > (SHADOW_INDEX_SIZE-numIndex))	//check if room for model verts
 	{	//flush the buffer by drawing the contents and re-locking again
-		if (shadowIndexBufferD3D->Lock(0,numIndex*sizeof(short),DX8_LOCK_CAST(&pvIndices),D3DLOCK_DISCARD) != D3D_OK)
+		if (!DX8Wrapper::Map_DX8_Index_Buffer(shadowIndexBufferD3D,0,numIndex*sizeof(short),GFX_MAP_WRITE_DISCARD,(void**)&pvIndices))
 			return;
 		nShadowIndicesInBuf=0;
 		nShadowStartBatchIndex=0;
 	}
 	else
-	{	if (shadowIndexBufferD3D->Lock(nShadowIndicesInBuf*sizeof(short),numIndex*sizeof(short), DX8_LOCK_CAST(&pvIndices),D3DLOCK_NOOVERWRITE) != D3D_OK)
+	{	if (!DX8Wrapper::Map_DX8_Index_Buffer(shadowIndexBufferD3D,nShadowIndicesInBuf*sizeof(short),numIndex*sizeof(short),GFX_MAP_WRITE_NO_OVERWRITE,(void**)&pvIndices))
 			return;
 	}
 
@@ -1480,7 +1480,7 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 		memcpy(pvIndices,geometry->GetPolygonIndex(0,(short *)pvIndices),numPolys*3*sizeof(short));
 	}
 
-	shadowIndexBufferD3D->Unlock();
+	DX8Wrapper::Unmap_DX8_Index_Buffer(shadowIndexBufferD3D);
 
 	DX8Wrapper::Set_DX8_Indices(shadowIndexBufferD3D,nShadowStartBatchVertex);
 
@@ -1595,13 +1595,13 @@ void W3DVolumetricShadow::RenderMeshVolumeBounds(Int meshIndex, Int lightIndex, 
 
 	if (nShadowVertsInBuf > (SHADOW_VERTEX_SIZE-numVerts))	//check if room for model verts
 	{	//flush the buffer by drawing the contents and re-locking again
-		if (shadowVertexBufferD3D->Lock(0,numVerts*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),DX8_LOCK_CAST(&pvVertices),D3DLOCK_DISCARD) != D3D_OK)
+		if (!DX8Wrapper::Map_DX8_Vertex_Buffer(shadowVertexBufferD3D,0,numVerts*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),GFX_MAP_WRITE_DISCARD,(void**)&pvVertices))
 			return;
 		nShadowVertsInBuf=0;
 		nShadowStartBatchVertex=0;
 	}
 	else
-	{	if (shadowVertexBufferD3D->Lock(nShadowVertsInBuf*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),numVerts*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX), DX8_LOCK_CAST(&pvVertices),D3DLOCK_NOOVERWRITE) != D3D_OK)
+	{	if (!DX8Wrapper::Map_DX8_Vertex_Buffer(shadowVertexBufferD3D,nShadowVertsInBuf*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),numVerts*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),GFX_MAP_WRITE_NO_OVERWRITE,(void**)&pvVertices))
 			return;
 	}
 	srand(0x1345465);
@@ -1618,17 +1618,17 @@ void W3DVolumetricShadow::RenderMeshVolumeBounds(Int meshIndex, Int lightIndex, 
 		}
 	}
 
-	shadowVertexBufferD3D->Unlock();
+	DX8Wrapper::Unmap_DX8_Vertex_Buffer(shadowVertexBufferD3D);
 
 	if (nShadowIndicesInBuf > (SHADOW_INDEX_SIZE-numIndex))	//check if room for model verts
 	{	//flush the buffer by drawing the contents and re-locking again
-		if (shadowIndexBufferD3D->Lock(0,numIndex*sizeof(short),DX8_LOCK_CAST(&pvIndices),D3DLOCK_DISCARD) != D3D_OK)
+		if (!DX8Wrapper::Map_DX8_Index_Buffer(shadowIndexBufferD3D,0,numIndex*sizeof(short),GFX_MAP_WRITE_DISCARD,(void**)&pvIndices))
 			return;
 		nShadowIndicesInBuf=0;
 		nShadowStartBatchIndex=0;
 	}
 	else
-	{	if (shadowIndexBufferD3D->Lock(nShadowIndicesInBuf*sizeof(short),numIndex*sizeof(short), DX8_LOCK_CAST(&pvIndices),D3DLOCK_NOOVERWRITE) != D3D_OK)
+	{	if (!DX8Wrapper::Map_DX8_Index_Buffer(shadowIndexBufferD3D,nShadowIndicesInBuf*sizeof(short),numIndex*sizeof(short),GFX_MAP_WRITE_NO_OVERWRITE,(void**)&pvIndices))
 			return;
 	}
 
@@ -1643,7 +1643,7 @@ void W3DVolumetricShadow::RenderMeshVolumeBounds(Int meshIndex, Int lightIndex, 
 		}
 	}
 
-	shadowIndexBufferD3D->Unlock();
+	DX8Wrapper::Unmap_DX8_Index_Buffer(shadowIndexBufferD3D);
 
 	DX8Wrapper::Set_DX8_Indices(shadowIndexBufferD3D,nShadowStartBatchVertex);
 
@@ -3807,27 +3807,16 @@ Bool W3DVolumetricShadowManager::ReAcquireResources()
 
 	DEBUG_ASSERTCRASH(m_pDev, ("Trying to ReAcquireResources on W3DVolumetricShadowManager without device"));
 
-	if (FAILED(m_pDev->CreateIndexBuffer
-	(
-		SHADOW_INDEX_SIZE*sizeof(WORD),
-		D3DUSAGE_WRITEONLY|D3DUSAGE_DYNAMIC,
-		D3DFMT_INDEX16,
-		D3DPOOL_DEFAULT,
-		&shadowIndexBufferD3D
-	)))
+	shadowIndexBufferD3D=DX8Wrapper::Create_DX8_Index_Buffer(SHADOW_INDEX_SIZE, GFX_USAGE_DYNAMIC);
+	if (shadowIndexBufferD3D == nullptr)
 		return FALSE;
 
 	if (shadowVertexBufferD3D == nullptr)
 	{	// Create vertex buffer
 
-		if (FAILED(m_pDev->CreateVertexBuffer
-		(
-			SHADOW_VERTEX_SIZE*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX),
-			D3DUSAGE_WRITEONLY|D3DUSAGE_DYNAMIC,
-			0,
-			D3DPOOL_DEFAULT,
-			&shadowVertexBufferD3D
-		)))
+		shadowVertexBufferD3D=DX8Wrapper::Create_DX8_Vertex_Buffer(
+			SHADOW_VERTEX_SIZE*sizeof(SHADOW_DYNAMIC_VOLUME_VERTEX), 0, GFX_USAGE_DYNAMIC);
+		if (shadowVertexBufferD3D == nullptr)
 			return FALSE;
 	}
 

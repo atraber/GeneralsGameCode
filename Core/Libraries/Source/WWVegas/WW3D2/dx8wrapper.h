@@ -511,6 +511,24 @@ public:
 	** gfxdevice.h for why a round trip through an API struct is the thing that stops a
 	** second backend existing.
 	*/
+	/*
+	** Buffers. Creation says what the buffer is for -- see GfxResourceUsage -- and never
+	** where to put it, because a pool is the one thing that cannot cross a seam. Mapping
+	** states the caller's intent, which is a hint under D3D9 and a rule under D3D11.
+	*/
+	static IDirect3DVertexBuffer8* Create_DX8_Vertex_Buffer(unsigned size_in_bytes,
+		unsigned fvf, unsigned usage);
+	static IDirect3DIndexBuffer8* Create_DX8_Index_Buffer(unsigned index_count, unsigned usage);
+	static void Release_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer);
+	static void Release_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer);
+
+	static bool Map_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer, unsigned offset_in_bytes,
+		unsigned size_in_bytes, GfxMapMode mode, void** data);
+	static void Unmap_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer);
+	static bool Map_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer, unsigned offset_in_bytes,
+		unsigned size_in_bytes, GfxMapMode mode, void** data);
+	static void Unmap_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer);
+
 	static bool Describe_DX8_Surface(IDirect3DSurface8* surface, WW3DSurfaceDescription& desc);
 	static bool Describe_DX8_Texture_Level(IDirect3DBaseTexture8* texture, unsigned level,
 		WW3DSurfaceDescription& desc);
@@ -2133,6 +2151,56 @@ WWINLINE bool DX8Wrapper::Copy_DX8_Surface(IDirect3DSurface8* source, IDirect3DS
 {
 	if (Gfx == nullptr) return false;
 	return Gfx->Copy_Surface((GfxSurface*)source, nullptr, (GfxSurface*)dest, nullptr);
+}
+
+WWINLINE IDirect3DVertexBuffer8* DX8Wrapper::Create_DX8_Vertex_Buffer(unsigned size_in_bytes,
+	unsigned fvf, unsigned usage)
+{
+	if (Gfx == nullptr) return nullptr;
+	return (IDirect3DVertexBuffer8*)Gfx->Create_Vertex_Buffer(size_in_bytes, fvf, usage);
+}
+
+WWINLINE IDirect3DIndexBuffer8* DX8Wrapper::Create_DX8_Index_Buffer(unsigned index_count,
+	unsigned usage)
+{
+	if (Gfx == nullptr) return nullptr;
+	return (IDirect3DIndexBuffer8*)Gfx->Create_Index_Buffer(index_count, usage);
+}
+
+WWINLINE void DX8Wrapper::Release_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer)
+{
+	GFXCALL(Release_Vertex_Buffer((GfxVertexBuffer*)buffer));
+}
+
+WWINLINE void DX8Wrapper::Release_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer)
+{
+	GFXCALL(Release_Index_Buffer((GfxIndexBuffer*)buffer));
+}
+
+WWINLINE bool DX8Wrapper::Map_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer,
+	unsigned offset_in_bytes, unsigned size_in_bytes, GfxMapMode mode, void** data)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Map_Vertex_Buffer((GfxVertexBuffer*)buffer, offset_in_bytes, size_in_bytes,
+		mode, data);
+}
+
+WWINLINE void DX8Wrapper::Unmap_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer)
+{
+	GFXCALL(Unmap_Vertex_Buffer((GfxVertexBuffer*)buffer));
+}
+
+WWINLINE bool DX8Wrapper::Map_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer,
+	unsigned offset_in_bytes, unsigned size_in_bytes, GfxMapMode mode, void** data)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Map_Index_Buffer((GfxIndexBuffer*)buffer, offset_in_bytes, size_in_bytes,
+		mode, data);
+}
+
+WWINLINE void DX8Wrapper::Unmap_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer)
+{
+	GFXCALL(Unmap_Index_Buffer((GfxIndexBuffer*)buffer));
 }
 
 WWINLINE bool DX8Wrapper::Describe_DX8_Surface(IDirect3DSurface8* surface,

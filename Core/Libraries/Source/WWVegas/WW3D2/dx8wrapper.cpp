@@ -4484,6 +4484,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Particle_Shadows();
 	Debug_Report_Alpha_Fog();
 	Debug_Report_Lighting();
+	GfxDeviceD3D9::Report_Nondynamic_Discards();
 	Debug_Report_Shader_Names();
 	Mesh_Technique_Report_Registrations();
 #endif

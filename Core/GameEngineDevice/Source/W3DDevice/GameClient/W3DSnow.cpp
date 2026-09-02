@@ -85,14 +85,10 @@ Bool W3DSnowManager::ReAcquireResources()
 		if (m_VertexBufferD3D == nullptr)
 		{	// Create vertex buffer
 
-			if (FAILED(m_pDev->CreateVertexBuffer
-			(
-				SNOW_BUFFER_SIZE*sizeof(POINTVERTEX),
-				D3DUSAGE_WRITEONLY|D3DUSAGE_DYNAMIC|D3DUSAGE_POINTS,
-				D3DFVF_POINTVERTEX,
-				D3DPOOL_DEFAULT,
-				&m_VertexBufferD3D
-			)))
+			m_VertexBufferD3D=DX8Wrapper::Create_DX8_Vertex_Buffer(
+				SNOW_BUFFER_SIZE*sizeof(POINTVERTEX), D3DFVF_POINTVERTEX,
+				GFX_USAGE_DYNAMIC|GFX_USAGE_POINT_SPRITES);
+			if (m_VertexBufferD3D == nullptr)
 				return FALSE;
 		}
 	}
@@ -267,8 +263,9 @@ void W3DSnowManager::renderSubBox(RenderInfoClass &rinfo, Int originX, Int origi
 
 		POINTVERTEX* verts;
 
-		if(m_VertexBufferD3D->Lock(m_dwBase * sizeof(POINTVERTEX), batchSize * sizeof(POINTVERTEX),
-			DX8_LOCK_CAST(&verts), m_dwBase ? D3DLOCK_NOOVERWRITE : D3DLOCK_DISCARD) != D3D_OK )
+		if(!DX8Wrapper::Map_DX8_Vertex_Buffer(m_VertexBufferD3D,
+			m_dwBase * sizeof(POINTVERTEX), batchSize * sizeof(POINTVERTEX),
+			m_dwBase ? GFX_MAP_WRITE_NO_OVERWRITE : GFX_MAP_WRITE_DISCARD, (void**)&verts))
 			return;	//couldn't lock buffer.
 
 		Int numberInBatch=0;
@@ -308,7 +305,7 @@ void W3DSnowManager::renderSubBox(RenderInfoClass &rinfo, Int originX, Int origi
 		}
 
 flush_particles:
-		m_VertexBufferD3D->Unlock();
+		DX8Wrapper::Unmap_DX8_Vertex_Buffer(m_VertexBufferD3D);
 		//Render any particles that may be queued up.
 		if (numberInBatch)
 		{

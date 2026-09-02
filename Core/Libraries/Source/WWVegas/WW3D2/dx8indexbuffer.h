@@ -45,6 +45,7 @@
 class DX8Wrapper;
 class SortingRendererClass;
 #include "d3d9_compat.h"
+#include "gfxdevice.h"
 class DX8IndexBufferClass;
 class SortingIndexBufferClass;
 
@@ -73,7 +74,9 @@ public:
 		IndexBufferClass* index_buffer;
 		unsigned short* indices;
 	public:
-		WriteLockClass(IndexBufferClass* index_buffer, int flags=0);
+		// The mode says what the caller intends -- see GfxMapMode. It used to be a raw
+		// D3DLOCK flag word, which meant every caller of this named a graphics API.
+		WriteLockClass(IndexBufferClass* index_buffer, GfxMapMode mode=GFX_MAP_WRITE);
 		~WriteLockClass();
 
 		unsigned short* Get_Index_Array() { return indices; }
@@ -158,11 +161,13 @@ class DX8IndexBufferClass : public IndexBufferClass
 	friend IndexBufferClass::WriteLockClass;
 	friend IndexBufferClass::AppendLockClass;
 public:
+	// The engine's own words for what a buffer is for, and the seam's: these are the
+	// GfxResourceUsage bits under the names the call sites already use.
 	enum UsageType {
-		USAGE_DEFAULT=0,
-		USAGE_DYNAMIC=1,
-		USAGE_SOFTWAREPROCESSING=2,
-		USAGE_NPATCHES=4
+		USAGE_DEFAULT=GFX_USAGE_STATIC,
+		USAGE_DYNAMIC=GFX_USAGE_DYNAMIC,
+		USAGE_SOFTWAREPROCESSING=GFX_USAGE_SOFTWARE_PROCESSING,
+		USAGE_NPATCHES=GFX_USAGE_NPATCHES
 	};
 
 	DX8IndexBufferClass(unsigned short index_count,UsageType usage=USAGE_DEFAULT);

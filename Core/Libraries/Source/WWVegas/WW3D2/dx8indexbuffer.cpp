@@ -182,7 +182,7 @@ void IndexBufferClass::Copy(unsigned short* indices,unsigned first_index,unsigne
 // ----------------------------------------------------------------------------
 
 
-IndexBufferClass::WriteLockClass::WriteLockClass(IndexBufferClass* index_buffer_, int flags) : index_buffer(index_buffer_)
+IndexBufferClass::WriteLockClass::WriteLockClass(IndexBufferClass* index_buffer_, GfxMapMode mode) : index_buffer(index_buffer_)
 {
 	DX8_THREAD_ASSERT();
 	WWASSERT(index_buffer);
@@ -191,11 +191,12 @@ IndexBufferClass::WriteLockClass::WriteLockClass(IndexBufferClass* index_buffer_
 	switch (index_buffer->Type()) {
 	case BUFFER_TYPE_DX8:
 		DX8_Assert();
-		DX8_ErrorCode(static_cast<DX8IndexBufferClass*>(index_buffer)->Get_DX8_Index_Buffer()->Lock(
+		DX8Wrapper::Map_DX8_Index_Buffer(
+			static_cast<DX8IndexBufferClass*>(index_buffer)->Get_DX8_Index_Buffer(),
 			0,
 			index_buffer->Get_Index_Count()*sizeof(WORD),
-			reinterpret_cast<void**>(&indices),
-			flags));
+			mode,
+			reinterpret_cast<void**>(&indices));
 		break;
 	case BUFFER_TYPE_SORTING:
 		indices=static_cast<SortingIndexBufferClass*>(index_buffer)->index_buffer;
@@ -217,7 +218,8 @@ IndexBufferClass::WriteLockClass::~WriteLockClass()
 	switch (index_buffer->Type()) {
 	case BUFFER_TYPE_DX8:
 		DX8_Assert();
-		DX8_ErrorCode(static_cast<DX8IndexBufferClass*>(index_buffer)->index_buffer->Unlock());
+		DX8Wrapper::Unmap_DX8_Index_Buffer(
+			static_cast<DX8IndexBufferClass*>(index_buffer)->Get_DX8_Index_Buffer());
 		break;
 	case BUFFER_TYPE_SORTING:
 		break;
@@ -242,11 +244,12 @@ IndexBufferClass::AppendLockClass::AppendLockClass(IndexBufferClass* index_buffe
 	switch (index_buffer->Type()) {
 	case BUFFER_TYPE_DX8:
 		DX8_Assert();
-		DX8_ErrorCode(static_cast<DX8IndexBufferClass*>(index_buffer)->index_buffer->Lock(
+		DX8Wrapper::Map_DX8_Index_Buffer(
+			static_cast<DX8IndexBufferClass*>(index_buffer)->Get_DX8_Index_Buffer(),
 			start_index*sizeof(unsigned short),
 			index_range*sizeof(unsigned short),
-			reinterpret_cast<void**>(&indices),
-			0));
+			GFX_MAP_WRITE,
+			reinterpret_cast<void**>(&indices));
 		break;
 	case BUFFER_TYPE_SORTING:
 		indices=static_cast<SortingIndexBufferClass*>(index_buffer)->index_buffer+start_index;
@@ -265,7 +268,8 @@ IndexBufferClass::AppendLockClass::~AppendLockClass()
 	switch (index_buffer->Type()) {
 	case BUFFER_TYPE_DX8:
 		DX8_Assert();
-		DX8_ErrorCode(static_cast<DX8IndexBufferClass*>(index_buffer)->index_buffer->Unlock());
+		DX8Wrapper::Unmap_DX8_Index_Buffer(
+			static_cast<DX8IndexBufferClass*>(index_buffer)->Get_DX8_Index_Buffer());
 		break;
 	case BUFFER_TYPE_SORTING:
 		break;
@@ -288,25 +292,11 @@ DX8IndexBufferClass::DX8IndexBufferClass(unsigned short index_count_,UsageType u
 {
 	DX8_THREAD_ASSERT();
 	WWASSERT(index_count);
-	unsigned usage_flags=
-		D3DUSAGE_WRITEONLY|
-		((usage&USAGE_DYNAMIC) ? D3DUSAGE_DYNAMIC : 0)|
-		((usage&USAGE_NPATCHES) ? D3DUSAGE_NPATCHES : 0)|
-		((usage&USAGE_SOFTWAREPROCESSING) ? D3DUSAGE_SOFTWAREPROCESSING : 0);
-	if (!DX8Wrapper::Get_Current_Caps()->Support_TnL()) {
-		usage_flags|=D3DUSAGE_SOFTWAREPROCESSING;
-	}
+	// The buffer says what it is for; where it lives, how wide an index is and whether
+	// vertex processing happens on the CPU are all the backend's business.
+	index_buffer=DX8Wrapper::Create_DX8_Index_Buffer(index_count, usage);
 
-	// Needs the device itself: index buffer creation is resource lifetime, not
-	// render state.
-	HRESULT ret=DX8Wrapper::_Get_D3D_Device8()->CreateIndexBuffer(
-		sizeof(WORD)*index_count,
-		usage_flags,
-		D3DFMT_INDEX16,
-		(usage&USAGE_DYNAMIC) ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED,
-		&index_buffer);
-
-	if (SUCCEEDED(ret)) {
+	if (index_buffer!=nullptr) {
 		return;
 	}
 
@@ -321,26 +311,22 @@ DX8IndexBufferClass::DX8IndexBufferClass(unsigned short index_count_,UsageType u
 	WW3D::_Invalidate_Mesh_Cache();
 
 	// Try again...
-	ret=DX8Wrapper::_Get_D3D_Device8()->CreateIndexBuffer(
-		sizeof(WORD)*index_count,
-		usage_flags,
-		D3DFMT_INDEX16,
-		(usage&USAGE_DYNAMIC) ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED,
-		&index_buffer);
+	index_buffer=DX8Wrapper::Create_DX8_Index_Buffer(index_count, usage);
 
-	if (SUCCEEDED(ret)) {
+	if (index_buffer!=nullptr) {
 		WWDEBUG_SAY(("...Index buffer creation successful"));
+		return;
 	}
 
 	// If it still fails it is fatal
-	DX8_ErrorCode(ret);
+	WWASSERT_PRINT(0,("Index buffer creation failed"));
 }
 
 // ----------------------------------------------------------------------------
 
 DX8IndexBufferClass::~DX8IndexBufferClass()
 {
-	index_buffer->Release();
+	DX8Wrapper::Release_DX8_Index_Buffer(index_buffer);
 }
 
 // ----------------------------------------------------------------------------
@@ -432,12 +418,12 @@ DynamicIBAccessClass::WriteLockClass::WriteLockClass(DynamicIBAccessClass* ib_ac
 		WWASSERT(DynamicIBAccess);
 //		WWASSERT(!dynamic_dx8_index_buffer->Engine_Refs());
 		DX8_Assert();
-		DX8_ErrorCode(
-			static_cast<DX8IndexBufferClass*>(DynamicIBAccess->IndexBuffer)->Get_DX8_Index_Buffer()->Lock(
+		DX8Wrapper::Map_DX8_Index_Buffer(
+			static_cast<DX8IndexBufferClass*>(DynamicIBAccess->IndexBuffer)->Get_DX8_Index_Buffer(),
 			DynamicIBAccess->IndexBufferOffset*sizeof(WORD),
 			DynamicIBAccess->Get_Index_Count()*sizeof(WORD),
-			reinterpret_cast<void**>(&Indices),
-			!DynamicIBAccess->IndexBufferOffset ? D3DLOCK_DISCARD : D3DLOCK_NOOVERWRITE));
+			!DynamicIBAccess->IndexBufferOffset ? GFX_MAP_WRITE_DISCARD : GFX_MAP_WRITE_NO_OVERWRITE,
+			reinterpret_cast<void**>(&Indices));
 		break;
 	case BUFFER_TYPE_DYNAMIC_SORTING:
 		Indices=static_cast<SortingIndexBufferClass*>(DynamicIBAccess->IndexBuffer)->index_buffer;
@@ -455,7 +441,8 @@ DynamicIBAccessClass::WriteLockClass::~WriteLockClass()
 	switch (DynamicIBAccess->Get_Type()) {
 	case BUFFER_TYPE_DYNAMIC_DX8:
 		DX8_Assert();
-		DX8_ErrorCode(static_cast<DX8IndexBufferClass*>(DynamicIBAccess->IndexBuffer)->Get_DX8_Index_Buffer()->Unlock());
+		DX8Wrapper::Unmap_DX8_Index_Buffer(
+			static_cast<DX8IndexBufferClass*>(DynamicIBAccess->IndexBuffer)->Get_DX8_Index_Buffer());
 		break;
 	case BUFFER_TYPE_DYNAMIC_SORTING:
 		break;

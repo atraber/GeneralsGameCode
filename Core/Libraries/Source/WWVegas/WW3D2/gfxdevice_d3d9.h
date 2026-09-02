@@ -101,6 +101,23 @@ public:
 								GfxSurface * dest, const GfxRect * dest_rect);
 	virtual bool			Update_Texture(GfxTexture * source, GfxTexture * dest);
 	virtual bool			Capture_Front_Buffer(GfxSurface * dest);
+	virtual GfxVertexBuffer * Create_Vertex_Buffer(unsigned size_in_bytes, unsigned fvf,
+								unsigned usage);
+	virtual GfxIndexBuffer *  Create_Index_Buffer(unsigned index_count, unsigned usage);
+	virtual void			Release_Vertex_Buffer(GfxVertexBuffer * buffer);
+	virtual void			Release_Index_Buffer(GfxIndexBuffer * buffer);
+
+	virtual bool			Map_Vertex_Buffer(GfxVertexBuffer * buffer, unsigned offset_in_bytes,
+								unsigned size_in_bytes, GfxMapMode mode, void ** data);
+	virtual void			Unmap_Vertex_Buffer(GfxVertexBuffer * buffer);
+	virtual bool			Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
+								unsigned size_in_bytes, GfxMapMode mode, void ** data);
+	virtual void			Unmap_Index_Buffer(GfxIndexBuffer * buffer);
+
+	// Debug only. Says how many maps asked to discard or append against a buffer that
+	// was not created dynamic -- legal under D3D9, a failed Map under D3D11.
+	static void				Report_Nondynamic_Discards();
+
 	virtual bool			Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc);
 	virtual bool			Describe_Texture_Level(GfxTexture * texture, unsigned level,
 								WW3DSurfaceDescription & desc);

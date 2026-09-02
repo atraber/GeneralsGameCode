@@ -393,6 +393,163 @@ bool GfxDeviceD3D9::Capture_Front_Buffer(GfxSurface * dest)
 	return SUCCEEDED(hr);
 }
 
+// ----------------------------------------------------------------------------
+// Buffers
+// ----------------------------------------------------------------------------
+
+// D3DUSAGE_WRITEONLY is not in the neutral vocabulary because every buffer the engine
+// makes is write-only -- nothing reads one back -- so it is a property of this backend
+// rather than a choice a caller makes. Software vertex processing is likewise forced on
+// hardware without transform and lighting whether or not the caller asked for it.
+static unsigned Usage_To_D3D(unsigned usage)
+{
+	unsigned flags = D3DUSAGE_WRITEONLY;
+	if (usage & GFX_USAGE_DYNAMIC) flags |= D3DUSAGE_DYNAMIC;
+	if (usage & GFX_USAGE_NPATCHES) flags |= D3DUSAGE_NPATCHES;
+	if (usage & GFX_USAGE_SOFTWARE_PROCESSING) flags |= D3DUSAGE_SOFTWAREPROCESSING;
+	if (usage & GFX_USAGE_POINT_SPRITES) flags |= D3DUSAGE_POINTS;
+	if (!DX8Wrapper::Get_Current_Caps()->Support_TnL()) flags |= D3DUSAGE_SOFTWAREPROCESSING;
+	return flags;
+}
+
+static D3DPOOL Usage_To_D3D_Pool(unsigned usage)
+{
+	return (usage & GFX_USAGE_DYNAMIC) ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED;
+}
+
+static DWORD Map_Mode_To_D3D(GfxMapMode mode)
+{
+	switch (mode) {
+	case GFX_MAP_WRITE_DISCARD:			return D3DLOCK_DISCARD;
+	case GFX_MAP_WRITE_NO_OVERWRITE:	return D3DLOCK_NOOVERWRITE;
+	case GFX_MAP_READ:					return D3DLOCK_READONLY;
+	default:							return 0;
+	}
+}
+
+#ifdef RTS_DEBUG
+// D3D9 lets a discard or no-overwrite map through against a buffer that was not created
+// dynamic; it ignores the flag. D3D11's Map does not -- it fails the call. So the
+// mismatch is invisible here and fatal there, which makes it worth counting while the
+// only backend is still the forgiving one.
+static unsigned s_nondynamic_vb_discards = 0;
+static unsigned s_nondynamic_ib_discards = 0;
+// The positive control. A zero above is only a reading if these are not zero: without
+// them a discard audit that never runs and a discard audit that finds nothing print the
+// same line.
+static unsigned s_vb_discards = 0;
+static unsigned s_ib_discards = 0;
+
+static bool Is_Discarding(GfxMapMode mode)
+{
+	return mode == GFX_MAP_WRITE_DISCARD || mode == GFX_MAP_WRITE_NO_OVERWRITE;
+}
+#endif
+
+void GfxDeviceD3D9::Report_Nondynamic_Discards()
+{
+#ifdef RTS_DEBUG
+	// The same 600-frame window every other census here uses, so the figures can be read
+	// beside them.
+	static unsigned frames = 0;
+	if (++frames < 600) return;
+	frames = 0;
+	WWDEBUG_SAY(("DISCARD AUDIT over 600 frames: %u of %u vertex-buffer and %u of %u "
+		"index-buffer discard/append maps were against a buffer that was not created "
+		"dynamic. D3D9 ignores the flag and the map succeeds; D3D11's Map would fail the "
+		"call. The totals are the control: a zero beside a zero total is the audit not "
+		"running, not the engine being right.",
+		s_nondynamic_vb_discards, s_vb_discards, s_nondynamic_ib_discards, s_ib_discards));
+	s_nondynamic_vb_discards = 0;
+	s_nondynamic_ib_discards = 0;
+	s_vb_discards = 0;
+	s_ib_discards = 0;
+#endif
+}
+
+GfxVertexBuffer * GfxDeviceD3D9::Create_Vertex_Buffer(unsigned size_in_bytes, unsigned fvf,
+	unsigned usage)
+{
+	IDirect3DVertexBuffer8 * buffer = nullptr;
+	if (FAILED(m_device->CreateVertexBuffer(size_in_bytes, Usage_To_D3D(usage), fvf,
+			Usage_To_D3D_Pool(usage), &buffer))) {
+		return nullptr;
+	}
+	return (GfxVertexBuffer*)buffer;
+}
+
+GfxIndexBuffer * GfxDeviceD3D9::Create_Index_Buffer(unsigned index_count, unsigned usage)
+{
+	IDirect3DIndexBuffer8 * buffer = nullptr;
+	// Sixteen-bit indices, which is the only width the engine has ever asked for: every
+	// index it hands to a draw is an unsigned short.
+	if (FAILED(m_device->CreateIndexBuffer(sizeof(unsigned short) * index_count,
+			Usage_To_D3D(usage), D3DFMT_INDEX16, Usage_To_D3D_Pool(usage), &buffer))) {
+		return nullptr;
+	}
+	return (GfxIndexBuffer*)buffer;
+}
+
+void GfxDeviceD3D9::Release_Vertex_Buffer(GfxVertexBuffer * buffer)
+{
+	if (buffer != nullptr) ((IDirect3DVertexBuffer8*)buffer)->Release();
+}
+
+void GfxDeviceD3D9::Release_Index_Buffer(GfxIndexBuffer * buffer)
+{
+	if (buffer != nullptr) ((IDirect3DIndexBuffer8*)buffer)->Release();
+}
+
+bool GfxDeviceD3D9::Map_Vertex_Buffer(GfxVertexBuffer * buffer, unsigned offset_in_bytes,
+	unsigned size_in_bytes, GfxMapMode mode, void ** data)
+{
+	if (buffer == nullptr || data == nullptr) return false;
+	IDirect3DVertexBuffer8 * vb = (IDirect3DVertexBuffer8*)buffer;
+#ifdef RTS_DEBUG
+	if (Is_Discarding(mode)) {
+		s_vb_discards++;
+		D3DVERTEXBUFFER_DESC vbd;
+		if (SUCCEEDED(vb->GetDesc(&vbd)) && (vbd.Usage & D3DUSAGE_DYNAMIC) == 0) {
+			s_nondynamic_vb_discards++;
+		}
+	}
+#endif
+	HRESULT hr = vb->Lock(offset_in_bytes, size_in_bytes, DX8_LOCK_CAST(data),
+		Map_Mode_To_D3D(mode));
+	DX8_ErrorCode(hr);
+	return SUCCEEDED(hr);
+}
+
+void GfxDeviceD3D9::Unmap_Vertex_Buffer(GfxVertexBuffer * buffer)
+{
+	if (buffer != nullptr) DX8_ErrorCode(((IDirect3DVertexBuffer8*)buffer)->Unlock());
+}
+
+bool GfxDeviceD3D9::Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
+	unsigned size_in_bytes, GfxMapMode mode, void ** data)
+{
+	if (buffer == nullptr || data == nullptr) return false;
+	IDirect3DIndexBuffer8 * ib = (IDirect3DIndexBuffer8*)buffer;
+#ifdef RTS_DEBUG
+	if (Is_Discarding(mode)) {
+		s_ib_discards++;
+		D3DINDEXBUFFER_DESC ibd;
+		if (SUCCEEDED(ib->GetDesc(&ibd)) && (ibd.Usage & D3DUSAGE_DYNAMIC) == 0) {
+			s_nondynamic_ib_discards++;
+		}
+	}
+#endif
+	HRESULT hr = ib->Lock(offset_in_bytes, size_in_bytes, DX8_LOCK_CAST(data),
+		Map_Mode_To_D3D(mode));
+	DX8_ErrorCode(hr);
+	return SUCCEEDED(hr);
+}
+
+void GfxDeviceD3D9::Unmap_Index_Buffer(GfxIndexBuffer * buffer)
+{
+	if (buffer != nullptr) DX8_ErrorCode(((IDirect3DIndexBuffer8*)buffer)->Unlock());
+}
+
 bool GfxDeviceD3D9::Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc)
 {
 	if (surface == nullptr) return false;
