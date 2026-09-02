@@ -214,6 +214,21 @@ public:
 	virtual void			Set_Viewport(const GfxViewport & viewport) = 0;
 	virtual bool			Get_Viewport(GfxViewport & viewport) = 0;
 
+	// ---- describing a resource -------------------------------------------
+	//
+	// What a surface is, said in the neutral vocabulary. These are what break the
+	// D3DSURFACE_DESC round trip: the engine used to read a description off a surface
+	// the API had handed it and feed the Format and MultiSampleType fields straight
+	// back into a creation call, so its idea of "this format" was whatever D3D9 had
+	// written in a struct. No second backend can implement that. It can implement
+	// these.
+	//
+	// Describe_Texture_Level answers only for a 2-D texture; a backend returns false
+	// for anything else rather than guessing.
+	virtual bool			Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc) = 0;
+	virtual bool			Describe_Texture_Level(GfxTexture * texture, unsigned level,
+								WW3DSurfaceDescription & desc) = 0;
+
 	// ---- transfers and queries -------------------------------------------
 
 	// One call for D3D9's UpdateSurface and StretchRect: the difference between

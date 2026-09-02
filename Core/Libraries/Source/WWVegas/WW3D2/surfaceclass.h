@@ -59,11 +59,9 @@ class SurfaceClass : public RefCountClass
 	public:
 		typedef void *LockedSurfacePtr;
 
-		struct SurfaceDescription {
-			WW3DFormat		Format;	// Surface format
-			unsigned int	Width;	// Surface width in pixels
-			unsigned int	Height;	// Surface height in pixels
-		};
+		// One vocabulary, not two: this predates WW3DSurfaceDescription and said the same
+		// thing minus the sample count, so it is now that type under its old name.
+		typedef WW3DSurfaceDescription SurfaceDescription;
 
 		// Create surface with desired height, width and format.
 		SurfaceClass(unsigned width, unsigned height, WW3DFormat format);

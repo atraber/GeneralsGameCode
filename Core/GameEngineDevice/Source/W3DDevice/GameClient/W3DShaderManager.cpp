@@ -54,6 +54,7 @@
 //-----------------------------------------------------------------------------
 
 #include "WW3D2/dx8wrapper.h"
+#include "WW3D2/formconv.h"
 #include "WW3D2/assetmgr.h"
 #include "WW3D2/ddsfile.h"
 #include <unordered_map>
@@ -439,13 +440,13 @@ Int ScreenBloomFilter::init()
 	// Quarter-resolution ping/pong bloom targets, in the scene's own colour format -- which
 	// under HDR is floating point, so that what the bright pass selects above 1.0 survives
 	// the two blur passes instead of being clipped on the way into them.
-	D3DSURFACE_DESC sd;
-	if (FAILED(sceneTex->GetLevelDesc(0, &sd)))
+	WW3DSurfaceDescription sd;
+	if (!DX8Wrapper::Describe_DX8_Texture_Level(sceneTex, 0, sd))
 	{
 		shutdown();
 		return FALSE;
 	}
-	const D3DFORMAT bloomFormat = W3DShaderManager::getSceneColorFormat();
+	const D3DFORMAT bloomFormat = WW3DFormat_To_D3DFormat(W3DShaderManager::getSceneColorFormat());
 	m_w = (Int)sd.Width  / 4;  if (m_w < 1) m_w = 1;
 	m_h = (Int)sd.Height / 4;  if (m_h < 1) m_h = 1;
 
@@ -2064,7 +2065,7 @@ void W3DShaderManager::init()
 {
 	int i,j;
 
-	D3DSURFACE_DESC desc;
+	WW3DSurfaceDescription desc;
 	// For now, check & see if we are gf3 or higher on the food chain.
 
 	ChipsetType res=DC_UNKNOWN;
@@ -2083,7 +2084,8 @@ void W3DShaderManager::init()
 		if (hr != S_OK || !m_oldRenderSurface)
 			return;
 
-		m_oldRenderSurface->GetDesc(&desc);
+		if (!DX8Wrapper::Describe_DX8_Surface(m_oldRenderSurface, desc))
+			return;
 
 		// The post-process reads a plain (non-multisampled) texture, so always create
 		// that. Redirecting the scene straight into a non-MSAA texture while the depth
@@ -2091,11 +2093,12 @@ void W3DShaderManager::init()
 		// is drawn into a matching multisampled colour surface (m_newRenderSurface) and
 		// resolved into the plain texture (m_resolveSurface) by endRenderToTexture.
 		LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-		hr = dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format, D3DPOOL_DEFAULT, &m_renderTexture);
+		hr = dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
+			WW3DFormat_To_D3DFormat(desc.Format), D3DPOOL_DEFAULT, &m_renderTexture);
 
 		if (hr == S_OK)
 		{
-			if (desc.MultiSampleType == D3DMULTISAMPLE_NONE)
+			if (desc.MultiSample == WW3D_MULTISAMPLE_NONE)
 			{
 				// No MSAA: render straight into the plain texture, no resolve needed.
 				hr = m_renderTexture->GetSurfaceLevel(0, &m_newRenderSurface);
@@ -2107,8 +2110,9 @@ void W3DShaderManager::init()
 				// surface as the resolve destination. The 6-arg form goes through the
 				// d3d9_compat shim (multisample quality 0, matching the standard MSAA the
 				// back buffer / depth use), so the surface pairs with the MSAA depth.
-				hr = dev->CreateRenderTarget(desc.Width, desc.Height, desc.Format,
-					desc.MultiSampleType, FALSE, &m_newRenderSurface);
+				hr = dev->CreateRenderTarget(desc.Width, desc.Height,
+					WW3DFormat_To_D3DFormat(desc.Format),
+					WW3DMultiSample_To_D3DMultiSample(desc.MultiSample), FALSE, &m_newRenderSurface);
 				if (hr == S_OK)
 					hr = m_renderTexture->GetSurfaceLevel(0, &m_resolveSurface);
 			}
@@ -2466,13 +2470,13 @@ void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, 
 	// because StretchRect between differing formats is where this would quietly start
 	// failing. The copy target is created on first use and released with the rest, so a
 	// session that never enters the mode pays nothing for it.
-	D3DSURFACE_DESC sd;
-	if (FAILED(brightSurface->GetDesc(&sd)))
+	WW3DSurfaceDescription sd;
+	if (!DX8Wrapper::Describe_DX8_Surface(brightSurface, sd))
 		return;
 	if (m_debugBrightTexture != nullptr)
 	{
-		D3DSURFACE_DESC have;
-		if (FAILED(m_debugBrightSurface->GetDesc(&have)) ||
+		WW3DSurfaceDescription have;
+		if (!DX8Wrapper::Describe_DX8_Surface(m_debugBrightSurface, have) ||
 			have.Width != sd.Width || have.Height != sd.Height || have.Format != sd.Format)
 		{
 			SAFE_RELEASE(m_debugBrightSurface);
@@ -2482,7 +2486,8 @@ void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, 
 	if (m_debugBrightTexture == nullptr)
 	{
 		if (FAILED(dev->CreateTexture(sd.Width, sd.Height, 1, D3DUSAGE_RENDERTARGET,
-				sd.Format, D3DPOOL_DEFAULT, &m_debugBrightTexture)) || m_debugBrightTexture == nullptr)
+				WW3DFormat_To_D3DFormat(sd.Format), D3DPOOL_DEFAULT, &m_debugBrightTexture)) ||
+			m_debugBrightTexture == nullptr)
 		{
 			m_debugBrightTexture = nullptr;
 			return;
@@ -3413,9 +3418,14 @@ void W3DShaderManager::initSsr()
 		DEBUG_LOG(("SSR: disabled -- no render target to take the screen size from\n"));
 		return;
 	}
-	D3DSURFACE_DESC desc;
-	rt->GetDesc(&desc);
+	WW3DSurfaceDescription desc;
+	const bool haveDesc = DX8Wrapper::Describe_DX8_Surface(rt, desc);
 	rt->Release();
+	if (!haveDesc)
+	{
+		DEBUG_LOG(("SSR: disabled -- the render target would not describe itself\n"));
+		return;
+	}
 
 	// Both targets are screen-sized: the depth one because the shader reprojects
 	// straight into screen UV and any other size would need a scale factor nothing
@@ -3487,9 +3497,11 @@ void W3DShaderManager::initRefraction()
 	IDirect3DSurface8 *rt = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	if (rt == nullptr)
 		return;
-	D3DSURFACE_DESC desc;
-	rt->GetDesc(&desc);
+	WW3DSurfaceDescription desc;
+	const bool haveDesc = DX8Wrapper::Describe_DX8_Surface(rt, desc);
 	rt->Release();
+	if (!haveDesc)
+		return;
 
 	// Screen-sized: the shader reprojects world positions straight into screen UV, the
 	// same as the depth lookup, and a different size would need a scale factor nothing
@@ -3502,7 +3514,7 @@ void W3DShaderManager::initRefraction()
 	// whatever was last in the target. The water samples it from a shader, which reads
 	// either format without caring.
 	if (FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
-				getSceneColorFormat(), D3DPOOL_DEFAULT, &m_refractionTexture)) ||
+				WW3DFormat_To_D3DFormat(getSceneColorFormat()), D3DPOOL_DEFAULT, &m_refractionTexture)) ||
 		FAILED(m_refractionTexture->GetSurfaceLevel(0, &m_refractionSurface)))
 	{
 		DEBUG_LOG(("Water refraction: disabled -- could not create the %dx%d target\n",
@@ -3549,19 +3561,19 @@ DWORD W3DShaderManager::m_toneMapPS = 0;
 // A2R10G10B10 has no range above 1.0 at all, which is the entire point, and the packed
 // encodings (RGBM, RGBE) cannot be alpha blended -- and this scene blends constantly, in
 // every effect, the water and every translucent pass.
-#define HDR_SCENE_FORMAT D3DFMT_A16B16G16R16F
+#define HDR_SCENE_FORMAT WW3D_FORMAT_A16B16G16R16F
 
-D3DFORMAT W3DShaderManager::getSceneColorFormat()
+WW3DFormat W3DShaderManager::getSceneColorFormat()
 {
 	if (m_hdrActive)
 		return HDR_SCENE_FORMAT;
 	if (m_renderTexture != nullptr)
 	{
-		D3DSURFACE_DESC sd;
-		if (SUCCEEDED(m_renderTexture->GetLevelDesc(0, &sd)))
+		WW3DSurfaceDescription sd;
+		if (DX8Wrapper::Describe_DX8_Texture_Level(m_renderTexture, 0, sd))
 			return sd.Format;
 	}
-	return D3DFMT_A8R8G8B8;
+	return WW3D_FORMAT_A8R8G8B8;
 }
 
 void W3DShaderManager::initHdr()
@@ -3590,8 +3602,8 @@ void W3DShaderManager::initHdr()
 	// doing -- and a scene target built on that answer gets bound against the multisampled
 	// depth buffer the back buffer came with, which D3D9 rejects at draw time rather than
 	// at bind time. The whole tactical view renders black and every call still returns S_OK.
-	D3DSURFACE_DESC sceneDesc;
-	if (m_oldRenderSurface == nullptr || FAILED(m_oldRenderSurface->GetDesc(&sceneDesc)))
+	WW3DSurfaceDescription sceneDesc;
+	if (m_oldRenderSurface == nullptr || !DX8Wrapper::Describe_DX8_Surface(m_oldRenderSurface, sceneDesc))
 		return;
 
 	// Three capabilities, each load-bearing on its own:
@@ -3619,7 +3631,7 @@ void W3DShaderManager::initHdr()
 	for (Int i = 0; i < (Int)(sizeof(checks)/sizeof(checks[0])); i++)
 	{
 		if (FAILED(d3d->CheckDeviceFormat(adapter, devType, display,
-				checks[i].usage, D3DRTYPE_TEXTURE, HDR_SCENE_FORMAT)))
+				checks[i].usage, D3DRTYPE_TEXTURE, WW3DFormat_To_D3DFormat(HDR_SCENE_FORMAT))))
 		{
 			DEBUG_LOG(("HDR: off -- no A16B16G16R16F %s on this device\n", checks[i].name));
 			return;
@@ -3629,12 +3641,13 @@ void W3DShaderManager::initHdr()
 	// Multisampling is asked separately because floating-point multisampling arrived a
 	// hardware generation after floating-point targets; a device can have one without the
 	// other, and the scene target has to match whatever the depth buffer already is.
-	if (sceneDesc.MultiSampleType != D3DMULTISAMPLE_NONE &&
-		FAILED(d3d->CheckDeviceMultiSampleType(adapter, devType, HDR_SCENE_FORMAT,
-			FALSE, sceneDesc.MultiSampleType, nullptr)))
+	if (sceneDesc.MultiSample != WW3D_MULTISAMPLE_NONE &&
+		FAILED(d3d->CheckDeviceMultiSampleType(adapter, devType,
+			WW3DFormat_To_D3DFormat(HDR_SCENE_FORMAT), FALSE,
+			WW3DMultiSample_To_D3DMultiSample(sceneDesc.MultiSample), nullptr)))
 	{
 		DEBUG_LOG(("HDR: off -- no %dx A16B16G16R16F multisampling, and the depth buffer is multisampled\n",
-			(Int)sceneDesc.MultiSampleType));
+			(Int)sceneDesc.MultiSample));
 		return;
 	}
 
@@ -3649,18 +3662,19 @@ void W3DShaderManager::initHdr()
 	// multisampled colour surface and resolve into the texture; without, draw into the
 	// texture's own surface and skip the resolve.
 	HRESULT hr = dev->CreateTexture(sceneDesc.Width, sceneDesc.Height, 1, D3DUSAGE_RENDERTARGET,
-		HDR_SCENE_FORMAT, D3DPOOL_DEFAULT, &m_hdrTexture);
+		WW3DFormat_To_D3DFormat(HDR_SCENE_FORMAT), D3DPOOL_DEFAULT, &m_hdrTexture);
 	if (SUCCEEDED(hr))
 	{
-		if (sceneDesc.MultiSampleType == D3DMULTISAMPLE_NONE)
+		if (sceneDesc.MultiSample == WW3D_MULTISAMPLE_NONE)
 		{
 			hr = m_hdrTexture->GetSurfaceLevel(0, &m_hdrRenderSurface);
 			m_hdrResolveSurface = nullptr;
 		}
 		else
 		{
-			hr = dev->CreateRenderTarget(sceneDesc.Width, sceneDesc.Height, HDR_SCENE_FORMAT,
-				sceneDesc.MultiSampleType, FALSE, &m_hdrRenderSurface);
+			hr = dev->CreateRenderTarget(sceneDesc.Width, sceneDesc.Height,
+				WW3DFormat_To_D3DFormat(HDR_SCENE_FORMAT),
+				WW3DMultiSample_To_D3DMultiSample(sceneDesc.MultiSample), FALSE, &m_hdrRenderSurface);
 			if (SUCCEEDED(hr))
 				hr = m_hdrTexture->GetSurfaceLevel(0, &m_hdrResolveSurface);
 		}
@@ -3681,7 +3695,7 @@ void W3DShaderManager::initHdr()
 	// cannot ask this layer -- see Set_Hdr_Effect_Gain.
 	DX8Wrapper::Set_Hdr_Effect_Gain(HDR_EFFECT_GAIN);
 	DEBUG_LOG(("HDR: active, %dx%d A16B16G16R16F scene target (multisample %d), effect gain %.2f\n",
-		sceneDesc.Width, sceneDesc.Height, (Int)sceneDesc.MultiSampleType, HDR_EFFECT_GAIN));
+		sceneDesc.Width, sceneDesc.Height, (Int)sceneDesc.MultiSample, HDR_EFFECT_GAIN));
 }
 
 void W3DShaderManager::toneMapSceneToRenderTexture()
@@ -3701,8 +3715,8 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 	if (dst == nullptr)
 		return;
 
-	D3DSURFACE_DESC sd;
-	if (FAILED(m_renderTexture->GetLevelDesc(0, &sd)))
+	WW3DSurfaceDescription sd;
+	if (!DX8Wrapper::Describe_DX8_Texture_Level(m_renderTexture, 0, sd))
 		return;
 
 	IDirect3DSurface8 *savedRT = nullptr;

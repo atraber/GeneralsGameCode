@@ -101,6 +101,10 @@ public:
 								GfxSurface * dest, const GfxRect * dest_rect);
 	virtual bool			Update_Texture(GfxTexture * source, GfxTexture * dest);
 	virtual bool			Capture_Front_Buffer(GfxSurface * dest);
+	virtual bool			Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc);
+	virtual bool			Describe_Texture_Level(GfxTexture * texture, unsigned level,
+								WW3DSurfaceDescription & desc);
+
 	virtual bool			Get_Display_Mode(unsigned & width, unsigned & height, WW3DFormat & format);
 	virtual unsigned		Get_Available_Texture_Memory();
 	virtual void			Trim_Resource_Memory();

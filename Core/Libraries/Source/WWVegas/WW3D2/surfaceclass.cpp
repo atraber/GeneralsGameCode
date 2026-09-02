@@ -203,6 +203,7 @@ void SurfaceClass::Get_Description(SurfaceDescription &surface_desc)
 	surface_desc.Format = D3DFormat_To_WW3DFormat(d3d_desc.Format);
 	surface_desc.Height = d3d_desc.Height;
 	surface_desc.Width = d3d_desc.Width;
+	surface_desc.MultiSample = D3DMultiSample_To_WW3DMultiSample(d3d_desc.MultiSampleType);
 }
 
 unsigned int SurfaceClass::Get_Bytes_Per_Pixel()

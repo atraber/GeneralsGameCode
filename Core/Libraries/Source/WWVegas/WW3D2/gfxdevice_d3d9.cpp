@@ -393,6 +393,36 @@ bool GfxDeviceD3D9::Capture_Front_Buffer(GfxSurface * dest)
 	return SUCCEEDED(hr);
 }
 
+bool GfxDeviceD3D9::Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc)
+{
+	if (surface == nullptr) return false;
+	D3DSURFACE_DESC sd;
+	if (FAILED(((IDirect3DSurface8*)surface)->GetDesc(&sd))) return false;
+	desc.Width = sd.Width;
+	desc.Height = sd.Height;
+	desc.Format = D3DFormat_To_WW3DFormat(sd.Format);
+	desc.MultiSample = D3DMultiSample_To_WW3DMultiSample(sd.MultiSampleType);
+	return true;
+}
+
+bool GfxDeviceD3D9::Describe_Texture_Level(GfxTexture * texture, unsigned level,
+	WW3DSurfaceDescription & desc)
+{
+	if (texture == nullptr) return false;
+	// GetLevelDesc lives on the 2-D texture interface, and the handle this side of the
+	// seam does not say which kind of texture it is -- so ask before casting rather
+	// than calling a method the object may not have.
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_TEXTURE) return false;
+	D3DSURFACE_DESC sd;
+	if (FAILED(((IDirect3DTexture8*)base)->GetLevelDesc(level, &sd))) return false;
+	desc.Width = sd.Width;
+	desc.Height = sd.Height;
+	desc.Format = D3DFormat_To_WW3DFormat(sd.Format);
+	desc.MultiSample = D3DMultiSample_To_WW3DMultiSample(sd.MultiSampleType);
+	return true;
+}
+
 bool GfxDeviceD3D9::Get_Display_Mode(unsigned & width, unsigned & height, WW3DFormat & format)
 {
 	D3DDISPLAYMODE mode;

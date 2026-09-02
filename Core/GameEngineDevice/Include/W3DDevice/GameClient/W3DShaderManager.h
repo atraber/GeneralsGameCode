@@ -199,7 +199,7 @@ public:
 	///Format any mid-scene grab of the scene colour must be created in, so its copy is a
 	///same-format one. Follows the scene target: floating point under HDR, else the back
 	///buffer's own format.
-	static D3DFORMAT getSceneColorFormat();
+	static WW3DFormat getSceneColorFormat();
 	///Draw the floating-point scene into m_renderTexture through the tone map. Called at the
 	///end of the render-to-texture bracket, so nothing downstream ever meets the wide range.
 	static void toneMapSceneToRenderTexture();

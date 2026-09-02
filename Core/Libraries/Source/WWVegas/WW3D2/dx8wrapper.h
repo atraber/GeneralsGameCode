@@ -505,6 +505,17 @@ public:
 	static bool Copy_DX8_Surface(IDirect3DSurface8* source, IDirect3DSurface8* dest);
 
 	/*
+	** What a surface is, in the engine's own vocabulary rather than in D3D9's. Callers
+	** that used to read a D3DSURFACE_DESC off a surface and hand its Format straight back
+	** into a creation call go through these instead: see the note at Describe_Surface in
+	** gfxdevice.h for why a round trip through an API struct is the thing that stops a
+	** second backend existing.
+	*/
+	static bool Describe_DX8_Surface(IDirect3DSurface8* surface, WW3DSurfaceDescription& desc);
+	static bool Describe_DX8_Texture_Level(IDirect3DBaseTexture8* texture, unsigned level,
+		WW3DSurfaceDescription& desc);
+
+	/*
 	** Whether the backend is in a state to be drawn to. Four subsystems check this before
 	** touching the terrain, the shroud or a view, and all four used to ask a D3D9 device
 	** whether it had been taken away by another application. That question has a
@@ -2122,6 +2133,20 @@ WWINLINE bool DX8Wrapper::Copy_DX8_Surface(IDirect3DSurface8* source, IDirect3DS
 {
 	if (Gfx == nullptr) return false;
 	return Gfx->Copy_Surface((GfxSurface*)source, nullptr, (GfxSurface*)dest, nullptr);
+}
+
+WWINLINE bool DX8Wrapper::Describe_DX8_Surface(IDirect3DSurface8* surface,
+	WW3DSurfaceDescription& desc)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Describe_Surface((GfxSurface*)surface, desc);
+}
+
+WWINLINE bool DX8Wrapper::Describe_DX8_Texture_Level(IDirect3DBaseTexture8* texture,
+	unsigned level, WW3DSurfaceDescription& desc)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Describe_Texture_Level((GfxTexture*)texture, level, desc);
 }
 
 WWINLINE bool DX8Wrapper::Get_DX8_Viewport(D3DVIEWPORT8& viewport)

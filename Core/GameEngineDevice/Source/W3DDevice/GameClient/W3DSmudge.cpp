@@ -37,6 +37,7 @@
 #include "WW3D2/texture.h"
 #include "WW3D2/dx8indexbuffer.h"
 #include "WW3D2/dx8wrapper.h"
+#include "WW3D2/formconv.h"
 #include "WW3D2/rinfo.h"
 #include "WW3D2/camera.h"
 #include "WW3D2/sortingrenderer.h"
@@ -109,7 +110,7 @@ static_assert(SMUDGE_DRAW_SIZE * 5 < 0x10000, "Vertex index exceeds 16-bit limit
 void W3DSmudgeManager::createBackgroundTexture()
 {
 	REF_PTR_RELEASE(m_backgroundTexture);
-	m_backgroundFormat = (UnsignedInt)D3DFMT_UNKNOWN;
+	m_backgroundFormat = (UnsignedInt)WW3D_FORMAT_UNKNOWN;
 
 	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
 	if (dev == nullptr)
@@ -125,11 +126,12 @@ void W3DSmudgeManager::createBackgroundTexture()
 	surface->Get_Description(surface_desc);
 	REF_PTR_RELEASE(surface);
 
-	const D3DFORMAT format = W3DShaderManager::getSceneColorFormat();
+	const WW3DFormat format = W3DShaderManager::getSceneColorFormat();
 
 	IDirect3DTexture8 *tex = nullptr;
 	if (FAILED(dev->CreateTexture(surface_desc.Width, surface_desc.Height, 1,
-			D3DUSAGE_RENDERTARGET, format, D3DPOOL_DEFAULT, &tex)) || tex == nullptr)
+			D3DUSAGE_RENDERTARGET, WW3DFormat_To_D3DFormat(format), D3DPOOL_DEFAULT, &tex)) ||
+		tex == nullptr)
 	{
 		DEBUG_LOG(("SMUDGE: could not create the %dx%d background copy (format %d)\n",
 			surface_desc.Width, surface_desc.Height, (Int)format));
@@ -155,7 +157,7 @@ void W3DSmudgeManager::createBackgroundTexture()
 */
 void W3DSmudgeManager::refreshBackgroundTexture()
 {
-	const D3DFORMAT sceneFormat = W3DShaderManager::getSceneColorFormat();
+	const WW3DFormat sceneFormat = W3DShaderManager::getSceneColorFormat();
 	if (m_backgroundTexture != nullptr && m_backgroundFormat == (UnsignedInt)sceneFormat)
 		return;
 
