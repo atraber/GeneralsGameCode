@@ -146,6 +146,9 @@ unsigned							DX8Wrapper::FFRenderPending[8] = { 0 };
 bool								DX8Wrapper::FFStatePending = false;
 unsigned							DX8Wrapper::FFDeviceStage[MAX_TEXTURE_STAGES][32];
 unsigned							DX8Wrapper::FFDeviceRender[256];
+D3DMATRIX						DX8Wrapper::FFDeviceTransform[DX8Wrapper::FF_TRANSFORM_SLOTS];
+unsigned							DX8Wrapper::FFTransformPending = 0;
+unsigned							DX8Wrapper::FFDeviceTransformValid = 0;
 D3DMATERIAL8						DX8Wrapper::CurrentMaterial = { { 1.0f, 1.0f, 1.0f, 1.0f },
 																	{ 1.0f, 1.0f, 1.0f, 1.0f },
 																	{ 0.0f, 0.0f, 0.0f, 0.0f },
@@ -334,6 +337,25 @@ void DX8Wrapper::Flush_Fixed_Function_State()
 	// configuration turns it on, and with lighting off D3D ignores the material entirely.
 	// CurrentMaterial itself stays -- the routing block reads it to build the shader's
 	// material constants, so it is tracked-state IR like the stage words, not residue.
+
+	while (FFTransformPending) {
+		unsigned long bit;
+		_BitScanForward(&bit, FFTransformPending);
+		FFTransformPending &= FFTransformPending - 1;
+		const unsigned which = FF_Transform_Which(bit);
+		const D3DMATRIX & wanted = DX8Transforms[which];
+		if ((FFDeviceTransformValid & (1u << bit)) &&
+			memcmp(&FFDeviceTransform[bit], &wanted, sizeof(D3DMATRIX)) == 0) continue;
+		FFDeviceTransform[bit] = wanted;
+		FFDeviceTransformValid |= (1u << bit);
+		GFXCALL(Set_Transform(which,(const float*)&wanted));
+#ifdef RTS_DEBUG
+		Debug_Note_Device_Transform(which,(const float*)&wanted);
+		++s_ffFlushedWrites;
+		NoteFlushedWrite(s_ffFlushSiteOverride != nullptr
+			? s_ffFlushSiteOverride : s_declarationSite);
+#endif
+	}
 
 	if (!FFStatePending) return;
 	FFStatePending = false;
@@ -1018,25 +1040,10 @@ namespace {
 	// The ten D3D8 stage states the compatibility layer turns into D3D9 sampler states.
 	// Reading one back has to go the same way it was written or it is a different word.
 
-	// Which transform slots anything has ever sent. The values themselves are
-	// DX8Transforms[], which Send_Transform_To_Device writes on the way to the device and
-	// which nothing else writes -- so it is both what the render path reads and what the
-	// audit compares D3D against. An untouched slot holds whatever the reset filled it
-	// with and the wrapper is claiming nothing about it, which is what this flags.
-	enum { AUDIT_TRANSFORM_SLOTS = D3DTS_WORLD + 1 };
-	bool      s_sentTransformValid[AUDIT_TRANSFORM_SLOTS];
 	// -1 means the transform half of the positive control did not get to run this window.
+	// Which slots the wrapper claims is DX8Wrapper::FFDeviceTransformValid; the audit reads
+	// that directly rather than keeping a second copy here.
 	int       s_invControlSawXform = -1;
-
-	// Is this a transform slot the device actually stores and we actually use? D3D9 has
-	// 256 world matrices and eight texture matrices; the engine writes world 0, the view,
-	// the projection and the texture matrices, and reading any other slot back is asking
-	// the device about a word nobody wrote.
-	bool IsAuditedTransform(unsigned which)
-	{
-		return which == D3DTS_WORLD || which == D3DTS_VIEW || which == D3DTS_PROJECTION ||
-			   (which >= D3DTS_TEXTURE0 && which <= D3DTS_TEXTURE7);
-	}
 
 	const char * AuditTransformName(unsigned which)
 	{
@@ -1058,6 +1065,7 @@ namespace {
 
 	// The fixed-function lighting census. Counted per draw, after the flush, so what it
 	// reads is what the device will use and not what somebody asked for earlier.
+	unsigned s_transformDeviceWrites = 0; // matrices handed to D3D
 	unsigned s_lightDraws = 0;          // every draw through DX8Wrapper::Draw
 	unsigned s_lightFFDraws = 0;        // ...of which fixed function
 	unsigned s_lightFFLit = 0;          // ...with D3DRS_LIGHTING enabled at the device
@@ -1112,14 +1120,21 @@ unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
 	// Transforms. Only the slots something has actually sent are read: an untouched slot
 	// holds whatever D3D defaulted it to and the wrapper is not claiming anything about
 	// it, which is the same rule the 0x12345678 sentinel enforces above.
-	for (unsigned t = 0; t < AUDIT_TRANSFORM_SLOTS; ++t) {
-		if (!s_sentTransformValid[t]) continue;
-		if (!IsAuditedTransform(t)) continue;
+	// Transforms. Compared against what was last *flushed*, not against DX8Transforms:
+	// since the deferral, the tracked array is what the wrapper wants the device to have
+	// and FFDeviceTransform is what it believes the device does have, exactly as
+	// FFDeviceRender is for the deferred render states. A slot nothing has flushed is a
+	// slot the wrapper claims nothing about, and is skipped for the same reason a
+	// 0x12345678 word is -- so on a configuration with no fixed-function draws this sweep
+	// legitimately has nothing to check, and says so through its control.
+	for (unsigned slot = 0; slot < FF_TRANSFORM_SLOTS; ++slot) {
+		if (!(FFDeviceTransformValid & (1u << slot))) continue;
+		const unsigned which = FF_Transform_Which(slot);
 		D3DMATRIX actual;
-		if (!Gfx->Get_Transform(t, (float*)&actual)) continue;
-		if (memcmp(&actual, &DX8Transforms[t], sizeof(D3DMATRIX)) == 0) continue;
+		if (!Gfx->Get_Transform(which, (float*)&actual)) continue;
+		if (memcmp(&actual, &FFDeviceTransform[slot], sizeof(D3DMATRIX)) == 0) continue;
 		++wrong;
-		NoteInvWord(3, t);
+		NoteInvWord(3, which);
 	}
 
 	if (wrong) { ++g->wrongCalls; g->wrongWords += wrong; }
@@ -1154,13 +1169,19 @@ void DX8Wrapper::Debug_Audit_Frame_End()
 	// matrix put there is not a transform anything could mistake for real, and it is put
 	// back from the recorded value on the next line -- again after EndScene, so no draw can
 	// see it.
-	if (s_invFrames + 1 >= 600 && Gfx != nullptr && s_sentTransformValid[D3DTS_VIEW]) {
-		const D3DMATRIX real = DX8Transforms[D3DTS_VIEW];
+	if (s_invFrames + 1 >= 600 && Gfx != nullptr && FFDeviceTransformValid != 0) {
+		// Whichever slot the wrapper actually claims. On a configuration with no
+		// fixed-function draws none of them is claimed and this does not run, which the
+		// report distinguishes from the control running and seeing nothing.
+		unsigned long slot;
+		_BitScanForward(&slot, FFDeviceTransformValid);
+		const unsigned which = FF_Transform_Which(slot);
+		const D3DMATRIX real = FFDeviceTransform[slot];
 		D3DMATRIX bogus = real;
 		bogus.m[3][0] += 12345.0f;
-		Gfx->Set_Transform(D3DTS_VIEW, (const float*)&bogus);
+		Gfx->Set_Transform(which, (const float*)&bogus);
 		s_invControlSawXform = (int)Debug_Audit_Invalidation("(control -- one transform poked at the device)");
-		Gfx->Set_Transform(D3DTS_VIEW, (const float*)&real);
+		Gfx->Set_Transform(which, (const float*)&real);
 	}
 
 	// Every thirtieth frame, not every frame. The check is ~300 device reads, each a
@@ -1208,7 +1229,9 @@ void DX8Wrapper::Debug_Report_Invalidations()
 		WWDEBUG_SAY(("  TRANSFORM CONTROL FAILED: a matrix written at the device behind the "
 					 "wrapper's back was NOT seen. The transform numbers are worthless."));
 	} else {
-		WWDEBUG_SAY(("  transform control did not run this window."));
+		WWDEBUG_SAY(("  transform control did not run: the wrapper has not flushed a matrix "
+					 "to the device, so it is claiming nothing about one and the sweep above "
+					 "had nothing to check. Expected wherever there are no fixed-function draws."));
 	}
 	s_invControlSawXform = -1;
 
@@ -1252,9 +1275,8 @@ void DX8Wrapper::Debug_Report_Invalidations()
 
 void DX8Wrapper::Debug_Note_Device_Transform(unsigned which, const float * matrix4x4)
 {
-	(void)matrix4x4;   // the value itself is DX8Transforms[which]; only the flag is new here
-	if (which >= AUDIT_TRANSFORM_SLOTS) return;
-	s_sentTransformValid[which] = true;
+	(void)which; (void)matrix4x4;
+	++s_transformDeviceWrites;
 }
 
 void DX8Wrapper::Debug_Note_Lighting_Draw()
@@ -1297,9 +1319,10 @@ void DX8Wrapper::Debug_Report_Lighting()
 	WWDEBUG_SAY(("FIXED-FUNCTION LIGHTING CENSUS over 600 frames: %u draws, %u fixed "
 				 "function, %u of those with lighting enabled at the device (%u of them "
 				 "because nothing ever flushed the word and D3D's default is on). "
-				 "D3DRS_LIGHTING read back off the device now: %u",
+				 "D3DRS_LIGHTING read back off the device now: %u. Matrices handed to "
+				 "D3D: %u",
 		s_lightDraws, s_lightFFDraws, s_lightFFLit, s_lightFFLitByDefault,
-		deviceLighting));
+		deviceLighting, s_transformDeviceWrites));
 	if (s_lightDraws == 0) {
 		WWDEBUG_SAY(("  CONTROL FAILED: no draws reached this census at all, so the counts "
 					 "above are not a measurement of anything."));
@@ -1308,6 +1331,7 @@ void DX8Wrapper::Debug_Report_Lighting()
 	s_lightFFDraws = 0;
 	s_lightFFLit = 0;
 	s_lightFFLitByDefault = 0;
+	s_transformDeviceWrites = 0;
 }
 
 void DX8Wrapper::Debug_Report_FF_Sites()
@@ -2871,6 +2895,11 @@ void DX8Wrapper::Invalidate_Cached_Render_States(const char * site)
 		DX8Transforms[t].m[2][2] = 1.0f;
 		DX8Transforms[t].m[3][3] = 1.0f;
 	}
+
+	// And the wrapper stops believing it has sent the device any of them, so the next
+	// fixed-function draw resends whatever it needs rather than matching against a value a
+	// reset has already thrown away. Same role as poisoning FFDeviceRender.
+	FFDeviceTransformValid = 0;
 
 	// Poison the shader-constant shadow caches so the next Set_*_Shader_Constant
 	// always writes through. Set_Vertex/Pixel_Shader_Constant skip the device

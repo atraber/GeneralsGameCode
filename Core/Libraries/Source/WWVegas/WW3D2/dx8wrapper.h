@@ -451,6 +451,11 @@ public:
 	// Set_Projection_Transform_With_Z_Bias -- so there is a single point at which what was
 	// sent can be recorded, which is what the device-state audit compares against.
 	static void Send_Transform_To_Device(unsigned which, const D3DMATRIX& m);
+	// Which deferred slot a transform belongs in, and back again. -1 for a transform the
+	// engine never writes -- D3DTS_WORLD1..3 and the rest of D3D's 256 world matrices --
+	// which is sent straight through rather than given a slot it would never reuse.
+	static int      FF_Transform_Slot(unsigned which);
+	static unsigned FF_Transform_Which(unsigned slot);
 
 	// Raise TEXGEN_STATE_CHANGED when the matrix just written was a texture stage's.
 	//
@@ -765,7 +770,7 @@ public:
 	// asked for. Flushed from two places, which between them cover every way to draw:
 	// Draw(), for everything that goes through the wrapper, and Prepare_Direct_Draw for the
 	// handful of subsystems that talk to the device themselves.
-	static bool Has_Pending_Fixed_Function_State() { return FFStatePending; }
+	static bool Has_Pending_Fixed_Function_State() { return FFStatePending || FFTransformPending!=0; }
 	static void Flush_Fixed_Function_State();
 	static bool Is_Deferred_FF_Stage_State(unsigned state);
 	static bool Is_Deferred_FF_Render_State(unsigned state);
@@ -1006,6 +1011,15 @@ protected:
 	// 420744 words a window that way, against 336289 asked for -- worse than not deferring.
 	static unsigned						FFDeviceStage[MAX_TEXTURE_STAGES][32];
 	static unsigned						FFDeviceRender[256];
+	// Transforms, deferred the same way. Eleven slots rather than a 257-entry array:
+	// D3DTS_WORLD is 256 and the rest are 2, 3 and 16..23, so they are packed into one
+	// bitmask by FF_Transform_Slot. FFDeviceTransformValid says which the device has ever
+	// actually been handed -- the equivalent of the 0x12345678 sentinel for a matrix, which
+	// has no spare bit pattern to spare.
+	enum { FF_TRANSFORM_SLOTS = 11 };
+	static D3DMATRIX					FFDeviceTransform[FF_TRANSFORM_SLOTS];
+	static unsigned						FFTransformPending;
+	static unsigned						FFDeviceTransformValid;
 	// The material is tracked rather than bit-flagged because there is no array behind it
 	// to defer into -- this copy *is* the tracked state. The routing block reads it to
 	// recover the house-colour tint and the stealth opacity, which it used to fetch back
@@ -1826,12 +1840,44 @@ WWINLINE void DX8Wrapper::Set_Pixel_Shader_Constant(int reg, const void* data, i
 }
 // shader system updates KJM ^
 
+WWINLINE int DX8Wrapper::FF_Transform_Slot(unsigned which)
+{
+	if (which == (unsigned)D3DTS_VIEW)       return 0;
+	if (which == (unsigned)D3DTS_PROJECTION) return 1;
+	if (which >= (unsigned)D3DTS_TEXTURE0 && which <= (unsigned)D3DTS_TEXTURE7)
+		return 2 + (int)(which - (unsigned)D3DTS_TEXTURE0);
+	if (which == (unsigned)D3DTS_WORLD)      return 10;
+	return -1;
+}
+
+WWINLINE unsigned DX8Wrapper::FF_Transform_Which(unsigned slot)
+{
+	switch (slot) {
+	case 0:  return (unsigned)D3DTS_VIEW;
+	case 1:  return (unsigned)D3DTS_PROJECTION;
+	case 10: return (unsigned)D3DTS_WORLD;
+	default: return (unsigned)D3DTS_TEXTURE0 + (slot - 2);
+	}
+}
+
 WWINLINE void DX8Wrapper::Send_Transform_To_Device(unsigned which, const D3DMATRIX& m)
 {
-	// The array is written here and nowhere else, which is what makes it readable in place
-	// of the device: every path that reaches D3D with a matrix comes through this function,
-	// so a slot holds exactly what the device was last given for it.
+	// Tracked here and nowhere else, which is what makes DX8Transforms readable in place of
+	// the device: every path that writes a matrix comes through this function.
 	if (which < (unsigned)(D3DTS_WORLD+1)) DX8Transforms[which]=m;
+
+	// Deferred, like the combine and the texgen and for the same reason. A matrix on the
+	// device is read by fixed-function vertex processing and by nothing else -- the
+	// programmable path concatenates world*view*projection on the CPU out of this array and
+	// hands the shader a constant -- so it only has to be there for a draw that is actually
+	// going out on fixed function, and Flush_Fixed_Function_State puts it there for one.
+	// Measured before deferring: 1195831 matrices a 600-frame window reached D3D on the
+	// shadow-map configuration, where the number of fixed-function draws is zero.
+	const int slot = FF_Transform_Slot(which);
+	if (slot >= 0) {
+		FFTransformPending |= (1u << slot);
+		return;
+	}
 	GFXCALL(Set_Transform(which,(const float*)&m));
 #ifdef RTS_DEBUG
 	Debug_Note_Device_Transform(which,(const float*)&m);
