@@ -1223,11 +1223,6 @@ void RTS3DScene::Customized_Render( RenderInfoClass &rinfo )
 	if (m_drawTerrainOnly) {
 		return;
 	}
-#ifdef EXTENDED_STATS
-	if (DX8Wrapper::stats.m_disableObjects) {
-		return;
-	}
-#endif
 
 	// loop through all render objects in the list:
 	for (it.First(&RenderList); !it.Is_Done();)

@@ -2956,11 +2956,6 @@ called after flush. */
 //=============================================================================
 void BaseHeightMapRenderObjClass::renderTrees(CameraClass * camera)
 {
-#ifdef EXTENDED_STATS
-	if (DX8Wrapper::stats.m_disableObjects) {
-		return;
-	}
-#endif
 	if (m_map==nullptr) return;
 	if (Scene==nullptr) return;
 	if (m_treeBuffer) {

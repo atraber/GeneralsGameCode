@@ -2552,9 +2552,6 @@ Direct3DCreateType	Direct3DCreate8Ptr = nullptr;
 HINSTANCE D3D8Lib = nullptr;
 
 DX8_CleanupHook	 *DX8Wrapper::m_pCleanupHook=nullptr;
-#ifdef EXTENDED_STATS
-DX8_Stats	 DX8Wrapper::stats;
-#endif
 /***********************************************************************************
 **
 ** DX8Wrapper Implementation
@@ -4501,11 +4498,6 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 		DX8_RECORD_DX8_CALLS();
 
 		if (present==GFX_DEVICE_OK) {
-#ifdef EXTENDED_STATS
-			if (stats.m_sleepTime) {
-				::Sleep(stats.m_sleepTime);
-			}
-#endif
 			IsDeviceLost=false;
 			FrameCount++;
 		}

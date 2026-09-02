@@ -1367,11 +1367,6 @@ void HeightMapRenderObjClass::On_Frame_Update()
 	return;
 #endif
 
-#ifdef EXTENDED_STATS
-	if (DX8Wrapper::stats.m_disableTerrain) {
-		return;
-	}
-#endif
 
 	Int numDynaLights=0;
 	W3DDynamicLight *enabledLights[MAX_ENABLED_DYNAMIC_LIGHTS];
@@ -1928,11 +1923,6 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 	return;
 #endif
 
-#ifdef EXTENDED_STATS
-	if (DX8Wrapper::stats.m_disableTerrain) {
-		return;
-	}
-#endif
 
 	DX8Wrapper::Set_Light_Environment(rinfo.light_environment);
 

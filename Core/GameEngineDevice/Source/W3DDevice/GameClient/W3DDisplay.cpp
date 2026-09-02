@@ -1114,20 +1114,6 @@ void W3DDisplay::gatherDebugStats()
 
 	s_timeSinceLastUpdateInSecs = ((double)(time64 - s_lastUpdateTime64) / (double)(freq64));
 
-#ifdef EXTENDED_STATS
-		static FILE *pListFile = nullptr;
-		static Int64 lastFrameTime=0;
-		static samples = 0;
-		if (pListFile == nullptr) {
-			pListFile = fopen("FrameRateLog.txt", "w");
-		}
-		samples++;
-		if (pListFile && lastFrameTime && samples<100) {
-			float timeSinceLastFrame = (float)((double)(time64-lastFrameTime) / (double)(freq64));
-			fprintf(pListFile, "%d ", (int)(1/timeSinceLastFrame));
-		}
-		lastFrameTime = time64;
-#endif
 
 	// we update stats on a delay
 	const Real UPDATE_RATE_SECS = 2.0;
@@ -1182,134 +1168,6 @@ void W3DDisplay::gatherDebugStats()
 
 		Int polyPerFrame = Debug_Statistics::Get_DX8_Polygons();
 
-#ifdef EXTENDED_STATS
-		static float gameOverheadMS = 0.0f;
-		static float consoleMS = 0.0f;
-		static float threeDOverheadMS = 0.0f;
-		static float terrainMS = 0.0f;
-		static float objectMS = 0.0f;
-		static float overlapMS = 0.0f;
-		static int  extendedStats = 0;
-		const int SHOW_STATS_TIME=12; // show extended stats for 5 cycles == 10 seconds.
-		static enum {disabled, sync, gameOverhead, console, threeDOverhead, terrain, objects, overlap, normal} statMode = disabled;
-
-		if (statMode == sync) {
-			extendedStats = SHOW_STATS_TIME;
-			statMode = gameOverhead;
-		} else if (statMode == gameOverhead) {
-			gameOverheadMS = ms;
-			statMode = console;
-			DX8Wrapper::stats.m_disableTerrain = true;
-			DX8Wrapper::stats.m_disableOverhead = true;
-			DX8Wrapper::stats.m_disableWater = true;
-			DX8Wrapper::stats.m_disableObjects = true;
-			DX8Wrapper::stats.m_disableConsole = false;
-			DX8Wrapper::stats.m_debugLinesToShow = 1;
-		} else if (statMode == console) {
-			consoleMS = ms;
-			statMode = threeDOverhead;
-			DX8Wrapper::stats.m_disableTerrain = true;
-			DX8Wrapper::stats.m_disableOverhead = true;
-			DX8Wrapper::stats.m_disableWater = true;
-			DX8Wrapper::stats.m_disableObjects = true;
-			DX8Wrapper::stats.m_disableConsole = true;
-			DX8Wrapper::stats.m_debugLinesToShow = 1;
-		} else if (statMode == threeDOverhead) {
-			threeDOverheadMS = ms;
-			statMode = terrain;
-			DX8Wrapper::stats.m_disableTerrain = false;
-			DX8Wrapper::stats.m_disableOverhead = true;
-			DX8Wrapper::stats.m_disableWater = true;
-			DX8Wrapper::stats.m_disableObjects = true;
-			DX8Wrapper::stats.m_disableConsole = true;
-			DX8Wrapper::stats.m_debugLinesToShow = 1;
-		} else if (statMode == terrain) {
-			terrainMS = ms;
-			statMode = objects;
-			DX8Wrapper::stats.m_disableOverhead = true;
-			DX8Wrapper::stats.m_disableTerrain = true;
-			DX8Wrapper::stats.m_disableWater = true;
-			DX8Wrapper::stats.m_disableObjects = false;
-			DX8Wrapper::stats.m_disableConsole = true;
-			DX8Wrapper::stats.m_debugLinesToShow = 1;
-		} else if (statMode == objects) {
-			objectMS = ms;
-			statMode = overlap;
-			DX8Wrapper::stats.m_disableOverhead = false;
-			DX8Wrapper::stats.m_disableTerrain = false;
-			DX8Wrapper::stats.m_disableWater = false;
-			DX8Wrapper::stats.m_disableObjects = false;
-			DX8Wrapper::stats.m_disableConsole = true;
-			DX8Wrapper::stats.m_sleepTime = (int)(terrainMS);
-			DX8Wrapper::stats.m_debugLinesToShow = 1;
-		} else if (statMode == overlap) {
-			overlapMS = ms;
-			statMode = normal;
-			DX8Wrapper::stats.m_disableOverhead = false;
-			DX8Wrapper::stats.m_disableTerrain = false;
-			DX8Wrapper::stats.m_disableWater = false;
-			DX8Wrapper::stats.m_disableObjects = false;
-			DX8Wrapper::stats.m_disableConsole = true;
-			DX8Wrapper::stats.m_sleepTime = 0;
-			DX8Wrapper::stats.m_debugLinesToShow = 1;
-		} else if (statMode == normal) {
-			overlapMS = (ms + ((int)terrainMS) - overlapMS );
-			statMode = disabled;
-			extendedStats = SHOW_STATS_TIME;
-
-			// Done collecting stats. Re-enable stuff
-			DX8Wrapper::stats.m_disableConsole = false;
-			DX8Wrapper::stats.m_debugLinesToShow = -1;
-		} else if (!DX8Wrapper::stats.m_showingStats) {
-			// start collecting extended info.
-			DX8Wrapper::stats.m_showingStats = true;
-			DX8Wrapper::stats.m_disableOverhead = false;
-			DX8Wrapper::stats.m_disableTerrain = true;
-			DX8Wrapper::stats.m_disableWater = true;
-			DX8Wrapper::stats.m_disableObjects = true;
-			DX8Wrapper::stats.m_disableConsole = true;
-			DX8Wrapper::stats.m_debugLinesToShow = 1;
-			statMode = sync;
-			gameOverheadMS = 0.0f;
-			threeDOverheadMS = 0.0f;
-			terrainMS = 0.0f;
-			objectMS = 0.0f;
-		}
-		if (statMode != disabled) {
-			unibuffer.format(L"FPS: %.2f, %.2fms - Collecting extended stats.", fps, ms);
-		} else if (extendedStats>0) {
-			extendedStats--;
-			unibuffer.format( L"FPS: %.2f, %.2fms - OH %.2fms, Console %.2fms, 3D OH %.2fms, Terrain %.2fms, Obs %.2fms, CPU %.2fms",
-				fps, ms, gameOverheadMS, consoleMS, threeDOverheadMS, terrainMS, objectMS, overlapMS);
-			if (extendedStats==SHOW_STATS_TIME-2) {
-				char bufferA[ 256 ];
-				sprintf( bufferA, "FPS: %.2f, %.2fms - OH %.2fms, Console %.2fms, 3D OH %.2fms, Terrain %.2fms, Obs %.2fms, CPU %.2fms\n",
-					fps, ms, gameOverheadMS, consoleMS, threeDOverheadMS, terrainMS, objectMS, overlapMS);
-				::OutputDebugString(bufferA);
-				if (pListFile) {
-					fprintf(pListFile, "\n%s", bufferA);
-				}
-				sprintf( bufferA, "Polygons: per frame %d, per second %d\n", polyPerFrame,
-						(Int)(polyPerFrame*fps));
-				::OutputDebugString(bufferA);
-				if (pListFile) {
-					fprintf(pListFile, "%s", bufferA);
-					fflush(pListFile);
-				}
-			}
-		}
- 		if (pListFile) {
-			fprintf(pListFile, "\nFPS: %.2f, %.2fms\n", fps, ms);
-			fflush(pListFile);
-		}
-		if (pListFile) {
-			samples = 0;
-			if (statMode != disabled) {
-				fprintf(pListFile, "Stat%d-", statMode);
-			}
-		}
-
-#endif
 		// check for debug D3D
 		Bool debugD3D=false;
 		RegistryClass registry ("Software\\Microsoft\\Direct3d");
@@ -1629,13 +1487,6 @@ Int W3DDisplay::drawDebugStats()
 	Color dropColor = GameMakeColor( 0, 0, 0, 255 );
 
 	int linesOfStrings = DisplayStringCount;
-#ifdef EXTENDED_STATS
-	if (DX8Wrapper::stats.m_debugLinesToShow > -1)
-	{
-		linesOfStrings = DX8Wrapper::stats.m_debugLinesToShow;
-	}
-
-#endif
 
 
 	Int w, h;
@@ -1880,9 +1731,6 @@ void W3DDisplay::draw()
 	{
 		calculateTerrainLOD();
 	}
-#ifdef EXTENDED_STATS
-AGAIN:
-#endif
 
 #ifdef DUMP_PERF_STATS
 	if( TheGlobalData->m_dumpPerformanceStatistics )
@@ -1911,12 +1759,6 @@ AGAIN:
 	{
 		gatherDebugStats();
 	}
-#ifdef EXTENDED_STATS
-	else
-	{
-		DX8Wrapper::stats.m_showingStats = false;
-	}
-#endif
 
 #ifdef SAMPLE_DYNAMIC_LIGHT
 	Vector3 loc;
@@ -2215,11 +2057,6 @@ AGAIN:
 
 	} while (freezeTime && !TheTacticalView->isCameraMovementFinished());
 
-#ifdef EXTENDED_STATS
-	if (DX8Wrapper::stats.m_disableOverhead) {
-		goto AGAIN;
-	}
-#endif
 }
 
 #define LETTER_BOX_FADE_TIME	1000.0f		///1000 ms.

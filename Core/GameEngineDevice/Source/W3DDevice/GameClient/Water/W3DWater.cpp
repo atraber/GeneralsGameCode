@@ -1681,11 +1681,6 @@ void WaterRenderObjClass::updateRenderTargetTextures(CameraClass *cam)
 //-------------------------------------------------------------------------------------------------
 void WaterRenderObjClass::renderMirror(CameraClass *cam)
 {
-#ifdef EXTENDED_STATS
-	if (DX8Wrapper::stats.m_disableWater) {
-		return;
-	}
-#endif
 	Matrix3D	OldCameraMatrix=cam->Get_Transform();
 	Matrix4x4	FullMatrix4(cam->Get_Transform());	//copy 3x4 matrix into a 4x4
 	Vector3		WaterNormal(0,0,1);	//normal of plane used for reflection
@@ -1778,11 +1773,6 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
 		((SceneClass *)rinfo.Camera.Get_User_Data())->Get_Extra_Pass_Polygon_Mode() == SceneClass::EXTRA_PASS_CLEAR_LINE)
 		return;	//water is not drawn in wireframe or custom scene passes
 
-#ifdef EXTENDED_STATS
-	if (DX8Wrapper::stats.m_disableWater) {
-		return;
-	}
-#endif
 	if (ShaderClass::Is_Backface_Culling_Inverted())
 		return;	//the water object will not reflect in itself, so don't do anything if rendering a mirror.
 

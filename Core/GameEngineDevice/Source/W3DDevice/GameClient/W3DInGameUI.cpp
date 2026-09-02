@@ -420,9 +420,6 @@ void W3DInGameUI::draw()
 
 	// repaint all our windows
 
-#ifdef EXTENDED_STATS
-	if (!DX8Wrapper::stats.m_disableConsole) {
-#endif
 
 #ifdef DO_UNIT_TIMINGS
 #pragma MESSAGE("*** WARNING *** DOING DO_UNIT_TIMINGS!!!!")
@@ -436,9 +433,6 @@ void W3DInGameUI::draw()
 
 	postWindowDraw();
 
-#ifdef EXTENDED_STATS
-	}
-#endif
 
 	TheDisplay->endBatch();
 

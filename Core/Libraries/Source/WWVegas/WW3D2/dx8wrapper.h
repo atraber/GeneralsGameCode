@@ -123,7 +123,6 @@ struct DX8FrameStatistics
 		material_changes(0),
 		vertex_buffer_changes(0),
 		index_buffer_changes(0),
-		light_changes(0),
 		texture_changes(0),
 		render_state_changes(0),
 		texture_stage_state_changes(0),
@@ -136,7 +135,6 @@ struct DX8FrameStatistics
 	unsigned material_changes;
 	unsigned vertex_buffer_changes;
 	unsigned index_buffer_changes;
-	unsigned light_changes;
 	unsigned texture_changes;
 	unsigned render_state_changes;
 	unsigned texture_stage_state_changes;
@@ -148,7 +146,6 @@ struct DX8FrameStatistics
 #define DX8_RECORD_MATERIAL_CHANGE()			FrameStatistics.material_changes++
 #define DX8_RECORD_VERTEX_BUFFER_CHANGE()		FrameStatistics.vertex_buffer_changes++
 #define DX8_RECORD_INDEX_BUFFER_CHANGE()		FrameStatistics.index_buffer_changes++
-#define DX8_RECORD_LIGHT_CHANGE()				FrameStatistics.light_changes++
 #define DX8_RECORD_TEXTURE_CHANGE()				FrameStatistics.texture_changes++
 #define DX8_RECORD_RENDER_STATE_CHANGE()		FrameStatistics.render_state_changes++
 #define DX8_RECORD_TEXTURE_STAGE_STATE_CHANGE() FrameStatistics.texture_stage_state_changes++
@@ -190,29 +187,6 @@ WWINLINE void DX8_ErrorCode(unsigned res)
 #endif
 
 
-#define no_EXTENDED_STATS
-// EXTENDED_STATS collects additional timing statistics by turning off parts
-// of the 3D drawing system (terrain, objects, etc.)
-#ifdef EXTENDED_STATS
-class DX8_Stats
-{
-public:
-	bool m_showingStats;
-	bool m_disableTerrain;
-	bool m_disableWater;
-	bool m_disableObjects;
-	bool m_disableOverhead;
-	bool m_disableConsole;
-	int  m_debugLinesToShow;
-	int	 m_sleepTime;
-public:
-	DX8_Stats::DX8_Stats() {
-		m_disableConsole = m_showingStats = m_disableTerrain = m_disableWater = m_disableOverhead = m_disableObjects = false;
-		m_sleepTime = 0;
-		m_debugLinesToShow = -1; // -1 means show all expected lines of output
-	}
-};
-#endif
 
 
 // This virtual interface was added for the Generals RTS.
@@ -314,9 +288,6 @@ class DX8Wrapper
 		unsigned short vertex_count=0);
 
 public:
-#ifdef EXTENDED_STATS
-	static DX8_Stats stats;
-#endif
 
 	static bool Init(void * hwnd, bool lite = false);
 	static void Shutdown();
@@ -872,9 +843,6 @@ public:
 	// binds above; exposed because a caller that builds its own constant set still needs
 	// exactly this mapping and must not reinvent the sign convention.
 	static bool Build_Pixels_To_Clip(D3DXMATRIX & out);
-	// The material as last set, without asking the device for it.
-	static const D3DMATERIAL8 & Get_DX8_Material() { return CurrentMaterial; }
-
 	// Names of the specific values of render states and texture stage states
 	static void Get_DX8_Texture_Stage_State_Value_Name(StringClass& name, D3DTEXTURESTAGESTATETYPE state, unsigned value);
 	static void Get_DX8_Render_State_Value_Name(StringClass& name, D3DRENDERSTATETYPE state, unsigned value);
@@ -2035,9 +2003,9 @@ WWINLINE void DX8Wrapper::Set_DX8_Material(const D3DMATERIAL8* mat)
 	// 857432 render words a window against 856292 calls, one apiece. The mesh renderer
 	// sets a material per pass and the great majority of consecutive passes share one.
 	//
-	// CurrentMaterial is what callers read back through Get_DX8_Material and what the
-	// routing block reads, so equality here means nothing observable changed. There is no
-	// longer a second, device-side copy to conflate it with.
+	// CurrentMaterial is what the routing block reads, so equality here means nothing
+	// observable changed. There is no longer a second, device-side copy to conflate it
+	// with.
 	if (memcmp(&CurrentMaterial, mat, sizeof(D3DMATERIAL8)) == 0) return;
 	DX8_RECORD_MATERIAL_CHANGE();
 	SNAPSHOT_SAY(("DX8 - SetMaterial"));
