@@ -1034,16 +1034,12 @@ namespace {
 	// The ten D3D8 stage states the compatibility layer turns into D3D9 sampler states.
 	// Reading one back has to go the same way it was written or it is a different word.
 
-	// What the wrapper has actually sent the device for each transform, and whether it has
-	// sent one at all. This is deliberately not DX8Transforms[]: that array is written by
-	// _Set_DX8_Transform and by nothing else, while the projection and texture matrices
-	// reach the device through the Set_Transform overloads and
-	// Set_Projection_Transform_With_Z_Bias, which do not touch it. Comparing the device
-	// against DX8Transforms[] would therefore report those as wrong every check and say
-	// nothing about whether anybody is writing behind the wrapper's back, which is the
-	// question. Recorded at the device call, so it cannot drift from what was sent.
+	// Which transform slots anything has ever sent. The values themselves are
+	// DX8Transforms[], which Send_Transform_To_Device writes on the way to the device and
+	// which nothing else writes -- so it is both what the render path reads and what the
+	// audit compares D3D against. An untouched slot holds whatever the reset filled it
+	// with and the wrapper is claiming nothing about it, which is what this flags.
 	enum { AUDIT_TRANSFORM_SLOTS = D3DTS_WORLD + 1 };
-	D3DMATRIX s_sentTransform[AUDIT_TRANSFORM_SLOTS];
 	bool      s_sentTransformValid[AUDIT_TRANSFORM_SLOTS];
 	// -1 means the transform half of the positive control did not get to run this window.
 	int       s_invControlSawXform = -1;
@@ -1151,7 +1147,7 @@ unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
 		if (!IsAuditedTransform(t)) continue;
 		D3DMATRIX actual;
 		if (!Gfx->Get_Transform(t, (float*)&actual)) continue;
-		if (memcmp(&actual, &s_sentTransform[t], sizeof(D3DMATRIX)) == 0) continue;
+		if (memcmp(&actual, &DX8Transforms[t], sizeof(D3DMATRIX)) == 0) continue;
 		++wrong;
 		NoteInvWord(3, t);
 	}
@@ -1189,7 +1185,7 @@ void DX8Wrapper::Debug_Audit_Frame_End()
 	// back from the recorded value on the next line -- again after EndScene, so no draw can
 	// see it.
 	if (s_invFrames + 1 >= 600 && Gfx != nullptr && s_sentTransformValid[D3DTS_VIEW]) {
-		const D3DMATRIX real = s_sentTransform[D3DTS_VIEW];
+		const D3DMATRIX real = DX8Transforms[D3DTS_VIEW];
 		D3DMATRIX bogus = real;
 		bogus.m[3][0] += 12345.0f;
 		Gfx->Set_Transform(D3DTS_VIEW, (const float*)&bogus);
@@ -1287,8 +1283,8 @@ void DX8Wrapper::Debug_Report_Invalidations()
 
 void DX8Wrapper::Debug_Note_Device_Transform(unsigned which, const float * matrix4x4)
 {
+	(void)matrix4x4;   // the value itself is DX8Transforms[which]; only the flag is new here
 	if (which >= AUDIT_TRANSFORM_SLOTS) return;
-	s_sentTransform[which] = *reinterpret_cast<const D3DMATRIX*>(matrix4x4);
 	s_sentTransformValid[which] = true;
 }
 
@@ -2904,8 +2900,21 @@ void DX8Wrapper::Invalidate_Cached_Render_States(const char * site)
 	//Need to explicitly set render_state texture pointers to null. MW
 	Release_Render_State();
 
-	// (gth) clear the matrix shadows too
-	memset(&DX8Transforms, 0, sizeof(DX8Transforms));
+	// (gth) clear the matrix shadows too -- to identity, not to zero, which matters now
+	// that they are read in place of the device. This runs on a device reset, and a reset
+	// puts D3D's own transform state back to identity; zeroing the shadows would have made
+	// a later read return a zero matrix where asking the device would have returned
+	// identity. The world and view are re-applied from render_state regardless (see below),
+	// but nothing re-applies the projection or a texture matrix.
+	//
+	// Unverifiable by the replay harness, which creates one device and never resets it.
+	for (unsigned t = 0; t < D3DTS_WORLD+1; ++t) {
+		memset(&DX8Transforms[t], 0, sizeof(D3DMATRIX));
+		DX8Transforms[t].m[0][0] = 1.0f;
+		DX8Transforms[t].m[1][1] = 1.0f;
+		DX8Transforms[t].m[2][2] = 1.0f;
+		DX8Transforms[t].m[3][3] = 1.0f;
+	}
 
 	// Poison the shader-constant shadow caches so the next Set_*_Shader_Constant
 	// always writes through. Set_Vertex/Pixel_Shader_Constant skip the device

@@ -1834,6 +1834,10 @@ WWINLINE void DX8Wrapper::Set_Pixel_Shader_Constant(int reg, const void* data, i
 
 WWINLINE void DX8Wrapper::Send_Transform_To_Device(unsigned which, const D3DMATRIX& m)
 {
+	// The array is written here and nowhere else, which is what makes it readable in place
+	// of the device: every path that reaches D3D with a matrix comes through this function,
+	// so a slot holds exactly what the device was last given for it.
+	if (which < (unsigned)(D3DTS_WORLD+1)) DX8Transforms[which]=m;
 	GFXCALL(Set_Transform(which,(const float*)&m));
 #ifdef RTS_DEBUG
 	Debug_Note_Device_Transform(which,(const float*)&m);
@@ -1843,31 +1847,38 @@ WWINLINE void DX8Wrapper::Send_Transform_To_Device(unsigned which, const D3DMATR
 WWINLINE void DX8Wrapper::_Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, const D3DMATRIX& m)
 {
 	WWASSERT(transform<=D3DTS_WORLD);
-#if 0 // (gth) this optimization is breaking generals because they set the transform behind our backs.
-	if (mtx!=DX8Transforms[transform])
-#endif
-	{
-		DX8Transforms[transform]=m;
-		// A texture matrix is an input to the routing block, which uploads it to the vertex
-		// shader so a generated coordinate set can be transformed there. Writing one has to
-		// invalidate a decision already taken, for the same reason the coordinate source
-		// does -- see TEXGEN_STATE_CHANGED.
-		if (transform >= D3DTS_TEXTURE0 && transform <= D3DTS_TEXTURE7) {
-			render_state_changed |= (unsigned)TEXGEN_STATE_CHANGED;
-		}
-		SNAPSHOT_SAY(("DX8 - SetTransform %d [%f,%f,%f,%f][%f,%f,%f,%f][%f,%f,%f,%f]",
-			transform,
-			m.m[0][0],m.m[0][1],m.m[0][2],m.m[0][3],
-			m.m[1][0],m.m[1][1],m.m[1][2],m.m[1][3],
-			m.m[2][0],m.m[2][1],m.m[2][2],m.m[2][3]));
-		DX8_RECORD_MATRIX_CHANGE();
-		Send_Transform_To_Device((unsigned)transform,m);
+	// The redundancy check that used to live here was disabled with the note "this
+	// optimization is breaking generals because they set the transform behind our backs".
+	// That is no longer true: the backend seam converted every direct device write, the
+	// device-state audit now reads all eleven live transform slots back off D3D on a timer
+	// with its own positive control, and over both shadow configurations it finds nothing
+	// disagreeing. Re-enabling the check is a separate question -- it is a saved device
+	// call, not a correctness fix -- and is deliberately not bundled here.
+
+	// A texture matrix is an input to the routing block, which uploads it to the vertex
+	// shader so a generated coordinate set can be transformed there. Writing one has to
+	// invalidate a decision already taken, for the same reason the coordinate source
+	// does -- see TEXGEN_STATE_CHANGED.
+	if (transform >= D3DTS_TEXTURE0 && transform <= D3DTS_TEXTURE7) {
+		render_state_changed |= (unsigned)TEXGEN_STATE_CHANGED;
 	}
+	SNAPSHOT_SAY(("DX8 - SetTransform %d [%f,%f,%f,%f][%f,%f,%f,%f][%f,%f,%f,%f]",
+		transform,
+		m.m[0][0],m.m[0][1],m.m[0][2],m.m[0][3],
+		m.m[1][0],m.m[1][1],m.m[1][2],m.m[1][3],
+		m.m[2][0],m.m[2][1],m.m[2][2],m.m[2][3]));
+	DX8_RECORD_MATRIX_CHANGE();
+	Send_Transform_To_Device((unsigned)transform,m);
 }
 
 WWINLINE void DX8Wrapper::_Get_DX8_Transform(D3DTRANSFORMSTATETYPE transform, D3DMATRIX& m)
 {
-	GFXCALL(Get_Transform((unsigned)transform,(float*)&m));
+	// Read from what the wrapper sent, not from the device. D3D11 has no transform state to
+	// ask, so a read-back here would be a call no second backend could answer; and there is
+	// nothing to gain from asking, since Send_Transform_To_Device is the only way a matrix
+	// reaches D3D and it records every one.
+	WWASSERT(transform<=D3DTS_WORLD);
+	m=DX8Transforms[transform];
 }
 
 WWINLINE void DX8Wrapper::Note_Texture_Transform_Write(D3DTRANSFORMSTATETYPE transform)
@@ -2599,9 +2610,10 @@ WWINLINE void DX8Wrapper::Get_Transform(D3DTRANSFORMSTATETYPE transform, Matrix4
 		else m=To_Matrix4x4(render_state.view);
 		break;
 	default:
-		D3DMATRIX dxm;
-		GFXCALL(Get_Transform((unsigned)transform,(float*)&dxm));
-		m=To_Matrix4x4(dxm);
+		// Projection and the texture matrices: tracked rather than asked for, see
+		// _Get_DX8_Transform. World and view above never came off the device at all.
+		WWASSERT(transform<=D3DTS_WORLD);
+		m=To_Matrix4x4(DX8Transforms[transform]);
 		break;
 	}
 }
