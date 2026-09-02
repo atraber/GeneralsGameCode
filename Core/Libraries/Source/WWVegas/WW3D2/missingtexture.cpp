@@ -29,37 +29,28 @@ static unsigned missing_image_depth=24;
 extern unsigned int missing_image_palette[];
 extern unsigned int missing_image_pixels[];
 
-static IDirect3DTexture8 * _MissingTexture = nullptr;
+static GfxTexture * _MissingTexture = nullptr;
 
-IDirect3DTexture8* MissingTexture::_Get_Missing_Texture()
+GfxTexture* MissingTexture::_Get_Missing_Texture()
 {
 	WWASSERT(_MissingTexture);
-	_MissingTexture->AddRef();
+	DX8Wrapper::Reference_DX8_Texture(_MissingTexture);
 	return _MissingTexture;
 }
 
-IDirect3DSurface8* MissingTexture::_Create_Missing_Surface()
+GfxSurface* MissingTexture::_Create_Missing_Surface()
 {
-	IDirect3DSurface8 *texture_surface = nullptr;
-	DX8_ErrorCode(_MissingTexture->GetSurfaceLevel(0, &texture_surface));
-	D3DSURFACE_DESC texture_surface_desc;
-	::ZeroMemory(&texture_surface_desc, sizeof(D3DSURFACE_DESC));
-	DX8_ErrorCode(texture_surface->GetDesc(&texture_surface_desc));
+	GfxSurface *texture_surface =
+		DX8Wrapper::Get_DX8_Texture_Surface_Level(_MissingTexture, 0);
+	WW3DSurfaceDescription texture_surface_desc;
+	DX8Wrapper::Describe_DX8_Surface(texture_surface, texture_surface_desc);
 
-	IDirect3DSurface8 *surface = nullptr;
-	DX8_Assert();
-	HRESULT hr = DX8Wrapper::D3D9_CreateImageSurface_Helper(
-		// Needs the device itself: D3DX takes one to create a texture with. No render
-		// state is touched, so nothing here can desynchronise the tracked state.
-		DX8Wrapper::_Get_D3D_Device8(),
+	GfxSurface *surface = DX8Wrapper::Create_DX8_Offscreen_Surface(
 		texture_surface_desc.Width,
 		texture_surface_desc.Height,
-		texture_surface_desc.Format,
-		&surface);
-	DX8_ErrorCode(hr);
-	DX8Wrapper::Increment_DX8_CallCount();
-	DX8Wrapper::_Copy_DX8_Rects(texture_surface, nullptr, 0, surface, nullptr);
-	texture_surface->Release();
+		texture_surface_desc.Format);
+	DX8Wrapper::Copy_DX8_Surface(texture_surface, surface);
+	DX8Wrapper::Release_DX8_Surface_Resource(texture_surface);
 	return surface;
 }
 
@@ -67,7 +58,7 @@ void MissingTexture::_Init()
 {
 	WWASSERT(!_MissingTexture);
 
-	IDirect3DTexture8* tex=DX8Wrapper::_Create_DX8_Texture
+	GfxTexture* tex=DX8Wrapper::_Create_DX8_Texture
 	(
 		missing_image_width,
 		missing_image_height,
@@ -75,20 +66,15 @@ void MissingTexture::_Init()
 		MIP_LEVELS_ALL
 	);
 
-	D3DLOCKED_RECT locked_rect;
-	RECT rect;
+	GfxMappedRect locked_rect;
+	GfxRect rect;
 	rect.left=0;
 	rect.right=missing_image_width;
 	rect.top=0;
 	rect.bottom=missing_image_height;
-	DX8_ErrorCode(
-		tex->LockRect(
-			0,
-			&locked_rect,
-			&rect,
-			0));
+	DX8Wrapper::Map_DX8_Texture(tex,0,&rect,GFX_MAP_WRITE,locked_rect);
 
-	unsigned *buffer=(unsigned*)locked_rect.pBits;
+	unsigned *buffer=(unsigned*)locked_rect.Data;
 	unsigned char *pixels=(unsigned char *)missing_image_pixels;
 	for (unsigned y=0;y<missing_image_height;y++)
 	{
@@ -97,29 +83,22 @@ void MissingTexture::_Init()
 			//*buffer++=missing_image_palette[*pixels++];
 			*buffer++=0x7FFF00FF;
 		}
-		buffer=(unsigned*)locked_rect.pBits;
+		buffer=(unsigned*)locked_rect.Data;
 		buffer+=locked_rect.Pitch/sizeof(unsigned)*y;
 	}
 
-	DX8_ErrorCode(tex->UnlockRect(0));
+	DX8Wrapper::Unmap_DX8_Texture(tex,0);
 
-	for (unsigned i=1;i<tex->GetLevelCount();++i) {
-		IDirect3DSurface8 *src,*dst;
-		DX8_ErrorCode(tex->GetSurfaceLevel(i-1,&src));
-		DX8_ErrorCode(tex->GetSurfaceLevel(i,&dst));
+	for (unsigned i=1;i<DX8Wrapper::Get_DX8_Texture_Level_Count(tex);++i) {
+		GfxSurface *src = DX8Wrapper::Get_DX8_Texture_Surface_Level(tex,i-1);
+		GfxSurface *dst = DX8Wrapper::Get_DX8_Texture_Surface_Level(tex,i);
 
-		DX8_ErrorCode(D3DXLoadSurfaceFromSurface(
-			dst,
-			nullptr,	// palette
-			nullptr,	// rect
-			src,
-			nullptr,	// palette
-			nullptr,	// rect
-			D3DX_FILTER_BOX,	// box is good for 2:1 filtering
-			0));
+		// Halving, which is what a mip step is; the box filter this used to name is the
+		// backend's answer to that and not something a caller has to know.
+		DX8Wrapper::Copy_DX8_Surface_Rect(src,nullptr,dst,nullptr,GFX_COPY_HALVE);
 
-		src->Release();
-		dst->Release();
+		DX8Wrapper::Release_DX8_Surface_Resource(src);
+		DX8Wrapper::Release_DX8_Surface_Resource(dst);
 	}
 
 	_MissingTexture=tex;
@@ -164,7 +143,7 @@ void MissingTexture::_Init()
 
 void MissingTexture::_Deinit()
 {
-	_MissingTexture->Release();
+	DX8Wrapper::Release_DX8_Texture_Resource(_MissingTexture);
 	_MissingTexture=nullptr;
 }
 

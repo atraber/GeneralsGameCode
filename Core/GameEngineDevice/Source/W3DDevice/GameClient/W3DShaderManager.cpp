@@ -116,22 +116,22 @@ __int64 W3DShaderManager::m_driverVersion;
 
 Bool W3DShaderManager::m_renderingToTexture = false;
 Bool W3DShaderManager::m_sceneHistoryCaptured = false;
-IDirect3DSurface8 *W3DShaderManager::m_oldRenderSurface=nullptr;	///<previous render target
+GfxSurface *W3DShaderManager::m_oldRenderSurface=nullptr;	///<previous render target
 DWORD W3DShaderManager::m_debugDepthPS = 0;
 DWORD W3DShaderManager::m_debugShadowPS = 0;
 DWORD W3DShaderManager::m_debugBloomPS = 0;
 DWORD W3DShaderManager::m_debugShroudPS = 0;
-IDirect3DTexture8 *W3DShaderManager::m_debugBrightTexture = nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_debugBrightSurface = nullptr;
-IDirect3DTexture8 *W3DShaderManager::m_renderTexture=nullptr;		///<texture into which rendering will be redirected.
-IDirect3DSurface8 *W3DShaderManager::m_newRenderSurface=nullptr;	///<new render target inside m_renderTexture
-IDirect3DSurface8 *W3DShaderManager::m_resolveSurface=nullptr;	///<MSAA resolve destination (m_renderTexture surface) when MSAA is on
-IDirect3DSurface8 *W3DShaderManager::m_oldDepthSurface=nullptr;	///<previous depth buffer surface
-IDirect3DTexture8 *W3DShaderManager::m_pShadowMapTexture=nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_pShadowMapSurface=nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_pShadowMapDepthSurface=nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_shadowSavedRT=nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_shadowSavedDepth=nullptr;
+GfxTexture *W3DShaderManager::m_debugBrightTexture = nullptr;
+GfxSurface *W3DShaderManager::m_debugBrightSurface = nullptr;
+GfxTexture *W3DShaderManager::m_renderTexture=nullptr;		///<texture into which rendering will be redirected.
+GfxSurface *W3DShaderManager::m_newRenderSurface=nullptr;	///<new render target inside m_renderTexture
+GfxSurface *W3DShaderManager::m_resolveSurface=nullptr;	///<MSAA resolve destination (m_renderTexture surface) when MSAA is on
+GfxSurface *W3DShaderManager::m_oldDepthSurface=nullptr;	///<previous depth buffer surface
+GfxTexture *W3DShaderManager::m_pShadowMapTexture=nullptr;
+GfxSurface *W3DShaderManager::m_pShadowMapSurface=nullptr;
+GfxSurface *W3DShaderManager::m_pShadowMapDepthSurface=nullptr;
+GfxSurface *W3DShaderManager::m_shadowSavedRT=nullptr;
+GfxSurface *W3DShaderManager::m_shadowSavedDepth=nullptr;
 unsigned W3DShaderManager::m_shadowSavedStates[W3DShaderManager::NUM_SHADOW_SAVED_STATES]={0};
 /*===========================================================================================*/
 /*=========      Screen Shaders	=============================================================*/
@@ -202,7 +202,7 @@ Bool ScreenDefaultFilter::preRender(Bool &skipRender, CustomScenePassModes &scen
 
 Bool ScreenDefaultFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doExtraRender)
 {
-	IDirect3DTexture8 * tex =	W3DShaderManager::endRenderToTexture();
+	GfxTexture * tex =	W3DShaderManager::endRenderToTexture();
 	DEBUG_ASSERTCRASH(tex, ("Require rendered texture."));
 	if (!tex) return false;
 	if (!set(mode)) return false;
@@ -389,10 +389,10 @@ protected:
 	static DWORD m_brightPS;
 	static DWORD m_blurPS;
 	static DWORD m_compositePS;
-	static IDirect3DTexture8 *m_texA;   // ping
-	static IDirect3DTexture8 *m_texB;   // pong
-	static IDirect3DSurface8 *m_surfA;
-	static IDirect3DSurface8 *m_surfB;
+	static GfxTexture *m_texA;   // ping
+	static GfxTexture *m_texB;   // pong
+	static GfxSurface *m_surfA;
+	static GfxSurface *m_surfB;
 	static Int m_w;
 	static Int m_h;
 };
@@ -400,10 +400,10 @@ protected:
 DWORD ScreenBloomFilter::m_brightPS = 0;
 DWORD ScreenBloomFilter::m_blurPS = 0;
 DWORD ScreenBloomFilter::m_compositePS = 0;
-IDirect3DTexture8 *ScreenBloomFilter::m_texA = nullptr;
-IDirect3DTexture8 *ScreenBloomFilter::m_texB = nullptr;
-IDirect3DSurface8 *ScreenBloomFilter::m_surfA = nullptr;
-IDirect3DSurface8 *ScreenBloomFilter::m_surfB = nullptr;
+GfxTexture *ScreenBloomFilter::m_texA = nullptr;
+GfxTexture *ScreenBloomFilter::m_texB = nullptr;
+GfxSurface *ScreenBloomFilter::m_surfA = nullptr;
+GfxSurface *ScreenBloomFilter::m_surfB = nullptr;
 Int ScreenBloomFilter::m_w = 0;
 Int ScreenBloomFilter::m_h = 0;
 
@@ -421,7 +421,7 @@ Int ScreenBloomFilter::init()
 		return FALSE;   // bloom needs the scene rendered into a texture
 
 	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	IDirect3DTexture8 *sceneTex = W3DShaderManager::getRenderTexture();
+	GfxTexture *sceneTex = W3DShaderManager::getRenderTexture();
 	if (!dev || !sceneTex)
 		return FALSE;
 
@@ -446,14 +446,14 @@ Int ScreenBloomFilter::init()
 		shutdown();
 		return FALSE;
 	}
-	const D3DFORMAT bloomFormat = WW3DFormat_To_D3DFormat(W3DShaderManager::getSceneColorFormat());
+	const WW3DFormat bloomFormat = W3DShaderManager::getSceneColorFormat();
 	m_w = (Int)sd.Width  / 4;  if (m_w < 1) m_w = 1;
 	m_h = (Int)sd.Height / 4;  if (m_h < 1) m_h = 1;
 
-	if (FAILED(dev->CreateTexture(m_w, m_h, 1, D3DUSAGE_RENDERTARGET, bloomFormat, D3DPOOL_DEFAULT, &m_texA)) ||
-	    FAILED(dev->CreateTexture(m_w, m_h, 1, D3DUSAGE_RENDERTARGET, bloomFormat, D3DPOOL_DEFAULT, &m_texB)) ||
-	    FAILED(m_texA->GetSurfaceLevel(0, &m_surfA)) ||
-	    FAILED(m_texB->GetSurfaceLevel(0, &m_surfB)))
+	if (nullptr == (m_texA = DX8Wrapper::Create_DX8_Texture_Resource(m_w, m_h, 1, bloomFormat, GFX_USAGE_RENDER_TARGET)) ||
+	    nullptr == (m_texB = DX8Wrapper::Create_DX8_Texture_Resource(m_w, m_h, 1, bloomFormat, GFX_USAGE_RENDER_TARGET)) ||
+	    nullptr == (m_surfA = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_texA, 0)) ||
+	    nullptr == (m_surfB = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_texB, 0)))
 	{
 		shutdown();
 		return FALSE;
@@ -466,10 +466,10 @@ Int ScreenBloomFilter::init()
 Int ScreenBloomFilter::shutdown()
 {
 	W3DFilters[FT_VIEW_BLOOM] = nullptr;   // don't leave a stale pointer if re-init fails
-	SAFE_RELEASE(m_surfA);
-	SAFE_RELEASE(m_surfB);
-	SAFE_RELEASE(m_texA);
-	SAFE_RELEASE(m_texB);
+	DX8Wrapper::Release_DX8_Resource(m_surfA);
+	DX8Wrapper::Release_DX8_Resource(m_surfB);
+	DX8Wrapper::Release_DX8_Resource(m_texA);
+	DX8Wrapper::Release_DX8_Resource(m_texB);
 	if (m_brightPS)    { reinterpret_cast<IDirect3DPixelShader9*>(m_brightPS)->Release();    m_brightPS = 0; }
 	if (m_blurPS)      { reinterpret_cast<IDirect3DPixelShader9*>(m_blurPS)->Release();      m_blurPS = 0; }
 	if (m_compositePS) { reinterpret_cast<IDirect3DPixelShader9*>(m_compositePS)->Release(); m_compositePS = 0; }
@@ -485,7 +485,7 @@ Bool ScreenBloomFilter::preRender(Bool &skipRender, CustomScenePassModes &sceneP
 
 Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool &doExtraRender)
 {
-	IDirect3DTexture8 *sceneTex = W3DShaderManager::endRenderToTexture();   // restores back buffer as target
+	GfxTexture *sceneTex = W3DShaderManager::endRenderToTexture();   // restores back buffer as target
 	if (!sceneTex)
 		return false;
 
@@ -495,7 +495,7 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 
 	// Capture the restored back buffer + depth so the composite can return to them
 	// after bouncing through the reduced-resolution bloom targets.
-	IDirect3DSurface8 *backBuf = nullptr, *backDepth = nullptr;
+	GfxSurface *backBuf = nullptr, *backDepth = nullptr;
 	backBuf = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	backDepth = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 
@@ -527,7 +527,7 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	// by the time it reaches sceneTex it has been brought down to 8 bits and everything
 	// above 1.0 has become 1.0. The threshold moves with the source for the same reason:
 	// there is no point asking an 8-bit image for pixels above 1.0.
-	IDirect3DTexture8 *brightSrc = sceneTex;
+	GfxTexture *brightSrc = sceneTex;
 	D3DXVECTOR4 threshold(0.65f, 0.30f, 0.0f, 0.0f);   // 8-bit scene: light rather than bright
 	if (W3DShaderManager::isHdrActive() && W3DShaderManager::getHdrTexture() != nullptr)
 	{
@@ -573,7 +573,7 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	// history, the black-and-white filter, the cross-fade and motion blur all read that
 	// texture and all want a displayable image. They get the scene without the glow, which
 	// is the right answer for a reflection and an acceptable one for the rest.
-	IDirect3DTexture8 *compositeSrc = sceneTex;
+	GfxTexture *compositeSrc = sceneTex;
 	D3DXVECTOR4 toneMapCtl(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f);
 	if (W3DShaderManager::isHdrActive() && W3DShaderManager::getHdrTexture() != nullptr)
 	{
@@ -589,8 +589,8 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	W3DShaderManager::setLinearClampSampler(1);
 	W3DShaderManager::drawScreenQuad(dev, (float)xpos, (float)ypos, (float)width, (float)height, su0, sv0, su1, sv1, 0, 0, 1, 1);
 
-	SAFE_RELEASE(backBuf);
-	SAFE_RELEASE(backDepth);
+	DX8Wrapper::Release_DX8_Resource(backBuf);
+	DX8Wrapper::Release_DX8_Resource(backDepth);
 	reset();
 	return true;
 }
@@ -672,7 +672,7 @@ Bool ScreenBWFilter::preRender(Bool &skipRender, CustomScenePassModes &scenePass
 
 Bool ScreenBWFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doExtraRender)
 {
-	IDirect3DTexture8 * tex =	W3DShaderManager::endRenderToTexture();
+	GfxTexture * tex =	W3DShaderManager::endRenderToTexture();
 	DEBUG_ASSERTCRASH(tex, ("Require rendered texture."));
 	if (!tex) return false;
 	if (!set(mode)) return false;
@@ -863,7 +863,7 @@ Bool ScreenBWFilterDOT3::preRender(Bool &skipRender, CustomScenePassModes &scene
 Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doExtraRender)
 {
 	FF_SITE("ScreenBWFilterDOT3::postRender");
-	IDirect3DTexture8 * tex =	W3DShaderManager::endRenderToTexture();
+	GfxTexture * tex =	W3DShaderManager::endRenderToTexture();
 	DEBUG_ASSERTCRASH(tex, ("Require rendered texture."));
 	if (!tex) return false;
 	if (!set(mode)) return false;
@@ -1116,7 +1116,7 @@ Bool ScreenCrossFadeFilter::preRender(Bool &skipRender, CustomScenePassModes &sc
 
 Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doExtraRender)
 {
-	IDirect3DTexture8 * tex;
+	GfxTexture * tex;
 
 	if (m_skipRender)
 	{
@@ -1304,7 +1304,7 @@ Bool ScreenMotionBlurFilter::preRender(Bool &skipRender, CustomScenePassModes &s
 Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doExtraRender)
 {
 	FF_SITE("ScreenMotionBlurFilter::postRender");
-	IDirect3DTexture8 * tex =	W3DShaderManager::endRenderToTexture();
+	GfxTexture * tex =	W3DShaderManager::endRenderToTexture();
 	DEBUG_ASSERTCRASH(tex, ("Require rendered texture."));
 	if (!tex) return false;
 	if (!set(mode)) return false;
@@ -2092,16 +2092,16 @@ void W3DShaderManager::init()
 		// buffer is multisampled is an API violation, so when MSAA is active the scene
 		// is drawn into a matching multisampled colour surface (m_newRenderSurface) and
 		// resolved into the plain texture (m_resolveSurface) by endRenderToTexture.
-		LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-		hr = dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
-			WW3DFormat_To_D3DFormat(desc.Format), D3DPOOL_DEFAULT, &m_renderTexture);
+		m_renderTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height,
+			1, desc.Format, GFX_USAGE_RENDER_TARGET);
+		hr = (m_renderTexture != nullptr) ? S_OK : E_FAIL;
 
 		if (hr == S_OK)
 		{
 			if (desc.MultiSample == WW3D_MULTISAMPLE_NONE)
 			{
 				// No MSAA: render straight into the plain texture, no resolve needed.
-				hr = m_renderTexture->GetSurfaceLevel(0, &m_newRenderSurface);
+				hr = (m_newRenderSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_renderTexture, 0)) != nullptr ? S_OK : E_FAIL;
 				m_resolveSurface = nullptr;
 			}
 			else
@@ -2110,29 +2110,29 @@ void W3DShaderManager::init()
 				// surface as the resolve destination. The 6-arg form goes through the
 				// d3d9_compat shim (multisample quality 0, matching the standard MSAA the
 				// back buffer / depth use), so the surface pairs with the MSAA depth.
-				hr = dev->CreateRenderTarget(desc.Width, desc.Height,
-					WW3DFormat_To_D3DFormat(desc.Format),
-					WW3DMultiSample_To_D3DMultiSample(desc.MultiSample), FALSE, &m_newRenderSurface);
+				m_newRenderSurface = DX8Wrapper::Create_DX8_Render_Target_Surface(
+					desc.Width, desc.Height, desc.Format, desc.MultiSample);
+				hr = (m_newRenderSurface != nullptr) ? S_OK : E_FAIL;
 				if (hr == S_OK)
-					hr = m_renderTexture->GetSurfaceLevel(0, &m_resolveSurface);
+					hr = (m_resolveSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_renderTexture, 0)) != nullptr ? S_OK : E_FAIL;
 			}
 		}
 
 		if (hr != S_OK)
 		{
-			SAFE_RELEASE(m_resolveSurface);
-			SAFE_RELEASE(m_newRenderSurface);
-			SAFE_RELEASE(m_renderTexture);
-			SAFE_RELEASE(m_oldRenderSurface);
+			DX8Wrapper::Release_DX8_Resource(m_resolveSurface);
+			DX8Wrapper::Release_DX8_Resource(m_newRenderSurface);
+			DX8Wrapper::Release_DX8_Resource(m_renderTexture);
+			DX8Wrapper::Release_DX8_Resource(m_oldRenderSurface);
 		} else {
 			m_oldDepthSurface = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 			hr = m_oldDepthSurface ? S_OK : E_FAIL;
 			if (hr != S_OK)
 			{
-				SAFE_RELEASE(m_resolveSurface);
-				SAFE_RELEASE(m_newRenderSurface);
-				SAFE_RELEASE(m_renderTexture);
-				SAFE_RELEASE(m_oldRenderSurface);
+				DX8Wrapper::Release_DX8_Resource(m_resolveSurface);
+				DX8Wrapper::Release_DX8_Resource(m_newRenderSurface);
+				DX8Wrapper::Release_DX8_Resource(m_renderTexture);
+				DX8Wrapper::Release_DX8_Resource(m_oldRenderSurface);
 				m_oldDepthSurface = nullptr;
 			}
 		}
@@ -2362,11 +2362,11 @@ void W3DShaderManager::shutdownUnitShaders()
 	DX8Wrapper::Set_Orm_Resolver(nullptr);
 	clearOrmCache();
 	if (DX8Wrapper::m_defaultOrmMap != nullptr) {
-		DX8Wrapper::m_defaultOrmMap->Release();
+		DX8Wrapper::Release_DX8_Texture_Resource(DX8Wrapper::m_defaultOrmMap);
 		DX8Wrapper::m_defaultOrmMap = nullptr;
 	}
 	if (DX8Wrapper::m_envCubeMap != nullptr) {
-		DX8Wrapper::m_envCubeMap->Release();
+		DX8Wrapper::Release_DX8_Texture_Resource(DX8Wrapper::m_envCubeMap);
 		DX8Wrapper::m_envCubeMap = nullptr;
 	}
 	// initEnvMap re-bakes and resets the bake baseline when it recreates the cube,
@@ -2439,8 +2439,8 @@ void W3DShaderManager::shutdownDebugVis()
 	// Released here as well as at device reset: this is a D3DPOOL_DEFAULT render target,
 	// and one of those outliving a Reset() is exactly the leak that pinned the device
 	// shut on alt-tab once already.
-	SAFE_RELEASE(m_debugBrightSurface);
-	SAFE_RELEASE(m_debugBrightTexture);
+	DX8Wrapper::Release_DX8_Resource(m_debugBrightSurface);
+	DX8Wrapper::Release_DX8_Resource(m_debugBrightTexture);
 	if (DX8Wrapper::m_dwDebugNormalVS) {
 		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwDebugNormalVS)->Release();
 		DX8Wrapper::m_dwDebugNormalVS = 0;
@@ -2455,7 +2455,7 @@ void W3DShaderManager::shutdownDebugVis()
 	}
 }
 
-void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, Int width, Int height)
+void W3DShaderManager::captureBloomBrightPass(GfxSurface *brightSurface, Int width, Int height)
 {
 #ifdef RTS_DEBUG
 	if (DX8Wrapper::Get_Debug_Vis_Mode() != DEBUG_VIS_BLOOM || brightSurface == nullptr)
@@ -2479,22 +2479,21 @@ void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, 
 		if (!DX8Wrapper::Describe_DX8_Surface(m_debugBrightSurface, have) ||
 			have.Width != sd.Width || have.Height != sd.Height || have.Format != sd.Format)
 		{
-			SAFE_RELEASE(m_debugBrightSurface);
-			SAFE_RELEASE(m_debugBrightTexture);
+			DX8Wrapper::Release_DX8_Resource(m_debugBrightSurface);
+			DX8Wrapper::Release_DX8_Resource(m_debugBrightTexture);
 		}
 	}
 	if (m_debugBrightTexture == nullptr)
 	{
-		if (FAILED(dev->CreateTexture(sd.Width, sd.Height, 1, D3DUSAGE_RENDERTARGET,
-				WW3DFormat_To_D3DFormat(sd.Format), D3DPOOL_DEFAULT, &m_debugBrightTexture)) ||
+		if (FAILED((0 == ((m_debugBrightTexture = DX8Wrapper::Create_DX8_Texture_Resource(sd.Width, sd.Height, 1, sd.Format, GFX_USAGE_RENDER_TARGET)) != nullptr ? S_OK : E_FAIL))) ||
 			m_debugBrightTexture == nullptr)
 		{
 			m_debugBrightTexture = nullptr;
 			return;
 		}
-		if (FAILED(m_debugBrightTexture->GetSurfaceLevel(0, &m_debugBrightSurface)))
+		if (nullptr == (m_debugBrightSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_debugBrightTexture, 0)))
 		{
-			SAFE_RELEASE(m_debugBrightTexture);
+			DX8Wrapper::Release_DX8_Resource(m_debugBrightTexture);
 			return;
 		}
 	}
@@ -2515,8 +2514,8 @@ void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, 
 		}
 		// Drop the target rather than show it. The mode reports having nothing to draw,
 		// which is true and is a different statement from a screen full of false positives.
-		SAFE_RELEASE(m_debugBrightSurface);
-		SAFE_RELEASE(m_debugBrightTexture);
+		DX8Wrapper::Release_DX8_Resource(m_debugBrightSurface);
+		DX8Wrapper::Release_DX8_Resource(m_debugBrightTexture);
 	}
 #else
 	(void)brightSurface; (void)width; (void)height;
@@ -2526,7 +2525,7 @@ void W3DShaderManager::captureBloomBrightPass(IDirect3DSurface8 *brightSurface, 
 #ifdef RTS_DEBUG
 // One tile of the shadow-map inspector. `showAlpha` picks the coverage channel rather
 // than the depth.
-static HRESULT drawShadowMapTile(LPDIRECT3DDEVICE8 dev, IDirect3DTexture8 *shadowTex,
+static HRESULT drawShadowMapTile(LPDIRECT3DDEVICE8 dev, GfxTexture *shadowTex,
 							  DWORD ps, float x, float y, float side, Bool showAlpha)
 {
 	DX8Wrapper::Set_Pixel_Shader(ps);
@@ -2557,7 +2556,7 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 
 	// What each mode wants to look at, resolved before any state is touched so that a
 	// mode with nothing to show costs nothing and leaves the pipeline alone.
-	IDirect3DTexture8 *shroudTex = nullptr;
+	GfxTexture *shroudTex = nullptr;
 	if (mode == DEBUG_VIS_SHROUD)
 	{
 		W3DShroud *shroud = (TheTerrainRenderObject != nullptr)
@@ -2909,13 +2908,14 @@ void W3DShaderManager::initDefaultOrmMap()
 	if (dev == nullptr)
 		return;
 
-	IDirect3DTexture8* tex = nullptr;
-	if (FAILED(dev->CreateTexture(1, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &tex)) || tex == nullptr)
+	GfxTexture* tex = DX8Wrapper::Create_DX8_Texture_Resource(1, 1, 1,
+		WW3D_FORMAT_A8R8G8B8, GFX_USAGE_STATIC);
+	if (tex == nullptr)
 		return;
 
-	D3DLOCKED_RECT lr;
-	if (FAILED(tex->LockRect(0, &lr, nullptr, 0))) {
-		tex->Release();
+	GfxMappedRect lr;
+	if (!DX8Wrapper::Map_DX8_Texture(tex, 0, nullptr, GFX_MAP_WRITE, lr)) {
+		DX8Wrapper::Release_DX8_Resource(tex);
 		return;
 	}
 	// A8R8G8B8 is ARGB in memory order, and the shader reads the sampled texel as
@@ -2925,8 +2925,8 @@ void W3DShaderManager::initDefaultOrmMap()
 	const unsigned char r = (unsigned char)(DEFAULT_ORM_AO        * 255.0f + 0.5f);
 	const unsigned char g = (unsigned char)(DEFAULT_ORM_ROUGHNESS * 255.0f + 0.5f);
 	const unsigned char b = (unsigned char)(DEFAULT_ORM_METALLIC  * 255.0f + 0.5f);
-	*(unsigned*)lr.pBits = ((unsigned)a << 24) | ((unsigned)r << 16) | ((unsigned)g << 8) | (unsigned)b;
-	tex->UnlockRect(0);
+	*(unsigned*)lr.Data = ((unsigned)a << 24) | ((unsigned)r << 16) | ((unsigned)g << 8) | (unsigned)b;
+	DX8Wrapper::Unmap_DX8_Texture(tex, 0);
 
 	DX8Wrapper::m_defaultOrmMap = tex;
 }
@@ -3035,7 +3035,7 @@ static float envCloudFbm(float x, float y, float z)
 }
 
 // Fill all six faces of a locked cubemap with the sky/ground gradient + sun disc.
-static void bakeEnvMapFaces(IDirect3DCubeTexture8* cube,
+static void bakeEnvMapFaces(GfxTexture* cube,
                             const float sunDir[3], const float sunColor[3],
                             const float sky[3], const float ground[3])
 {
@@ -3057,11 +3057,11 @@ static void bakeEnvMapFaces(IDirect3DCubeTexture8* cube,
 	double envSumR = 0.0, envSumG = 0.0, envSumB = 0.0;
 
 	for (int face = 0; face < 6; ++face) {
-		D3DLOCKED_RECT lr;
-		if (FAILED(cube->LockRect((D3DCUBEMAP_FACES)face, 0, &lr, nullptr, 0)))
+		GfxMappedRect lr;
+		if (!DX8Wrapper::Map_DX8_Cube_Texture(cube, face, 0, nullptr, GFX_MAP_WRITE, lr))
 			continue;
 		for (int y = 0; y < ENV_MAP_SIZE; ++y) {
-			unsigned* row = (unsigned*)((unsigned char*)lr.pBits + y * lr.Pitch);
+			unsigned* row = (unsigned*)((unsigned char*)lr.Data + y * lr.Pitch);
 			float t = ((float)y + 0.5f) / ENV_MAP_SIZE * 2.0f - 1.0f;
 			for (int x = 0; x < ENV_MAP_SIZE; ++x) {
 				float s = ((float)x + 0.5f) / ENV_MAP_SIZE * 2.0f - 1.0f;
@@ -3113,7 +3113,7 @@ static void bakeEnvMapFaces(IDirect3DCubeTexture8* cube,
 				envSumR += ri; envSumG += gi; envSumB += bi;
 			}
 		}
-		cube->UnlockRect((D3DCUBEMAP_FACES)face, 0);
+		DX8Wrapper::Unmap_DX8_Cube_Texture(cube, face, 0);
 	}
 
 	{
@@ -3127,7 +3127,7 @@ static void bakeEnvMapFaces(IDirect3DCubeTexture8* cube,
 	// Rebuild the mip chain from the level 0 we just wrote. Required now that the faces
 	// carry cloud detail: the reflection vector can sweep most of a face across a single
 	// pixel on a curved surface, and without mips that undersampling sparkles.
-	D3DXFilterTexture(cube, nullptr, 0, D3DX_DEFAULT);
+	DX8Wrapper::Generate_DX8_Mips(cube, 0);
 }
 
 // The scene's dominant light, for the env bake.
@@ -3251,24 +3251,23 @@ void W3DShaderManager::initShadowMap()
 		DEBUG_LOG(("Shadow map: particle depth shaders did not load -- particles will not cast\n"));
 	}
 
-	HRESULT texHr = dev->CreateTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 1, D3DUSAGE_RENDERTARGET,
-			D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_pShadowMapTexture);
-	if (FAILED(texHr) || m_pShadowMapTexture == nullptr)
+	m_pShadowMapTexture = DX8Wrapper::Create_DX8_Texture_Resource(SHADOW_MAP_SIZE,
+		SHADOW_MAP_SIZE, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET);
+	if (m_pShadowMapTexture == nullptr)
 	{
-		m_pShadowMapTexture = nullptr;
 		return;
 	}
-	if (FAILED(m_pShadowMapTexture->GetSurfaceLevel(0, &m_pShadowMapSurface)))
+	if (nullptr == (m_pShadowMapSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_pShadowMapTexture, 0)))
 	{
-		SAFE_RELEASE(m_pShadowMapTexture);
+		DX8Wrapper::Release_DX8_Resource(m_pShadowMapTexture);
 		return;
 	}
-	HRESULT dsHr = dev->CreateDepthStencilSurface(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, D3DFMT_D16,
-			D3DMULTISAMPLE_NONE, &m_pShadowMapDepthSurface);
-	if (FAILED(dsHr))
+	m_pShadowMapDepthSurface = DX8Wrapper::Create_DX8_Depth_Stencil_Surface(SHADOW_MAP_SIZE,
+		SHADOW_MAP_SIZE, WW3D_ZFORMAT_D16, WW3D_MULTISAMPLE_NONE);
+	if (m_pShadowMapDepthSurface == nullptr)
 	{
-		SAFE_RELEASE(m_pShadowMapSurface);
-		SAFE_RELEASE(m_pShadowMapTexture);
+		DX8Wrapper::Release_DX8_Resource(m_pShadowMapSurface);
+		DX8Wrapper::Release_DX8_Resource(m_pShadowMapTexture);
 		m_pShadowMapDepthSurface = nullptr;
 		return;
 	}
@@ -3279,9 +3278,9 @@ void W3DShaderManager::initShadowMap()
 void W3DShaderManager::shutdownShadowMap()
 {
 	DX8Wrapper::m_pShadowMap = nullptr;
-	SAFE_RELEASE(m_pShadowMapDepthSurface);
-	SAFE_RELEASE(m_pShadowMapSurface);
-	SAFE_RELEASE(m_pShadowMapTexture);
+	DX8Wrapper::Release_DX8_Resource(m_pShadowMapDepthSurface);
+	DX8Wrapper::Release_DX8_Resource(m_pShadowMapSurface);
+	DX8Wrapper::Release_DX8_Resource(m_pShadowMapTexture);
 	if (DX8Wrapper::m_dwShadowDepthVS) {
 		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwShadowDepthVS)->Release();
 		DX8Wrapper::m_dwShadowDepthVS = 0;
@@ -3314,7 +3313,7 @@ void W3DShaderManager::debugDumpShadowMap(const char *tag)
 		return;
 	char path[MAX_PATH];
 	sprintf(path, "dump_shadowmap_%s.png", tag);
-	D3DXSaveSurfaceToFileA(path, D3DXIFF_PNG, m_pShadowMapSurface, nullptr, nullptr);
+	DX8Wrapper::Save_DX8_Surface_To_File(path, m_pShadowMapSurface);
 }
 #endif
 
@@ -3391,11 +3390,11 @@ Bool W3DShaderManager::cullSphereFromShadowFrustum(const Vector3 &center, Real r
 // target, and D3D9 leaves a read from the bound render target undefined.
 // ---------------------------------------------------------------------------
 
-IDirect3DTexture8 *W3DShaderManager::m_ssrDepthTexture = nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_ssrDepthSurface = nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_ssrDepthStencil = nullptr;
-IDirect3DTexture8 *W3DShaderManager::m_sceneHistoryTexture = nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_sceneHistorySurface = nullptr;
+GfxTexture *W3DShaderManager::m_ssrDepthTexture = nullptr;
+GfxSurface *W3DShaderManager::m_ssrDepthSurface = nullptr;
+GfxSurface *W3DShaderManager::m_ssrDepthStencil = nullptr;
+GfxTexture *W3DShaderManager::m_sceneHistoryTexture = nullptr;
+GfxSurface *W3DShaderManager::m_sceneHistorySurface = nullptr;
 
 void W3DShaderManager::initSsr()
 {
@@ -3412,7 +3411,7 @@ void W3DShaderManager::initSsr()
 		return;
 	}
 
-	IDirect3DSurface8 *rt = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	GfxSurface *rt = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	if (rt == nullptr)
 	{
 		DEBUG_LOG(("SSR: disabled -- no render target to take the screen size from\n"));
@@ -3420,7 +3419,7 @@ void W3DShaderManager::initSsr()
 	}
 	WW3DSurfaceDescription desc;
 	const bool haveDesc = DX8Wrapper::Describe_DX8_Surface(rt, desc);
-	rt->Release();
+	DX8Wrapper::Release_DX8_Surface_Resource(rt);
 	if (!haveDesc)
 	{
 		DEBUG_LOG(("SSR: disabled -- the render target would not describe itself\n"));
@@ -3432,14 +3431,12 @@ void W3DShaderManager::initSsr()
 	// else knows about, the history one because it is a copy of the frame. The depth
 	// buffer is deliberately non-multisampled -- this target is never resolved and
 	// nothing samples its edges, so MSAA would only cost fill rate.
-	if (FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
-				D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_ssrDepthTexture)) ||
-		FAILED(m_ssrDepthTexture->GetSurfaceLevel(0, &m_ssrDepthSurface)) ||
-		FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
-				D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_sceneHistoryTexture)) ||
-		FAILED(m_sceneHistoryTexture->GetSurfaceLevel(0, &m_sceneHistorySurface)) ||
-		FAILED(dev->CreateDepthStencilSurface(desc.Width, desc.Height, D3DFMT_D16,
-				D3DMULTISAMPLE_NONE, &m_ssrDepthStencil)))
+	if (nullptr == (m_ssrDepthTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET)) ||
+		nullptr == (m_ssrDepthSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_ssrDepthTexture, 0)) ||
+		nullptr == (m_sceneHistoryTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET)) ||
+		nullptr == (m_sceneHistorySurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_sceneHistoryTexture, 0)) ||
+		nullptr == (m_ssrDepthStencil = DX8Wrapper::Create_DX8_Depth_Stencil_Surface(
+				desc.Width, desc.Height, WW3D_ZFORMAT_D16, WW3D_MULTISAMPLE_NONE)))
 	{
 		DEBUG_LOG(("SSR: disabled -- could not create the %dx%d targets\n",
 			desc.Width, desc.Height));
@@ -3453,8 +3450,8 @@ void W3DShaderManager::initSsr()
 	// means whatever was last in that memory. The shader reflects it perfectly happily,
 	// which shows up as reflections in colours that appear nowhere in the scene, and
 	// the "is the history still black" check never fires to say so.
-	IDirect3DSurface8 *savedRT = nullptr;
-	IDirect3DSurface8 *savedDS = nullptr;
+	GfxSurface *savedRT = nullptr;
+	GfxSurface *savedDS = nullptr;
 	savedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	savedDS = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_ssrDepthSurface, m_ssrDepthStencil)))
@@ -3462,8 +3459,8 @@ void W3DShaderManager::initSsr()
 	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_sceneHistorySurface, nullptr)))
 		DX8Wrapper::Clear(true, false, Vector3(0.0f, 0.0f, 0.0f), 1.0f, 1.0f);
 	DX8Wrapper::Set_DX8_Render_Target(savedRT, savedDS);
-	SAFE_RELEASE(savedRT);
-	SAFE_RELEASE(savedDS);
+	DX8Wrapper::Release_DX8_Resource(savedRT);
+	DX8Wrapper::Release_DX8_Resource(savedDS);
 
 	DX8Wrapper::m_pSceneDepth = m_ssrDepthTexture;   // now Has_Ssr() is true
 	DX8Wrapper::m_pSceneColor = m_sceneHistoryTexture;
@@ -3483,8 +3480,8 @@ void W3DShaderManager::initSsr()
 // difference trick in water_ps legitimate.
 // ---------------------------------------------------------------------------
 
-IDirect3DTexture8 *W3DShaderManager::m_refractionTexture = nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_refractionSurface = nullptr;
+GfxTexture *W3DShaderManager::m_refractionTexture = nullptr;
+GfxSurface *W3DShaderManager::m_refractionSurface = nullptr;
 
 void W3DShaderManager::initRefraction()
 {
@@ -3494,12 +3491,12 @@ void W3DShaderManager::initRefraction()
 	if (dev == nullptr)
 		return;
 
-	IDirect3DSurface8 *rt = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	GfxSurface *rt = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	if (rt == nullptr)
 		return;
 	WW3DSurfaceDescription desc;
 	const bool haveDesc = DX8Wrapper::Describe_DX8_Surface(rt, desc);
-	rt->Release();
+	DX8Wrapper::Release_DX8_Surface_Resource(rt);
 	if (!haveDesc)
 		return;
 
@@ -3513,9 +3510,9 @@ void W3DShaderManager::initRefraction()
 	// here would simply stop copying the moment HDR came on, and the water would refract
 	// whatever was last in the target. The water samples it from a shader, which reads
 	// either format without caring.
-	if (FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET,
-				WW3DFormat_To_D3DFormat(getSceneColorFormat()), D3DPOOL_DEFAULT, &m_refractionTexture)) ||
-		FAILED(m_refractionTexture->GetSurfaceLevel(0, &m_refractionSurface)))
+	if (nullptr == (m_refractionTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width,
+				desc.Height, 1, getSceneColorFormat(), GFX_USAGE_RENDER_TARGET)) ||
+		nullptr == (m_refractionSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_refractionTexture, 0)))
 	{
 		DEBUG_LOG(("Water refraction: disabled -- could not create the %dx%d target\n",
 			desc.Width, desc.Height));
@@ -3526,15 +3523,15 @@ void W3DShaderManager::initRefraction()
 	// Clear before anything can sample it. A render target's contents are undefined until
 	// written, and undefined is not black -- the water would refract whatever was last in
 	// that memory, which is the failure mode the SSR history hit.
-	IDirect3DSurface8 *savedRT = nullptr;
-	IDirect3DSurface8 *savedDS = nullptr;
+	GfxSurface *savedRT = nullptr;
+	GfxSurface *savedDS = nullptr;
 	savedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	savedDS = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_refractionSurface, nullptr)))
 		DX8Wrapper::Clear(true, false, Vector3(0.0f, 0.0f, 0.0f), 1.0f, 1.0f);
 	DX8Wrapper::Set_DX8_Render_Target(savedRT, savedDS);
-	SAFE_RELEASE(savedRT);
-	SAFE_RELEASE(savedDS);
+	DX8Wrapper::Release_DX8_Resource(savedRT);
+	DX8Wrapper::Release_DX8_Resource(savedDS);
 
 	DEBUG_LOG(("Water refraction: active, %dx%d grab target\n", desc.Width, desc.Height));
 	DX8Wrapper::m_pRefraction = m_refractionTexture;
@@ -3543,8 +3540,8 @@ void W3DShaderManager::initRefraction()
 void W3DShaderManager::shutdownRefraction()
 {
 	DX8Wrapper::m_pRefraction = nullptr;
-	SAFE_RELEASE(m_refractionSurface);
-	SAFE_RELEASE(m_refractionTexture);
+	DX8Wrapper::Release_DX8_Resource(m_refractionSurface);
+	DX8Wrapper::Release_DX8_Resource(m_refractionTexture);
 }
 
 // ---------------------------------------------------------------------------
@@ -3552,9 +3549,9 @@ void W3DShaderManager::shutdownRefraction()
 // ---------------------------------------------------------------------------
 
 Bool W3DShaderManager::m_hdrActive = false;
-IDirect3DTexture8 *W3DShaderManager::m_hdrTexture = nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_hdrRenderSurface = nullptr;
-IDirect3DSurface8 *W3DShaderManager::m_hdrResolveSurface = nullptr;
+GfxTexture *W3DShaderManager::m_hdrTexture = nullptr;
+GfxSurface *W3DShaderManager::m_hdrRenderSurface = nullptr;
+GfxSurface *W3DShaderManager::m_hdrResolveSurface = nullptr;
 DWORD W3DShaderManager::m_toneMapPS = 0;
 
 // Sixteen bits of floating point per channel. The alternatives do not work here:
@@ -3661,22 +3658,23 @@ void W3DShaderManager::initHdr()
 	// Same arrangement as the 8-bit path it sits in front of: with MSAA, draw into a
 	// multisampled colour surface and resolve into the texture; without, draw into the
 	// texture's own surface and skip the resolve.
-	HRESULT hr = dev->CreateTexture(sceneDesc.Width, sceneDesc.Height, 1, D3DUSAGE_RENDERTARGET,
-		WW3DFormat_To_D3DFormat(HDR_SCENE_FORMAT), D3DPOOL_DEFAULT, &m_hdrTexture);
+	m_hdrTexture = DX8Wrapper::Create_DX8_Texture_Resource(sceneDesc.Width,
+		sceneDesc.Height, 1, HDR_SCENE_FORMAT, GFX_USAGE_RENDER_TARGET);
+	HRESULT hr = (m_hdrTexture != nullptr) ? S_OK : E_FAIL;
 	if (SUCCEEDED(hr))
 	{
 		if (sceneDesc.MultiSample == WW3D_MULTISAMPLE_NONE)
 		{
-			hr = m_hdrTexture->GetSurfaceLevel(0, &m_hdrRenderSurface);
+			hr = (m_hdrRenderSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_hdrTexture, 0)) != nullptr ? S_OK : E_FAIL;
 			m_hdrResolveSurface = nullptr;
 		}
 		else
 		{
-			hr = dev->CreateRenderTarget(sceneDesc.Width, sceneDesc.Height,
-				WW3DFormat_To_D3DFormat(HDR_SCENE_FORMAT),
-				WW3DMultiSample_To_D3DMultiSample(sceneDesc.MultiSample), FALSE, &m_hdrRenderSurface);
+			m_hdrRenderSurface = DX8Wrapper::Create_DX8_Render_Target_Surface(
+				sceneDesc.Width, sceneDesc.Height, HDR_SCENE_FORMAT, sceneDesc.MultiSample);
+			hr = (m_hdrRenderSurface != nullptr) ? S_OK : E_FAIL;
 			if (SUCCEEDED(hr))
-				hr = m_hdrTexture->GetSurfaceLevel(0, &m_hdrResolveSurface);
+				hr = (m_hdrResolveSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_hdrTexture, 0)) != nullptr ? S_OK : E_FAIL;
 		}
 	}
 
@@ -3711,7 +3709,7 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 	// own surface); with it, m_resolveSurface is. Either way it is the surface belonging to
 	// m_renderTexture, which the scene did not draw into this frame -- the floating-point
 	// target did -- so nothing is being sampled and written at once.
-	IDirect3DSurface8 *dst = (m_resolveSurface != nullptr) ? m_resolveSurface : m_newRenderSurface;
+	GfxSurface *dst = (m_resolveSurface != nullptr) ? m_resolveSurface : m_newRenderSurface;
 	if (dst == nullptr)
 		return;
 
@@ -3719,8 +3717,8 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 	if (!DX8Wrapper::Describe_DX8_Texture_Level(m_renderTexture, 0, sd))
 		return;
 
-	IDirect3DSurface8 *savedRT = nullptr;
-	IDirect3DSurface8 *savedDS = nullptr;
+	GfxSurface *savedRT = nullptr;
+	GfxSurface *savedDS = nullptr;
 	savedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	savedDS = DX8Wrapper::Get_DX8_Depth_Target_Surface();
 
@@ -3784,8 +3782,8 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 	}
 
 	DX8Wrapper::Set_DX8_Render_Target(savedRT, savedDS);
-	SAFE_RELEASE(savedRT);
-	SAFE_RELEASE(savedDS);
+	DX8Wrapper::Release_DX8_Resource(savedRT);
+	DX8Wrapper::Release_DX8_Resource(savedDS);
 }
 
 void W3DShaderManager::shutdownHdr()
@@ -3796,9 +3794,9 @@ void W3DShaderManager::shutdownHdr()
 	// several times display white into a target that clamps them, turning every muzzle
 	// flash into a flat white blob.
 	DX8Wrapper::Set_Hdr_Effect_Gain(1.0f);
-	SAFE_RELEASE(m_hdrResolveSurface);
-	SAFE_RELEASE(m_hdrRenderSurface);
-	SAFE_RELEASE(m_hdrTexture);
+	DX8Wrapper::Release_DX8_Resource(m_hdrResolveSurface);
+	DX8Wrapper::Release_DX8_Resource(m_hdrRenderSurface);
+	DX8Wrapper::Release_DX8_Resource(m_hdrTexture);
 	if (m_toneMapPS)
 	{
 		reinterpret_cast<IDirect3DPixelShader9*>(m_toneMapPS)->Release();
@@ -3817,11 +3815,11 @@ void W3DShaderManager::captureRefraction()
 	// Whatever is the render target right now -- the back buffer normally, the filter
 	// chain's texture when bloom is running. Both are correct: it is the surface the
 	// water's own blend is about to read.
-	IDirect3DSurface8 *src = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	GfxSurface *src = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	if (src != nullptr)
 	{
 		DX8Wrapper::Copy_DX8_Surface(src, m_refractionSurface);
-		src->Release();
+		DX8Wrapper::Release_DX8_Surface_Resource(src);
 	}
 }
 
@@ -3829,11 +3827,11 @@ void W3DShaderManager::shutdownSsr()
 {
 	DX8Wrapper::m_pSceneDepth = nullptr;
 	DX8Wrapper::m_pSceneColor = nullptr;
-	SAFE_RELEASE(m_ssrDepthStencil);
-	SAFE_RELEASE(m_ssrDepthSurface);
-	SAFE_RELEASE(m_ssrDepthTexture);
-	SAFE_RELEASE(m_sceneHistorySurface);
-	SAFE_RELEASE(m_sceneHistoryTexture);
+	DX8Wrapper::Release_DX8_Resource(m_ssrDepthStencil);
+	DX8Wrapper::Release_DX8_Resource(m_ssrDepthSurface);
+	DX8Wrapper::Release_DX8_Resource(m_ssrDepthTexture);
+	DX8Wrapper::Release_DX8_Resource(m_sceneHistorySurface);
+	DX8Wrapper::Release_DX8_Resource(m_sceneHistoryTexture);
 }
 
 Bool W3DShaderManager::isSsrActive()
@@ -3866,8 +3864,8 @@ void W3DShaderManager::startCameraDepthRendering()
 			DEBUG_LOG(("SSR: depth prepass SKIPPED -- Set_DX8_Render_Target failed. The "
 				"pass never runs, so nothing is written and SsrParams stays zero.\n"));
 		}
-		SAFE_RELEASE(m_shadowSavedRT);
-		SAFE_RELEASE(m_shadowSavedDepth);
+		DX8Wrapper::Release_DX8_Resource(m_shadowSavedRT);
+		DX8Wrapper::Release_DX8_Resource(m_shadowSavedDepth);
 		return;
 	}
 	// Read off the device, deliberately, and one of the few places that is the right
@@ -3907,11 +3905,11 @@ void W3DShaderManager::captureSceneHistory()
 	// m_renderTexture is the scene already resolved out of MSAA by endRenderToTexture,
 	// so this is a straight copy. It exists because that texture is the render target
 	// again next frame, and a texture cannot be read while it is being written.
-	IDirect3DSurface8 *src = nullptr;
-	if (SUCCEEDED(m_renderTexture->GetSurfaceLevel(0, &src)) && src != nullptr)
+	GfxSurface *src = nullptr;
+	if (nullptr != (src = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_renderTexture, 0)) && src != nullptr)
 	{
 		DX8Wrapper::Copy_DX8_Surface(src, m_sceneHistorySurface);
-		src->Release();
+		DX8Wrapper::Release_DX8_Surface_Resource(src);
 		m_sceneHistoryCaptured = true;
 	}
 }
@@ -3934,11 +3932,11 @@ void W3DShaderManager::captureSceneHistoryFromBackBuffer()
 	if (dev == nullptr)
 		return;
 
-	IDirect3DSurface8 *back = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
+	GfxSurface *back = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	if (back != nullptr)
 	{
 		DX8Wrapper::Copy_DX8_Surface(back, m_sceneHistorySurface);
-		back->Release();
+		DX8Wrapper::Release_DX8_Surface_Resource(back);
 		m_sceneHistoryCaptured = true;
 	}
 }
@@ -3958,8 +3956,8 @@ void W3DShaderManager::startShadowMapRendering()
 
 	if (FAILED(DX8Wrapper::Set_DX8_Render_Target(m_pShadowMapSurface, m_pShadowMapDepthSurface)))
 	{
-		SAFE_RELEASE(m_shadowSavedRT);
-		SAFE_RELEASE(m_shadowSavedDepth);
+		DX8Wrapper::Release_DX8_Resource(m_shadowSavedRT);
+		DX8Wrapper::Release_DX8_Resource(m_shadowSavedDepth);
 		return;
 	}
 	// The depth pass overrides the render states it needs (see the shadow-depth branch in
@@ -3992,8 +3990,8 @@ void W3DShaderManager::endShadowMapRendering()
 	if (m_shadowSavedRT != nullptr)
 	{
 		DX8Wrapper::Set_DX8_Render_Target(m_shadowSavedRT, m_shadowSavedDepth);
-		SAFE_RELEASE(m_shadowSavedRT);
-		SAFE_RELEASE(m_shadowSavedDepth);
+		DX8Wrapper::Release_DX8_Resource(m_shadowSavedRT);
+		DX8Wrapper::Release_DX8_Resource(m_shadowSavedDepth);
 	}
 	// Put the render states back through the wrapper. Nothing the depth pass forced --
 	// least of all the colour/z mask that keeps unroutable draws out of the map -- may
@@ -4027,10 +4025,11 @@ void W3DShaderManager::initEnvMap()
 	if (dev == nullptr)
 		return;
 
-	IDirect3DCubeTexture8* cube = nullptr;
 	// Levels = 0 asks for a full mip chain; bakeEnvMapFaces fills level 0 and filters
 	// the rest down. See the note there on why the chain is needed at this size.
-	if (FAILED(dev->CreateCubeTexture(ENV_MAP_SIZE, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &cube)) || cube == nullptr)
+	GfxTexture* cube = DX8Wrapper::Create_DX8_Cube_Texture_Resource(ENV_MAP_SIZE, 0,
+		WW3D_FORMAT_A8R8G8B8, GFX_USAGE_STATIC);
+	if (cube == nullptr)
 		return;
 
 	// Initial bake from whatever the map's lighting says now; re-baked when it changes.
@@ -4056,7 +4055,7 @@ void W3DShaderManager::initEnvMap()
 //=============================================================================
 void W3DShaderManager::updateEnvMap()
 {
-	IDirect3DCubeTexture8* cube = (IDirect3DCubeTexture8*)DX8Wrapper::m_envCubeMap;
+	GfxTexture* cube = (GfxTexture*)DX8Wrapper::m_envCubeMap;
 	if (cube == nullptr)
 		return;
 
@@ -4104,11 +4103,11 @@ void W3DShaderManager::getCloudScroll(float& ax, float& ay, float& bx, float& by
 void W3DShaderManager::shutdown()
 {
 	shutdownUnitShaders();
-	SAFE_RELEASE(m_resolveSurface);
-	SAFE_RELEASE(m_newRenderSurface);
-	SAFE_RELEASE(m_renderTexture);
-	SAFE_RELEASE(m_oldRenderSurface);
-	SAFE_RELEASE(m_oldDepthSurface);
+	DX8Wrapper::Release_DX8_Resource(m_resolveSurface);
+	DX8Wrapper::Release_DX8_Resource(m_newRenderSurface);
+	DX8Wrapper::Release_DX8_Resource(m_renderTexture);
+	DX8Wrapper::Release_DX8_Resource(m_oldRenderSurface);
+	DX8Wrapper::Release_DX8_Resource(m_oldDepthSurface);
 	m_currentShader = ST_INVALID;
 	m_currentFilter = FT_NULL_FILTER;
 	//release any assets associated with a shader (vertex/pixel shaders, textures, etc.)
@@ -4283,7 +4282,7 @@ void W3DShaderManager::startRenderToTexture()
 	// back into m_renderTexture at the end of this bracket. Everything downstream therefore
 	// still finds the 8-bit scene texture it has always read; the only code that sees the
 	// wider range is what deliberately asks for getHdrTexture().
-	IDirect3DSurface8 *sceneTarget = m_hdrActive ? m_hdrRenderSurface : m_newRenderSurface;
+	GfxSurface *sceneTarget = m_hdrActive ? m_hdrRenderSurface : m_newRenderSurface;
 	HRESULT hr = DX8Wrapper::Set_DX8_Render_Target(sceneTarget, m_oldDepthSurface);
 
 	// If it was the floating-point target that would not bind -- a depth buffer mismatch the
@@ -4302,11 +4301,11 @@ void W3DShaderManager::startRenderToTexture()
 	if (hr != S_OK)
 	{
 		// Permanently disable RTT
-		SAFE_RELEASE(m_resolveSurface);
-		SAFE_RELEASE(m_newRenderSurface);
-		SAFE_RELEASE(m_renderTexture);
-		SAFE_RELEASE(m_oldRenderSurface);
-		SAFE_RELEASE(m_oldDepthSurface);
+		DX8Wrapper::Release_DX8_Resource(m_resolveSurface);
+		DX8Wrapper::Release_DX8_Resource(m_newRenderSurface);
+		DX8Wrapper::Release_DX8_Resource(m_renderTexture);
+		DX8Wrapper::Release_DX8_Resource(m_oldRenderSurface);
+		DX8Wrapper::Release_DX8_Resource(m_oldDepthSurface);
 		return;
 	}
 
@@ -4338,7 +4337,7 @@ void W3DShaderManager::startRenderToTexture()
 /** Ends rendering to a texture.
  */
 //=============================================================================
-IDirect3DTexture8 *W3DShaderManager::endRenderToTexture()
+GfxTexture *W3DShaderManager::endRenderToTexture()
 {
 	DEBUG_ASSERTCRASH(m_renderingToTexture, ("Not rendering to texture."));
 	if (!m_renderingToTexture) return nullptr;
@@ -4386,7 +4385,7 @@ IDirect3DTexture8 *W3DShaderManager::endRenderToTexture()
 /**Returns texture containing the image that was last rendered using any of the effects requiring render target
 textures.  Used mostly for cross-fading effects that need an unmodified version of the view before the effect
 was applied.  NOTE: This texture does not survive device reset.. so quit effect on reset!*/
-IDirect3DTexture8 *W3DShaderManager::getRenderTexture()
+GfxTexture *W3DShaderManager::getRenderTexture()
 {
 	return m_renderTexture;
 }

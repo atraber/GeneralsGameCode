@@ -93,8 +93,7 @@ W3DShroud::~W3DShroud()
 {
 	ReleaseResources();
 
-	if (m_pSrcTexture)
-		m_pSrcTexture->Release();
+	DX8Wrapper::Release_DX8_Resource(m_pSrcTexture);
 
 	delete [] m_finalFogData;
 	delete [] m_currentFogData;
@@ -164,16 +163,20 @@ void W3DShroud::init(WorldHeightMap *pMap, Real worldCellSizeX, Real worldCellSi
 
 	DEBUG_ASSERTCRASH( m_pSrcTexture != nullptr, ("Failed to Allocate Shroud Src Surface"));
 
-	D3DLOCKED_RECT rect;
+	GfxMappedRect rect;
 
-	//Get a pointer to source surface pixels.
-	HRESULT res = m_pSrcTexture->LockRect(&rect,nullptr,D3DLOCK_NO_DIRTY_UPDATE);
-	m_pSrcTexture->UnlockRect();
+	// Get a pointer to source surface pixels. The flag this used to pass --
+	// D3DLOCK_NO_DIRTY_UPDATE -- suppressed the dirty-region bookkeeping D3D9 keeps for
+	// *managed* textures, and this is an offscreen system-memory surface, which has no
+	// managed copy and no dirty region. It has never done anything; see the note at
+	// GfxMapMode.
+	bool res = DX8Wrapper::Map_DX8_Surface(m_pSrcTexture,nullptr,GFX_MAP_WRITE,rect);
+	DX8Wrapper::Unmap_DX8_Surface(m_pSrcTexture);
 
-	DEBUG_ASSERTCRASH( res == D3D_OK, ("Failed to lock shroud src surface"));
-	res = 0;// just to avoid compiler warnings
+	DEBUG_ASSERTCRASH( res, ("Failed to lock shroud src surface"));
+	res = false;// just to avoid compiler warnings
 
-	m_srcTextureData=rect.pBits;
+	m_srcTextureData=rect.Data;
 	m_srcTexturePitch=rect.Pitch;
 
 	//clear entire texture to black
@@ -205,8 +208,7 @@ void W3DShroud::reset()
 	//Free old shroud data since it may no longer fit new map.
 	if (m_pSrcTexture)
 	{
-		m_pSrcTexture->Release();
-		m_pSrcTexture=nullptr;
+		DX8Wrapper::Release_DX8_Resource(m_pSrcTexture);
 	}
 
 	delete [] m_finalFogData;

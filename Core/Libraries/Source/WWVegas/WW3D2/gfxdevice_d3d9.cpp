@@ -378,12 +378,44 @@ bool GfxDeviceD3D9::Copy_Surface(GfxSurface * source, const GfxRect * source_rec
 	return SUCCEEDED(hr);
 }
 
+bool GfxDeviceD3D9::Copy_Surface_Rect(GfxSurface * source, const GfxRect * source_rect,
+	GfxSurface * dest, const GfxRect * dest_rect, GfxCopyFilter filter)
+{
+	// Deliberately not the ladder in Copy_Surface above. Both callers here have already
+	// decided that the result matters more than the route, and one of them is a scale
+	// that must filter -- StretchRect would take it with point sampling and produce a
+	// different image.
+	HRESULT hr = D3DXLoadSurfaceFromSurface(
+		(IDirect3DSurface8*)dest, nullptr, reinterpret_cast<const RECT*>(dest_rect),
+		(IDirect3DSurface8*)source, nullptr, reinterpret_cast<const RECT*>(source_rect),
+		filter == GFX_COPY_RESAMPLE ? D3DX_FILTER_TRIANGLE
+			: (filter == GFX_COPY_HALVE ? D3DX_FILTER_BOX : D3DX_FILTER_NONE), 0);
+	DX8_ErrorCode(hr);
+	return SUCCEEDED(hr);
+}
+
 bool GfxDeviceD3D9::Update_Texture(GfxTexture * source, GfxTexture * dest)
 {
 	HRESULT hr = m_device->UpdateTexture((IDirect3DBaseTexture8*)source,
 		(IDirect3DBaseTexture8*)dest);
 	DX8_ErrorCode(hr);
 	return SUCCEEDED(hr);
+}
+
+bool GfxDeviceD3D9::Generate_Mips(GfxTexture * texture, unsigned base_level)
+{
+	if (texture == nullptr) return false;
+	// D3DX_DEFAULT is D3DX_FILTER_BOX here, which is what the one caller that passed it
+	// meant and what the other five asked for outright.
+	HRESULT hr = D3DXFilterTexture((IDirect3DBaseTexture8*)texture, nullptr, base_level,
+		D3DX_FILTER_BOX);
+	DX8_ErrorCode(hr);
+	return SUCCEEDED(hr);
+}
+
+void GfxDeviceD3D9::Set_Texture_Detail_Level(GfxTexture * texture, unsigned skip_levels)
+{
+	if (texture != nullptr) ((IDirect3DBaseTexture8*)texture)->SetLOD(skip_levels);
 }
 
 bool GfxDeviceD3D9::Capture_Front_Buffer(GfxSurface * dest)
@@ -601,6 +633,11 @@ void GfxDeviceD3D9::Release_Texture(GfxTexture * texture)
 	if (texture != nullptr) ((IDirect3DBaseTexture8*)texture)->Release();
 }
 
+void GfxDeviceD3D9::Reference_Texture(GfxTexture * texture)
+{
+	if (texture != nullptr) ((IDirect3DBaseTexture8*)texture)->AddRef();
+}
+
 GfxSurface * GfxDeviceD3D9::Create_Render_Target_Surface(unsigned width, unsigned height,
 	WW3DFormat format, WW3DMultiSampleType multisample)
 {
@@ -640,6 +677,11 @@ GfxSurface * GfxDeviceD3D9::Create_Offscreen_Surface(unsigned width, unsigned he
 void GfxDeviceD3D9::Release_Surface(GfxSurface * surface)
 {
 	if (surface != nullptr) ((IDirect3DSurface8*)surface)->Release();
+}
+
+void GfxDeviceD3D9::Reference_Surface(GfxSurface * surface)
+{
+	if (surface != nullptr) ((IDirect3DSurface8*)surface)->AddRef();
 }
 
 unsigned GfxDeviceD3D9::Get_Texture_Level_Count(GfxTexture * texture)
@@ -735,6 +777,45 @@ void GfxDeviceD3D9::Unmap_Volume_Texture(GfxTexture * texture, unsigned level)
 	DX8_ErrorCode(((IDirect3DVolumeTexture8*)base)->UnlockBox(level));
 }
 
+bool GfxDeviceD3D9::Map_Cube_Texture(GfxTexture * texture, unsigned face, unsigned level,
+	const GfxRect * rect, GfxMapMode mode, GfxMappedRect & mapped)
+{
+	mapped.Data = nullptr;
+	mapped.Pitch = 0;
+	if (texture == nullptr) return false;
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_CUBETEXTURE) return false;
+	D3DLOCKED_RECT lr;
+	HRESULT hr = ((IDirect3DCubeTexture8*)base)->LockRect((D3DCUBEMAP_FACES)face, level, &lr,
+		reinterpret_cast<const RECT*>(rect), Map_Mode_To_D3D(mode));
+	DX8_ErrorCode(hr);
+	if (FAILED(hr)) return false;
+	mapped.Data = lr.pBits;
+	mapped.Pitch = lr.Pitch;
+	return true;
+}
+
+void GfxDeviceD3D9::Unmap_Cube_Texture(GfxTexture * texture, unsigned face, unsigned level)
+{
+	if (texture == nullptr) return;
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_CUBETEXTURE) return;
+	DX8_ErrorCode(((IDirect3DCubeTexture8*)base)->UnlockRect((D3DCUBEMAP_FACES)face, level));
+}
+
+bool GfxDeviceD3D9::Describe_Depth_Texture_Level(GfxTexture * texture, unsigned level,
+	WW3DZFormat & format)
+{
+	format = WW3D_ZFORMAT_UNKNOWN;
+	if (texture == nullptr) return false;
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_TEXTURE) return false;
+	D3DSURFACE_DESC sd;
+	if (FAILED(((IDirect3DTexture8*)base)->GetLevelDesc(level, &sd))) return false;
+	format = D3DFormat_To_WW3DZFormat(sd.Format);
+	return true;
+}
+
 bool GfxDeviceD3D9::Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc)
 {
 	if (surface == nullptr) return false;
@@ -755,13 +836,41 @@ bool GfxDeviceD3D9::Describe_Texture_Level(GfxTexture * texture, unsigned level,
 	// seam does not say which kind of texture it is -- so ask before casting rather
 	// than calling a method the object may not have.
 	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
-	if (base->GetType() != D3DRTYPE_TEXTURE) return false;
 	D3DSURFACE_DESC sd;
-	if (FAILED(((IDirect3DTexture8*)base)->GetLevelDesc(level, &sd))) return false;
+	switch (base->GetType()) {
+		case D3DRTYPE_TEXTURE:
+			if (FAILED(((IDirect3DTexture8*)base)->GetLevelDesc(level, &sd))) return false;
+			break;
+		case D3DRTYPE_CUBETEXTURE:
+			// Every face of a cube level has the same description, so face 0 answers for
+			// the level -- which is what the one caller wants to know.
+			if (FAILED(((IDirect3DCubeTexture8*)base)->GetLevelDesc(level, &sd))) return false;
+			break;
+		default:
+			return false;
+	}
 	desc.Width = sd.Width;
 	desc.Height = sd.Height;
 	desc.Format = D3DFormat_To_WW3DFormat(sd.Format);
 	desc.MultiSample = D3DMultiSample_To_WW3DMultiSample(sd.MultiSampleType);
+	return true;
+}
+
+bool GfxDeviceD3D9::Describe_Volume_Level(GfxTexture * texture, unsigned level,
+	WW3DSurfaceDescription & desc, unsigned & depth)
+{
+	depth = 0;
+	if (texture == nullptr) return false;
+	IDirect3DBaseTexture8 * base = (IDirect3DBaseTexture8*)texture;
+	if (base->GetType() != D3DRTYPE_VOLUMETEXTURE) return false;
+	D3DVOLUME_DESC vd;
+	if (FAILED(((IDirect3DVolumeTexture8*)base)->GetLevelDesc(level, &vd))) return false;
+	desc.Width = vd.Width;
+	desc.Height = vd.Height;
+	desc.Format = D3DFormat_To_WW3DFormat(vd.Format);
+	// A volume has no multisampling; saying so is better than leaving the field unset.
+	desc.MultiSample = WW3D_MULTISAMPLE_NONE;
+	depth = vd.Depth;
 	return true;
 }
 
@@ -791,6 +900,32 @@ void GfxDeviceD3D9::Set_Gamma_Ramp(const void * ramp, bool calibrate)
 {
 	m_device->SetGammaRamp(0, calibrate ? D3DSGR_CALIBRATE : D3DSGR_NO_CALIBRATION,
 		(const D3DGAMMARAMP*)ramp);
+}
+
+bool GfxDeviceD3D9::Set_Hardware_Cursor(GfxSurface * image, unsigned hot_x, unsigned hot_y)
+{
+	HRESULT hr = m_device->SetCursorProperties(hot_x, hot_y, (IDirect3DSurface8*)image);
+	return SUCCEEDED(hr);
+}
+
+void GfxDeviceD3D9::Show_Hardware_Cursor(bool show)
+{
+	m_device->ShowCursor(show ? TRUE : FALSE);
+}
+
+void GfxDeviceD3D9::Set_Hardware_Cursor_Position(unsigned x, unsigned y)
+{
+	// D3DCURSOR_IMMEDIATE_UPDATE: move it now rather than at the next present, which is
+	// what a cursor following the mouse has to do.
+	m_device->SetCursorPosition(x, y, D3DCURSOR_IMMEDIATE_UPDATE);
+}
+
+bool GfxDeviceD3D9::Save_Surface_To_File(const char * path, GfxSurface * surface)
+{
+	if (surface == nullptr) return false;
+	HRESULT hr = D3DXSaveSurfaceToFileA(path, D3DXIFF_PNG, (IDirect3DSurface8*)surface,
+		nullptr, nullptr);
+	return SUCCEEDED(hr);
 }
 
 bool GfxDeviceD3D9::Validate_Draw_State(unsigned & passes)

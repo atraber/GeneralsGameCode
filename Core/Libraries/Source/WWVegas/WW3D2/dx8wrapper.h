@@ -305,7 +305,10 @@ public:
 
 	static bool Has_Stencil ();
 	static void Get_Format_Name(unsigned int format, StringClass *tex_format);
-	static unsigned int Get_Surface_Size(const D3DSURFACE_DESC& desc);
+	// How many bytes a surface of this shape occupies. Said in the engine's own format
+	// vocabulary: the two callers both have a WW3DSurfaceDescription now, and the answer
+	// is arithmetic about a pixel layout rather than about an API.
+	static unsigned int Get_Surface_Size(const WW3DSurfaceDescription& desc);
 
 	/*
 	** Rendering
@@ -444,7 +447,7 @@ public:
 	static void Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigned value);
 	static void Set_DX8_Clip_Plane(DWORD Index, CONST float* pPlane);
 	static void Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURESTAGESTATETYPE state, unsigned value);
-	static void Set_DX8_Texture(unsigned int stage, IDirect3DBaseTexture8* texture);
+	static void Set_DX8_Texture(unsigned int stage, GfxTexture* texture);
 
 	/*
 	** The direct drawers' entry points.
@@ -457,8 +460,8 @@ public:
 	** is also how the base-vertex-index and stream-binding regressions happened. These are
 	** the same submissions, through the same backend as every other draw in the game.
 	*/
-	static void Set_DX8_Stream_Source(unsigned stream, IDirect3DVertexBuffer8* buffer, unsigned stride);
-	static void Set_DX8_Indices(IDirect3DIndexBuffer8* buffer, int base_vertex_index);
+	static void Set_DX8_Stream_Source(unsigned stream, GfxVertexBuffer* buffer, unsigned stride);
+	static void Set_DX8_Indices(GfxIndexBuffer* buffer, int base_vertex_index);
 	static void Draw_DX8_Indexed_Primitive(unsigned primitive_type, int base_vertex_index,
 					unsigned min_vertex_index, unsigned vertex_count,
 					unsigned start_index, unsigned primitive_count);
@@ -473,10 +476,13 @@ public:
 	** these stay reads, they just stop being reads of a D3D device in particular.
 	*/
 	static bool Get_DX8_Render_State(unsigned state, unsigned& value);
-	static IDirect3DSurface8* Get_DX8_Render_Target_Surface(unsigned index);
-	static IDirect3DSurface8* Get_DX8_Depth_Target_Surface();
+	static GfxSurface* Get_DX8_Render_Target_Surface(unsigned index);
+	static GfxSurface* Get_DX8_Depth_Target_Surface();
 	static bool Get_DX8_Viewport(D3DVIEWPORT8& viewport);
-	static bool Copy_DX8_Surface(IDirect3DSurface8* source, IDirect3DSurface8* dest);
+	static bool Copy_DX8_Surface(GfxSurface* source, GfxSurface* dest);
+	// Rectangle to rectangle, taking whatever route the backend has for it.
+	static bool Copy_DX8_Surface(GfxSurface* source, const GfxRect* source_rect,
+		GfxSurface* dest, const GfxRect* dest_rect);
 
 	/*
 	** What a surface is, in the engine's own vocabulary rather than in D3D9's. Callers
@@ -490,22 +496,80 @@ public:
 	** where to put it, because a pool is the one thing that cannot cross a seam. Mapping
 	** states the caller's intent, which is a hint under D3D9 and a rule under D3D11.
 	*/
-	static IDirect3DVertexBuffer8* Create_DX8_Vertex_Buffer(unsigned size_in_bytes,
+	static GfxVertexBuffer* Create_DX8_Vertex_Buffer(unsigned size_in_bytes,
 		unsigned fvf, unsigned usage);
-	static IDirect3DIndexBuffer8* Create_DX8_Index_Buffer(unsigned index_count, unsigned usage);
-	static void Release_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer);
-	static void Release_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer);
+	static GfxIndexBuffer* Create_DX8_Index_Buffer(unsigned index_count, unsigned usage);
+	static void Release_DX8_Vertex_Buffer(GfxVertexBuffer* buffer);
+	static void Release_DX8_Index_Buffer(GfxIndexBuffer* buffer);
 
-	static bool Map_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer, unsigned offset_in_bytes,
+	static bool Map_DX8_Vertex_Buffer(GfxVertexBuffer* buffer, unsigned offset_in_bytes,
 		unsigned size_in_bytes, GfxMapMode mode, void** data);
-	static void Unmap_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer);
-	static bool Map_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer, unsigned offset_in_bytes,
+	static void Unmap_DX8_Vertex_Buffer(GfxVertexBuffer* buffer);
+	static bool Map_DX8_Index_Buffer(GfxIndexBuffer* buffer, unsigned offset_in_bytes,
 		unsigned size_in_bytes, GfxMapMode mode, void** data);
-	static void Unmap_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer);
+	static void Unmap_DX8_Index_Buffer(GfxIndexBuffer* buffer);
 
-	static bool Describe_DX8_Surface(IDirect3DSurface8* surface, WW3DSurfaceDescription& desc);
-	static bool Describe_DX8_Texture_Level(IDirect3DBaseTexture8* texture, unsigned level,
+	static bool Describe_DX8_Surface(GfxSurface* surface, WW3DSurfaceDescription& desc);
+	static bool Describe_DX8_Texture_Level(GfxTexture* texture, unsigned level,
 		WW3DSurfaceDescription& desc);
+	static bool Describe_DX8_Volume_Level(GfxTexture* texture, unsigned level,
+		WW3DSurfaceDescription& desc, unsigned& depth);
+
+	/*
+	** Textures and surfaces, on the same terms as the buffers above: what it is for and
+	** what is in it, never which pool. These are declared in the opaque handle types
+	** rather than in D3D9's, because a caller that has to name GfxTexture to hold
+	** the result has not actually stopped depending on D3D9 -- and naming it in a header
+	** is what makes the dependency a class contract instead of a call site.
+	*/
+	static void Reference_DX8_Texture(GfxTexture* texture);
+	static GfxTexture* Create_DX8_Texture_Resource(unsigned width, unsigned height,
+		unsigned levels, WW3DFormat format, unsigned usage);
+	static GfxTexture* Create_DX8_Cube_Texture_Resource(unsigned edge_length, unsigned levels,
+		WW3DFormat format, unsigned usage);
+	static void Release_DX8_Texture_Resource(GfxTexture* texture);
+	/*
+	** Release and forget, in one call that picks the right one by the handle's type.
+	** Every one of these resources was being freed through a SAFE_RELEASE that called
+	** Release() on it -- which is a method, and an opaque handle has none. Two overloads
+	** rather than one macro so that handing a texture to the surface path is a compile
+	** error rather than a wrong vtable slot.
+	*/
+	static void Release_DX8_Resource(GfxTexture*& texture);
+	static void Release_DX8_Resource(GfxSurface*& surface);
+	static GfxSurface* Create_DX8_Render_Target_Surface(unsigned width, unsigned height,
+		WW3DFormat format, WW3DMultiSampleType multisample);
+	static GfxSurface* Create_DX8_Depth_Stencil_Surface(unsigned width, unsigned height,
+		WW3DZFormat format, WW3DMultiSampleType multisample);
+	static GfxSurface* Create_DX8_Offscreen_Surface(unsigned width, unsigned height,
+		WW3DFormat format);
+	static void Release_DX8_Surface_Resource(GfxSurface* surface);
+	static void Reference_DX8_Surface(GfxSurface* surface);
+	static bool Copy_DX8_Surface_Rect(GfxSurface* source, const GfxRect* source_rect,
+		GfxSurface* dest, const GfxRect* dest_rect, GfxCopyFilter filter);
+	static unsigned Get_DX8_Texture_Level_Count(GfxTexture* texture);
+	static bool Generate_DX8_Mips(GfxTexture* texture, unsigned base_level);
+	static void Set_DX8_Texture_Detail_Level(GfxTexture* texture, unsigned skip_levels);
+	static bool Set_DX8_Hardware_Cursor(GfxSurface* image, unsigned hot_x, unsigned hot_y);
+	static void Show_DX8_Hardware_Cursor(bool show);
+	static void Set_DX8_Hardware_Cursor_Position(unsigned x, unsigned y);
+	static bool Save_DX8_Surface_To_File(const char* path, GfxSurface* surface);
+	// Hands back a reference; give it to Release_DX8_Surface_Resource.
+	static GfxSurface* Get_DX8_Texture_Surface_Level(GfxTexture* texture, unsigned level);
+	static bool Map_DX8_Texture(GfxTexture* texture, unsigned level, const GfxRect* rect,
+		GfxMapMode mode, GfxMappedRect& mapped);
+	static void Unmap_DX8_Texture(GfxTexture* texture, unsigned level);
+	static bool Map_DX8_Surface(GfxSurface* surface, const GfxRect* rect, GfxMapMode mode,
+		GfxMappedRect& mapped);
+	static void Unmap_DX8_Surface(GfxSurface* surface);
+	static bool Map_DX8_Volume_Texture(GfxTexture* texture, unsigned level, GfxMapMode mode,
+		GfxMappedBox& mapped);
+	static void Unmap_DX8_Volume_Texture(GfxTexture* texture, unsigned level);
+	static bool Map_DX8_Cube_Texture(GfxTexture* texture, unsigned face, unsigned level,
+		const GfxRect* rect, GfxMapMode mode, GfxMappedRect& mapped);
+	static void Unmap_DX8_Cube_Texture(GfxTexture* texture, unsigned face, unsigned level);
+	static bool Describe_DX8_Depth_Texture_Level(GfxTexture* texture, unsigned level,
+		WW3DZFormat& format);
 
 	/*
 	** Whether the backend is in a state to be drawn to. Four subsystems check this before
@@ -551,7 +615,7 @@ public:
 	** Resources
 	*/
 
-	static IDirect3DVolumeTexture8* _Create_DX8_Volume_Texture
+	static GfxTexture* _Create_DX8_Volume_Texture
 	(
 		unsigned int width,
 		unsigned int height,
@@ -561,7 +625,7 @@ public:
 		D3DPOOL pool=D3DPOOL_MANAGED
 	);
 
-	static IDirect3DCubeTexture8* _Create_DX8_Cube_Texture
+	static GfxTexture* _Create_DX8_Cube_Texture
 	(
 		unsigned int width,
 		unsigned int height,
@@ -572,7 +636,7 @@ public:
 	);
 
 
-	static IDirect3DTexture8* _Create_DX8_ZTexture
+	static GfxTexture* _Create_DX8_ZTexture
 	(
 		unsigned int width,
 		unsigned int height,
@@ -582,7 +646,7 @@ public:
 	);
 
 
-	static IDirect3DTexture8 * _Create_DX8_Texture
+	static GfxTexture * _Create_DX8_Texture
 	(
 		unsigned int width,
 		unsigned int height,
@@ -591,12 +655,12 @@ public:
 		D3DPOOL pool=D3DPOOL_MANAGED,
 		bool rendertarget=false
 	);
-	static IDirect3DTexture8 * _Create_DX8_Texture(const char *filename, MipCountType mip_level_count);
-	static IDirect3DTexture8 * _Create_DX8_Texture(IDirect3DSurface8 *surface, MipCountType mip_level_count);
+	static GfxTexture * _Create_DX8_Texture(const char *filename, MipCountType mip_level_count);
+	static GfxTexture * _Create_DX8_Texture(GfxSurface *surface, MipCountType mip_level_count);
 
-	static IDirect3DSurface8 * _Create_DX8_Surface(unsigned int width, unsigned int height, WW3DFormat format);
-	static IDirect3DSurface8 * _Create_DX8_Surface(const char *filename);
-	static IDirect3DSurface8 * _Get_DX8_Front_Buffer();
+	static GfxSurface * _Create_DX8_Surface(unsigned int width, unsigned int height, WW3DFormat format);
+	static GfxSurface * _Create_DX8_Surface(const char *filename);
+	static GfxSurface * _Get_DX8_Front_Buffer();
 	static SurfaceClass * _Get_DX8_Back_Buffer(unsigned int num=0);
 	// The colour surface being drawn into right now, which is the back buffer only when
 	// nothing has redirected the scene. Anything reading back what the frame has drawn so
@@ -604,10 +668,10 @@ public:
 	static SurfaceClass * _Get_DX8_Render_Target();
 
 	static HRESULT _Copy_DX8_Rects(
-			IDirect3DSurface8* pSourceSurface,
+			GfxSurface* pSourceSurface,
 			CONST RECT* pSourceRectsArray,
 			UINT cRects,
-			IDirect3DSurface8* pDestinationSurface,
+			GfxSurface* pDestinationSurface,
 			CONST POINT* pDestPointsArray
 	);
 
@@ -621,8 +685,8 @@ public:
 
 
 	static HRESULT Set_DX8_Render_Target(
-			IDirect3DSurface8* pRenderTarget,
-			IDirect3DSurface8* pNewZStencil
+			GfxSurface* pRenderTarget,
+			GfxSurface* pNewZStencil
 	);
 
 	static void _Update_Texture(TextureClass *system, TextureClass *video);
@@ -672,7 +736,7 @@ public:
 	**
 	**	swap_chain_ptr->Present (nullptr, nullptr, nullptr, nullptr);
 	**
-	**	DX8Wrapper::Set_Render_Target ((IDirect3DSurface8 *)nullptr);
+	**	DX8Wrapper::Set_Render_Target ((GfxSurface *)nullptr);
 	**
 	*/
 	static IDirect3DSwapChain8 *	Create_Additional_Swap_Chain (HWND render_window);
@@ -682,8 +746,8 @@ public:
 	*/
 	static TextureClass *	Create_Render_Target (int width, int height, WW3DFormat format = WW3D_FORMAT_UNKNOWN);
 
-	static void					Set_Render_Target (IDirect3DSurface8 *render_target, bool use_default_depth_buffer = false);
-	static void					Set_Render_Target (IDirect3DSurface8* render_target, IDirect3DSurface8* dpeth_buffer);
+	static void					Set_Render_Target (GfxSurface *render_target, bool use_default_depth_buffer = false);
+	static void					Set_Render_Target (GfxSurface* render_target, GfxSurface* dpeth_buffer);
 
 	static void					Set_Render_Target (IDirect3DSwapChain8 *swap_chain);
 	static bool					Is_Render_To_Texture() { return IsRenderToTexture; }
@@ -994,7 +1058,7 @@ protected:
 	static bool								world_identity;
 	static unsigned						RenderStates[256];
 	static unsigned						TextureStageStates[MAX_TEXTURE_STAGES][32];
-	static IDirect3DBaseTexture8 *	Textures[MAX_TEXTURE_STAGES];
+	static GfxTexture *	Textures[MAX_TEXTURE_STAGES];
 
 	// Deferred fixed-function state. See Flush_Fixed_Function_State in dx8wrapper.cpp for
 	// why these words stop at the arrays above instead of going on to the device.
@@ -1042,10 +1106,10 @@ protected:
 	static IDirect3D8 *					D3DInterface;			//d3d8;
 	static IDirect3DDevice8 *			D3DDevice;				//d3ddevice8;
 
-	static IDirect3DSurface8 *			CurrentRenderTarget;
-	static IDirect3DSurface8 *			CurrentDepthBuffer;
-	static IDirect3DSurface8 *			DefaultRenderTarget;
-	static IDirect3DSurface8 *			DefaultDepthBuffer;
+	static GfxSurface *			CurrentRenderTarget;
+	static GfxSurface *			CurrentDepthBuffer;
+	static GfxSurface *			DefaultRenderTarget;
+	static GfxSurface *			DefaultDepthBuffer;
 
 	static unsigned							DrawPolygonLowBoundLimit;
 
@@ -1109,7 +1173,7 @@ public:
 	static DWORD						m_dwUnitPbrPS;
 	// Shared environment cubemap sampled by the PBR shader for reflections. Bound on
 	// texture stage 4 (0=albedo, 1=ORM, 2/3=terrain overlays are already spoken for).
-	static IDirect3DBaseTexture8*		m_envCubeMap;
+	static GfxTexture*		m_envCubeMap;
 	// Mean colour of the baked cubemap. The PBR shader divides its irradiance tap by
 	// this so the directional ambient it derives averages to 1.0, letting it redistribute
 	// the engine's ambient by direction without changing the overall exposure.
@@ -1124,7 +1188,7 @@ public:
 	// unoccluded (AO 1), fully dielectric (metallic 0), and rough enough that the
 	// specular lobe is a broad sheen rather than a highlight the original never had.
 	// Built by W3DShaderManager::initDefaultOrmMap.
-	static IDirect3DBaseTexture8*		m_defaultOrmMap;
+	static GfxTexture*		m_defaultOrmMap;
 	// Resolver (installed by the game layer) that maps a base texture to its ORM
 	// sibling texture (<name>_orm), or nullptr when the unit ships no PBR maps.
 	typedef TextureBaseClass* (*OrmResolverFunc)(TextureBaseClass* baseTexture);
@@ -1382,9 +1446,9 @@ public:
 	// The scene as it stood immediately before the water drew. Captured mid-frame by
 	// W3DShaderManager::captureRefraction, and bound on stage 1 -- see the note in the
 	// water routing branch about why the sparkle texture gave that stage up.
-	static IDirect3DBaseTexture8*		m_pRefraction;
-	static IDirect3DBaseTexture8*		m_pWaterShroud;     // fog-of-war projection, or null
-	static void Set_Water_Shroud(IDirect3DBaseTexture8* tex, float sx, float sy, float ox, float oy)
+	static GfxTexture*		m_pRefraction;
+	static GfxTexture*		m_pWaterShroud;     // fog-of-war projection, or null
+	static void Set_Water_Shroud(GfxTexture* tex, float sx, float sy, float ox, float oy)
 	{
 		m_pWaterShroud = tex;
 		m_waterShroudUV.Set(sx, sy, ox, oy);
@@ -1414,11 +1478,11 @@ public:
 	// so this pair dithers the coverage instead. See shadowdepthparticle_ps.hlsl.
 	static DWORD						m_dwShadowDepthParticleVS;
 	static DWORD						m_dwShadowDepthParticlePS;
-	static IDirect3DBaseTexture8*		m_pShadowMap;       // depth-packed shadow map (bound for sampling)
+	static GfxTexture*		m_pShadowMap;       // depth-packed shadow map (bound for sampling)
 	// The cloud shadow field, so meshes can be shaded by the same clouds the ground is.
 	// Republished by the terrain each frame rather than cached at creation, because a
 	// device reset rebuilds the texture and would leave a stale pointer here.
-	static IDirect3DBaseTexture8*		m_pCloudMap;
+	static GfxTexture*		m_pCloudMap;
 	static float						m_sunVP[16];
 	// x = depth-compare bias in sun-clip units, y = shadow strength (0 disables the
 	// lookup without unbinding anything), z = one texel in UV, w = the PCF kernel radius
@@ -1584,8 +1648,8 @@ public:
 	// colour the rays actually read. That colour is the *previous* frame's -- the
 	// current one is the live render target while units are drawing, and D3D9 leaves
 	// a read from the bound render target undefined.
-	static IDirect3DBaseTexture8*		m_pSceneDepth;
-	static IDirect3DBaseTexture8*		m_pSceneColor;
+	static GfxTexture*		m_pSceneDepth;
+	static GfxTexture*		m_pSceneColor;
 	static bool Has_Ssr() { return m_pSceneDepth != nullptr && m_pSceneColor != nullptr; }
 	// x = strength (0 disables the march without unbinding anything, as the shadow
 	// strength does), y = max ray length in world units, zw = the projection's _33/_43,
@@ -1634,7 +1698,7 @@ public:
 	{
 		m_terrainCloudEnable = cloud; m_terrainNoiseEnable = noise;
 	}
-	static void Set_Cloud_Map(IDirect3DBaseTexture8* tex) { m_pCloudMap = tex; }
+	static void Set_Cloud_Map(GfxTexture* tex) { m_pCloudMap = tex; }
 	static void Set_Cloud_Shadow(float ax, float ay, float bx, float by, float strength)
 	{
 		m_cloudScrollAX = ax; m_cloudScrollAY = ay;
@@ -2071,12 +2135,12 @@ WWINLINE void DX8Wrapper::Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigne
 	DX8_RECORD_RENDER_STATE_CHANGE();
 }
 
-WWINLINE void DX8Wrapper::Set_DX8_Stream_Source(unsigned stream, IDirect3DVertexBuffer8* buffer, unsigned stride)
+WWINLINE void DX8Wrapper::Set_DX8_Stream_Source(unsigned stream, GfxVertexBuffer* buffer, unsigned stride)
 {
 	GFXCALL(Set_Vertex_Stream(stream, (GfxVertexBuffer*)buffer, stride));
 }
 
-WWINLINE void DX8Wrapper::Set_DX8_Indices(IDirect3DIndexBuffer8* buffer, int base_vertex_index)
+WWINLINE void DX8Wrapper::Set_DX8_Indices(GfxIndexBuffer* buffer, int base_vertex_index)
 {
 	GFXCALL(Set_Index_Buffer((GfxIndexBuffer*)buffer, base_vertex_index));
 }
@@ -2106,49 +2170,56 @@ WWINLINE bool DX8Wrapper::Get_DX8_Render_State(unsigned state, unsigned& value)
 	return Gfx->Get_Render_State(state, value);
 }
 
-WWINLINE IDirect3DSurface8* DX8Wrapper::Get_DX8_Render_Target_Surface(unsigned index)
+WWINLINE GfxSurface* DX8Wrapper::Get_DX8_Render_Target_Surface(unsigned index)
 {
 	if (Gfx == nullptr) return nullptr;
-	return (IDirect3DSurface8*)Gfx->Get_Render_Target(index);
+	return (GfxSurface*)Gfx->Get_Render_Target(index);
 }
 
-WWINLINE IDirect3DSurface8* DX8Wrapper::Get_DX8_Depth_Target_Surface()
+WWINLINE GfxSurface* DX8Wrapper::Get_DX8_Depth_Target_Surface()
 {
 	if (Gfx == nullptr) return nullptr;
-	return (IDirect3DSurface8*)Gfx->Get_Depth_Target();
+	return (GfxSurface*)Gfx->Get_Depth_Target();
 }
 
-WWINLINE bool DX8Wrapper::Copy_DX8_Surface(IDirect3DSurface8* source, IDirect3DSurface8* dest)
+WWINLINE bool DX8Wrapper::Copy_DX8_Surface(GfxSurface* source, const GfxRect* source_rect,
+	GfxSurface* dest, const GfxRect* dest_rect)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Copy_Surface(source, source_rect, dest, dest_rect);
+}
+
+WWINLINE bool DX8Wrapper::Copy_DX8_Surface(GfxSurface* source, GfxSurface* dest)
 {
 	if (Gfx == nullptr) return false;
 	return Gfx->Copy_Surface((GfxSurface*)source, nullptr, (GfxSurface*)dest, nullptr);
 }
 
-WWINLINE IDirect3DVertexBuffer8* DX8Wrapper::Create_DX8_Vertex_Buffer(unsigned size_in_bytes,
+WWINLINE GfxVertexBuffer* DX8Wrapper::Create_DX8_Vertex_Buffer(unsigned size_in_bytes,
 	unsigned fvf, unsigned usage)
 {
 	if (Gfx == nullptr) return nullptr;
-	return (IDirect3DVertexBuffer8*)Gfx->Create_Vertex_Buffer(size_in_bytes, fvf, usage);
+	return (GfxVertexBuffer*)Gfx->Create_Vertex_Buffer(size_in_bytes, fvf, usage);
 }
 
-WWINLINE IDirect3DIndexBuffer8* DX8Wrapper::Create_DX8_Index_Buffer(unsigned index_count,
+WWINLINE GfxIndexBuffer* DX8Wrapper::Create_DX8_Index_Buffer(unsigned index_count,
 	unsigned usage)
 {
 	if (Gfx == nullptr) return nullptr;
-	return (IDirect3DIndexBuffer8*)Gfx->Create_Index_Buffer(index_count, usage);
+	return (GfxIndexBuffer*)Gfx->Create_Index_Buffer(index_count, usage);
 }
 
-WWINLINE void DX8Wrapper::Release_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer)
+WWINLINE void DX8Wrapper::Release_DX8_Vertex_Buffer(GfxVertexBuffer* buffer)
 {
 	GFXCALL(Release_Vertex_Buffer((GfxVertexBuffer*)buffer));
 }
 
-WWINLINE void DX8Wrapper::Release_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer)
+WWINLINE void DX8Wrapper::Release_DX8_Index_Buffer(GfxIndexBuffer* buffer)
 {
 	GFXCALL(Release_Index_Buffer((GfxIndexBuffer*)buffer));
 }
 
-WWINLINE bool DX8Wrapper::Map_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer,
+WWINLINE bool DX8Wrapper::Map_DX8_Vertex_Buffer(GfxVertexBuffer* buffer,
 	unsigned offset_in_bytes, unsigned size_in_bytes, GfxMapMode mode, void** data)
 {
 	if (Gfx == nullptr) return false;
@@ -2156,12 +2227,12 @@ WWINLINE bool DX8Wrapper::Map_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer,
 		mode, data);
 }
 
-WWINLINE void DX8Wrapper::Unmap_DX8_Vertex_Buffer(IDirect3DVertexBuffer8* buffer)
+WWINLINE void DX8Wrapper::Unmap_DX8_Vertex_Buffer(GfxVertexBuffer* buffer)
 {
 	GFXCALL(Unmap_Vertex_Buffer((GfxVertexBuffer*)buffer));
 }
 
-WWINLINE bool DX8Wrapper::Map_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer,
+WWINLINE bool DX8Wrapper::Map_DX8_Index_Buffer(GfxIndexBuffer* buffer,
 	unsigned offset_in_bytes, unsigned size_in_bytes, GfxMapMode mode, void** data)
 {
 	if (Gfx == nullptr) return false;
@@ -2169,23 +2240,208 @@ WWINLINE bool DX8Wrapper::Map_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer,
 		mode, data);
 }
 
-WWINLINE void DX8Wrapper::Unmap_DX8_Index_Buffer(IDirect3DIndexBuffer8* buffer)
+WWINLINE void DX8Wrapper::Unmap_DX8_Index_Buffer(GfxIndexBuffer* buffer)
 {
 	GFXCALL(Unmap_Index_Buffer((GfxIndexBuffer*)buffer));
 }
 
-WWINLINE bool DX8Wrapper::Describe_DX8_Surface(IDirect3DSurface8* surface,
+WWINLINE GfxTexture* DX8Wrapper::Create_DX8_Texture_Resource(unsigned width,
+	unsigned height, unsigned levels, WW3DFormat format, unsigned usage)
+{
+	if (Gfx == nullptr) return nullptr;
+	return Gfx->Create_Texture(width, height, levels, format, usage);
+}
+
+WWINLINE GfxTexture* DX8Wrapper::Create_DX8_Cube_Texture_Resource(unsigned edge_length,
+	unsigned levels, WW3DFormat format, unsigned usage)
+{
+	if (Gfx == nullptr) return nullptr;
+	return Gfx->Create_Cube_Texture(edge_length, levels, format, usage);
+}
+
+WWINLINE void DX8Wrapper::Reference_DX8_Texture(GfxTexture* texture)
+{
+	if (Gfx != nullptr) Gfx->Reference_Texture(texture);
+}
+
+WWINLINE void DX8Wrapper::Release_DX8_Texture_Resource(GfxTexture* texture)
+{
+	if (Gfx != nullptr) Gfx->Release_Texture(texture);
+}
+
+WWINLINE void DX8Wrapper::Release_DX8_Resource(GfxTexture*& texture)
+{
+	if (texture != nullptr && Gfx != nullptr) Gfx->Release_Texture(texture);
+	texture = nullptr;
+}
+
+WWINLINE void DX8Wrapper::Release_DX8_Resource(GfxSurface*& surface)
+{
+	if (surface != nullptr && Gfx != nullptr) Gfx->Release_Surface(surface);
+	surface = nullptr;
+}
+
+WWINLINE GfxSurface* DX8Wrapper::Create_DX8_Render_Target_Surface(unsigned width,
+	unsigned height, WW3DFormat format, WW3DMultiSampleType multisample)
+{
+	if (Gfx == nullptr) return nullptr;
+	return Gfx->Create_Render_Target_Surface(width, height, format, multisample);
+}
+
+WWINLINE GfxSurface* DX8Wrapper::Create_DX8_Depth_Stencil_Surface(unsigned width,
+	unsigned height, WW3DZFormat format, WW3DMultiSampleType multisample)
+{
+	if (Gfx == nullptr) return nullptr;
+	return Gfx->Create_Depth_Stencil_Surface(width, height, format, multisample);
+}
+
+WWINLINE GfxSurface* DX8Wrapper::Create_DX8_Offscreen_Surface(unsigned width,
+	unsigned height, WW3DFormat format)
+{
+	if (Gfx == nullptr) return nullptr;
+	return Gfx->Create_Offscreen_Surface(width, height, format);
+}
+
+WWINLINE void DX8Wrapper::Release_DX8_Surface_Resource(GfxSurface* surface)
+{
+	if (Gfx != nullptr) Gfx->Release_Surface(surface);
+}
+
+WWINLINE void DX8Wrapper::Reference_DX8_Surface(GfxSurface* surface)
+{
+	if (Gfx != nullptr) Gfx->Reference_Surface(surface);
+}
+
+WWINLINE bool DX8Wrapper::Copy_DX8_Surface_Rect(GfxSurface* source, const GfxRect* source_rect,
+	GfxSurface* dest, const GfxRect* dest_rect, GfxCopyFilter filter)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Copy_Surface_Rect(source, source_rect, dest, dest_rect, filter);
+}
+
+WWINLINE bool DX8Wrapper::Set_DX8_Hardware_Cursor(GfxSurface* image, unsigned hot_x,
+	unsigned hot_y)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Set_Hardware_Cursor(image, hot_x, hot_y);
+}
+
+WWINLINE void DX8Wrapper::Show_DX8_Hardware_Cursor(bool show)
+{
+	if (Gfx != nullptr) Gfx->Show_Hardware_Cursor(show);
+}
+
+WWINLINE void DX8Wrapper::Set_DX8_Hardware_Cursor_Position(unsigned x, unsigned y)
+{
+	if (Gfx != nullptr) Gfx->Set_Hardware_Cursor_Position(x, y);
+}
+
+WWINLINE bool DX8Wrapper::Save_DX8_Surface_To_File(const char* path, GfxSurface* surface)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Save_Surface_To_File(path, surface);
+}
+
+WWINLINE bool DX8Wrapper::Generate_DX8_Mips(GfxTexture* texture, unsigned base_level)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Generate_Mips(texture, base_level);
+}
+
+WWINLINE void DX8Wrapper::Set_DX8_Texture_Detail_Level(GfxTexture* texture,
+	unsigned skip_levels)
+{
+	if (Gfx != nullptr) Gfx->Set_Texture_Detail_Level(texture, skip_levels);
+}
+
+WWINLINE unsigned DX8Wrapper::Get_DX8_Texture_Level_Count(GfxTexture* texture)
+{
+	if (Gfx == nullptr) return 0;
+	return Gfx->Get_Texture_Level_Count(texture);
+}
+
+WWINLINE GfxSurface* DX8Wrapper::Get_DX8_Texture_Surface_Level(GfxTexture* texture,
+	unsigned level)
+{
+	if (Gfx == nullptr) return nullptr;
+	return Gfx->Get_Texture_Surface_Level(texture, level);
+}
+
+WWINLINE bool DX8Wrapper::Map_DX8_Texture(GfxTexture* texture, unsigned level,
+	const GfxRect* rect, GfxMapMode mode, GfxMappedRect& mapped)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Map_Texture(texture, level, rect, mode, mapped);
+}
+
+WWINLINE void DX8Wrapper::Unmap_DX8_Texture(GfxTexture* texture, unsigned level)
+{
+	if (Gfx != nullptr) Gfx->Unmap_Texture(texture, level);
+}
+
+WWINLINE bool DX8Wrapper::Map_DX8_Surface(GfxSurface* surface, const GfxRect* rect,
+	GfxMapMode mode, GfxMappedRect& mapped)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Map_Surface(surface, rect, mode, mapped);
+}
+
+WWINLINE void DX8Wrapper::Unmap_DX8_Surface(GfxSurface* surface)
+{
+	if (Gfx != nullptr) Gfx->Unmap_Surface(surface);
+}
+
+WWINLINE bool DX8Wrapper::Map_DX8_Volume_Texture(GfxTexture* texture, unsigned level,
+	GfxMapMode mode, GfxMappedBox& mapped)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Map_Volume_Texture(texture, level, mode, mapped);
+}
+
+WWINLINE void DX8Wrapper::Unmap_DX8_Volume_Texture(GfxTexture* texture, unsigned level)
+{
+	if (Gfx != nullptr) Gfx->Unmap_Volume_Texture(texture, level);
+}
+
+WWINLINE bool DX8Wrapper::Describe_DX8_Surface(GfxSurface* surface,
 	WW3DSurfaceDescription& desc)
 {
 	if (Gfx == nullptr) return false;
 	return Gfx->Describe_Surface((GfxSurface*)surface, desc);
 }
 
-WWINLINE bool DX8Wrapper::Describe_DX8_Texture_Level(IDirect3DBaseTexture8* texture,
+WWINLINE bool DX8Wrapper::Describe_DX8_Texture_Level(GfxTexture* texture,
 	unsigned level, WW3DSurfaceDescription& desc)
 {
 	if (Gfx == nullptr) return false;
 	return Gfx->Describe_Texture_Level((GfxTexture*)texture, level, desc);
+}
+
+WWINLINE bool DX8Wrapper::Map_DX8_Cube_Texture(GfxTexture* texture, unsigned face,
+	unsigned level, const GfxRect* rect, GfxMapMode mode, GfxMappedRect& mapped)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Map_Cube_Texture(texture, face, level, rect, mode, mapped);
+}
+
+WWINLINE void DX8Wrapper::Unmap_DX8_Cube_Texture(GfxTexture* texture, unsigned face,
+	unsigned level)
+{
+	if (Gfx != nullptr) Gfx->Unmap_Cube_Texture(texture, face, level);
+}
+
+WWINLINE bool DX8Wrapper::Describe_DX8_Depth_Texture_Level(GfxTexture* texture,
+	unsigned level, WW3DZFormat& format)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Describe_Depth_Texture_Level(texture, level, format);
+}
+
+WWINLINE bool DX8Wrapper::Describe_DX8_Volume_Level(GfxTexture* texture, unsigned level,
+	WW3DSurfaceDescription& desc, unsigned& depth)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Describe_Volume_Level(texture, level, desc, depth);
 }
 
 WWINLINE bool DX8Wrapper::Get_DX8_Viewport(D3DVIEWPORT8& viewport)
@@ -2249,7 +2505,7 @@ WWINLINE void DX8Wrapper::Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURE
 	DX8_RECORD_TEXTURE_STAGE_STATE_CHANGE();
 }
 
-WWINLINE void DX8Wrapper::Set_DX8_Texture(unsigned int stage, IDirect3DBaseTexture8* texture)
+WWINLINE void DX8Wrapper::Set_DX8_Texture(unsigned int stage, GfxTexture* texture)
 {
   	if (stage >= MAX_TEXTURE_STAGES)
   	{	GFXCALL(Set_Texture(stage, (GfxTexture*)texture));
@@ -2260,18 +2516,18 @@ WWINLINE void DX8Wrapper::Set_DX8_Texture(unsigned int stage, IDirect3DBaseTextu
 
 	SNAPSHOT_SAY(("DX8 - SetTexture(%x) ",texture));
 
-	if (Textures[stage]) Textures[stage]->Release();
+	if (Textures[stage]) Gfx->Release_Texture(Textures[stage]);
 	Textures[stage] = texture;
-	if (Textures[stage]) Textures[stage]->AddRef();
+	if (Textures[stage]) Gfx->Reference_Texture(Textures[stage]);
 	GFXCALL(Set_Texture(stage, (GfxTexture*)texture));
 	DX8_RECORD_TEXTURE_CHANGE();
 }
 
 WWINLINE HRESULT DX8Wrapper::_Copy_DX8_Rects(
-  IDirect3DSurface8* pSourceSurface,
+  GfxSurface* pSourceSurface,
   CONST RECT* pSourceRectsArray,
   UINT cRects,
-  IDirect3DSurface8* pDestinationSurface,
+  GfxSurface* pDestinationSurface,
   CONST POINT* pDestPointsArray
 )
 {
@@ -2307,8 +2563,8 @@ WWINLINE HRESULT DX8Wrapper::_Copy_DX8_Rects(
 }
 
 WWINLINE HRESULT DX8Wrapper::Set_DX8_Render_Target(
-  IDirect3DSurface8* pRenderTarget,
-  IDirect3DSurface8* pNewZStencil
+  GfxSurface* pRenderTarget,
+  GfxSurface* pNewZStencil
 )
 {
 	if (DX8Wrapper::Gfx == nullptr) return E_FAIL;
@@ -2839,32 +3095,32 @@ WWINLINE RenderStateStruct& RenderStateStruct::operator= (const RenderStateStruc
 	return *this;
 }
 
-WWINLINE unsigned int DX8Wrapper::Get_Surface_Size(const D3DSURFACE_DESC& desc)
+WWINLINE unsigned int DX8Wrapper::Get_Surface_Size(const WW3DSurfaceDescription& desc)
 {
 	unsigned int width = desc.Width;
 	unsigned int height = desc.Height;
 	unsigned int aligned_width = (width + 3) & ~3;
 	unsigned int aligned_height = (height + 3) & ~3;
 	switch (desc.Format) {
-		case D3DFMT_DXT1:
+		case WW3D_FORMAT_DXT1:
 			return (aligned_width * aligned_height) / 2;
-		case D3DFMT_DXT2:
-		case D3DFMT_DXT3:
-		case D3DFMT_DXT4:
-		case D3DFMT_DXT5:
+		case WW3D_FORMAT_DXT2:
+		case WW3D_FORMAT_DXT3:
+		case WW3D_FORMAT_DXT4:
+		case WW3D_FORMAT_DXT5:
 			return aligned_width * aligned_height;
-		case D3DFMT_A8R8G8B8:
-		case D3DFMT_X8R8G8B8:
+		case WW3D_FORMAT_A8R8G8B8:
+		case WW3D_FORMAT_X8R8G8B8:
 			return width * height * 4;
-		case D3DFMT_R8G8B8:
+		case WW3D_FORMAT_R8G8B8:
 			return width * height * 3;
-		case D3DFMT_R5G6B5:
-		case D3DFMT_X1R5G5B5:
-		case D3DFMT_A1R5G5B5:
-		case D3DFMT_A4R4G4B4:
+		case WW3D_FORMAT_R5G6B5:
+		case WW3D_FORMAT_X1R5G5B5:
+		case WW3D_FORMAT_A1R5G5B5:
+		case WW3D_FORMAT_A4R4G4B4:
 			return width * height * 2;
-		case D3DFMT_A8:
-		case D3DFMT_L8:
+		case WW3D_FORMAT_A8:
+		case WW3D_FORMAT_L8:
 			return width * height;
 		default:
 			return width * height * 4;

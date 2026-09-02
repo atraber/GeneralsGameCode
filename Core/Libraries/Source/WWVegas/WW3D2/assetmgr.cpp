@@ -305,10 +305,10 @@ static void Log_Textures(bool inited,unsigned& total_count, unsigned& total_mem)
 		TextureClass * tex=ite.Peek_Value();
 		if (tex->Is_Initialized()!=inited) continue;
 
-		D3DSURFACE_DESC desc;
-		IDirect3DTexture8* d3d_texture=tex->Peek_D3D_Texture();
+		WW3DSurfaceDescription desc;
+		GfxTexture* d3d_texture=tex->Peek_D3D_Base_Texture();
 		if (!d3d_texture) continue;
-		DX8_ErrorCode(d3d_texture->GetLevelDesc(0,&desc));
+		DX8Wrapper::Describe_DX8_Texture_Level(d3d_texture,0,desc);
 
 		StringClass tex_format="Unknown";
 		switch (desc.Format) {

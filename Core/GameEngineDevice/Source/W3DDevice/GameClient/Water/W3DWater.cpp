@@ -583,8 +583,8 @@ WaterRenderObjClass::~WaterRenderObjClass()
 
 	i=NUM_BUMP_FRAMES;
 	while (i--)
-	{	SAFE_RELEASE( m_pBumpTexture[i]);
-		SAFE_RELEASE( m_pBumpTexture2[i]);
+	{	DX8Wrapper::Release_DX8_Resource(m_pBumpTexture[i]);
+		DX8Wrapper::Release_DX8_Resource(m_pBumpTexture2[i]);
 	}
 
 	delete [] m_meshData;
@@ -708,11 +708,11 @@ RenderObjClass *	 WaterRenderObjClass::Clone() const
 /** Copies raw bits from pBumpSrc (a regular grayscale texture) into a D3D
 	*   bump-map format. */
 //-------------------------------------------------------------------------------------------------
-HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass *pBumpSource)
+HRESULT WaterRenderObjClass::initBumpMap(GfxTexture **pTex, TextureClass *pBumpSource)
 {
     SurfaceClass::SurfaceDescription    d3dsd;
 	SurfaceClass * surf;
-    D3DLOCKED_RECT     d3dlr;
+    GfxMappedRect      d3dlr;
 	DWORD dwSrcPitch;
 	BYTE* pSrc;
 	Int numLevels;
@@ -730,7 +730,7 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass 
 
 	if (pBumpSource->Peek_D3D_Texture())
 	{
-		numLevels=pBumpSource->Peek_D3D_Texture()->GetLevelCount();
+		numLevels=DX8Wrapper::Get_DX8_Texture_Level_Count(pBumpSource->Peek_D3D_Base_Texture());
 	}
 	else
 		return S_OK;
@@ -743,9 +743,9 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass 
 		surf->Get_Description(d3dsd);
 		pSrc=(unsigned char *)surf->Lock((int *)&dwSrcPitch);
 
-		pTex[0]->LockRect( level, &d3dlr, nullptr, 0 );
+		DX8Wrapper::Map_DX8_Texture( pTex[0], level, nullptr, GFX_MAP_WRITE, d3dlr );
 		DWORD dwDstPitch = (DWORD)d3dlr.Pitch;
-		BYTE* pDst       = (BYTE*)d3dlr.pBits;
+		BYTE* pDst       = (BYTE*)d3dlr.Data;
 
 		for( DWORD y=0; y<d3dsd.Height; y++ )
 		{
@@ -810,7 +810,7 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass 
 			pSrc += dwSrcPitch;    pDst += dwDstPitch;
 		}
 
-		pTex[0]->UnlockRect(level);
+		DX8Wrapper::Unmap_DX8_Texture(pTex[0], level);
 		surf->Unlock();
 		REF_PTR_RELEASE (surf);
 	}
@@ -826,9 +826,9 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass 
     // Fill the bits of the new texture surface with bits from
     // a private format.
 
-    m_pBumpTexture[i]->LockRect( 0, &d3dlr, 0, 0 );
+    DX8Wrapper::Map_DX8_Texture( m_pBumpTexture[i], 0, nullptr, GFX_MAP_WRITE, d3dlr );
     DWORD dwDstPitch = (DWORD)d3dlr.Pitch;
-    BYTE* pDst       = (BYTE*)d3dlr.pBits;
+    BYTE* pDst       = (BYTE*)d3dlr.Data;
 
     for( DWORD y=0; y<d3dsd.Height; y++ )
     {
@@ -893,7 +893,7 @@ HRESULT WaterRenderObjClass::initBumpMap(LPDIRECT3DTEXTURE8 *pTex, TextureClass 
         pSrc += dwSrcPitch;    pDst += dwDstPitch;
     }
 
-    m_pBumpTexture[i]->UnlockRect(0);
+    DX8Wrapper::Unmap_DX8_Texture(m_pBumpTexture[i], 0);
     surf->Unlock();
 #endif
 
@@ -1062,8 +1062,10 @@ void WaterRenderObjClass::ReleaseResources()
 	REF_PTR_RELEASE(m_indexBuffer);
 
 	REF_PTR_RELEASE(m_pReflectionTexture);
-	SAFE_RELEASE(m_vertexBufferD3D);
-	SAFE_RELEASE(m_indexBufferD3D);
+	DX8Wrapper::Release_DX8_Vertex_Buffer(m_vertexBufferD3D);
+	m_vertexBufferD3D=nullptr;
+	DX8Wrapper::Release_DX8_Index_Buffer(m_indexBufferD3D);
+	m_indexBufferD3D=nullptr;
 
 	if (m_waterTrackSystem)
 		m_waterTrackSystem->ReleaseResources();
@@ -1456,8 +1458,10 @@ void WaterRenderObjClass::enableWaterGrid(Bool state)
 		reset();
 
 		//Release existing grid data
-		SAFE_RELEASE(m_vertexBufferD3D);
-		SAFE_RELEASE(m_indexBufferD3D);
+		DX8Wrapper::Release_DX8_Vertex_Buffer(m_vertexBufferD3D);
+	m_vertexBufferD3D=nullptr;
+		DX8Wrapper::Release_DX8_Index_Buffer(m_indexBufferD3D);
+	m_indexBufferD3D=nullptr;
 
 		//Create new grid data
 		if (FAILED(generateIndexBuffer(m_gridCellsX+1,m_gridCellsY+1)))
@@ -1746,7 +1750,7 @@ void WaterRenderObjClass::renderMirror(CameraClass *cam)
 	WW3D::End_Render(false);
 
 	// Change the rendertarget back to the main backbuffer
-	DX8Wrapper::Set_Render_Target((IDirect3DSurface8 *)nullptr);
+	DX8Wrapper::Set_Render_Target((GfxSurface *)nullptr);
 }
 
 //-------------------------------------------------------------------------------------------------

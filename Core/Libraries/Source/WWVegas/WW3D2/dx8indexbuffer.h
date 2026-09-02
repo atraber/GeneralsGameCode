@@ -176,10 +176,10 @@ public:
 	void Copy(unsigned int* indices,unsigned start_index,unsigned index_count);
 	void Copy(unsigned short* indices,unsigned start_index,unsigned index_count);
 
-	IDirect3DIndexBuffer8* Get_DX8_Index_Buffer()	{ return index_buffer; }
+	GfxIndexBuffer* Get_DX8_Index_Buffer()	{ return index_buffer; }
 
 private:
-	IDirect3DIndexBuffer8*	index_buffer;		// actual dx8 index buffer
+	GfxIndexBuffer*	index_buffer;		// the backend's buffer handle
 };
 
 

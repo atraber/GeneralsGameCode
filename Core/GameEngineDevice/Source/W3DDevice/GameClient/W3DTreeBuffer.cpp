@@ -132,13 +132,13 @@ int W3DTreeBuffer::W3DTreeTextureClass::update(W3DTreeBuffer *buffer)
 	Get_Filter().Set_U_Addr_Mode(TextureFilterClass::TEXTURE_ADDRESS_CLAMP);
 	Get_Filter().Set_V_Addr_Mode(TextureFilterClass::TEXTURE_ADDRESS_CLAMP);
 
-	IDirect3DSurface8 *surface_level;
-	D3DSURFACE_DESC surface_desc;
-	D3DLOCKED_RECT locked_rect;
-	DX8_ErrorCode(Peek_D3D_Texture()->GetSurfaceLevel(0, &surface_level));
-	DX8_ErrorCode(surface_level->GetDesc(&surface_desc));
+	GfxSurface *surface_level;
+	WW3DSurfaceDescription surface_desc;
+	GfxMappedRect locked_rect;
+	surface_level = DX8Wrapper::Get_DX8_Texture_Surface_Level(Peek_D3D_Base_Texture(), 0);
+	DX8Wrapper::Describe_DX8_Surface(surface_level, surface_desc);
 
-	DX8_ErrorCode(surface_level->LockRect(&locked_rect, nullptr, 0));
+	DX8Wrapper::Map_DX8_Surface(surface_level, nullptr, GFX_MAP_WRITE, locked_rect);
 
 	Int tilePixelExtent = TILE_PIXEL_EXTENT;
 //	Int numRows = surface_desc.Height/(tilePixelExtent+TILE_OFFSET);
@@ -153,7 +153,7 @@ int W3DTreeBuffer::W3DTreeTextureClass::update(W3DTreeBuffer *buffer)
 		UnsignedInt cellX, cellY;
 		for (cellX = 0; cellX < surface_desc.Width; cellX++) {
 			for (cellY = 0; cellY < surface_desc.Height; cellY++) {
-				UnsignedByte *pBGR = ((UnsignedByte *)locked_rect.pBits)+(cellY*surface_desc.Width+cellX)*pixelBytes;
+				UnsignedByte *pBGR = ((UnsignedByte *)locked_rect.Data)+(cellY*surface_desc.Width+cellX)*pixelBytes;
 				//*((Short*)pBGR) =  0x8000 + (((255-2*cellY)>>3)<<10) + ((4*cellX)>>4);
 				*((Int*)pBGR) =  0xFF000000 | ( (((255-cellY))<<16) + ((cellX)) );
 
@@ -172,7 +172,7 @@ int W3DTreeBuffer::W3DTreeTextureClass::update(W3DTreeBuffer *buffer)
 				UnsignedByte *pBGR = pTile->getRGBDataForWidth(tilePixelExtent);
 				pBGR += (tilePixelExtent-(1+j))*TILE_BYTES_PER_PIXEL*tilePixelExtent; // invert to match.
 				Int row = position.y+j;
-				UnsignedByte *pBGRA = ((UnsignedByte*)locked_rect.pBits) +
+				UnsignedByte *pBGRA = ((UnsignedByte*)locked_rect.Data) +
 							(row)*surface_desc.Width*pixelBytes;
 
 				Int column = position.x;
@@ -187,11 +187,11 @@ int W3DTreeBuffer::W3DTreeTextureClass::update(W3DTreeBuffer *buffer)
 		}
 
 	}
-	DX8_ErrorCode(surface_level->UnlockRect());
-	surface_level->Release();
-	DX8_ErrorCode(D3DXFilterTexture(Peek_D3D_Texture(), nullptr, (UINT)0, D3DX_FILTER_BOX));
+	DX8Wrapper::Unmap_DX8_Surface(surface_level);
+	DX8Wrapper::Release_DX8_Surface_Resource(surface_level);
+	DX8Wrapper::Generate_DX8_Mips(Peek_D3D_Base_Texture(), 0);
 	if (WW3D::Get_Texture_Reduction()) {
-		DX8_ErrorCode(Peek_D3D_Texture()->SetLOD((DWORD)WW3D::Get_Texture_Reduction()));
+		DX8Wrapper::Set_DX8_Texture_Detail_Level(Peek_D3D_Base_Texture(), WW3D::Get_Texture_Reduction());
 	}
 	return(surface_desc.Height);
 }
@@ -205,7 +205,7 @@ int W3DTreeBuffer::W3DTreeTextureClass::update(W3DTreeBuffer *buffer)
 void W3DTreeBuffer::W3DTreeTextureClass::setLOD(Int LOD) const
 {
 	if (Peek_D3D_Texture()) {
-		DX8_ErrorCode(Peek_D3D_Texture()->SetLOD((DWORD)LOD));
+		DX8Wrapper::Set_DX8_Texture_Detail_Level(Peek_D3D_Base_Texture(), LOD);
 	}
 }
 //=============================================================================

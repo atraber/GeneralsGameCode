@@ -25,7 +25,7 @@
 #include "wwstring.h"
 #include "vector3.h"
 
-#include "d3d9_compat.h"
+#include "gfxdevice.h"
 
 // ----------------------------------------------------------------------------
 //
@@ -214,7 +214,7 @@ public:
 	DDSType Get_Type() const { return Type; }
 
 	// Copy pixels to the destination surface.
-	void Copy_Level_To_Surface(unsigned level,IDirect3DSurface8* d3d_surface,const Vector3& hsv_shift=Vector3(0.0f,0.0f,0.0f));
+	void Copy_Level_To_Surface(unsigned level,GfxSurface* d3d_surface,const Vector3& hsv_shift=Vector3(0.0f,0.0f,0.0f));
 	void Copy_Level_To_Surface(
 		unsigned level,
 		WW3DFormat dest_format,

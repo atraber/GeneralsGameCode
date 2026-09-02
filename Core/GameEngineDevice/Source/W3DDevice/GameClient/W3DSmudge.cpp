@@ -128,10 +128,9 @@ void W3DSmudgeManager::createBackgroundTexture()
 
 	const WW3DFormat format = W3DShaderManager::getSceneColorFormat();
 
-	IDirect3DTexture8 *tex = nullptr;
-	if (FAILED(dev->CreateTexture(surface_desc.Width, surface_desc.Height, 1,
-			D3DUSAGE_RENDERTARGET, WW3DFormat_To_D3DFormat(format), D3DPOOL_DEFAULT, &tex)) ||
-		tex == nullptr)
+	GfxTexture *tex = DX8Wrapper::Create_DX8_Texture_Resource(surface_desc.Width,
+		surface_desc.Height, 1, format, GFX_USAGE_RENDER_TARGET);
+	if (tex == nullptr)
 	{
 		DEBUG_LOG(("SMUDGE: could not create the %dx%d background copy (format %d)\n",
 			surface_desc.Width, surface_desc.Height, (Int)format));
@@ -139,7 +138,7 @@ void W3DSmudgeManager::createBackgroundTexture()
 	}
 
 	m_backgroundTexture = MSGNEW("TextureClass") TextureClass(tex);
-	tex->Release();	//TextureClass took its own reference
+	DX8Wrapper::Release_DX8_Texture_Resource(tex);	//TextureClass took its own reference
 
 	m_backgroundFormat = (UnsignedInt)format;
 	m_backBufferWidth = surface_desc.Width;
@@ -181,7 +180,7 @@ Bool W3DSmudgeManager::captureBackground(SurfaceClass *sceneSurface)
 	if (sceneSurface == nullptr || m_backgroundTexture == nullptr)
 		return FALSE;
 
-	IDirect3DSurface8 *src = sceneSurface->Peek_D3D_Surface();
+	GfxSurface *src = sceneSurface->Peek_D3D_Surface();
 	if (src == nullptr)
 		return FALSE;
 
@@ -189,16 +188,16 @@ Bool W3DSmudgeManager::captureBackground(SurfaceClass *sceneSurface)
 	if (dev == nullptr)
 		return FALSE;
 
-	IDirect3DTexture8 *tex = m_backgroundTexture->Peek_D3D_Texture();
+	GfxTexture *tex = m_backgroundTexture->Peek_D3D_Texture();
 	if (tex == nullptr)
 		return FALSE;
 
-	IDirect3DSurface8 *dst = nullptr;
-	if (FAILED(tex->GetSurfaceLevel(0, &dst)) || dst == nullptr)
+	GfxSurface *dst = DX8Wrapper::Get_DX8_Texture_Surface_Level(tex, 0);
+	if (dst == nullptr)
 		return FALSE;
 
 	const HRESULT hr = DX8Wrapper::Copy_DX8_Surface(src, dst) ? S_OK : E_FAIL;
-	dst->Release();
+	DX8Wrapper::Release_DX8_Surface_Resource(dst);
 
 	if (FAILED(hr))
 	{
@@ -261,10 +260,9 @@ void W3DSmudgeManager::ReAcquireResources()
 /*Copies a portion of the current render target into a specified buffer*/
 Int copyRect(unsigned char *buf, Int bufSize, int oX, int oY, int width, int height)
 {
- 	IDirect3DSurface8 *surface=nullptr;	///<previous render target
- 	IDirect3DSurface8 *tempSurface=nullptr;
+ 	GfxSurface *surface=nullptr;	///<previous render target
+ 	GfxSurface *tempSurface=nullptr;
 	Int result = 0;
-	HRESULT hr = S_OK;
 
  	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
@@ -276,35 +274,33 @@ Int copyRect(unsigned char *buf, Int bufSize, int oX, int oY, int width, int hei
 	if (!surface)
 		goto error;
 
- 	D3DSURFACE_DESC desc;
+ 	WW3DSurfaceDescription desc;
 
- 	surface->GetDesc(&desc);
+ 	DX8Wrapper::Describe_DX8_Surface(surface,desc);
 
-	RECT srcRect;
+	GfxRect srcRect;
 	srcRect.left=oX;
 	srcRect.top=oY;
 	srcRect.right=oX+width;
 	srcRect.bottom=oY+height;
 
-	POINT dstPoint;
-	dstPoint.x=0;
-	dstPoint.y=0;
+	GfxRect dstRect;
+	dstRect.left=0;
+	dstRect.top=0;
+	dstRect.right=width;
+	dstRect.bottom=height;
 
- 	hr=DX8Wrapper::D3D9_CreateImageSurface_Helper(m_pDev, width, height, desc.Format, &tempSurface);
+ 	tempSurface = DX8Wrapper::Create_DX8_Offscreen_Surface(width, height, desc.Format);
 
-	if (hr != S_OK)
+	if (!tempSurface)
 		goto error;
 
- 	hr=DX8Wrapper::_Copy_DX8_Rects(surface,&srcRect,1,tempSurface,&dstPoint);
-
-	if (hr != S_OK)
+	if (!DX8Wrapper::Copy_DX8_Surface(surface,&srcRect,tempSurface,&dstRect))
 		goto error;
 
- 	D3DLOCKED_RECT lrect;
+ 	GfxMappedRect lrect;
 
- 	hr=tempSurface->LockRect(&lrect,nullptr,D3DLOCK_READONLY);
-
-	if (hr != S_OK)
+	if (!DX8Wrapper::Map_DX8_Surface(tempSurface,nullptr,GFX_MAP_READ,lrect))
 		goto error;
 
 	{
@@ -314,16 +310,14 @@ Int copyRect(unsigned char *buf, Int bufSize, int oX, int oY, int width, int hei
 			bufSize = surfaceSize;
 	}
 
-	memcpy(buf,lrect.pBits,bufSize);
+	memcpy(buf,lrect.Data,bufSize);
 	result = bufSize;
 
-	tempSurface->UnlockRect();
+	DX8Wrapper::Unmap_DX8_Surface(tempSurface);
 
 error:
-	if (surface)
-		surface->Release();
-	if (tempSurface)
-		tempSurface->Release();
+	DX8Wrapper::Release_DX8_Resource(surface);
+	DX8Wrapper::Release_DX8_Resource(tempSurface);
 
 	return result;
 }

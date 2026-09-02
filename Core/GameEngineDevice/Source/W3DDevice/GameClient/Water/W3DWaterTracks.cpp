@@ -308,12 +308,17 @@ Int WaterTracksObj::render(DX8VertexBufferClass	*vertexBuffer, Int batchStart)
 
 	if (batchStart < (WATER_VB_PAGES*WATER_STRIP_X*WATER_STRIP_Y-m_x*m_y))
 	{	//we have room in current VB, append new verts
-		if(vertexBuffer->Get_DX8_Vertex_Buffer()->Lock(batchStart*vertexBuffer->FVF_Info().Get_FVF_Size(),m_x*m_y*vertexBuffer->FVF_Info().Get_FVF_Size(),DX8_LOCK_CAST(&vb),D3DLOCK_NOOVERWRITE) != D3D_OK)
+		if(!DX8Wrapper::Map_DX8_Vertex_Buffer(vertexBuffer->Get_DX8_Vertex_Buffer(),
+				batchStart*vertexBuffer->FVF_Info().Get_FVF_Size(),
+				m_x*m_y*vertexBuffer->FVF_Info().Get_FVF_Size(),
+				GFX_MAP_WRITE_NO_OVERWRITE, (void**)&vb))
 			return batchStart;
 	}
 	else
 	{	//ran out of room in last VB, request a substitute VB.
-		if(vertexBuffer->Get_DX8_Vertex_Buffer()->Lock(0,m_x*m_y*vertexBuffer->FVF_Info().Get_FVF_Size(),DX8_LOCK_CAST(&vb),D3DLOCK_DISCARD) != D3D_OK)
+		if(!DX8Wrapper::Map_DX8_Vertex_Buffer(vertexBuffer->Get_DX8_Vertex_Buffer(), 0,
+				m_x*m_y*vertexBuffer->FVF_Info().Get_FVF_Size(),
+				GFX_MAP_WRITE_DISCARD, (void**)&vb))
 			return batchStart;
 		batchStart=0;	//reset start of page to first vertex
 	}
@@ -469,7 +474,7 @@ Int WaterTracksObj::render(DX8VertexBufferClass	*vertexBuffer, Int batchStart)
 	vb->v1=1.0f;
 	vb++;
 
-	vertexBuffer->Get_DX8_Vertex_Buffer()->Unlock();
+	DX8Wrapper::Unmap_DX8_Vertex_Buffer(vertexBuffer->Get_DX8_Vertex_Buffer());
 
 	Int idxCount=(m_y-1)*(m_x*2+2) - 2;	//index count
 

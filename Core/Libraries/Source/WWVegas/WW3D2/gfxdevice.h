@@ -171,6 +171,16 @@ struct GfxMappedBox
 ** wearing one HRESULT; this names them, and a backend with no device-lost concept
 ** simply always answers GFX_DEVICE_OK.
 */
+/*
+** Whether a rectangle copy may resample.
+*/
+enum GfxCopyFilter
+{
+	GFX_COPY_NO_FILTER = 0,		// take the pixels as they are
+	GFX_COPY_RESAMPLE,			// scale them, filtering as it goes
+	GFX_COPY_HALVE				// build the next mip down from this one
+};
+
 enum GfxDeviceStatus
 {
 	GFX_DEVICE_OK = 0,
@@ -324,6 +334,12 @@ public:
 	virtual GfxTexture *	Create_Cube_Texture(unsigned edge_length, unsigned levels,
 								WW3DFormat format, unsigned usage) = 0;
 	virtual void			Release_Texture(GfxTexture * texture) = 0;
+	// The wrapper keeps its own reference to whatever is bound at each stage, so that an
+	// engine-side owner going away does not free a texture the device is still pointing
+	// at. That is not a COM detail leaking through -- a backend that hands out handles
+	// has to be told when a second holder appears, whatever it counts them with -- so it
+	// is stated here as a pair with Release_Texture rather than as an AddRef.
+	virtual void			Reference_Texture(GfxTexture * texture) = 0;
 
 	// A render target and a depth target are surfaces rather than textures because
 	// that is what the engine binds: Set_Render_Target above takes two of them. Where
@@ -339,6 +355,10 @@ public:
 	virtual GfxSurface *	Create_Offscreen_Surface(unsigned width, unsigned height,
 								WW3DFormat format) = 0;
 	virtual void			Release_Surface(GfxSurface * surface) = 0;
+	// The counterpart of Release_Surface, for the same reason Reference_Texture exists:
+	// the wrapper holds the render target and the depth target it swapped out across a
+	// redirected pass, and something has to know there are two holders.
+	virtual void			Reference_Surface(GfxSurface * surface) = 0;
 
 	// How many mip levels a texture actually has, and the surface for one of them.
 	// Get_Texture_Surface_Level hands back a reference the caller must give to
@@ -376,6 +396,11 @@ public:
 	virtual bool			Map_Volume_Texture(GfxTexture * texture, unsigned level,
 								GfxMapMode mode, GfxMappedBox & mapped) = 0;
 	virtual void			Unmap_Volume_Texture(GfxTexture * texture, unsigned level) = 0;
+	// A cube face is addressed by index 0..5 in the order +X -X +Y -Y +Z -Z, which is
+	// the order both APIs use and the order the engine's own loader writes them in.
+	virtual bool			Map_Cube_Texture(GfxTexture * texture, unsigned face, unsigned level,
+								const GfxRect * rect, GfxMapMode mode, GfxMappedRect & mapped) = 0;
+	virtual void			Unmap_Cube_Texture(GfxTexture * texture, unsigned face, unsigned level) = 0;
 
 	// ---- describing a resource -------------------------------------------
 	//
@@ -386,11 +411,19 @@ public:
 	// written in a struct. No second backend can implement that. It can implement
 	// these.
 	//
-	// Describe_Texture_Level answers only for a 2-D texture; a backend returns false
-	// for anything else rather than guessing.
+	// Describe_Texture_Level answers for a 2-D texture and for a cube face, both of
+	// which have exactly this shape. A volume level has a third dimension and gets its
+	// own call rather than a Depth field nothing else would ever set.
 	virtual bool			Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc) = 0;
 	virtual bool			Describe_Texture_Level(GfxTexture * texture, unsigned level,
 								WW3DSurfaceDescription & desc) = 0;
+	virtual bool			Describe_Volume_Level(GfxTexture * texture, unsigned level,
+								WW3DSurfaceDescription & desc, unsigned & depth) = 0;
+	// A depth texture's level, whose format is a depth format and so has no WW3DFormat
+	// spelling at all. Asking Describe_Texture_Level for one and reading the answer as a
+	// colour format is how a Z texture comes back as WW3D_FORMAT_UNKNOWN.
+	virtual bool			Describe_Depth_Texture_Level(GfxTexture * texture, unsigned level,
+								WW3DZFormat & format) = 0;
 
 	// ---- transfers and queries -------------------------------------------
 
@@ -399,7 +432,28 @@ public:
 	// for itself.
 	virtual bool			Copy_Surface(GfxSurface * source, const GfxRect * source_rect,
 								GfxSurface * dest, const GfxRect * dest_rect) = 0;
+	// A rectangle-to-rectangle copy, with the caller saying whether the pixels may be
+	// resampled on the way. Copy_Surface above is the fast path and will take whatever
+	// route the API offers; this one is the two callers that care about the answer --
+	// SurfaceClass::Copy must not filter, SurfaceClass::Stretch_Copy must -- and folding
+	// them together would silently change what one of them produces.
+	//
+	// Under D3D9 both are D3DXLoadSurfaceFromSurface, which is one of the D3DX services
+	// with no D3D11 counterpart: over there this becomes a shader pass or a CPU convert.
+	// Naming the intent here is what makes that a decision a backend gets to make.
+	virtual bool			Copy_Surface_Rect(GfxSurface * source, const GfxRect * source_rect,
+								GfxSurface * dest, const GfxRect * dest_rect,
+								GfxCopyFilter filter) = 0;
 	virtual bool			Update_Texture(GfxTexture * source, GfxTexture * dest) = 0;
+	// Fill in every mip below base_level from the level above it. Five callers build a
+	// texture atlas a tile at a time and then ask for this; under D3D9 it is D3DXFilterTexture
+	// with a box filter, which is what every one of them asked for by name, and under
+	// D3D11 it is GenerateMips with its own rules. Naming the intent is what lets those
+	// be different.
+	virtual bool			Generate_Mips(GfxTexture * texture, unsigned base_level) = 0;
+	// How many of the largest mip levels to leave unused. This is the texture-reduction
+	// setting, and it is a property of a texture rather than of a draw.
+	virtual void			Set_Texture_Detail_Level(GfxTexture * texture, unsigned skip_levels) = 0;
 	virtual bool			Capture_Front_Buffer(GfxSurface * dest) = 0;
 
 	virtual bool			Get_Display_Mode(unsigned & width, unsigned & height, WW3DFormat & format) = 0;
@@ -411,6 +465,21 @@ public:
 	virtual void			Trim_Resource_Memory() = 0;
 
 	virtual void			Set_Gamma_Ramp(const void * ramp, bool calibrate) = 0;
+
+	// The hardware cursor: an image, and the point in it the pointer actually is.
+	//
+	// This is the least portable thing left in this interface and it is here so that a
+	// backend can say no. D3D9 draws a cursor; D3D11 has no cursor concept at all, and
+	// what replaces it is either the Win32 cursor or a quad the game draws itself.
+	// W3DMouse already has a software path -- RM_POLYGON -- so a backend answering
+	// false here is not a missing feature, it is the other path.
+	virtual bool			Set_Hardware_Cursor(GfxSurface * image, unsigned hot_x, unsigned hot_y) = 0;
+	virtual void			Show_Hardware_Cursor(bool show) = 0;
+	virtual void			Set_Hardware_Cursor_Position(unsigned x, unsigned y) = 0;
+
+	// Write a surface out as an image file, which is what the screenshot and the frame
+	// dump are built on. Every measurement in this port has come through here.
+	virtual bool			Save_Surface_To_File(const char * path, GfxSurface * surface) = 0;
 
 	// Debug only: asks whether the current state can be drawn in one pass. There is
 	// no obligation to answer -- a backend that cannot returns false.

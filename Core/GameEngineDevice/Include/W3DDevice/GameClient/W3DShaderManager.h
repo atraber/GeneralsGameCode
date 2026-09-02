@@ -88,7 +88,7 @@ public:
 	///through the same pair of targets straight afterwards, so by the end of the frame
 	///neither holds the unblurred result -- and a blurred glow is spread over its
 	///neighbours by construction, which is the one thing that mode must not show.
-	static void captureBloomBrightPass(IDirect3DSurface8 *brightSurface, Int width, Int height);
+	static void captureBloomBrightPass(GfxSurface *brightSurface, Int width, Int height);
 	///Draw whatever the current debug visualization mode puts on top of the frame.
 	///Called once per frame after the scene and its post-process, before the game UI.
 	///Does nothing unless a mode that draws an overlay is active.
@@ -101,8 +101,8 @@ public:
 	static DWORD m_debugShadowPS;					///<debugshadow_ps: unpacks the shadow map for the inspector tile
 	static DWORD m_debugBloomPS;					///<debugbloom_ps: false-colours the bright-pass copy
 	static DWORD m_debugShroudPS;					///<debugshroud_ps: draws the shroud field as a tile
-	static IDirect3DTexture8 *m_debugBrightTexture;	///<copy of the bloom bright pass, made only while DEBUG_VIS_BLOOM is on
-	static IDirect3DSurface8 *m_debugBrightSurface;	///<its surface, the StretchRect destination
+	static GfxTexture *m_debugBrightTexture;	///<copy of the bloom bright pass, made only while DEBUG_VIS_BLOOM is on
+	static GfxSurface *m_debugBrightSurface;	///<its surface, the StretchRect destination
 	static void shutdownUnitShaders();	///<release the unit shaders and vertex declaration.
 	static void getCloudScroll(float& ax, float& ay, float& bx, float& by); ///<world-space drift of the two cloud layers.
 	static TextureBaseClass* resolveOrmTexture(TextureBaseClass* baseTexture); ///<PBR ORM map for a base texture, or null (cached).
@@ -184,8 +184,8 @@ public:
 	// Support routines for filter methods.
 	static Bool canRenderToTexture() { return (m_oldRenderSurface && m_newRenderSurface);}
 	static void startRenderToTexture(); ///< Sets render target to texture.
-	static IDirect3DTexture8 * endRenderToTexture(); ///< Ends render to texture, & returns texture.
-	static IDirect3DTexture8 * getRenderTexture();	///< returns last used render target texture
+	static GfxTexture * endRenderToTexture(); ///< Ends render to texture, & returns texture.
+	static GfxTexture * getRenderTexture();	///< returns last used render target texture
 	///Create the floating-point scene target and the tone map that brings it back to 8 bits.
 	///Safe to call when the option is off or the device cannot do it; HDR simply stays off.
 	static void initHdr();
@@ -195,7 +195,7 @@ public:
 	static Bool isHdrActive() { return m_hdrActive; }
 	///The floating-point scene, valid between startRenderToTexture and the tone map at the
 	///end of endRenderToTexture. This is what a post-process wanting the range reads.
-	static IDirect3DTexture8 * getHdrTexture() { return m_hdrTexture; }
+	static GfxTexture * getHdrTexture() { return m_hdrTexture; }
 	///Format any mid-scene grab of the scene colour must be created in, so its copy is a
 	///same-format one. Follows the scene target: floating point under HDR, else the back
 	///buffer's own format.
@@ -220,35 +220,35 @@ protected:
 	// Info for a render to texture surface for special effects.
 	static Bool m_renderingToTexture;
 	static Bool m_sceneHistoryCaptured;	///<set once this frame's scene colour reached the SSR history texture.
-	static IDirect3DSurface8 *m_oldRenderSurface;	///<previous render target
-	static IDirect3DTexture8 *m_renderTexture;		///<plain (non-MSAA) texture the redirected scene ends up in (post-process reads this)
-	static IDirect3DSurface8 *m_newRenderSurface;	///<render target the scene is drawn into: m_renderTexture's surface, or an MSAA surface when MSAA is on
-	static IDirect3DSurface8 *m_resolveSurface;		///<when MSAA: m_renderTexture's surface, the StretchRect resolve destination; null otherwise
-	static IDirect3DSurface8 *m_oldDepthSurface;	///<previous depth buffer surface
+	static GfxSurface *m_oldRenderSurface;	///<previous render target
+	static GfxTexture *m_renderTexture;		///<plain (non-MSAA) texture the redirected scene ends up in (post-process reads this)
+	static GfxSurface *m_newRenderSurface;	///<render target the scene is drawn into: m_renderTexture's surface, or an MSAA surface when MSAA is on
+	static GfxSurface *m_resolveSurface;		///<when MSAA: m_renderTexture's surface, the StretchRect resolve destination; null otherwise
+	static GfxSurface *m_oldDepthSurface;	///<previous depth buffer surface
 	// Directional shadow map (sun-view depth) render target + its own depth buffer.
-	static IDirect3DTexture8 *m_pShadowMapTexture;	///<depth-packed shadow map (A8R8G8B8)
-	static IDirect3DSurface8 *m_pShadowMapSurface;	///<colour surface of the shadow map
-	static IDirect3DSurface8 *m_pShadowMapDepthSurface;	///<the shadow map's own depth buffer
-	static IDirect3DSurface8 *m_shadowSavedRT;		///<render target saved across the shadow depth pass
-	static IDirect3DSurface8 *m_shadowSavedDepth;	///<depth surface saved across the shadow depth pass
+	static GfxTexture *m_pShadowMapTexture;	///<depth-packed shadow map (A8R8G8B8)
+	static GfxSurface *m_pShadowMapSurface;	///<colour surface of the shadow map
+	static GfxSurface *m_pShadowMapDepthSurface;	///<the shadow map's own depth buffer
+	static GfxSurface *m_shadowSavedRT;		///<render target saved across the shadow depth pass
+	static GfxSurface *m_shadowSavedDepth;	///<depth surface saved across the shadow depth pass
 	static unsigned m_shadowSavedStates[NUM_SHADOW_SAVED_STATES];	///<render states saved across the shadow depth pass
 	// Screen-space reflections. The depth target is the shadow map's arrangement at
 	// screen size and from the camera; the history texture is last frame's scene, which
 	// is what the rays actually read (this frame's is the live render target).
-	static IDirect3DTexture8 *m_ssrDepthTexture;	///<camera-view depth-packed target (A8R8G8B8)
-	static IDirect3DSurface8 *m_ssrDepthSurface;	///<colour surface of the depth target
-	static IDirect3DSurface8 *m_ssrDepthStencil;	///<the depth pass's own depth buffer
-	static IDirect3DTexture8 *m_sceneHistoryTexture;	///<previous frame's resolved scene colour
-	static IDirect3DSurface8 *m_sceneHistorySurface;	///<its surface, the StretchRect destination
-	static IDirect3DTexture8 *m_refractionTexture;	///<scene as it stood just before the water drew
-	static IDirect3DSurface8 *m_refractionSurface;	///<its surface, the StretchRect destination
+	static GfxTexture *m_ssrDepthTexture;	///<camera-view depth-packed target (A8R8G8B8)
+	static GfxSurface *m_ssrDepthSurface;	///<colour surface of the depth target
+	static GfxSurface *m_ssrDepthStencil;	///<the depth pass's own depth buffer
+	static GfxTexture *m_sceneHistoryTexture;	///<previous frame's resolved scene colour
+	static GfxSurface *m_sceneHistorySurface;	///<its surface, the StretchRect destination
+	static GfxTexture *m_refractionTexture;	///<scene as it stood just before the water drew
+	static GfxSurface *m_refractionSurface;	///<its surface, the StretchRect destination
 	// High dynamic range scene target. The scene is drawn here instead of straight into
 	// m_renderTexture, and tone mapped down into it at the end of render-to-texture, so
 	// everything downstream still finds the 8-bit scene texture it has always read.
 	static Bool m_hdrActive;						///<HDR wanted, supported, and its resources exist
-	static IDirect3DTexture8 *m_hdrTexture;			///<floating-point scene colour (A16B16G16R16F)
-	static IDirect3DSurface8 *m_hdrRenderSurface;	///<what the scene draws into: the texture's surface, or an MSAA surface
-	static IDirect3DSurface8 *m_hdrResolveSurface;	///<when MSAA: the texture's surface, the resolve destination; null otherwise
+	static GfxTexture *m_hdrTexture;			///<floating-point scene colour (A16B16G16R16F)
+	static GfxSurface *m_hdrRenderSurface;	///<what the scene draws into: the texture's surface, or an MSAA surface
+	static GfxSurface *m_hdrResolveSurface;	///<when MSAA: the texture's surface, the resolve destination; null otherwise
 	static DWORD m_toneMapPS;						///<tonemap_ps: HDR scene -> the 8-bit scene texture
 
 

@@ -107,8 +107,8 @@ struct SHADOW_STATIC_VOLUME_VERTEX	//vertex structure passed to D3D
 	#define SHADOW_DYNAMIC_VOLUME_FVF	D3DFVF_XYZ
 #endif
 
-LPDIRECT3DVERTEXBUFFER8 shadowVertexBufferD3D=nullptr;		///<D3D vertex buffer
-LPDIRECT3DINDEXBUFFER8	shadowIndexBufferD3D=nullptr;	///<D3D index buffer
+GfxVertexBuffer* shadowVertexBufferD3D=nullptr;		///<D3D vertex buffer
+GfxIndexBuffer*	shadowIndexBufferD3D=nullptr;	///<D3D index buffer
 int nShadowVertsInBuf=0;	//model vetices in vertex buffer
 int nShadowStartBatchVertex=0;
 int nShadowIndicesInBuf=0;	//model vetices in vertex buffer
@@ -125,7 +125,7 @@ static Real beX;
 static Real beY;
 static Real beZ;
 
-static LPDIRECT3DVERTEXBUFFER8 lastActiveVertexBuffer=nullptr;
+static GfxVertexBuffer* lastActiveVertexBuffer=nullptr;
 
 /** A simple structure to hold random geometry (vertices, polygons, etc.).  We'll use this
 * to store shadow volumes. */
@@ -3784,10 +3784,8 @@ W3DVolumetricShadowManager::~W3DVolumetricShadowManager()
 /** Releases all W3D/D3D assets before a reset.. */
 void W3DVolumetricShadowManager::ReleaseResources()
 {
-	if (shadowIndexBufferD3D)
-		shadowIndexBufferD3D->Release();
-	if (shadowVertexBufferD3D)
-		shadowVertexBufferD3D->Release();
+	DX8Wrapper::Release_DX8_Index_Buffer(shadowIndexBufferD3D);
+	DX8Wrapper::Release_DX8_Vertex_Buffer(shadowVertexBufferD3D);
 	shadowIndexBufferD3D=nullptr;
 	shadowVertexBufferD3D=nullptr;
 	if (TheW3DBufferManager)

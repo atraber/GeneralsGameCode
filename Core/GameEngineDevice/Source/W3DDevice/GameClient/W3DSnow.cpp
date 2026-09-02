@@ -60,8 +60,7 @@ void W3DSnowManager::ReleaseResources()
 {
 	REF_PTR_RELEASE(m_snowTexture);
 
-	if (m_VertexBufferD3D)
-		m_VertexBufferD3D->Release();
+	DX8Wrapper::Release_DX8_Vertex_Buffer(m_VertexBufferD3D);
 
 	m_VertexBufferD3D=nullptr;
 

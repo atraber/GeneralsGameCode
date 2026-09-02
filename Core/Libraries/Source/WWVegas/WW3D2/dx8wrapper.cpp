@@ -155,7 +155,7 @@ D3DMATERIAL8						DX8Wrapper::CurrentMaterial = { { 1.0f, 1.0f, 1.0f, 1.0f },
 																	{ 0.0f, 0.0f, 0.0f, 0.0f },
 																	1.0f };
 
-IDirect3DBaseTexture8 *		DX8Wrapper::Textures[MAX_TEXTURE_STAGES];
+GfxTexture *		DX8Wrapper::Textures[MAX_TEXTURE_STAGES];
 RenderStateStruct				DX8Wrapper::render_state;
 unsigned							DX8Wrapper::render_state_changed;
 
@@ -165,10 +165,10 @@ D3DCOLOR							DX8Wrapper::FogColor										= 0;
 IDirect3D8 *					DX8Wrapper::D3DInterface								= nullptr;
 IDirect3DDevice8 *			DX8Wrapper::D3DDevice									= nullptr;
 GfxDeviceClass *				DX8Wrapper::Gfx											= nullptr;
-IDirect3DSurface8 *			DX8Wrapper::CurrentRenderTarget						= nullptr;
-IDirect3DSurface8 *			DX8Wrapper::CurrentDepthBuffer						= nullptr;
-IDirect3DSurface8 *			DX8Wrapper::DefaultRenderTarget						= nullptr;
-IDirect3DSurface8 *			DX8Wrapper::DefaultDepthBuffer						= nullptr;
+GfxSurface *			DX8Wrapper::CurrentRenderTarget						= nullptr;
+GfxSurface *			DX8Wrapper::CurrentDepthBuffer						= nullptr;
+GfxSurface *			DX8Wrapper::DefaultRenderTarget						= nullptr;
+GfxSurface *			DX8Wrapper::DefaultDepthBuffer						= nullptr;
 bool								DX8Wrapper::IsRenderToTexture							= false;
 
 unsigned							DX8Wrapper::_MainThreadID								= 0;
@@ -196,7 +196,7 @@ DWORD							DX8Wrapper::m_dwUnitDetailPS = 0;
 DWORD							DX8Wrapper::m_shaderRoutingMask = DX8Wrapper::SHADER_ROUTE_BASELINE;
 DWORD							DX8Wrapper::m_dwUnitPbrVS = 0;
 DWORD							DX8Wrapper::m_dwUnitPbrPS = 0;
-IDirect3DBaseTexture8*			DX8Wrapper::m_envCubeMap = nullptr;
+GfxTexture*			DX8Wrapper::m_envCubeMap = nullptr;
 float							DX8Wrapper::m_envAverage[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
 DX8Wrapper::OrmResolverFunc		DX8Wrapper::s_ormResolver = nullptr;
 DWORD							DX8Wrapper::m_dwTerrainVS = 0;
@@ -2291,8 +2291,8 @@ Vector4							DX8Wrapper::m_waterFoamCtl(1.0f, 0.0f, 0.02f, 0.0f);
 Vector4							DX8Wrapper::m_waterFoamCol(1.0f, 1.0f, 1.0f, 0.0f);
 Vector4							DX8Wrapper::m_waterRefractCtl(0.0f, 0.0f, 1.0f, 0.0f);
 Vector4							DX8Wrapper::m_waterAbsorb(0.0f, 0.0f, 0.0f, 0.0f);
-IDirect3DBaseTexture8*			DX8Wrapper::m_pRefraction = nullptr;
-IDirect3DBaseTexture8*			DX8Wrapper::m_pWaterShroud = nullptr;
+GfxTexture*			DX8Wrapper::m_pRefraction = nullptr;
+GfxTexture*			DX8Wrapper::m_pWaterShroud = nullptr;
 #ifdef RTS_DEBUG
 unsigned						DX8Wrapper::s_waterRoutedDraws = 0;
 #endif
@@ -2300,8 +2300,8 @@ DWORD							DX8Wrapper::m_dwShadowDepthVS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthPS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthParticleVS = 0;
 DWORD							DX8Wrapper::m_dwShadowDepthParticlePS = 0;
-IDirect3DBaseTexture8*			DX8Wrapper::m_pShadowMap = nullptr;
-IDirect3DBaseTexture8*			DX8Wrapper::m_pCloudMap = nullptr;
+GfxTexture*			DX8Wrapper::m_pShadowMap = nullptr;
+GfxTexture*			DX8Wrapper::m_pCloudMap = nullptr;
 float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -2367,8 +2367,8 @@ bool DX8Wrapper::Cull_Sphere_By_Sun(const Vector3 &center, float radius)
 }
 bool							DX8Wrapper::m_bDepthPrepass = false;
 float							DX8Wrapper::m_depthVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneDepth = nullptr;
-IDirect3DBaseTexture8*			DX8Wrapper::m_pSceneColor = nullptr;
+GfxTexture*			DX8Wrapper::m_pSceneDepth = nullptr;
+GfxTexture*			DX8Wrapper::m_pSceneColor = nullptr;
 float							DX8Wrapper::m_ssrParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 bool							DX8Wrapper::m_softParticles = false;
 float							DX8Wrapper::m_softParticleFade = 0.0f;
@@ -2398,7 +2398,7 @@ static DWORD s_dwOriginalPS = 0;  // fixed-function pixel shader to restore afte
 // set this, and undoing it unconditionally would strip stage 1 from draws that put
 // their own texture there.
 static bool s_pbrOrmBound = false;
-IDirect3DBaseTexture8*			DX8Wrapper::m_defaultOrmMap = nullptr;
+GfxTexture*			DX8Wrapper::m_defaultOrmMap = nullptr;
 
 // Put texture stage 1 back the way the engine expects it after a PBR draw bound its
 // ORM map there. That bind went straight to the device, behind the applied-texture
@@ -2801,7 +2801,7 @@ void DX8Wrapper::Shutdown()
 {
 	if (D3DDevice) {
 
-		Set_Render_Target ((IDirect3DSurface8 *)nullptr);
+		Set_Render_Target ((GfxSurface *)nullptr);
 		Release_Device();
 	}
 
@@ -2818,7 +2818,7 @@ void DX8Wrapper::Shutdown()
 		{
 			if (Textures[i])
 			{
-				Textures[i]->Release();
+				Gfx->Release_Texture(Textures[i]);
 				Textures[i] = nullptr;
 			}
 		}
@@ -2990,7 +2990,7 @@ void DX8Wrapper::Invalidate_Cached_Render_States(const char * site)
 		if (Gfx)
 			Gfx->Set_Texture(a,nullptr);
 		if (Textures[a] != nullptr) {
-			Textures[a]->Release();
+			Gfx->Release_Texture(Textures[a]);
 		}
 		Textures[a]=nullptr;
 	}
@@ -3242,12 +3242,12 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 		// Release_Device has always unbound before releasing; Reset_Device never did.
 		// The releases below (Set_Vertex_Buffer, the cleanup hook, _Deinit) only drop
 		// *our* pointers, which is not the same thing.
-		Set_Render_Target((IDirect3DSurface8 *)nullptr);	// back to the back buffer
+		Set_Render_Target((GfxSurface *)nullptr);	// back to the back buffer
 		for (unsigned stage=0;stage<MAX_TEXTURE_STAGES;++stage)
 		{
 			GFXCALL(Set_Texture(stage,nullptr));
 			if (Textures[stage]) {
-				Textures[stage]->Release();
+				Gfx->Release_Texture(Textures[stage]);
 				Textures[stage] = nullptr;
 			}
 		}
@@ -3974,8 +3974,8 @@ void DX8Wrapper::Get_Render_Target_Resolution(int & set_w,int & set_h,int & set_
 	WWASSERT(IsInitted);
 
 	if (CurrentRenderTarget != nullptr) {
-		D3DSURFACE_DESC info;
-		CurrentRenderTarget->GetDesc (&info);
+		WW3DSurfaceDescription info;
+		Gfx->Describe_Surface(CurrentRenderTarget, info);
 
 		set_w				= info.Width;
 		set_h				= info.Height;
@@ -4976,9 +4976,9 @@ void DX8Wrapper::Draw(
 				GfxVertexBuffer * bound = nullptr;
 				unsigned offset = 0, stride = 0;
 				if (Gfx->Get_Vertex_Stream(0, &bound, &offset, &stride)) {
-					streamWrong = ((IDirect3DVertexBuffer9*)bound != static_cast<DX8VertexBufferClass*>(
+					streamWrong = (bound != static_cast<DX8VertexBufferClass*>(
 						render_state.vertex_buffers[0])->Get_DX8_Vertex_Buffer());
-					if (bound) ((IDirect3DVertexBuffer9*)bound)->Release();
+					if (bound) Gfx->Release_Vertex_Buffer(bound);
 				}
 			}
 			Debug_Note_Foreign_Bindings(expectedBase, (int)g_D3D9_BaseVertexIndex, streamWrong);
@@ -7498,7 +7498,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 	SNAPSHOT_SAY(("DX8Wrapper::Apply_Render_State_Changes() - finished"));
 }
 
-IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
+GfxTexture * DX8Wrapper::_Create_DX8_Texture
 (
 	unsigned int width,
 	unsigned int height,
@@ -7570,7 +7570,7 @@ IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
 		DX8_ErrorCode(ret);
 		// Just return the texture, no reduction
 		// allowed for render targets.
-		return texture;
+		return (GfxTexture*)texture;
 	}
 
 	// We should never run out of video memory when allocating a non-rendertarget texture.
@@ -7616,10 +7616,10 @@ IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
 	}
 	DX8_ErrorCode(ret);
 
-	return texture;
+	return (GfxTexture*)texture;
 }
 
-IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
+GfxTexture * DX8Wrapper::_Create_DX8_Texture
 (
 	const char *filename,
 	MipCountType mip_level_count
@@ -7661,18 +7661,19 @@ IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
 		texture->Release();
 		return MissingTexture::_Get_Missing_Texture();
 	}
-	return texture;
+	return (GfxTexture*)texture;
 }
 
-IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
+GfxTexture * DX8Wrapper::_Create_DX8_Texture
 (
-	IDirect3DSurface8 *surface,
+	GfxSurface *surface_handle,
 	MipCountType mip_level_count
 )
 {
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
 	IDirect3DTexture8 *texture = nullptr;
+	IDirect3DSurface8 *surface = (IDirect3DSurface8*)surface_handle;
 
 	D3DSURFACE_DESC surface_desc;
 	::ZeroMemory(&surface_desc, sizeof(D3DSURFACE_DESC));
@@ -7681,7 +7682,7 @@ IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
 	// This function will create a texture with a different (but similar) format if the surface is
 	// not in a supported texture format.
 	WW3DFormat format=D3DFormat_To_WW3DFormat(surface_desc.Format);
-	texture = _Create_DX8_Texture(surface_desc.Width, surface_desc.Height, format, mip_level_count);
+	texture = (IDirect3DTexture8*)_Create_DX8_Texture(surface_desc.Width, surface_desc.Height, format, mip_level_count);
 
 	// Copy the surface to the texture
 	IDirect3DSurface8 *tex_surface = nullptr;
@@ -7695,14 +7696,14 @@ IDirect3DTexture8 * DX8Wrapper::_Create_DX8_Texture
 		DX8_ErrorCode(D3DXFilterTexture(texture, nullptr, 0, D3DX_FILTER_BOX));
 	}
 
-	return texture;
+	return (GfxTexture*)texture;
 
 }
 
 /*!
  * KJM create depth stencil texture
  */
-IDirect3DTexture8 * DX8Wrapper::_Create_DX8_ZTexture
+GfxTexture * DX8Wrapper::_Create_DX8_ZTexture
 (
 	unsigned int width,
 	unsigned int height,
@@ -7777,13 +7778,13 @@ IDirect3DTexture8 * DX8Wrapper::_Create_DX8_ZTexture
 	// Just return the texture, no reduction
 	// allowed for render targets.
 
-	return texture;
+	return (GfxTexture*)texture;
 }
 
 /*!
  * KJM create cube map texture
  */
-IDirect3DCubeTexture8* DX8Wrapper::_Create_DX8_Cube_Texture
+GfxTexture* DX8Wrapper::_Create_DX8_Cube_Texture
 (
 	unsigned int width,
 	unsigned int height,
@@ -7864,7 +7865,7 @@ IDirect3DCubeTexture8* DX8Wrapper::_Create_DX8_Cube_Texture
 		DX8_ErrorCode(ret);
 		// Just return the texture, no reduction
 		// allowed for render targets.
-		return texture;
+		return (GfxTexture*)texture;
 	}
 
 	// We should never run out of video memory when allocating a non-rendertarget texture.
@@ -7915,13 +7916,13 @@ IDirect3DCubeTexture8* DX8Wrapper::_Create_DX8_Cube_Texture
 	}
 	DX8_ErrorCode(ret);
 
-	return texture;
+	return (GfxTexture*)texture;
 }
 
 /*!
  * KJM create volume texture
  */
-IDirect3DVolumeTexture8* DX8Wrapper::_Create_DX8_Volume_Texture
+GfxTexture* DX8Wrapper::_Create_DX8_Volume_Texture
 (
 	unsigned int width,
 	unsigned int height,
@@ -7994,11 +7995,11 @@ IDirect3DVolumeTexture8* DX8Wrapper::_Create_DX8_Volume_Texture
 	}
 	DX8_ErrorCode(ret);
 
-	return texture;
+	return (GfxTexture*)texture;
 }
 
 
-IDirect3DSurface8 * DX8Wrapper::_Create_DX8_Surface(unsigned int width, unsigned int height, WW3DFormat format)
+GfxSurface * DX8Wrapper::_Create_DX8_Surface(unsigned int width, unsigned int height, WW3DFormat format)
 {
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
@@ -8013,7 +8014,7 @@ IDirect3DSurface8 * DX8Wrapper::_Create_DX8_Surface(unsigned int width, unsigned
 	DX8_ErrorCode(hr);
 	Increment_DX8_CallCount();
 
-	return surface;
+	return (GfxSurface*)surface;
 }
 
 HRESULT DX8Wrapper::D3D9_CreateImageSurface_Helper(
@@ -8032,7 +8033,7 @@ HRESULT DX8Wrapper::D3D9_CreateImageSurface_Helper(
 }
 
 
-IDirect3DSurface8 * DX8Wrapper::_Create_DX8_Surface(const char *filename_)
+GfxSurface * DX8Wrapper::_Create_DX8_Surface(const char *filename_)
 {
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
@@ -8074,11 +8075,10 @@ IDirect3DSurface8 * DX8Wrapper::_Create_DX8_Surface(const char *filename_)
 	}
 
 	StringClass filename_string(filename_,true);
-	surface=TextureLoader::Load_Surface_Immediate(
+	return TextureLoader::Load_Surface_Immediate(
 		filename_string,
 		WW3D_FORMAT_UNKNOWN,
 		true);
-	return surface;
 }
 
 
@@ -8289,7 +8289,7 @@ void DX8Wrapper::Set_Light_Environment(LightEnvironmentClass* light_env)
 */
 }
 
-IDirect3DSurface8 * DX8Wrapper::_Get_DX8_Front_Buffer()
+GfxSurface * DX8Wrapper::_Get_DX8_Front_Buffer()
 {
 	DX8_THREAD_ASSERT();
 	unsigned width=0, height=0;
@@ -8304,7 +8304,7 @@ IDirect3DSurface8 * DX8Wrapper::_Get_DX8_Front_Buffer()
 	Increment_DX8_CallCount();
 
 	GFXCALL(Capture_Front_Buffer((GfxSurface*)fb));
-	return fb;
+	return (GfxSurface*)fb;
 }
 
 SurfaceClass * DX8Wrapper::_Get_DX8_Back_Buffer(unsigned int num)
@@ -8312,11 +8312,11 @@ SurfaceClass * DX8Wrapper::_Get_DX8_Back_Buffer(unsigned int num)
 	DX8_THREAD_ASSERT();
 
 	SurfaceClass *surf=nullptr;
-	IDirect3DSurface8 * bb=(IDirect3DSurface8*)Gfx->Get_Back_Buffer(num);
+	GfxSurface * bb=Gfx->Get_Back_Buffer(num);
 	if (bb)
 	{
 		surf=NEW_REF(SurfaceClass,(bb));
-		bb->Release();
+		Gfx->Release_Surface(bb);
 	}
 
 	return surf;
@@ -8327,11 +8327,11 @@ SurfaceClass * DX8Wrapper::_Get_DX8_Render_Target()
 	DX8_THREAD_ASSERT();
 
 	SurfaceClass *surf=nullptr;
-	IDirect3DSurface8 * rt=(IDirect3DSurface8*)Gfx->Get_Render_Target(0);
+	GfxSurface * rt=Gfx->Get_Render_Target(0);
 	if (rt)
 	{
 		surf=NEW_REF(SurfaceClass,(rt));
-		rt->Release();	//SurfaceClass took its own reference
+		Gfx->Release_Surface(rt);	//SurfaceClass took its own reference
 	}
 
 	return surf;
@@ -8488,23 +8488,23 @@ void DX8Wrapper::Set_Render_Target_With_Z
 )
 {
 	WWASSERT(texture!=nullptr);
-	IDirect3DSurface8 * d3d_surf = texture->Get_D3D_Surface_Level();
+	GfxSurface * d3d_surf = texture->Get_D3D_Surface_Level();
 	WWASSERT(d3d_surf != nullptr);
 
-	IDirect3DSurface8* d3d_zbuf=nullptr;
+	GfxSurface* d3d_zbuf=nullptr;
 	if (ztexture!=nullptr)
 	{
 
 		d3d_zbuf=ztexture->Get_D3D_Surface_Level();
 		WWASSERT(d3d_zbuf!=nullptr);
 		Set_Render_Target(d3d_surf,d3d_zbuf);
-		d3d_zbuf->Release();
+		Gfx->Release_Surface(d3d_zbuf);
 	}
 	else
 	{
 		Set_Render_Target(d3d_surf,true);
 	}
-	d3d_surf->Release();
+	Gfx->Release_Surface(d3d_surf);
 
 	IsRenderToTexture = true;
 }
@@ -8524,7 +8524,7 @@ DX8Wrapper::Set_Render_Target(IDirect3DSwapChain8 *swap_chain)
 	//
 	//	Set this back buffer as the render target
 	//
-	Set_Render_Target (render_target, true);
+	Set_Render_Target ((GfxSurface*)render_target, true);
 
 	//
 	//	Release our hold on the back buffer
@@ -8538,7 +8538,7 @@ DX8Wrapper::Set_Render_Target(IDirect3DSwapChain8 *swap_chain)
 }
 
 void
-DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default_depth_buffer)
+DX8Wrapper::Set_Render_Target(GfxSurface *render_target, bool use_default_depth_buffer)
 {
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
@@ -8560,11 +8560,11 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 		if (DefaultRenderTarget != nullptr)
 		{
 			Set_DX8_Render_Target(DefaultRenderTarget, DefaultDepthBuffer);
-			DefaultRenderTarget->Release ();
+			Gfx->Release_Surface(DefaultRenderTarget);
 			DefaultRenderTarget = nullptr;
 			if (DefaultDepthBuffer)
 			{
-				DefaultDepthBuffer->Release ();
+				Gfx->Release_Surface(DefaultDepthBuffer);
 				DefaultDepthBuffer = nullptr;
 			}
 		}
@@ -8574,13 +8574,13 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 		//
 		if (CurrentRenderTarget != nullptr)
 		{
-			CurrentRenderTarget->Release ();
+			Gfx->Release_Surface(CurrentRenderTarget);
 			CurrentRenderTarget = nullptr;
 		}
 
 		if (CurrentDepthBuffer!=nullptr)
 		{
-			CurrentDepthBuffer->Release();
+			Gfx->Release_Surface(CurrentDepthBuffer);
 			CurrentDepthBuffer=nullptr;
 		}
 
@@ -8594,8 +8594,7 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 		//
 		if (DefaultDepthBuffer == nullptr)
 		{
-//		IDirect3DSurface8 *depth_buffer = nullptr;
-			DefaultDepthBuffer=(IDirect3DSurface8*)Gfx->Get_Depth_Target();
+			DefaultDepthBuffer=Gfx->Get_Depth_Target();
 		}
 
 		//
@@ -8603,7 +8602,7 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 		//
 		if (DefaultRenderTarget == nullptr)
 		{
-			DefaultRenderTarget=(IDirect3DSurface8*)Gfx->Get_Render_Target(0);
+			DefaultRenderTarget=Gfx->Get_Render_Target(0);
 		}
 
 		//
@@ -8611,13 +8610,13 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 		//
 		if (CurrentRenderTarget != nullptr)
 		{
-			CurrentRenderTarget->Release ();
+			Gfx->Release_Surface(CurrentRenderTarget);
 			CurrentRenderTarget = nullptr;
 		}
 
 		if (CurrentDepthBuffer!=nullptr)
 		{
-			CurrentDepthBuffer->Release();
+			Gfx->Release_Surface(CurrentDepthBuffer);
 			CurrentDepthBuffer=nullptr;
 		}
 
@@ -8628,7 +8627,7 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 		WWASSERT (CurrentRenderTarget != nullptr);
 		if (CurrentRenderTarget != nullptr)
 		{
-			CurrentRenderTarget->AddRef ();
+			Gfx->Reference_Surface(CurrentRenderTarget);
 
 			//
 			//	Switch render targets
@@ -8648,7 +8647,7 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 	//	Free our hold on the depth buffer
 	//
 //	if (depth_buffer != nullptr) {
-//		depth_buffer->Release ();
+//		Gfx->Release_Surface(depth_buffer);
 //		depth_buffer = nullptr;
 //	}
 
@@ -8662,8 +8661,8 @@ DX8Wrapper::Set_Render_Target(IDirect3DSurface8 *render_target, bool use_default
 */
 void DX8Wrapper::Set_Render_Target
 (
-	IDirect3DSurface8* render_target,
-	IDirect3DSurface8* depth_buffer
+	GfxSurface* render_target,
+	GfxSurface* depth_buffer
 )
 {
 	DX8_THREAD_ASSERT();
@@ -8686,11 +8685,11 @@ void DX8Wrapper::Set_Render_Target
 		if (DefaultRenderTarget != nullptr)
 		{
 			Set_DX8_Render_Target(DefaultRenderTarget, DefaultDepthBuffer);
-			DefaultRenderTarget->Release ();
+			Gfx->Release_Surface(DefaultRenderTarget);
 			DefaultRenderTarget = nullptr;
 			if (DefaultDepthBuffer)
 			{
-				DefaultDepthBuffer->Release ();
+				Gfx->Release_Surface(DefaultDepthBuffer);
 				DefaultDepthBuffer = nullptr;
 			}
 		}
@@ -8700,13 +8699,13 @@ void DX8Wrapper::Set_Render_Target
 		//
 		if (CurrentRenderTarget != nullptr)
 		{
-			CurrentRenderTarget->Release ();
+			Gfx->Release_Surface(CurrentRenderTarget);
 			CurrentRenderTarget = nullptr;
 		}
 
 		if (CurrentDepthBuffer!=nullptr)
 		{
-			CurrentDepthBuffer->Release();
+			Gfx->Release_Surface(CurrentDepthBuffer);
 			CurrentDepthBuffer=nullptr;
 		}
 	}
@@ -8719,8 +8718,7 @@ void DX8Wrapper::Set_Render_Target
 		//
 		if (DefaultDepthBuffer == nullptr)
 		{
-//		IDirect3DSurface8 *depth_buffer = nullptr;
-			DefaultDepthBuffer=(IDirect3DSurface8*)Gfx->Get_Depth_Target();
+			DefaultDepthBuffer=Gfx->Get_Depth_Target();
 		}
 
 		//
@@ -8728,7 +8726,7 @@ void DX8Wrapper::Set_Render_Target
 		//
 		if (DefaultRenderTarget == nullptr)
 		{
-			DefaultRenderTarget=(IDirect3DSurface8*)Gfx->Get_Render_Target(0);
+			DefaultRenderTarget=Gfx->Get_Render_Target(0);
 		}
 
 		//
@@ -8736,13 +8734,13 @@ void DX8Wrapper::Set_Render_Target
 		//
 		if (CurrentRenderTarget != nullptr)
 		{
-			CurrentRenderTarget->Release ();
+			Gfx->Release_Surface(CurrentRenderTarget);
 			CurrentRenderTarget = nullptr;
 		}
 
 		if (CurrentDepthBuffer!=nullptr)
 		{
-			CurrentDepthBuffer->Release();
+			Gfx->Release_Surface(CurrentDepthBuffer);
 			CurrentDepthBuffer=nullptr;
 		}
 
@@ -8754,8 +8752,8 @@ void DX8Wrapper::Set_Render_Target
 		WWASSERT (CurrentRenderTarget != nullptr);
 		if (CurrentRenderTarget != nullptr)
 		{
-			CurrentRenderTarget->AddRef ();
-			CurrentDepthBuffer->AddRef();
+			Gfx->Reference_Surface(CurrentRenderTarget);
+			Gfx->Reference_Surface(CurrentDepthBuffer);
 
 			//
 			//	Switch render targets

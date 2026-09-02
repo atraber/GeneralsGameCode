@@ -99,7 +99,12 @@ public:
 
 	virtual bool			Copy_Surface(GfxSurface * source, const GfxRect * source_rect,
 								GfxSurface * dest, const GfxRect * dest_rect);
+	virtual bool			Copy_Surface_Rect(GfxSurface * source, const GfxRect * source_rect,
+								GfxSurface * dest, const GfxRect * dest_rect,
+								GfxCopyFilter filter);
 	virtual bool			Update_Texture(GfxTexture * source, GfxTexture * dest);
+	virtual bool			Generate_Mips(GfxTexture * texture, unsigned base_level);
+	virtual void			Set_Texture_Detail_Level(GfxTexture * texture, unsigned skip_levels);
 	virtual bool			Capture_Front_Buffer(GfxSurface * dest);
 	virtual GfxVertexBuffer * Create_Vertex_Buffer(unsigned size_in_bytes, unsigned fvf,
 								unsigned usage);
@@ -125,6 +130,7 @@ public:
 	virtual GfxTexture *	Create_Cube_Texture(unsigned edge_length, unsigned levels,
 								WW3DFormat format, unsigned usage);
 	virtual void			Release_Texture(GfxTexture * texture);
+	virtual void			Reference_Texture(GfxTexture * texture);
 	virtual GfxSurface *	Create_Render_Target_Surface(unsigned width, unsigned height,
 								WW3DFormat format, WW3DMultiSampleType multisample);
 	virtual GfxSurface *	Create_Depth_Stencil_Surface(unsigned width, unsigned height,
@@ -132,6 +138,7 @@ public:
 	virtual GfxSurface *	Create_Offscreen_Surface(unsigned width, unsigned height,
 								WW3DFormat format);
 	virtual void			Release_Surface(GfxSurface * surface);
+	virtual void			Reference_Surface(GfxSurface * surface);
 	virtual unsigned		Get_Texture_Level_Count(GfxTexture * texture);
 	virtual GfxSurface *	Get_Texture_Surface_Level(GfxTexture * texture, unsigned level);
 	virtual bool			Map_Texture(GfxTexture * texture, unsigned level,
@@ -143,15 +150,26 @@ public:
 	virtual bool			Map_Volume_Texture(GfxTexture * texture, unsigned level,
 								GfxMapMode mode, GfxMappedBox & mapped);
 	virtual void			Unmap_Volume_Texture(GfxTexture * texture, unsigned level);
+	virtual bool			Map_Cube_Texture(GfxTexture * texture, unsigned face, unsigned level,
+								const GfxRect * rect, GfxMapMode mode, GfxMappedRect & mapped);
+	virtual void			Unmap_Cube_Texture(GfxTexture * texture, unsigned face, unsigned level);
+	virtual bool			Describe_Depth_Texture_Level(GfxTexture * texture, unsigned level,
+								WW3DZFormat & format);
 
 	virtual bool			Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc);
 	virtual bool			Describe_Texture_Level(GfxTexture * texture, unsigned level,
 								WW3DSurfaceDescription & desc);
+	virtual bool			Describe_Volume_Level(GfxTexture * texture, unsigned level,
+								WW3DSurfaceDescription & desc, unsigned & depth);
 
 	virtual bool			Get_Display_Mode(unsigned & width, unsigned & height, WW3DFormat & format);
 	virtual unsigned		Get_Available_Texture_Memory();
 	virtual void			Trim_Resource_Memory();
 	virtual void			Set_Gamma_Ramp(const void * ramp, bool calibrate);
+	virtual bool			Set_Hardware_Cursor(GfxSurface * image, unsigned hot_x, unsigned hot_y);
+	virtual void			Show_Hardware_Cursor(bool show);
+	virtual void			Set_Hardware_Cursor_Position(unsigned x, unsigned y);
+	virtual bool			Save_Surface_To_File(const char * path, GfxSurface * surface);
 	virtual bool			Validate_Draw_State(unsigned & passes);
 
 private:
