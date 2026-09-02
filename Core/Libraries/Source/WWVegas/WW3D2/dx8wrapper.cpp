@@ -1071,6 +1071,47 @@ namespace {
 	unsigned s_lightFFLit = 0;          // ...with D3DRS_LIGHTING enabled at the device
 	unsigned s_lightFFLitByDefault = 0; // ...of which by D3D's default, nothing having flushed
 	int      s_lightFrames = 0;
+
+	// ...and which drawer each fixed-function draw belonged to.
+	//
+	// The count on its own is the thing that cannot be acted on. "4.9% of draws are
+	// fixed function" is a percentage; "the shadow volumes and the six screen quads are
+	// fixed function" is a list of files, and a D3D11 backend has to answer for every
+	// one of them -- there is no FVF, no transform-and-lighting stage and no combine, so
+	// each of these draws needs an input layout and a vertex shader written for it.
+	//
+	// Keyed the way the call-site census keys its flushes: the declaration scope if one
+	// is in force, otherwise the pass. The same key means the two tables can be read side
+	// by side -- one says who still *writes* fixed-function state, this one says who
+	// still *draws* with it, and they are not the same set.
+	//
+	// The two halves are split because they are separate pieces of work. A draw that is
+	// fixed function only in its pixel stage has a vertex shader already and needs a
+	// pixel shader; one that is fixed function only in its vertex stage arrives with an
+	// FVF and needs an input layout and a vertex shader. A draw that is both needs both.
+	enum { MAX_FF_DRAW_SITES = 24 };
+	struct FFDrawSite {
+		const char* who;
+		unsigned    draws;      // fixed-function draws attributed here
+		unsigned    vertexOnly; // ...fixed function in the vertex stage alone
+		unsigned    pixelOnly;  // ...in the pixel stage alone
+		unsigned    both;       // ...in both
+		unsigned    lit;        // ...with D3DRS_LIGHTING enabled at the device
+		unsigned    fvf;        // an example vertex format, for the vertex-side ones
+		unsigned    routed;     // ...for which the routing block actually ran
+		unsigned    masked;     // ...that may write neither colour nor depth
+	};
+	FFDrawSite s_ffDrawSites[MAX_FF_DRAW_SITES];
+	int      s_ffDrawSiteCount = 0;
+	unsigned s_ffDrawSiteDropped = 0;
+
+	// Whether the routing block ran for the draw being counted.
+	//
+	// Apply_Render_State_Changes returns early on !render_state_changed, so a draw whose
+	// state is unchanged since the last one is submitted with whatever shaders the last
+	// routed draw left bound -- and if that draw was one the routing declined, what it
+	// left is an FVF. Read at the top of Draw(), because Apply clears the word.
+	bool s_ffDrawRoutingRan = false;
 }
 
 unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
@@ -1298,6 +1339,48 @@ void DX8Wrapper::Debug_Note_Lighting_Draw()
 	// reads the word back off D3D once a window rather than leaving that as an argument.
 	unsigned lighting = FFDeviceRender[D3DRS_LIGHTING];
 	if (lighting == 0x12345678) { lighting = TRUE; ++s_lightFFLitByDefault; }
+
+	// Attribute the draw before returning on the lighting test, because the lighting word
+	// is a property of these draws and not the reason for counting them. A D3D11 backend
+	// owes an input layout and a shader to every row of this table, lit or not.
+	{
+		const char* who = s_declarationSite;
+		if (who == nullptr) who = Debug_Current_Pass_Name();
+		FFDrawSite* e = nullptr;
+		for (int i = 0; i < s_ffDrawSiteCount; ++i) {
+			if (s_ffDrawSites[i].who == who) { e = &s_ffDrawSites[i]; break; }
+		}
+		if (e == nullptr && s_ffDrawSiteCount >= MAX_FF_DRAW_SITES) {
+			++s_ffDrawSiteDropped;
+		} else {
+			if (e == nullptr) {
+				e = &s_ffDrawSites[s_ffDrawSiteCount++];
+				e->who = who; e->draws = 0; e->vertexOnly = 0; e->pixelOnly = 0;
+				e->both = 0; e->lit = 0; e->fvf = 0; e->routed = 0; e->masked = 0;
+			}
+			++e->draws;
+			const bool v = Is_Fixed_Function_Vertex_Draw();
+			const bool p = Is_Fixed_Function_Pixel_Draw();
+			if (v && p)      ++e->both;
+			else if (v)      ++e->vertexOnly;
+			else             ++e->pixelOnly;
+			// An example rather than a group key: the same drawer can submit several
+			// formats, and the point of the number is to say what an input layout for
+			// this row would have to describe.
+			if (v && e->fvf == 0) e->fvf = Vertex_Shader;
+			if (lighting != FALSE) ++e->lit;
+			if (s_ffDrawRoutingRan) ++e->routed;
+			// A draw that may write neither colour nor depth cannot change a render
+			// target, so a second backend owes it nothing at all -- it is a draw call
+			// spent on producing nothing, and the work is to stop submitting it rather
+			// than to write a shader for it. Read from the tracked states, which is
+			// what the device is holding: the masks are cached and stay set until
+			// something changes them.
+			if (RenderStates[D3DRS_COLORWRITEENABLE] == 0 &&
+				RenderStates[D3DRS_ZWRITEENABLE] == FALSE) ++e->masked;
+		}
+	}
+
 	if (lighting == FALSE) return;
 	++s_lightFFLit;
 }
@@ -1327,6 +1410,46 @@ void DX8Wrapper::Debug_Report_Lighting()
 		WWDEBUG_SAY(("  CONTROL FAILED: no draws reached this census at all, so the counts "
 					 "above are not a measurement of anything."));
 	}
+
+	// Who those fixed-function draws belonged to.
+	//
+	// This is the number a D3D11 estimate is made of, and it is not the one the
+	// burn-down reports. FIXED-FUNCTION DRAWS is taken inside the routing block and asks
+	// whether every mesh draw the block saw was handed a shader; it reads zero and its
+	// own header says direct-device drawers are not counted. This asks what is *bound*
+	// at the draw, which is what the hardware uses -- and D3D11 has nothing to run for a
+	// draw with an FVF and no shader.
+	if (s_ffDrawSiteCount > 0) {
+		WWDEBUG_SAY(("  the %u by the drawer that submitted them%s -- these are the draws a "
+					 "second backend would have to be given an input layout and a shader "
+					 "for, since it has no fixed-function pipeline to fall back on:",
+			s_lightFFDraws, s_ffDrawSiteDropped ? "  -- TABLE FULL" : ""));
+		for (int rank = 0; rank < s_ffDrawSiteCount; ++rank) {
+			int best = -1;
+			unsigned bestDraws = 0;
+			for (int i = 0; i < s_ffDrawSiteCount; ++i) {
+				if (s_ffDrawSites[i].draws > bestDraws) {
+					bestDraws = s_ffDrawSites[i].draws; best = i;
+				}
+			}
+			if (best < 0) break;
+			const FFDrawSite& d = s_ffDrawSites[best];
+			WWDEBUG_SAY(("    %-32s %8u draws  (vertex only %u, pixel only %u, both %u; "
+						 "%u lit; example FVF 0x%x; %u routed, %u inherited; "
+						 "%u write neither colour nor depth)",
+				d.who, d.draws, d.vertexOnly, d.pixelOnly, d.both, d.lit, d.fvf,
+				d.routed, d.draws - d.routed, d.masked));
+			s_ffDrawSites[best].draws = 0;
+		}
+	}
+	else if (s_lightFFDraws > 0) {
+		WWDEBUG_SAY(("  ATTRIBUTION FAILED: %u fixed-function draws were counted and none "
+					 "were attributed, so the table is not reading the same draws.",
+			s_lightFFDraws));
+	}
+	s_ffDrawSiteCount = 0;
+	s_ffDrawSiteDropped = 0;
+
 	s_lightDraws = 0;
 	s_lightFFDraws = 0;
 	s_lightFFLit = 0;
@@ -4864,6 +4987,13 @@ void DX8Wrapper::Draw(
 		render_state_changed |= (unsigned)VERTEX_BUFFER_CHANGED | (unsigned)INDEX_BUFFER_CHANGED;
 	}
 
+#ifdef RTS_DEBUG
+	// Read here rather than at the top of the function: the foreign-binding repair above
+	// raises two of these bits itself, and when it does the routing block really does run
+	// and really does decide. What this has to distinguish is a draw the routing block saw
+	// from one it returned early on -- Apply clears the word, so it cannot be read after.
+	s_ffDrawRoutingRan = (render_state_changed != 0);
+#endif
 	Apply_Render_State_Changes();
 #ifdef RTS_DEBUG
 	s_applyIsDraw = false;
