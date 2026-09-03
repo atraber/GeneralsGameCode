@@ -76,6 +76,12 @@ set(_rts_shaders
     wave_vs
     wave_ps
     bwfilter_ps
+    # Legacy multitexture water combiners, taken when the programmable water path is
+    # declined; both were ps_1_1 assembled at runtime until the assembler went away
+    waterriver_ps
+    watertrapezoid_ps
+    # Frame capture for the Tracy profiler (RTS_PROFILE_TRACY only)
+    profilerswizzle_ps
     # HDR scene -> 8-bit scene texture, at the end of render-to-texture
     tonemap_ps
     # Shadow-map depth pass

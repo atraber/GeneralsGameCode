@@ -346,7 +346,7 @@ void W3DShaderManager::setLinearClampSampler(DWORD stage)
 // why it is a member rather than a file static: two subsystems putting a rectangle on
 // screen should not each carry their own copy of the half-texel offset and the vertex
 // layout that goes with it.
-HRESULT W3DShaderManager::drawScreenQuad(LPDIRECT3DDEVICE8 dev,
+HRESULT W3DShaderManager::drawScreenQuad(
 	float dx, float dy, float dw, float dh,
 	float sU0, float sV0, float sU1, float sV1,
 	float bU0, float bV0, float bU1, float bV1)
@@ -539,7 +539,7 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	DX8Wrapper::Set_Pixel_Shader_Constant(0, threshold, 1);
 	DX8Wrapper::Set_DX8_Texture(0, brightSrc);
 	W3DShaderManager::setLinearClampSampler(0);
-	W3DShaderManager::drawScreenQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, su0, sv0, su1, sv1, 0, 0, 1, 1);
+	W3DShaderManager::drawScreenQuad(0.0f, 0.0f, (float)m_w, (float)m_h, su0, sv0, su1, sv1, 0, 0, 1, 1);
 	// Copy it before the blurs run, for DEBUG_VIS_BLOOM. Does nothing unless that mode
 	// is on. It has to happen here: passes 2 and 3 ping-pong through this very pair of
 	// targets, so by the end of the frame neither holds the unblurred result.
@@ -551,14 +551,14 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(1.0f / (float)m_w, 0.0f, 0.0f, 0.0f), 1);
 	DX8Wrapper::Set_DX8_Texture(0, m_texA);
 	W3DShaderManager::setLinearClampSampler(0);
-	W3DShaderManager::drawScreenQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
+	W3DShaderManager::drawScreenQuad(0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
 
 	// Pass 3: vertical blur. texB -> texA.
 	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
 	DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(0.0f, 1.0f / (float)m_h, 0.0f, 0.0f), 1);
 	DX8Wrapper::Set_DX8_Texture(0, m_texB);
 	W3DShaderManager::setLinearClampSampler(0);
-	W3DShaderManager::drawScreenQuad(dev, 0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
+	W3DShaderManager::drawScreenQuad(0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
 
 	// Pass 4: composite scene + bloom -> back buffer (over the tactical rect).
 	// Bloom intensity is baked into bloom_composite_ps.hlsl.
@@ -587,7 +587,7 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	DX8Wrapper::Set_DX8_Texture(1, m_texA);
 	W3DShaderManager::setLinearClampSampler(0);
 	W3DShaderManager::setLinearClampSampler(1);
-	W3DShaderManager::drawScreenQuad(dev, (float)xpos, (float)ypos, (float)width, (float)height, su0, sv0, su1, sv1, 0, 0, 1, 1);
+	W3DShaderManager::drawScreenQuad((float)xpos, (float)ypos, (float)width, (float)height, su0, sv0, su1, sv1, 0, 0, 1, 1);
 
 	DX8Wrapper::Release_DX8_Resource(backBuf);
 	DX8Wrapper::Release_DX8_Resource(backDepth);
@@ -2525,7 +2525,7 @@ void W3DShaderManager::captureBloomBrightPass(GfxSurface *brightSurface, Int wid
 #ifdef RTS_DEBUG
 // One tile of the shadow-map inspector. `showAlpha` picks the coverage channel rather
 // than the depth.
-static HRESULT drawShadowMapTile(LPDIRECT3DDEVICE8 dev, GfxTexture *shadowTex,
+static HRESULT drawShadowMapTile(GfxTexture *shadowTex,
 							  DWORD ps, float x, float y, float side, Bool showAlpha)
 {
 	DX8Wrapper::Set_Pixel_Shader(ps);
@@ -2537,7 +2537,7 @@ static HRESULT drawShadowMapTile(LPDIRECT3DDEVICE8 dev, GfxTexture *shadowTex,
 	// holes on exactly the thin geometry -- wires, railings, rotor blades -- whose
 	// presence in the map is the thing most often in question.
 	W3DShaderManager::setLinearClampSampler(0);
-	return W3DShaderManager::drawScreenQuad(dev, x, y, side, side,
+	return W3DShaderManager::drawScreenQuad(x, y, side, side,
 		0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
 }
 #endif
@@ -2663,8 +2663,8 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 			// but solid-white in coverage is casting its bounding quad, not its
 			// silhouette.
 			what = "shadow";
-			hrA = drawShadowMapTile(dev, m_pShadowMapTexture, m_debugShadowPS, x, margin, side, TRUE);
-			hrB = drawShadowMapTile(dev, m_pShadowMapTexture, m_debugShadowPS,
+			hrA = drawShadowMapTile(m_pShadowMapTexture, m_debugShadowPS, x, margin, side, TRUE);
+			hrB = drawShadowMapTile(m_pShadowMapTexture, m_debugShadowPS,
 									x, margin * 2.0f + side, side, FALSE);
 			break;
 		}
@@ -2695,7 +2695,7 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
-			hrA = drawScreenQuad(dev, x, margin, side, side,
+			hrA = drawScreenQuad(x, margin, side, side,
 				0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
 			break;
 		}
@@ -2722,7 +2722,7 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
-			hrA = drawScreenQuad(dev, (float)xpos, (float)ypos, vw, vh,
+			hrA = drawScreenQuad((float)xpos, (float)ypos, vw, vh,
 				0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
 			break;
 		}
@@ -2741,7 +2741,7 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
-			hrA = drawScreenQuad(dev, x, margin, side, side,
+			hrA = drawScreenQuad(x, margin, side, side,
 				0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
 			break;
 		}
@@ -3757,7 +3757,7 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 		DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
 		DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
 
-		drawHr = drawScreenQuad(dev, 0.0f, 0.0f, (float)sd.Width, (float)sd.Height,
+		drawHr = drawScreenQuad(0.0f, 0.0f, (float)sd.Width, (float)sd.Height,
 			0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
 
 		DX8Wrapper::Set_Pixel_Shader(0);

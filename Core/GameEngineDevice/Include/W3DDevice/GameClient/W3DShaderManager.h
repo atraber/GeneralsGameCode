@@ -77,7 +77,7 @@ public:
 	static void setLinearClampSampler(DWORD stage);
 	///Draw a screen-space quad over [dx,dy]..[dx+dw,dy+dh], sampling source UVs on
 	///TEXCOORD0 and a second set on TEXCOORD1. The caller binds its own pixel shader.
-	static HRESULT drawScreenQuad(LPDIRECT3DDEVICE8 dev,
+	static HRESULT drawScreenQuad(
 		float dx, float dy, float dw, float dh,
 		float sU0, float sV0, float sU1, float sV1,
 		float bU0, float bV0, float bU1, float bV1);

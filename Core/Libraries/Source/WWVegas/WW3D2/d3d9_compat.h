@@ -113,7 +113,6 @@ extern INT g_D3D9_BaseVertexIndex;
 // Direct3D 8 to Direct3D 9 compatibility wrappers for shader creation, binding, constants, and destruction
 #define CreateVertexShader(decl, func, handle, usage) CreateVertexShader(func, reinterpret_cast<IDirect3DVertexShader9**>(handle))
 #define CreatePixelShader(func, handle) CreatePixelShader(func, reinterpret_cast<IDirect3DPixelShader9**>(handle))
-#define D3DXAssembleShader(src, len, flags, consts, ppShader, ppErrors) D3DXAssembleShader(src, len, nullptr, nullptr, flags, ppShader, ppErrors)
 #define DeleteVertexShader(handle) TestCooperativeLevel(), (handle ? ((IUnknown*)(handle))->Release() : 0)
 #define DeletePixelShader(handle) TestCooperativeLevel(), (handle ? ((IUnknown*)(handle))->Release() : 0)
 #define SetVertexShaderConstant(reg, data, count) SetVertexShaderConstantF(reg, (const float*)(data), count)

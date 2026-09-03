@@ -1168,46 +1168,19 @@ void WaterRenderObjClass::ReAcquireResources()
 	if (m_waterTrackSystem)
 		m_waterTrackSystem->ReAcquireResources();
 
-	if (W3DShaderManager::getChipset() >= DC_GENERIC_PIXEL_SHADER_1_1)
-	{
-		ID3DXBuffer *compiledShader;
-		const char *shader =
-			"ps.1.1\n \
-			tex t0 \n\
-			tex t1	\n\
-			tex t2	\n\
-			tex t3\n\
-			mul r0.rgb, v0, t0 ; blend vertex color into t0. \n\
-			mov r0.a, t0 ; keep vertex alpha from fading the base water. \n\
-			mul r1, t1, t2 ; mul\n\
-			add r1.rgb, r1, t3\n\
-			mul r1.rgb, r1, v0.a\n\
-			+mul r0.a, r0, t3\n\
-			add r0.rgb, r0, r1\n";
-		hr = D3DXAssembleShader( shader, strlen(shader), 0, nullptr, &compiledShader, nullptr);
-		if (hr==0) {
-			hr = 	DX8Wrapper::_Get_D3D_Device8()->CreatePixelShader((DWORD*)compiledShader->GetBufferPointer(), &m_riverWaterPixelShader);
-			compiledShader->Release();
-		}
-		// A third ps.1.1 shader was assembled here into m_waterPixelShader -- an environment
-		// mapped reflection using texbem. It was never bound: nothing in the engine read
-		// that handle between creating it and releasing it. Deleted rather than ported.
-		shader =
-			"ps.1.1\n \
-			tex t0 ;get water texture\n\
-			tex t1 ;get white highlights on black background\n\
-			tex t2 ;get white highlights with more tiling\n\
-			tex t3	; get black shroud \n\
-			mul r0,v0,t0 ; blend vertex color and alpha into base texture. \n\
-			mad r0.rgb, t1, t2, r0	; blend sparkles and noise \n\
-			mul r0.rgb, r0, t3 ; blend in black shroud \n\
-			;\n";
-		hr = D3DXAssembleShader( shader, strlen(shader), 0, nullptr, &compiledShader, nullptr);
-		if (hr==0) {
-			hr = 	DX8Wrapper::_Get_D3D_Device8()->CreatePixelShader((DWORD*)compiledShader->GetBufferPointer(), &m_trapezoidWaterPixelShader);
-			compiledShader->Release();
-		}
-	}
+	// The two legacy multitexture water combiners. Both were ps_1_1 assembled here at
+	// runtime with D3DXAssembleShader; they are now waterriver_ps.hlsl and
+	// watertrapezoid_ps.hlsl, built with every other shader and loaded like every other
+	// shader. Their vertex side is still fixed function, which D3D9 is content to pair a
+	// Shader Model 3 pixel shader with.
+	//
+	// A third ps_1_1 shader was assembled here into m_waterPixelShader -- an environment
+	// mapped reflection using texbem. It was never bound: nothing in the engine read that
+	// handle between creating it and releasing it. Deleted rather than ported.
+	W3DShaderManager::LoadAndCreateD3DShader("shaders\\waterriver_ps.pso", nullptr, 0, false,
+		&m_riverWaterPixelShader);
+	W3DShaderManager::LoadAndCreateD3DShader("shaders\\watertrapezoid_ps.pso", nullptr, 0, false,
+		&m_trapezoidWaterPixelShader);
 
 	//W3D Invalidate textures after losing the device and since we peek at the textures directly, it won't
 	//know to reinit them for us.  Do it here manually:
