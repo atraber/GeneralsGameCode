@@ -727,7 +727,6 @@ public:
 	static unsigned int Get_Free_Texture_RAM();
 
 	static unsigned _Get_Main_Thread_ID() { return _MainThreadID; }
-	static const D3DADAPTER_IDENTIFIER8& Get_Current_Adapter_Identifier() { return CurrentAdapterIdentifier; }
 
 	/*
 	** Statistics
@@ -826,7 +825,6 @@ public:
 	static void Set_Vertex_Shader_Constant(int reg, const void* data, int count);
 	static void Set_Pixel_Shader_Constant(int reg, const void* data, int count);
 
-	static DWORD Get_Vertex_Processing_Behavior() { return Vertex_Processing_Behavior; }
 
 	// Needed by scene lighting class
 	static void						Set_Ambient(const Vector3& color);
@@ -857,7 +855,16 @@ public:
 	static bool Has_Device() { return Gfx != nullptr && D3DDevice != nullptr; }
 
 	static IDirect3DDevice8* _Get_D3D_Device8() { return D3DDevice; }
-	static IDirect3D8* _Get_D3D8() { return D3DInterface; }
+	/*
+	** The adapter this device was made on, and which one of them it is.
+	**
+	** Everything that used to reach for the IDirect3D9 interface -- device enumeration,
+	** mode search, format checks, creation itself -- asks this instead. It outlives the
+	** device: it is made in Init and destroyed in Shutdown, whereas Gfx comes and goes
+	** with each device.
+	*/
+	static GfxAdapterClass * Get_Adapter() { return Adapter; }
+	static unsigned Get_Adapter_Index() { return (CurRenderDevice >= 0) ? (unsigned)CurRenderDevice : 0u; }
 	/// Returns the display format - added by TR for video playback - not part of W3D
 	static WW3DFormat	getBackBufferFormat();
 	static bool Reset_Device(bool reload_assets=true);
@@ -1048,8 +1055,8 @@ protected:
 	static void	Set_Texture_Bitdepth(int depth)	{ WWASSERT(depth==16 || depth==32); TextureBitDepth = depth; }
 	static int	Get_Texture_Bitdepth()			{ return TextureBitDepth; }
 
-	static void Set_MSAA_Mode(D3DMULTISAMPLE_TYPE mode) { MultiSampleAntiAliasing = mode; }
-	static D3DMULTISAMPLE_TYPE Get_MSAA_Mode() { return MultiSampleAntiAliasing; }
+	static void Set_MSAA_Mode(WW3DMultiSampleType mode) { MultiSampleAntiAliasing = mode; }
+	static WW3DMultiSampleType Get_MSAA_Mode() { return MultiSampleAntiAliasing; }
 
 	static void	Set_Swap_Interval(int swap);
 	static int	Get_Swap_Interval();
@@ -1059,10 +1066,10 @@ protected:
 	** Internal functions
 	*/
 	static void Resize_And_Position_Window();
-	static bool Find_Color_And_Z_Mode(int resx,int resy,int bitdepth,D3DFORMAT * set_colorbuffer,D3DFORMAT * set_backbuffer, D3DFORMAT * set_zmode);
-	static bool Find_Color_Mode(D3DFORMAT colorbuffer, int resx, int resy, UINT *mode);
-	static bool Find_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORMAT *zmode);
-	static bool Test_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORMAT zmode);
+	static bool Find_Color_And_Z_Mode(int resx,int resy,int bitdepth,WW3DFormat * set_colorbuffer,WW3DFormat * set_backbuffer, WW3DZFormat * set_zmode);
+	static bool Find_Color_Mode(WW3DFormat colorbuffer, int resx, int resy, unsigned *mode);
+	static bool Find_Z_Mode(WW3DFormat colorbuffer,WW3DFormat backbuffer, WW3DZFormat *zmode);
+	static bool Test_Z_Mode(WW3DFormat colorbuffer,WW3DFormat backbuffer, WW3DZFormat zmode);
 	static void Compute_Caps(WW3DFormat display_format);
 
 	/*
@@ -1088,8 +1095,8 @@ protected:
 	static int								BitDepth;
 	static int								TextureBitDepth;
 	static bool								IsWindowed;
-	static D3DFORMAT					DisplayFormat;
-	static D3DMULTISAMPLE_TYPE	MultiSampleAntiAliasing;
+	static WW3DFormat					DisplayFormat;
+	static WW3DMultiSampleType	MultiSampleAntiAliasing;
 
 
 	// shader system updates KJM v
@@ -1101,7 +1108,6 @@ protected:
 
 	static LightEnvironmentClass*		Light_Environment;
 
-	static DWORD							Vertex_Processing_Behavior;
 
 	static ZTextureClass*				Shadow_Map[MAX_SHADOW_MAPS];
 
@@ -1155,9 +1161,11 @@ protected:
 
 	static DX8Caps*						CurrentCaps;
 
-	static D3DADAPTER_IDENTIFIER8		CurrentAdapterIdentifier;
 
-	static IDirect3D8 *					D3DInterface;			//d3d8;
+	// The adapter, and the swap chain the device was created with. Both neutral; see
+	// gfxdevice.h. The API's own present parameters live inside the backend now.
+	static GfxAdapterClass *			Adapter;
+	static GfxSwapChainDesc				SwapChain;
 	static IDirect3DDevice8 *			D3DDevice;				//d3ddevice8;
 
 	static GfxSurface *			CurrentRenderTarget;

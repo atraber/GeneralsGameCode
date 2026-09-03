@@ -42,13 +42,15 @@
 #include "dx8wrapper.h"
 #include "formconv.h"
 
-// The D3D9 half of DX8Caps, out of the header so that nothing including it needs
-// d3d9.h. Nothing outside this file has ever read either of these.
+// What the adapter said, out of the header so that nothing including it has to know the
+// shape of either. Both are neutral now -- the D3D9 structs they were filled from stay
+// inside the backend -- so this is here for the header's sake and not for the API's.
 struct DX8CapsPrivate
 {
-	D3DCAPS8				Caps;
-	D3DADAPTER_IDENTIFIER8	AdapterId;
-	IDirect3D8*				Direct3D;	// warning XDK name conflict KJM
+	GfxDeviceCaps	Caps;
+	GfxAdapterInfo	Info;
+	GfxAdapterClass*	Adapter;
+	unsigned		AdapterIndex;
 };
 #pragma warning (disable : 4201)		// nonstandard extension - nameless struct
 #include <windows.h>
@@ -482,8 +484,8 @@ DX8Caps::DX8Caps(WW3DFormat display_format)
 	MaxDisplayHeight(0)
 {
 	memset(Private, 0, sizeof(*Private));
-	Private->Direct3D = DX8Wrapper::_Get_D3D8();
-	Private->AdapterId = DX8Wrapper::Get_Current_Adapter_Identifier();
+	Private->Adapter = DX8Wrapper::Get_Adapter();
+	Private->AdapterIndex = DX8Wrapper::Get_Adapter_Index();
 	Init_Caps();
 	Compute_Caps(display_format);
 }
@@ -499,10 +501,13 @@ DX8Caps::DX8Caps(WW3DFormat display_format, unsigned adapter_index)
 	MaxDisplayHeight(0)
 {
 	memset(Private, 0, sizeof(*Private));
-	Private->Direct3D = DX8Wrapper::_Get_D3D8();
-	Private->Direct3D->GetDeviceCaps(adapter_index, D3DDEVTYPE_HAL, &Private->Caps);
-	Private->Direct3D->GetAdapterIdentifier(adapter_index, D3DENUM_NO_WHQL_LEVEL, &Private->AdapterId);
-	SupportTnL = (Private->Caps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) == D3DDEVCAPS_HWTRANSFORMANDLIGHT;
+	Private->Adapter = DX8Wrapper::Get_Adapter();
+	Private->AdapterIndex = adapter_index;
+	if (Private->Adapter != nullptr) {
+		Private->Adapter->Query_Capabilities(adapter_index, Private->Caps);
+		Private->Adapter->Get_Adapter_Info(adapter_index, Private->Info);
+	}
+	SupportTnL = Private->Caps.HardwareTransformAndLighting;
 	Compute_Caps(display_format);
 }
 
@@ -527,24 +532,15 @@ void DX8Caps::Shutdown()
 
 void DX8Caps::Init_Caps()
 {
-	// The reported caps depend on which vertex-processing mode the device is in, so
-	// this asks twice: once forced to software, and again in hardware if the first
-	// answer says there is hardware transform and lighting to ask about.
-	//
-	// Through the backend rather than at the device, and through Set_DX8_Render_State
-	// rather than past it, so the wrapper's record of what the device holds stays
-	// true across a probe that runs before the first frame.
-	DX8Wrapper::Set_DX8_Render_State(D3DRS_SOFTWAREVERTEXPROCESSING,TRUE);
-	DX8CALL(GetDeviceCaps(&Private->Caps));
-
-	if ((Private->Caps.DevCaps&D3DDEVCAPS_HWTRANSFORMANDLIGHT)==D3DDEVCAPS_HWTRANSFORMANDLIGHT) {
-		SupportTnL=true;
-
-		DX8Wrapper::Set_DX8_Render_State(D3DRS_SOFTWAREVERTEXPROCESSING,FALSE);
-		DX8CALL(GetDeviceCaps(&Private->Caps));
-	} else {
-		SupportTnL=false;
-	}
+	// The backend asks the device, in whichever vertex-processing mode gives the answer the
+	// engine wants -- which under D3D9 means asking twice. That dance is the API's, so it
+	// lives there.
+	if (DX8Wrapper::Gfx == nullptr)
+		return;
+	DX8Wrapper::Gfx->Query_Capabilities(Private->Caps);
+	if (Private->Adapter != nullptr)
+		Private->Adapter->Get_Adapter_Info(Private->AdapterIndex, Private->Info);
+	SupportTnL = Private->Caps.HardwareTransformAndLighting;
 }
 
 // ----------------------------------------------------------------------------
@@ -554,7 +550,7 @@ void DX8Caps::Init_Caps()
 // ----------------------------------------------------------------------------
 void DX8Caps::Compute_Caps(WW3DFormat display_format)
 {
-	const D3DADAPTER_IDENTIFIER8& adapter_id = Private->AdapterId;
+	const GfxAdapterInfo& adapter_id = Private->Info;
 //	Init_Caps(D3DDevice);
 
 	CanDoMultiPass=true;
@@ -566,13 +562,11 @@ void DX8Caps::Compute_Caps(WW3DFormat display_format)
 	MaxTextureHeight      = Private->Caps.MaxTextureHeight;
 	MaxVolumeExtent       = Private->Caps.MaxVolumeExtent;
 	MaxTextureAspectRatio = Private->Caps.MaxTextureAspectRatio;
-	TextureOpCaps         = Private->Caps.TextureOpCaps;
-	SupportLinearFilter      = (Private->Caps.TextureFilterCaps & D3DPTFILTERCAPS_MINFLINEAR) != 0 &&
-	                           (Private->Caps.TextureFilterCaps & D3DPTFILTERCAPS_MAGFLINEAR) != 0;
-	SupportMipLinearFilter   = (Private->Caps.TextureFilterCaps & D3DPTFILTERCAPS_MIPFLINEAR) != 0;
-	SupportAnisotropicFilter = (Private->Caps.TextureFilterCaps & D3DPTFILTERCAPS_MAGFANISOTROPIC) != 0 &&
-	                           (Private->Caps.TextureFilterCaps & D3DPTFILTERCAPS_MINFANISOTROPIC) != 0;
-	SupportColorWriteEnable  = (Private->Caps.PrimitiveMiscCaps & D3DPMISCCAPS_COLORWRITEENABLE) != 0;
+	TextureOpCaps         = Private->Caps.FixedFunctionCombineOps;
+	SupportLinearFilter      = Private->Caps.LinearFilter;
+	SupportMipLinearFilter   = Private->Caps.MipLinearFilter;
+	SupportAnisotropicFilter = Private->Caps.AnisotropicFilter;
+	SupportColorWriteEnable  = Private->Caps.ColorWriteEnable;
 
 	CapsLog="";
 	CompactLog="";
@@ -580,10 +574,10 @@ void DX8Caps::Compute_Caps(WW3DFormat display_format)
 	DXLOG(("Driver: %s\r\n",adapter_id.Driver));
 
 	DriverDLL=adapter_id.Driver;
-	int Product = HIWORD(adapter_id.DriverVersion.HighPart);
-	int Version = LOWORD(adapter_id.DriverVersion.HighPart);
-	int SubVersion = HIWORD(adapter_id.DriverVersion.LowPart);
-	DriverBuildVersion = LOWORD(adapter_id.DriverVersion.LowPart);
+	const unsigned Product = adapter_id.DriverProduct;
+	const unsigned Version = adapter_id.DriverVersionNumber;
+	const unsigned SubVersion = adapter_id.DriverSubVersion;
+	DriverBuildVersion = adapter_id.DriverBuildVersion;
 
 	DXLOG(("Product=%d, Version=%d, SubVersion=%d, Build=%d\r\n",Product, Version, SubVersion, DriverBuildVersion));
 
@@ -650,32 +644,20 @@ void DX8Caps::Compute_Caps(WW3DFormat display_format)
 
 	DXLOG(("Vendor id: 0x%x\r\n",adapter_id.VendorId));
 	DXLOG(("Device id: 0x%x\r\n",adapter_id.DeviceId));
-	DXLOG(("SubSys id: 0x%x\r\n",adapter_id.SubSysId));
+	DXLOG(("SubSys id: 0x%x\r\n",adapter_id.SubSystemId));
 	DXLOG(("Revision: %d\r\n",adapter_id.Revision));
 
-	DXLOG(("GUID = {0x%x, 0x%x, 0x%x}, {0x%2.2x, 0x%2.2x, 0x%2.2x, 0x%2.2x, 0x%2.2x, 0x%2.2x, 0x%2.2x, 0x%2.2x}\r\n",
-		adapter_id.DeviceIdentifier.Data1,
-		adapter_id.DeviceIdentifier.Data2,
-		adapter_id.DeviceIdentifier.Data3,
-		adapter_id.DeviceIdentifier.Data4[0],
-		adapter_id.DeviceIdentifier.Data4[1],
-		adapter_id.DeviceIdentifier.Data4[2],
-		adapter_id.DeviceIdentifier.Data4[3],
-		adapter_id.DeviceIdentifier.Data4[4],
-		adapter_id.DeviceIdentifier.Data4[5],
-		adapter_id.DeviceIdentifier.Data4[6],
-		adapter_id.DeviceIdentifier.Data4[7]));
+	DXLOG(("Device identifier: %s\r\n",adapter_id.DeviceIdentifier));
 
 
-	SupportPointSprites = (Private->Caps.MaxPointSize > 1.0f);
-	SupportNPatches = ((Private->Caps.DevCaps&D3DDEVCAPS_NPATCHES)==D3DDEVCAPS_NPATCHES);
+	SupportPointSprites = Private->Caps.PointSprites;
+	SupportNPatches = Private->Caps.NPatches;
 	SupportZBias = true;
-	supportGamma=((Private->Caps.Caps2&D3DCAPS2_FULLSCREENGAMMA)==D3DCAPS2_FULLSCREENGAMMA);
-	SupportModAlphaAddClr = (Private->Caps.TextureOpCaps & D3DTEXOPCAPS_MODULATEALPHA_ADDCOLOR) == D3DTEXOPCAPS_MODULATEALPHA_ADDCOLOR;
-	SupportDot3=(Private->Caps.TextureOpCaps & D3DTEXOPCAPS_DOTPRODUCT3) == D3DTEXOPCAPS_DOTPRODUCT3;
-	SupportCubemaps=(Private->Caps.TextureCaps & D3DPTEXTURECAPS_CUBEMAP) == D3DPTEXTURECAPS_CUBEMAP;
-	SupportAnisotropicFiltering=
-		(Private->Caps.TextureFilterCaps&D3DPTFILTERCAPS_MAGFANISOTROPIC) && (Private->Caps.TextureFilterCaps&D3DPTFILTERCAPS_MINFANISOTROPIC);
+	supportGamma = Private->Caps.FullScreenGamma;
+	SupportModAlphaAddClr = Private->Caps.ModulateAlphaAddColor;
+	SupportDot3 = Private->Caps.DotProduct3;
+	SupportCubemaps = Private->Caps.CubeMaps;
+	SupportAnisotropicFiltering = Private->Caps.AnisotropicFilter;
 
 	DXLOG(("Hardware T&L support: %s\r\n",SupportTnL ? "Yes" : "No"));
 	DXLOG(("NPatch support: %s\r\n",SupportNPatches ? "Yes" : "No"));
@@ -694,7 +676,7 @@ void DX8Caps::Compute_Caps(WW3DFormat display_format)
 	Check_Driver_Version_Status();
 	Check_Maximum_Texture_Support();
 
-	MaxTexturesPerPass=Private->Caps.MaxSimultaneousTextures;
+	MaxTexturesPerPass=(int)Private->Caps.MaxSimultaneousTextures;
 
 	DXLOG(("Max textures per pass: %d\r\n",MaxTexturesPerPass));
 
@@ -710,8 +692,8 @@ void DX8Caps::Compute_Caps(WW3DFormat display_format)
 
 void DX8Caps::Check_Bumpmap_Support()
 {
-	SupportBumpEnvmap=!!(Private->Caps.TextureOpCaps & D3DTEXOPCAPS_BUMPENVMAP);
-	SupportBumpEnvmapLuminance=!!(Private->Caps.TextureOpCaps & D3DTEXOPCAPS_BUMPENVMAPLUMINANCE);
+	SupportBumpEnvmap = Private->Caps.BumpEnvmap;
+	SupportBumpEnvmapLuminance = Private->Caps.BumpEnvmapLuminance;
 	DXLOG(("Bumpmap support: %s\r\n",SupportBumpEnvmap ? "Yes" : "No"));
 	DXLOG(("Bumpmap luminance support: %s\r\n",SupportBumpEnvmapLuminance ? "Yes" : "No"));
 }
@@ -740,21 +722,15 @@ void DX8Caps::Check_Texture_Format_Support(WW3DFormat display_format)
 		}
 		return;
 	}
-	D3DFORMAT d3d_display_format=WW3DFormat_To_D3DFormat(display_format);
 	for (unsigned i=0;i<WW3D_FORMAT_COUNT;++i) {
 		if (i==WW3D_FORMAT_UNKNOWN) {
 			SupportTextureFormat[i]=false;
 		}
 		else {
 			WW3DFormat format=(WW3DFormat)i;
-			SupportTextureFormat[i]=SUCCEEDED(
-				Private->Direct3D->CheckDeviceFormat(
-					Private->Caps.AdapterOrdinal,
-					Private->Caps.DeviceType,
-					d3d_display_format,
-					0,
-					D3DRTYPE_TEXTURE,
-					WW3DFormat_To_D3DFormat(format)));
+			SupportTextureFormat[i]=Private->Adapter != nullptr &&
+				Private->Adapter->Supports_Texture_Format(
+					Private->Caps.AdapterOrdinal, display_format, format, GFX_FORMAT_TEXTURE);
 			if (SupportTextureFormat[i]) {
 				StringClass name(0,true);
 				Get_WW3D_Format_Name(format,name);
@@ -772,21 +748,15 @@ void DX8Caps::Check_Render_To_Texture_Support(WW3DFormat display_format)
 		}
 		return;
 	}
-	D3DFORMAT d3d_display_format=WW3DFormat_To_D3DFormat(display_format);
 	for (unsigned i=0;i<WW3D_FORMAT_COUNT;++i) {
 		if (i==WW3D_FORMAT_UNKNOWN) {
 			SupportRenderToTextureFormat[i]=false;
 		}
 		else {
 			WW3DFormat format=(WW3DFormat)i;
-			SupportRenderToTextureFormat[i]=SUCCEEDED(
-				Private->Direct3D->CheckDeviceFormat(
-					Private->Caps.AdapterOrdinal,
-					Private->Caps.DeviceType,
-					d3d_display_format,
-					D3DUSAGE_RENDERTARGET,
-					D3DRTYPE_TEXTURE,
-					WW3DFormat_To_D3DFormat(format)));
+			SupportRenderToTextureFormat[i]=Private->Adapter != nullptr &&
+				Private->Adapter->Supports_Texture_Format(
+					Private->Caps.AdapterOrdinal, display_format, format, GFX_FORMAT_RENDER_TARGET);
 			if (SupportRenderToTextureFormat[i]) {
 				StringClass name(0,true);
 				Get_WW3D_Format_Name(format,name);
@@ -811,7 +781,6 @@ void DX8Caps::Check_Depth_Stencil_Support(WW3DFormat display_format)
 		return;
 	}
 
-	D3DFORMAT d3d_display_format=WW3DFormat_To_D3DFormat(display_format);
 
 	for (unsigned i=0;i<WW3D_ZFORMAT_COUNT;++i)
 	{
@@ -822,18 +791,9 @@ void DX8Caps::Check_Depth_Stencil_Support(WW3DFormat display_format)
 		else
 		{
 			WW3DZFormat format=(WW3DZFormat)i;
-			SupportDepthStencilFormat[i]=SUCCEEDED
-			(
-				Private->Direct3D->CheckDeviceFormat
-				(
-					Private->Caps.AdapterOrdinal,
-					Private->Caps.DeviceType,
-					d3d_display_format,
-					D3DUSAGE_DEPTHSTENCIL,
-					D3DRTYPE_TEXTURE,
-					WW3DZFormat_To_D3DFormat(format)
-				)
-			);
+			SupportDepthStencilFormat[i]=Private->Adapter != nullptr &&
+				Private->Adapter->Supports_Depth_Texture_Format(
+					Private->Caps.AdapterOrdinal, display_format, format);
 
 			if (SupportDepthStencilFormat[i])
 			{
@@ -847,13 +807,13 @@ void DX8Caps::Check_Depth_Stencil_Support(WW3DFormat display_format)
 
 void DX8Caps::Check_Maximum_Texture_Support()
 {
-	MaxSimultaneousTextures=Private->Caps.MaxSimultaneousTextures;
+	MaxSimultaneousTextures=(int)Private->Caps.MaxSimultaneousTextures;
 }
 
 void DX8Caps::Check_Shader_Support()
 {
-	VertexShaderVersion=Private->Caps.VertexShaderVersion;
-	PixelShaderVersion=Private->Caps.PixelShaderVersion;
+	VertexShaderVersion=(int)Private->Caps.VertexShaderVersion;
+	PixelShaderVersion=(int)Private->Caps.PixelShaderVersion;
 	DXLOG(("Vertex shader version: %d.%d, pixel shader version: %d.%d\r\n",
 		(VertexShaderVersion>>8)&0xff,VertexShaderVersion&0xff,
 		(PixelShaderVersion>>8)&0xff,PixelShaderVersion&0xff));
@@ -1042,7 +1002,7 @@ bool DX8Caps::Is_Valid_Display_Format(int width, int height, WW3DFormat format)
 
 void DX8Caps::Vendor_Specific_Hacks()
 {
-	const D3DADAPTER_IDENTIFIER8& adapter_id = Private->AdapterId;
+	const GfxAdapterInfo& adapter_id = Private->Info;
 	if (VendorId==VENDOR_NVIDIA)
     {
 		if (SupportNPatches) {

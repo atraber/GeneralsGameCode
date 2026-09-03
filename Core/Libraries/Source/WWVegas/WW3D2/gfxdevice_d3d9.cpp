@@ -19,6 +19,10 @@
 #include "gfxdevice_d3d9.h"
 #include "dx8wrapper.h"
 #include "formconv.h"
+#include "WWLib/DbgHelpGuard.h"
+
+// Defined in dx8wrapper.cpp: decodes an HRESULT and logs it without asserting.
+extern void Non_Fatal_Log_DX8_ErrorCode(unsigned res, const char * file, int line);
 
 // What DX8CALL used to do at the call site, now that the call site is one seam away:
 // check the result and count it. Counting here rather than in the wrapper is the only
@@ -958,6 +962,432 @@ bool GfxDeviceD3D9::Save_Surface_To_File(const char * path, GfxSurface * surface
 	HRESULT hr = D3DXSaveSurfaceToFileA(path, D3DXIFF_PNG, (IDirect3DSurface8*)surface,
 		nullptr, nullptr);
 	return SUCCEEDED(hr);
+}
+
+// ---------------------------------------------------------------------------
+// The adapter.
+//
+// Everything here runs before a device exists -- enumerating what the machine has, asking
+// each adapter what it supports, and finally creating one. See gfxdevice.h for why it is a
+// separate object from the device rather than part of it.
+// ---------------------------------------------------------------------------
+
+// Set from the command line (-preserveFPU). A D3D9 wart: the driver is otherwise allowed to
+// leave the FPU control word changed, which the simulation notices.
+extern int DX8Wrapper_PreserveFPU;
+
+// The device type every call here asks about. There has only ever been one.
+#define GFX_D3D9_DEVTYPE D3DDEVTYPE_HAL
+
+typedef IDirect3D9* (WINAPI *Direct3DCreate9Type)(UINT SDKVersion);
+
+GfxAdapterD3D9::GfxAdapterD3D9()
+	: m_library(nullptr), m_d3d(nullptr)
+{
+	m_library = LoadLibrary("d3d9.dll");
+	if (m_library == nullptr)
+		return;
+
+	Direct3DCreate9Type create = (Direct3DCreate9Type)GetProcAddress(m_library, "Direct3DCreate9");
+	if (create == nullptr)
+		return;
+
+	// TheSuperHackers @bugfix xezon 13/06/2025 Front load the system dbghelp.dll to prevent
+	// the graphics driver from potentially loading the old game dbghelp.dll and then crashing
+	// the game process.
+	DbgHelpGuard dbgHelpGuard;
+	m_d3d = create(D3D_SDK_VERSION);
+}
+
+GfxAdapterD3D9::~GfxAdapterD3D9()
+{
+	if (m_d3d != nullptr) {
+		m_d3d->Release();
+		m_d3d = nullptr;
+	}
+	if (m_library != nullptr) {
+		FreeLibrary(m_library);
+		m_library = nullptr;
+	}
+}
+
+unsigned GfxAdapterD3D9::Get_Adapter_Count()
+{
+	if (m_d3d == nullptr) return 0;
+	return (unsigned)m_d3d->GetAdapterCount();
+}
+
+bool GfxAdapterD3D9::Get_Adapter_Info(unsigned adapter, GfxAdapterInfo & info)
+{
+	memset(&info, 0, sizeof(info));
+	if (m_d3d == nullptr) return false;
+
+	D3DADAPTER_IDENTIFIER8 id;
+	::ZeroMemory(&id, sizeof(id));
+	if (FAILED(m_d3d->GetAdapterIdentifier(adapter, D3DENUM_NO_WHQL_LEVEL, &id)))
+		return false;
+
+	strncpy(info.Description, id.Description, sizeof(info.Description) - 1);
+	strncpy(info.Driver, id.Driver, sizeof(info.Driver) - 1);
+	info.DriverProduct       = HIWORD(id.DriverVersion.HighPart);
+	info.DriverVersionNumber = LOWORD(id.DriverVersion.HighPart);
+	info.DriverSubVersion    = HIWORD(id.DriverVersion.LowPart);
+	info.DriverBuildVersion  = LOWORD(id.DriverVersion.LowPart);
+	sprintf(info.DriverVersion, "%d.%d.%d.%d",
+		info.DriverProduct, info.DriverVersionNumber,
+		info.DriverSubVersion, info.DriverBuildVersion);
+	sprintf(info.DeviceIdentifier, "%08X-%04X-%04X-%02X%02X%02X%02X%02X%02X%02X%02X",
+		id.DeviceIdentifier.Data1, id.DeviceIdentifier.Data2, id.DeviceIdentifier.Data3,
+		id.DeviceIdentifier.Data4[0], id.DeviceIdentifier.Data4[1],
+		id.DeviceIdentifier.Data4[2], id.DeviceIdentifier.Data4[3],
+		id.DeviceIdentifier.Data4[4], id.DeviceIdentifier.Data4[5],
+		id.DeviceIdentifier.Data4[6], id.DeviceIdentifier.Data4[7]);
+	info.VendorId = id.VendorId;
+	info.DeviceId = id.DeviceId;
+	info.SubSystemId = id.SubSysId;
+	info.Revision = id.Revision;
+	return true;
+}
+
+bool GfxAdapterD3D9::Get_Current_Display_Mode(unsigned adapter, GfxDisplayMode & mode)
+{
+	memset(&mode, 0, sizeof(mode));
+	mode.Format = WW3D_FORMAT_UNKNOWN;
+	if (m_d3d == nullptr) return false;
+
+	D3DDISPLAYMODE d3dmode;
+	::ZeroMemory(&d3dmode, sizeof(d3dmode));
+	if (FAILED(m_d3d->GetAdapterDisplayMode(adapter, &d3dmode)))
+		return false;
+
+	mode.Width = d3dmode.Width;
+	mode.Height = d3dmode.Height;
+	mode.RefreshRate = d3dmode.RefreshRate;
+	mode.Format = D3DFormat_To_WW3DFormat(d3dmode.Format);
+	return true;
+}
+
+unsigned GfxAdapterD3D9::Get_Display_Mode_Count(unsigned adapter, WW3DFormat format)
+{
+	if (m_d3d == nullptr) return 0;
+	return (unsigned)m_d3d->GetAdapterModeCount(adapter, WW3DFormat_To_D3DFormat(format));
+}
+
+bool GfxAdapterD3D9::Get_Display_Mode(unsigned adapter, WW3DFormat format,
+	unsigned index, GfxDisplayMode & mode)
+{
+	memset(&mode, 0, sizeof(mode));
+	mode.Format = WW3D_FORMAT_UNKNOWN;
+	if (m_d3d == nullptr) return false;
+
+	D3DDISPLAYMODE d3dmode;
+	::ZeroMemory(&d3dmode, sizeof(d3dmode));
+	if (FAILED(m_d3d->EnumAdapterModes(adapter, WW3DFormat_To_D3DFormat(format), index, &d3dmode)))
+		return false;
+
+	mode.Width = d3dmode.Width;
+	mode.Height = d3dmode.Height;
+	mode.RefreshRate = d3dmode.RefreshRate;
+	mode.Format = D3DFormat_To_WW3DFormat(d3dmode.Format);
+	return true;
+}
+
+bool GfxAdapterD3D9::Supports_Display_Format(unsigned adapter, WW3DFormat display,
+	WW3DFormat back_buffer, bool windowed)
+{
+	if (m_d3d == nullptr) return false;
+	return m_d3d->CheckDeviceType(adapter, GFX_D3D9_DEVTYPE,
+		WW3DFormat_To_D3DFormat(display), WW3DFormat_To_D3DFormat(back_buffer),
+		windowed ? TRUE : FALSE) == D3D_OK;
+}
+
+bool GfxAdapterD3D9::Supports_Depth_Stencil_Format(unsigned adapter, WW3DFormat display,
+	WW3DFormat back_buffer, WW3DZFormat depth)
+{
+	if (m_d3d == nullptr) return false;
+
+	const D3DFORMAT d3d_display = WW3DFormat_To_D3DFormat(display);
+	const D3DFORMAT d3d_depth   = WW3DZFormat_To_D3DFormat(depth);
+
+	// Two separate questions and both have to be yes: can the adapter make a depth buffer
+	// in this format at all, and can that depth buffer be used with this back buffer.
+	if (FAILED(m_d3d->CheckDeviceFormat(adapter, GFX_D3D9_DEVTYPE, d3d_display,
+			D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_SURFACE, d3d_depth)))
+		return false;
+
+	if (FAILED(m_d3d->CheckDepthStencilMatch(adapter, GFX_D3D9_DEVTYPE, d3d_display,
+			WW3DFormat_To_D3DFormat(back_buffer), d3d_depth)))
+		return false;
+
+	return true;
+}
+
+bool GfxAdapterD3D9::Supports_Multisample(unsigned adapter, WW3DFormat format,
+	bool windowed, WW3DMultiSampleType samples)
+{
+	if (m_d3d == nullptr) return false;
+	return SUCCEEDED(m_d3d->CheckDeviceMultiSampleType(adapter, GFX_D3D9_DEVTYPE,
+		WW3DFormat_To_D3DFormat(format), windowed ? TRUE : FALSE,
+		WW3DMultiSample_To_D3DMultiSample(samples), nullptr));
+}
+
+bool GfxAdapterD3D9::Supports_Depth_Multisample(unsigned adapter, WW3DZFormat format,
+	bool windowed, WW3DMultiSampleType samples)
+{
+	if (m_d3d == nullptr) return false;
+	return SUCCEEDED(m_d3d->CheckDeviceMultiSampleType(adapter, GFX_D3D9_DEVTYPE,
+		WW3DZFormat_To_D3DFormat(format), windowed ? TRUE : FALSE,
+		WW3DMultiSample_To_D3DMultiSample(samples), nullptr));
+}
+
+bool GfxAdapterD3D9::Supports_Hardware_Transform_And_Lighting(unsigned adapter)
+{
+	if (m_d3d == nullptr) return false;
+	D3DCAPS8 caps;
+	::ZeroMemory(&caps, sizeof(caps));
+	if (FAILED(m_d3d->GetDeviceCaps(adapter, GFX_D3D9_DEVTYPE, &caps)))
+		return false;
+	return (caps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) != 0;
+}
+
+// Translate the API's capability struct into the sixteen things the engine asks about.
+static void Fill_Device_Caps(const D3DCAPS8 & d3d, GfxDeviceCaps & caps)
+{
+	memset(&caps, 0, sizeof(caps));
+	caps.AdapterOrdinal = d3d.AdapterOrdinal;
+
+	caps.HardwareTransformAndLighting = (d3d.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) != 0;
+	caps.NPatches            = (d3d.DevCaps & D3DDEVCAPS_NPATCHES) != 0;
+	caps.FullScreenGamma     = (d3d.Caps2 & D3DCAPS2_FULLSCREENGAMMA) != 0;
+	caps.CubeMaps            = (d3d.TextureCaps & D3DPTEXTURECAPS_CUBEMAP) != 0;
+	caps.ColorWriteEnable    = (d3d.PrimitiveMiscCaps & D3DPMISCCAPS_COLORWRITEENABLE) != 0;
+	caps.BumpEnvmap          = (d3d.TextureOpCaps & D3DTEXOPCAPS_BUMPENVMAP) != 0;
+	caps.BumpEnvmapLuminance = (d3d.TextureOpCaps & D3DTEXOPCAPS_BUMPENVMAPLUMINANCE) != 0;
+	caps.ModulateAlphaAddColor = (d3d.TextureOpCaps & D3DTEXOPCAPS_MODULATEALPHA_ADDCOLOR) != 0;
+	caps.DotProduct3         = (d3d.TextureOpCaps & D3DTEXOPCAPS_DOTPRODUCT3) != 0;
+	caps.PointSprites        = d3d.MaxPointSize > 1.0f;
+
+	caps.LinearFilter        = (d3d.TextureFilterCaps & D3DPTFILTERCAPS_MINFLINEAR) != 0 &&
+	                           (d3d.TextureFilterCaps & D3DPTFILTERCAPS_MAGFLINEAR) != 0;
+	caps.MipLinearFilter     = (d3d.TextureFilterCaps & D3DPTFILTERCAPS_MIPFLINEAR) != 0;
+	caps.AnisotropicFilter   = (d3d.TextureFilterCaps & D3DPTFILTERCAPS_MAGFANISOTROPIC) != 0 &&
+	                           (d3d.TextureFilterCaps & D3DPTFILTERCAPS_MINFANISOTROPIC) != 0;
+
+	caps.MaxTextureWidth        = d3d.MaxTextureWidth;
+	caps.MaxTextureHeight       = d3d.MaxTextureHeight;
+	caps.MaxVolumeExtent        = d3d.MaxVolumeExtent;
+	caps.MaxTextureAspectRatio  = d3d.MaxTextureAspectRatio;
+	caps.MaxSimultaneousTextures = d3d.MaxSimultaneousTextures;
+
+	caps.VertexShaderVersion = d3d.VertexShaderVersion & 0xffff;
+	caps.PixelShaderVersion  = d3d.PixelShaderVersion & 0xffff;
+
+	caps.FixedFunctionCombineOps = d3d.TextureOpCaps;
+}
+
+bool GfxAdapterD3D9::Query_Capabilities(unsigned adapter, GfxDeviceCaps & caps)
+{
+	memset(&caps, 0, sizeof(caps));
+	if (m_d3d == nullptr) return false;
+
+	D3DCAPS8 d3d;
+	::ZeroMemory(&d3d, sizeof(d3d));
+	if (FAILED(m_d3d->GetDeviceCaps(adapter, GFX_D3D9_DEVTYPE, &d3d)))
+		return false;
+
+	Fill_Device_Caps(d3d, caps);
+	return true;
+}
+
+bool GfxAdapterD3D9::Supports_Texture_Format(unsigned adapter, WW3DFormat display,
+	WW3DFormat format, GfxFormatCapability capability)
+{
+	if (m_d3d == nullptr) return false;
+
+	DWORD usage;
+	switch (capability) {
+	case GFX_FORMAT_RENDER_TARGET: usage = D3DUSAGE_RENDERTARGET; break;
+	case GFX_FORMAT_BLENDABLE:     usage = D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING; break;
+	case GFX_FORMAT_FILTERABLE:    usage = D3DUSAGE_QUERY_FILTER; break;
+	default:                       usage = 0; break;
+	}
+
+	return SUCCEEDED(m_d3d->CheckDeviceFormat(adapter, GFX_D3D9_DEVTYPE,
+		WW3DFormat_To_D3DFormat(display), usage,
+		D3DRTYPE_TEXTURE, WW3DFormat_To_D3DFormat(format)));
+}
+
+bool GfxAdapterD3D9::Supports_Depth_Texture_Format(unsigned adapter, WW3DFormat display,
+	WW3DZFormat format)
+{
+	if (m_d3d == nullptr) return false;
+	return SUCCEEDED(m_d3d->CheckDeviceFormat(adapter, GFX_D3D9_DEVTYPE,
+		WW3DFormat_To_D3DFormat(display), D3DUSAGE_DEPTHSTENCIL,
+		D3DRTYPE_TEXTURE, WW3DZFormat_To_D3DFormat(format)));
+}
+
+bool GfxDeviceD3D9::Query_Capabilities(GfxDeviceCaps & caps)
+{
+	memset(&caps, 0, sizeof(caps));
+
+	// What the device reports depends on which vertex-processing mode it is in, so ask
+	// twice: once forced to software, and again in hardware if the first answer says there
+	// is hardware transform and lighting to ask about. The engine wants the second answer.
+	//
+	// Through DX8Wrapper::Set_DX8_Render_State rather than at the device, so the wrapper's
+	// record of what the device holds stays true across a probe that runs before the first
+	// frame.
+	D3DCAPS8 d3d;
+	::ZeroMemory(&d3d, sizeof(d3d));
+
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_SOFTWAREVERTEXPROCESSING, TRUE);
+	if (FAILED(m_device->GetDeviceCaps(&d3d)))
+		return false;
+
+	if ((d3d.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) == D3DDEVCAPS_HWTRANSFORMANDLIGHT) {
+		DX8Wrapper::Set_DX8_Render_State(D3DRS_SOFTWAREVERTEXPROCESSING, FALSE);
+		if (FAILED(m_device->GetDeviceCaps(&d3d)))
+			return false;
+	}
+
+	Fill_Device_Caps(d3d, caps);
+	return true;
+}
+
+// Fill in the API's own creation structure from what the engine asked for.
+static void Fill_Present_Parameters(const GfxSwapChainDesc & desc, D3DPRESENT_PARAMETERS & pp)
+{
+	::ZeroMemory(&pp, sizeof(pp));
+	pp.BackBufferWidth = desc.Width;
+	pp.BackBufferHeight = desc.Height;
+	pp.BackBufferCount = desc.BackBufferCount;
+	pp.BackBufferFormat = WW3DFormat_To_D3DFormat(desc.BackBufferFormat);
+	// Discard even in fullscreen: it is the most efficient, and nothing here reads a
+	// previous frame back out of the chain.
+	pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+	pp.hDeviceWindow = (HWND)desc.Window;
+	pp.Windowed = desc.Windowed ? TRUE : FALSE;
+	pp.EnableAutoDepthStencil = TRUE;
+	pp.AutoDepthStencilFormat = WW3DZFormat_To_D3DFormat(desc.DepthStencilFormat);
+	pp.MultiSampleType = WW3DMultiSample_To_D3DMultiSample(desc.MultiSample);
+	pp.Flags = 0;								// the back buffer is never locked
+	pp.FullScreen_RefreshRateInHz = desc.RefreshRate;
+	switch (desc.SwapInterval) {
+	case 0:  pp.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE; break;
+	case 1:  pp.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_ONE; break;
+	case 2:  pp.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_TWO; break;
+	case 3:  pp.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_THREE; break;
+	default: pp.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT; break;
+	}
+}
+
+GfxDeviceClass * GfxAdapterD3D9::Create_Device(unsigned adapter, GfxSwapChainDesc & desc)
+{
+	if (m_d3d == nullptr) return nullptr;
+
+	// How vertices are processed, how the FPU is left and whether the device is
+	// multithreaded are all questions only this API asks, so they are answered here and
+	// are not in the description the engine wrote.
+	DWORD behavior = Supports_Hardware_Transform_And_Lighting(adapter)
+		? D3DCREATE_MIXED_VERTEXPROCESSING : D3DCREATE_SOFTWARE_VERTEXPROCESSING;
+
+#ifdef CREATE_DX8_MULTI_THREADED
+	behavior |= D3DCREATE_MULTITHREADED;
+	_DX8SingleThreaded = false;
+#else
+	_DX8SingleThreaded = true;
+#endif
+
+	if (DX8Wrapper_PreserveFPU)
+		behavior |= D3DCREATE_FPU_PRESERVE;
+
+#ifdef CREATE_DX8_FPU_PRESERVE
+	behavior |= D3DCREATE_FPU_PRESERVE;
+#endif
+
+	D3DPRESENT_PARAMETERS pp;
+	Fill_Present_Parameters(desc, pp);
+
+	// TheSuperHackers @bugfix xezon 13/06/2025 Front load the system dbghelp.dll to prevent
+	// the graphics driver from potentially loading the old game dbghelp.dll and then crashing
+	// the game process.
+	DbgHelpGuard dbgHelpGuard;
+
+	IDirect3DDevice8 * device = nullptr;
+	HRESULT hr = m_d3d->CreateDevice(adapter, GFX_D3D9_DEVTYPE, (HWND)desc.Window,
+		behavior, &pp, &device);
+
+	if (FAILED(hr)) {
+		// The adapter may have claimed a 32-bit depth buffer it cannot actually pair with a
+		// 16-bit display. Drop to 16-bit depth and try once more, and tell the caller what
+		// it ended up with -- Has_Stencil and the shadow path both read that back.
+		const bool sixteen_bit_colour =
+			pp.BackBufferFormat == D3DFMT_R5G6B5 ||
+			pp.BackBufferFormat == D3DFMT_X1R5G5B5 ||
+			pp.BackBufferFormat == D3DFMT_A1R5G5B5;
+		const bool deep_depth =
+			pp.AutoDepthStencilFormat == D3DFMT_D32 ||
+			pp.AutoDepthStencilFormat == D3DFMT_D24S8 ||
+			pp.AutoDepthStencilFormat == D3DFMT_D24X8;
+
+		if (!sixteen_bit_colour || !deep_depth)
+			return nullptr;
+
+		desc.DepthStencilFormat = WW3D_ZFORMAT_D16;
+		pp.AutoDepthStencilFormat = D3DFMT_D16;
+		hr = m_d3d->CreateDevice(adapter, GFX_D3D9_DEVTYPE, (HWND)desc.Window,
+			behavior, &pp, &device);
+		if (FAILED(hr))
+			return nullptr;
+	}
+
+	dbgHelpGuard.deactivate();
+	return new GfxDeviceD3D9(device, pp);
+}
+
+GfxAdapterClass * Gfx_Create_Adapter()
+{
+	GfxAdapterD3D9 * adapter = new GfxAdapterD3D9;
+	if (!adapter->Is_Valid()) {
+		delete adapter;
+		return nullptr;
+	}
+	return adapter;
+}
+
+bool GfxDeviceD3D9::Reset_Swap_Chain(GfxSwapChainDesc & desc)
+{
+	Fill_Present_Parameters(desc, m_present);
+
+	// A device create or a mode switch commonly leaves the device transiently lost for a
+	// few frames. Wait for the OS to hand it back rather than giving up immediately, which
+	// intermittently left a dead device -- black screen or hang -- on startup.
+	HRESULT hr = m_device->TestCooperativeLevel();
+	WWDEBUG_SAY(("Reset_Swap_Chain: TestCooperativeLevel -> 0x%08x", hr));
+	int attempts = 0;
+	while (hr == D3DERR_DEVICELOST && attempts < 100) {
+		::Sleep(50);
+		hr = m_device->TestCooperativeLevel();
+		++attempts;
+	}
+	if (attempts > 0)
+		WWDEBUG_SAY(("Reset_Swap_Chain: waited %d x50ms; TestCooperativeLevel -> 0x%08x", attempts, hr));
+	if (hr == D3DERR_DEVICELOST) {
+		WWDEBUG_SAY(("Reset_Swap_Chain: device still lost after wait; giving up this attempt."));
+		return false;
+	}
+
+	// D3D_OK and D3DERR_DEVICENOTRESET are both resettable. Reset is called directly rather
+	// than through the error-checking macro: that routes failures into an assert, which in
+	// fullscreen pops an invisible dialog and hangs the app. Log and return false so the
+	// caller retries next frame.
+	hr = m_device->Reset(&m_present);
+	WWDEBUG_SAY(("Reset_Swap_Chain: Reset() -> 0x%08x", hr));
+	if (hr != D3D_OK) {
+		Non_Fatal_Log_DX8_ErrorCode(hr, __FILE__, __LINE__);
+		return false;
+	}
+	return true;
 }
 
 GfxQuery * GfxDeviceD3D9::Create_Query(GfxQueryType type)

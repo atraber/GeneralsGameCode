@@ -3537,9 +3537,8 @@ void W3DShaderManager::initHdr()
 		return;
 	}
 
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	IDirect3D8 *d3d = DX8Wrapper::_Get_D3D8();
-	if (dev == nullptr || d3d == nullptr)
+	GfxAdapterClass * adapterIf = DX8Wrapper::Get_Adapter();
+	if (adapterIf == nullptr)
 		return;
 
 	// Off the colour surface, not off m_renderTexture. A texture is never multisampled, so
@@ -3559,24 +3558,21 @@ void W3DShaderManager::initHdr()
 	// not others, so each is asked for by name and reported by name when it is missing.
 	// Adapter and display format come from the device itself rather than from a cached copy
 	// of what it was asked for, so the query is against what actually got created.
-	D3DDEVICE_CREATION_PARAMETERS params;
-	D3DDISPLAYMODE mode;
-	if (FAILED(dev->GetCreationParameters(&params)) ||
-		FAILED(dev->GetDisplayMode(0, &mode)))
+	// Adapter and display format come from the adapter the device was actually created on,
+	// not from a cached copy of what it was asked for.
+	const unsigned adapter = DX8Wrapper::Get_Adapter_Index();
+	GfxDisplayMode mode;
+	if (!adapterIf->Get_Current_Display_Mode(adapter, mode))
 		return;
 
-	const UnsignedInt adapter = params.AdapterOrdinal;
-	const D3DDEVTYPE devType = params.DeviceType;
-	const D3DFORMAT display = mode.Format;
-	static const struct { DWORD usage; const char *name; } checks[] = {
-		{ D3DUSAGE_RENDERTARGET,                                             "render targets" },
-		{ D3DUSAGE_RENDERTARGET | D3DUSAGE_QUERY_POSTPIXELSHADER_BLENDING,   "blending" },
-		{ D3DUSAGE_QUERY_FILTER,                                             "filtering" },
+	static const struct { GfxFormatCapability cap; const char *name; } checks[] = {
+		{ GFX_FORMAT_RENDER_TARGET, "render targets" },
+		{ GFX_FORMAT_BLENDABLE,     "blending" },
+		{ GFX_FORMAT_FILTERABLE,    "filtering" },
 	};
 	for (Int i = 0; i < (Int)(sizeof(checks)/sizeof(checks[0])); i++)
 	{
-		if (FAILED(d3d->CheckDeviceFormat(adapter, devType, display,
-				checks[i].usage, D3DRTYPE_TEXTURE, WW3DFormat_To_D3DFormat(HDR_SCENE_FORMAT))))
+		if (!adapterIf->Supports_Texture_Format(adapter, mode.Format, HDR_SCENE_FORMAT, checks[i].cap))
 		{
 			DEBUG_LOG(("HDR: off -- no A16B16G16R16F %s on this device\n", checks[i].name));
 			return;
@@ -3587,9 +3583,7 @@ void W3DShaderManager::initHdr()
 	// hardware generation after floating-point targets; a device can have one without the
 	// other, and the scene target has to match whatever the depth buffer already is.
 	if (sceneDesc.MultiSample != WW3D_MULTISAMPLE_NONE &&
-		FAILED(d3d->CheckDeviceMultiSampleType(adapter, devType,
-			WW3DFormat_To_D3DFormat(HDR_SCENE_FORMAT), FALSE,
-			WW3DMultiSample_To_D3DMultiSample(sceneDesc.MultiSample), nullptr)))
+		!adapterIf->Supports_Multisample(adapter, HDR_SCENE_FORMAT, false, sceneDesc.MultiSample))
 	{
 		DEBUG_LOG(("HDR: off -- no %dx A16B16G16R16F multisampling, and the depth buffer is multisampled\n",
 			(Int)sceneDesc.MultiSample));
@@ -4354,15 +4348,17 @@ ChipsetType W3DShaderManager::getChipset()
 		return (ChipsetType)TheGlobalData->m_chipSetType;
 
 	ChipsetType chip=DC_UNKNOWN;
-	IDirect3D8* d3d8Interface=DX8Wrapper::_Get_D3D8();
+	GfxAdapterClass* adapterIf = DX8Wrapper::Get_Adapter();
 
-	if (d3d8Interface && DX8Wrapper::_Get_D3D_Device8())
+	GfxAdapterInfo did;
+	if (adapterIf != nullptr && DX8Wrapper::Has_Device() &&
+		adapterIf->Get_Adapter_Info(0, did))
 	{
-
-		D3DADAPTER_IDENTIFIER8 did;
-		::ZeroMemory(&did, sizeof(D3DADAPTER_IDENTIFIER8));
-	/*	HRESULT res = */ d3d8Interface->GetAdapterIdentifier(0,D3DENUM_NO_WHQL_LEVEL,&did);
-		*((LARGE_INTEGER*)&m_driverVersion) = did.DriverVersion;
+		// The same 64-bit number the API packed its version into, reassembled from the four
+		// parts: GameLOD compares driver versions against stored values in this form.
+		m_driverVersion =
+			((__int64)((did.DriverProduct << 16) | did.DriverVersionNumber) << 32) |
+			(__int64)((did.DriverSubVersion << 16) | did.DriverBuildVersion);
 
 		if(did.VendorId == DC_NVIDIA_VENDOR_ID)
 		{

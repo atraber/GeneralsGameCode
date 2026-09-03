@@ -2090,19 +2090,19 @@ void WW3D::Set_MSAA_Mode(MultiSampleModeEnum mode)
 
 	default:
 	case MULTISAMPLE_MODE_NONE:
-		DX8Wrapper::Set_MSAA_Mode(D3DMULTISAMPLE_NONE);
+		DX8Wrapper::Set_MSAA_Mode(WW3D_MULTISAMPLE_NONE);
 		break;
 
 	case MULTISAMPLE_MODE_2X:
-		DX8Wrapper::Set_MSAA_Mode(D3DMULTISAMPLE_2_SAMPLES);
+		DX8Wrapper::Set_MSAA_Mode(WW3D_MULTISAMPLE_2X);
 		break;
 
 	case MULTISAMPLE_MODE_4X:
-		DX8Wrapper::Set_MSAA_Mode(D3DMULTISAMPLE_4_SAMPLES);
+		DX8Wrapper::Set_MSAA_Mode(WW3D_MULTISAMPLE_4X);
 		break;
 
 	case MULTISAMPLE_MODE_8X:
-		DX8Wrapper::Set_MSAA_Mode(D3DMULTISAMPLE_8_SAMPLES);
+		DX8Wrapper::Set_MSAA_Mode(WW3D_MULTISAMPLE_8X);
 		break;
 
 	}
@@ -2110,21 +2110,21 @@ void WW3D::Set_MSAA_Mode(MultiSampleModeEnum mode)
 
 WW3D::MultiSampleModeEnum WW3D::Get_MSAA_Mode()
 {
-	D3DMULTISAMPLE_TYPE type = DX8Wrapper::Get_MSAA_Mode();
+	WW3DMultiSampleType type = DX8Wrapper::Get_MSAA_Mode();
 
 	switch (type) {
 
 	default:
-	case D3DMULTISAMPLE_NONE:
+	case WW3D_MULTISAMPLE_NONE:
 		return MULTISAMPLE_MODE_NONE;
 
-	case D3DMULTISAMPLE_2_SAMPLES:
+	case WW3D_MULTISAMPLE_2X:
 		return MULTISAMPLE_MODE_2X;
 
-	case D3DMULTISAMPLE_4_SAMPLES:
+	case WW3D_MULTISAMPLE_4X:
 		return MULTISAMPLE_MODE_4X;
 
-	case D3DMULTISAMPLE_8_SAMPLES:
+	case WW3D_MULTISAMPLE_8X:
 		return MULTISAMPLE_MODE_8X;
 
 	}

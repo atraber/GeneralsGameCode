@@ -94,7 +94,7 @@ const int DEFAULT_RESOLUTION_WIDTH = 640;
 const int DEFAULT_RESOLUTION_HEIGHT = 480;
 const int DEFAULT_BIT_DEPTH = 32;
 const int DEFAULT_TEXTURE_BIT_DEPTH = 16;
-const D3DMULTISAMPLE_TYPE DEFAULT_MSAA = D3DMULTISAMPLE_NONE;
+const WW3DMultiSampleType DEFAULT_MSAA = WW3D_MULTISAMPLE_NONE;
 
 DX8FrameStatistics DX8Wrapper::FrameStatistics;
 static DX8FrameStatistics LastFrameStatistics;
@@ -120,8 +120,8 @@ int								DX8Wrapper::ResolutionHeight							= DEFAULT_RESOLUTION_HEIGHT;
 int								DX8Wrapper::BitDepth										= DEFAULT_BIT_DEPTH;
 int								DX8Wrapper::TextureBitDepth							= DEFAULT_TEXTURE_BIT_DEPTH;
 bool								DX8Wrapper::IsWindowed									= false;
-D3DFORMAT					DX8Wrapper::DisplayFormat	= D3DFMT_UNKNOWN;
-D3DMULTISAMPLE_TYPE DX8Wrapper::MultiSampleAntiAliasing	= DEFAULT_MSAA;
+WW3DFormat					DX8Wrapper::DisplayFormat	= WW3D_FORMAT_UNKNOWN;
+WW3DMultiSampleType DX8Wrapper::MultiSampleAntiAliasing	= DEFAULT_MSAA;
 
 // shader system additions KJM v
 DWORD								DX8Wrapper::Vertex_Shader								= 0;
@@ -132,7 +132,6 @@ Vector4							DX8Wrapper::Pixel_Shader_Constants[MAX_PIXEL_SHADER_CONSTANTS];
 
 LightEnvironmentClass*		DX8Wrapper::Light_Environment							= nullptr;
 
-DWORD								DX8Wrapper::Vertex_Processing_Behavior				= 0;
 ZTextureClass*					DX8Wrapper::Shadow_Map[MAX_SHADOW_MAPS];
 
 Vector3							DX8Wrapper::Ambient_Color;
@@ -163,7 +162,8 @@ unsigned							DX8Wrapper::render_state_changed;
 bool								DX8Wrapper::FogEnable									= false;
 D3DCOLOR							DX8Wrapper::FogColor										= 0;
 
-IDirect3D8 *					DX8Wrapper::D3DInterface								= nullptr;
+GfxAdapterClass *				DX8Wrapper::Adapter										= nullptr;
+GfxSwapChainDesc				DX8Wrapper::SwapChain;
 IDirect3DDevice8 *			DX8Wrapper::D3DDevice									= nullptr;
 GfxDeviceClass *				DX8Wrapper::Gfx											= nullptr;
 GfxSurface *			DX8Wrapper::CurrentRenderTarget						= nullptr;
@@ -184,7 +184,6 @@ DX8Caps*							DX8Wrapper::CurrentCaps = nullptr;
 // Hack test... this disables rendering of batches of too few polygons.
 unsigned							DX8Wrapper::DrawPolygonLowBoundLimit=0;
 
-D3DADAPTER_IDENTIFIER8		DX8Wrapper::CurrentAdapterIdentifier;
 
 unsigned long DX8Wrapper::FrameCount = 0;
 
@@ -2882,15 +2881,11 @@ bool								_DX8SingleThreaded										= false;
 
 INT g_D3D9_BaseVertexIndex = 0;
 
-static D3DPRESENT_PARAMETERS								_PresentParameters;
 static DynamicVectorClass<StringClass>					_RenderDeviceNameTable;
 static DynamicVectorClass<StringClass>					_RenderDeviceShortNameTable;
 static DynamicVectorClass<RenderDeviceDescClass>	_RenderDeviceDescriptionTable;
 
 
-typedef IDirect3D9* (WINAPI *Direct3DCreateType) (UINT SDKVersion);
-Direct3DCreateType	Direct3DCreate8Ptr = nullptr;
-HINSTANCE D3D8Lib = nullptr;
 
 DX8_CleanupHook	 *DX8Wrapper::m_pCleanupHook=nullptr;
 /***********************************************************************************
@@ -2970,7 +2965,7 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 	//world_identity;
 	//CurrentFogColor;
 
-	D3DInterface = nullptr;
+	Adapter = nullptr;
 	D3DDevice = nullptr;
 
 	WWDEBUG_SAY(("Reset DX8Wrapper statistics"));
@@ -2981,25 +2976,14 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 	Invalidate_Cached_Render_States("DX8Wrapper::Init");
 
 	if (!lite) {
-		D3D8Lib = LoadLibrary("d3d9.dll");
-
-		if (D3D8Lib == nullptr) return false;	// Return false at this point if init failed
-
-		Direct3DCreate8Ptr = (Direct3DCreateType) GetProcAddress(D3D8Lib, "Direct3DCreate9");
-		if (Direct3DCreate8Ptr == nullptr) return false;
-
 		/*
-		** Create the D3D interface object
+		** Open the adapter. This is the one place a concrete backend is chosen on the way
+		** in, as Create_Device is on the way out; loading the API's library and asking it
+		** for an interface both happen behind it.
 		*/
-		WWDEBUG_SAY(("Create Direct3D8"));
-		{
-			// TheSuperHackers @bugfix xezon 13/06/2025 Front load the system dbghelp.dll to prevent
-			// the graphics driver from potentially loading the old game dbghelp.dll and then crashing the game process.
-			DbgHelpGuard dbgHelpGuard;
-
-			D3DInterface = Direct3DCreate8Ptr(D3D_SDK_VERSION);		// TODO: handle failure cases...
-		}
-		if (D3DInterface == nullptr) {
+		WWDEBUG_SAY(("Create graphics adapter"));
+		Adapter = Gfx_Create_Adapter();
+		if (Adapter == nullptr) {
 			return(false);
 		}
 		IsInitted = true;
@@ -3023,10 +3007,9 @@ void DX8Wrapper::Shutdown()
 		Release_Device();
 	}
 
-	if (D3DInterface) {
-		D3DInterface->Release();
-		D3DInterface=nullptr;
-
+	if (Adapter) {
+		delete Adapter;
+		Adapter=nullptr;
 	}
 
 	if (CurrentCaps)
@@ -3042,11 +3025,6 @@ void DX8Wrapper::Shutdown()
 		}
 	}
 
-	if (D3D8Lib) {
-		FreeLibrary(D3D8Lib);
-		D3D8Lib = nullptr;
-	}
-
 	_RenderDeviceNameTable.Clear();		 // note - Delete_All() resizes the vector, causing a reallocation.  Clear is better. jba.
 	_RenderDeviceShortNameTable.Clear();
 	_RenderDeviceDescriptionTable.Clear();
@@ -3060,7 +3038,7 @@ void DX8Wrapper::Do_Onetime_Device_Dependent_Inits()
 	/*
 	** Set Global render states (some of which depend on caps)
 	*/
-	Compute_Caps(D3DFormat_To_WW3DFormat(DisplayFormat));
+	Compute_Caps(DisplayFormat);
 
    /*
 	** Initialize any other subsystems inside of WW3D
@@ -3310,123 +3288,22 @@ void DX8Wrapper::Do_Onetime_Device_Dependent_Shutdowns()
 bool DX8Wrapper::Create_Device()
 {
 	WWASSERT(D3DDevice==nullptr);	// for now, once you've created a device, you're stuck with it!
-
-	D3DCAPS8 caps;
-	if
-	(
-		FAILED
-		(
-			D3DInterface->GetDeviceCaps
-			(
-				CurRenderDevice,
-				WW3D_DEVTYPE,
-				&caps
-			)
-		)
-	)
-	{
-		return false;
-	}
-
-	::ZeroMemory(&CurrentAdapterIdentifier, sizeof(D3DADAPTER_IDENTIFIER8));
-
-	if
-	(
-		FAILED
-		(
-			D3DInterface->GetAdapterIdentifier
-			(
-				CurRenderDevice,
-				D3DENUM_NO_WHQL_LEVEL,
-				&CurrentAdapterIdentifier
-			)
-			)
-	)
-	{
-		return false;
-	}
-
-	Vertex_Processing_Behavior=(caps.DevCaps&D3DDEVCAPS_HWTRANSFORMANDLIGHT) ?
-		D3DCREATE_MIXED_VERTEXPROCESSING : D3DCREATE_SOFTWARE_VERTEXPROCESSING;
-
-	// enable this when all 'get' dx calls are removed KJM
-	/*if (caps.DevCaps&D3DDEVCAPS_PUREDEVICE)
-	{
-		Vertex_Processing_Behavior|=D3DCREATE_PUREDEVICE;
-	}*/
-
-#ifdef CREATE_DX8_MULTI_THREADED
-	Vertex_Processing_Behavior|=D3DCREATE_MULTITHREADED;
-	_DX8SingleThreaded=false;
-#else
-	_DX8SingleThreaded=true;
-#endif
-
-	if (DX8Wrapper_PreserveFPU)
-		Vertex_Processing_Behavior |= D3DCREATE_FPU_PRESERVE;
-
-#ifdef CREATE_DX8_FPU_PRESERVE
-	Vertex_Processing_Behavior|=D3DCREATE_FPU_PRESERVE;
-#endif
-
-	// TheSuperHackers @bugfix xezon 13/06/2025 Front load the system dbghelp.dll to prevent
-	// the graphics driver from potentially loading the old game dbghelp.dll and then crashing the game process.
-	DbgHelpGuard dbgHelpGuard;
-
-	HRESULT hr=D3DInterface->CreateDevice
-	(
-		CurRenderDevice,
-		WW3D_DEVTYPE,
-		_Hwnd,
-		Vertex_Processing_Behavior,
-		&_PresentParameters,
-		&D3DDevice
-	);
-
-	if (FAILED(hr))
-	{
-		// The device selection may fail because the device lied that it supports 32 bit zbuffer with 16 bit
-		// display. This happens at least on Voodoo2.
-
-		if ((_PresentParameters.BackBufferFormat==D3DFMT_R5G6B5 ||
-			_PresentParameters.BackBufferFormat==D3DFMT_X1R5G5B5 ||
-			_PresentParameters.BackBufferFormat==D3DFMT_A1R5G5B5) &&
-			(_PresentParameters.AutoDepthStencilFormat==D3DFMT_D32 ||
-			_PresentParameters.AutoDepthStencilFormat==D3DFMT_D24S8 ||
-			_PresentParameters.AutoDepthStencilFormat==D3DFMT_D24X8))
-		{
-			_PresentParameters.AutoDepthStencilFormat=D3DFMT_D16;
-			hr = D3DInterface->CreateDevice
-			(
-				CurRenderDevice,
-				WW3D_DEVTYPE,
-				_Hwnd,
-				Vertex_Processing_Behavior,
-				&_PresentParameters,
-				&D3DDevice
-			);
-
-			if (FAILED(hr))
-			{
-				return false;
-			}
-        }
-		else
-		{
-				return false;
-		}
-	}
-
-	dbgHelpGuard.deactivate();
+	if (Adapter == nullptr) return false;
 
 	/*
-	** Bind the backend. This has to happen before the one-time inits below, which set
-	** render state, and it is the one place in the engine that names a concrete backend
-	** -- everything downstream of here talks to GfxDeviceClass. A second backend would
-	** be chosen here and nowhere else.
+	** Make the device and its swap chain. Everything the API forces a choice about at this
+	** point -- how vertices are processed, how the FPU is left, what to do when the depth
+	** format the adapter claimed turns out not to work with the back buffer -- is the
+	** backend's business, and none of it appears here any more. SwapChain says what the
+	** engine wants; the backend may hand back a description with the depth format dropped,
+	** which is why it goes in by reference.
 	*/
 	delete Gfx;
-	Gfx = new GfxDeviceD3D9(D3DDevice);
+	Gfx = Adapter->Create_Device(Get_Adapter_Index(), SwapChain);
+	if (Gfx == nullptr) {
+		return false;
+	}
+	D3DDevice = ((GfxDeviceD3D9 *)Gfx)->Peek_Device();
 
 	/*
 	** Initialize all subsystems
@@ -3445,7 +3322,7 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 		// (common on startup -- "it starts if I don't touch the window") can block the
 		// driver indefinitely. Pump pending messages so a focus change settles, and if
 		// the window still isn't foreground, defer so the caller retries next frame.
-		if (!_PresentParameters.Windowed && _Hwnd != nullptr) {
+		if (!SwapChain.Windowed && _Hwnd != nullptr) {
 			MSG msg;
 			while (::PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
 				::TranslateMessage(&msg);
@@ -3518,35 +3395,12 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 		memset(Vertex_Shader_Constants,0,sizeof(Vector4)*MAX_VERTEX_SHADER_CONSTANTS);
 		memset(Pixel_Shader_Constants,0,sizeof(Vector4)*MAX_PIXEL_SHADER_CONSTANTS);
 
-		HRESULT hr=_Get_D3D_Device8()->TestCooperativeLevel();
-		WWDEBUG_SAY(("Reset_Device: TestCooperativeLevel -> 0x%08x (reload_assets=%d)", hr, reload_assets));
-		// A device create / mode switch (especially fullscreen) commonly leaves the
-		// device transiently D3DERR_DEVICELOST for a few frames. The old code gave up
-		// immediately, which intermittently left a dead device (black screen / hang)
-		// on startup. Wait for the OS to hand the device back, then reset.
-		int _waitAttempts = 0;
-		while (hr == D3DERR_DEVICELOST && _waitAttempts < 100) {
-			::Sleep(50);
-			hr = _Get_D3D_Device8()->TestCooperativeLevel();
-			++_waitAttempts;
-		}
-		if (_waitAttempts > 0)
-			WWDEBUG_SAY(("Reset_Device: waited %d x50ms for device; TestCooperativeLevel -> 0x%08x", _waitAttempts, hr));
-		if (hr == D3DERR_DEVICELOST) {
-			WWDEBUG_SAY(("Reset_Device: device still lost after wait; giving up this attempt."));
-			return false;	//device is lost and can't be reset.
-		}
-		// hr is D3D_OK or D3DERR_DEVICENOTRESET here; both are resettable. Call Reset
-		// directly rather than through DX8CALL_HRES: that routes failures into
-		// Log_DX8_ErrorCode -> WWASSERT(0), which in fullscreen pops an invisible
-		// dialog and hangs the app. Log non-fatally and return false so the caller
-		// retries on the next frame (the device usually resets once the transient
-		// mode/focus wobble on startup clears).
-		hr = _Get_D3D_Device8()->Reset(&_PresentParameters);
-		WWDEBUG_SAY(("Reset_Device: Reset() -> 0x%08x", hr));
-		if (hr != D3D_OK) {
-			Non_Fatal_Log_DX8_ErrorCode(hr, __FILE__, __LINE__);
-			return false;	//reset failed; caller will retry.
+		// The device is put back through the backend, which owns the API's own creation
+		// parameters and knows what "not ready yet" looks like. A false here is not a
+		// failure: the device is commonly not resettable for a few frames after a mode or
+		// focus change, and the caller retries next frame.
+		if (!Gfx->Reset_Swap_Chain(SwapChain)) {
+			return false;
 		}
 
 		if (reload_assets)
@@ -3613,92 +3467,79 @@ void DX8Wrapper::Release_Device()
 
 void DX8Wrapper::Enumerate_Devices()
 {
-	DX8_Assert();
+	if (Adapter == nullptr) return;
 
-	int adapter_count = D3DInterface->GetAdapterCount();
-	for (int adapter_index=0; adapter_index<adapter_count; adapter_index++) {
+	const unsigned adapter_count = Adapter->Get_Adapter_Count();
+	for (unsigned adapter_index=0; adapter_index<adapter_count; adapter_index++) {
 
-		D3DADAPTER_IDENTIFIER8 id;
-		::ZeroMemory(&id, sizeof(D3DADAPTER_IDENTIFIER8));
-		HRESULT res = D3DInterface->GetAdapterIdentifier(adapter_index,D3DENUM_NO_WHQL_LEVEL,&id);
+		GfxAdapterInfo info;
+		if (!Adapter->Get_Adapter_Info(adapter_index, info))
+			continue;
 
-		if (res == D3D_OK) {
+		/*
+		** Set up the render device description
+		*/
+		RenderDeviceDescClass desc;
+		desc.set_device_name(info.Description);
+		desc.set_driver_name(info.Driver);
+		desc.set_driver_version(info.DriverVersion);
 
-			/*
-			** Set up the render device description
-			** TODO: Fill in more fields of the render device description?  (need some lookup tables)
-			*/
-			RenderDeviceDescClass desc;
-			desc.set_device_name(id.Description);
-			desc.set_driver_name(id.Driver);
+		DX8Caps dx8caps(WW3D_FORMAT_UNKNOWN,adapter_index);
 
-			char buf[64];
-			sprintf(buf,"%d.%d.%d.%d", //"%04x.%04x.%04x.%04x",
-				HIWORD(id.DriverVersion.HighPart),
-				LOWORD(id.DriverVersion.HighPart),
-				HIWORD(id.DriverVersion.LowPart),
-				LOWORD(id.DriverVersion.LowPart));
+		/*
+		** Enumerate the resolutions
+		*/
+		desc.reset_resolution_list();
+		static const WW3DFormat formats[] = {
+			WW3D_FORMAT_X8R8G8B8, WW3D_FORMAT_R5G6B5, WW3D_FORMAT_A8R8G8B8,
+			WW3D_FORMAT_X1R5G5B5, WW3D_FORMAT_R8G8B8 };
+		for (int f = 0; f < sizeof(formats)/sizeof(formats[0]); f++) {
+			const WW3DFormat fmt = formats[f];
+			const unsigned mode_count = Adapter->Get_Display_Mode_Count(adapter_index, fmt);
+			for (unsigned mode_index=0; mode_index<mode_count; mode_index++) {
+				GfxDisplayMode mode;
+				if (!Adapter->Get_Display_Mode(adapter_index, fmt, mode_index, mode))
+					continue;
 
-			desc.set_driver_version(buf);
+				int bits = 0;
+				switch (mode.Format)
+				{
+					case WW3D_FORMAT_R8G8B8:
+					case WW3D_FORMAT_A8R8G8B8:
+					case WW3D_FORMAT_X8R8G8B8:		bits = 32; break;
 
-			D3DInterface->GetDeviceCaps(adapter_index,WW3D_DEVTYPE,&desc.Caps);
-			D3DInterface->GetAdapterIdentifier(adapter_index,D3DENUM_NO_WHQL_LEVEL,&desc.AdapterIdentifier);
+					case WW3D_FORMAT_R5G6B5:
+					case WW3D_FORMAT_X1R5G5B5:		bits = 16; break;
 
-			DX8Caps dx8caps(WW3D_FORMAT_UNKNOWN,(unsigned)adapter_index);
+					default: break;
+				}
 
-			/*
-			** Enumerate the resolutions
-			*/
-			desc.reset_resolution_list();
-			D3DFORMAT formats[] = { D3DFMT_X8R8G8B8, D3DFMT_R5G6B5, D3DFMT_A8R8G8B8, D3DFMT_X1R5G5B5, D3DFMT_R8G8B8 };
-			for (int f = 0; f < sizeof(formats)/sizeof(formats[0]); f++) {
-				D3DFORMAT fmt = formats[f];
-				int mode_count = D3DInterface->GetAdapterModeCount(adapter_index, fmt);
-				for (int mode_index=0; mode_index<mode_count; mode_index++) {
-					D3DDISPLAYMODE d3dmode;
-					::ZeroMemory(&d3dmode, sizeof(D3DDISPLAYMODE));
-					HRESULT res = D3DInterface->EnumAdapterModes(adapter_index,fmt,mode_index,&d3dmode);
+				// Some cards fail in certain modes, DX8Caps keeps list of those.
+				if (!dx8caps.Is_Valid_Display_Format(mode.Width,mode.Height,mode.Format)) {
+					bits=0;
+				}
 
-					if (res == D3D_OK) {
-						int bits = 0;
-						switch (d3dmode.Format)
-						{
-							case D3DFMT_R8G8B8:
-							case D3DFMT_A8R8G8B8:
-							case D3DFMT_X8R8G8B8:		bits = 32; break;
-
-							case D3DFMT_R5G6B5:
-							case D3DFMT_X1R5G5B5:		bits = 16; break;
-						}
-
-						// Some cards fail in certain modes, DX8Caps keeps list of those.
-						if (!dx8caps.Is_Valid_Display_Format(d3dmode.Width,d3dmode.Height,D3DFormat_To_WW3DFormat(d3dmode.Format))) {
-							bits=0;
-						}
-
-						if (bits != 0) {
-							desc.add_resolution(d3dmode.Width,d3dmode.Height,bits);
-						}
-					}
+				if (bits != 0) {
+					desc.add_resolution(mode.Width,mode.Height,bits);
 				}
 			}
+		}
 
-			// IML: If the device has one or more valid resolutions add it to the device list.
-			// NOTE: Testing has shown that there are drivers with zero resolutions.
-			if (desc.Enumerate_Resolutions().Count() > 0) {
+		// IML: If the device has one or more valid resolutions add it to the device list.
+		// NOTE: Testing has shown that there are drivers with zero resolutions.
+		if (desc.Enumerate_Resolutions().Count() > 0) {
 
-				/*
-				** Set up the device name
-				*/
-				StringClass device_name(id.Description,true);
-				_RenderDeviceNameTable.Add(device_name);
-				_RenderDeviceShortNameTable.Add(device_name);	// for now, just add the same name to the "pretty name table"
+			/*
+			** Set up the device name
+			*/
+			StringClass device_name(info.Description,true);
+			_RenderDeviceNameTable.Add(device_name);
+			_RenderDeviceShortNameTable.Add(device_name);	// for now, just add the same name to the "pretty name table"
 
-				/*
-				** Add the render device to our table
-				*/
-				_RenderDeviceDescriptionTable.Add(desc);
-			}
+			/*
+			** Add the render device to our table
+			*/
+			_RenderDeviceDescriptionTable.Add(desc);
 		}
 	}
 }
@@ -3889,22 +3730,21 @@ bool DX8Wrapper::Set_Render_Device(int dev, int width, int height, int bits, int
 	/*
 	** Initialize values for D3DPRESENT_PARAMETERS members.
 	*/
-	::ZeroMemory(&_PresentParameters, sizeof(D3DPRESENT_PARAMETERS));
-
-	_PresentParameters.BackBufferWidth = ResolutionWidth;
-	_PresentParameters.BackBufferHeight = ResolutionHeight;
-	_PresentParameters.BackBufferCount = IsWindowed ? 1 : 2;
-
-	//I changed this to discard all the time (even when full-screen) since that the most efficient. 07-16-03 MW:
-	_PresentParameters.SwapEffect = D3DSWAPEFFECT_DISCARD;//IsWindowed ? D3DSWAPEFFECT_DISCARD : D3DSWAPEFFECT_FLIP;		// Shouldn't this be D3DSWAPEFFECT_FLIP?
-	_PresentParameters.hDeviceWindow = _Hwnd;
-	_PresentParameters.Windowed = IsWindowed;
-
-	_PresentParameters.EnableAutoDepthStencil = TRUE;				// Driver will attempt to match Z-buffer depth
-	_PresentParameters.Flags=0;											// We're not going to lock the backbuffer
-
-	_PresentParameters.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT;
-	_PresentParameters.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
+	/*
+	** Say what the engine wants of the swap chain. Nothing here is in the API's vocabulary
+	** any more: the backend turns this into whatever its own creation call needs.
+	*/
+	SwapChain = GfxSwapChainDesc();
+	SwapChain.Window = _Hwnd;
+	SwapChain.Width = ResolutionWidth;
+	SwapChain.Height = ResolutionHeight;
+	SwapChain.BackBufferCount = IsWindowed ? 1 : 2;
+	SwapChain.Windowed = IsWindowed != 0;
+	SwapChain.RefreshRate = 0;					// whatever the adapter defaults to
+	SwapChain.SwapInterval = -1;				// and whatever it defaults to for waiting
+	SwapChain.BackBufferFormat = WW3D_FORMAT_UNKNOWN;
+	SwapChain.DepthStencilFormat = WW3D_ZFORMAT_UNKNOWN;
+	SwapChain.MultiSample = WW3D_MULTISAMPLE_NONE;
 
 	/*
 	** Set up the buffer formats.  Several issues here:
@@ -3913,48 +3753,49 @@ bool DX8Wrapper::Set_Render_Device(int dev, int width, int height, int bits, int
 	*/
 	if (IsWindowed) {
 
-		D3DDISPLAYMODE desktop_mode;
-		::ZeroMemory(&desktop_mode, sizeof(D3DDISPLAYMODE));
-		D3DInterface->GetAdapterDisplayMode( CurRenderDevice, &desktop_mode );
+		GfxDisplayMode desktop_mode;
+		if (Adapter == nullptr || !Adapter->Get_Current_Display_Mode(Get_Adapter_Index(), desktop_mode))
+			return false;
 
-		DisplayFormat=_PresentParameters.BackBufferFormat = desktop_mode.Format;
+		DisplayFormat = SwapChain.BackBufferFormat = desktop_mode.Format;
 
 		// In windowed mode, define the bitdepth from desktop mode (as it can't be changed)
-		switch (_PresentParameters.BackBufferFormat) {
-		case D3DFMT_X8R8G8B8:
-		case D3DFMT_A8R8G8B8:
-		case D3DFMT_R8G8B8: BitDepth=32; break;
-		case D3DFMT_A4R4G4B4:
-		case D3DFMT_A1R5G5B5:
-		case D3DFMT_R5G6B5: BitDepth=16; break;
-		case D3DFMT_L8:
-		case D3DFMT_A8:
-		case D3DFMT_P8: BitDepth=8; break;
+		switch (SwapChain.BackBufferFormat) {
+		case WW3D_FORMAT_X8R8G8B8:
+		case WW3D_FORMAT_A8R8G8B8:
+		case WW3D_FORMAT_R8G8B8: BitDepth=32; break;
+		case WW3D_FORMAT_A4R4G4B4:
+		case WW3D_FORMAT_A1R5G5B5:
+		case WW3D_FORMAT_R5G6B5: BitDepth=16; break;
+		case WW3D_FORMAT_L8:
+		case WW3D_FORMAT_A8:
+		case WW3D_FORMAT_P8: BitDepth=8; break;
 		default:
 			// Unknown backbuffer format probably means the device can't do windowed
 			return false;
 		}
 
-		if (BitDepth==32 && D3DInterface->CheckDeviceType(0,D3DDEVTYPE_HAL,desktop_mode.Format,D3DFMT_A8R8G8B8, TRUE) == D3D_OK)
+		if (BitDepth==32 && Adapter->Supports_Display_Format(Get_Adapter_Index(),
+				desktop_mode.Format, WW3D_FORMAT_A8R8G8B8, true))
 		{	//promote 32-bit modes to include destination alpha
-			_PresentParameters.BackBufferFormat = D3DFMT_A8R8G8B8;
+			SwapChain.BackBufferFormat = WW3D_FORMAT_A8R8G8B8;
 		}
 
 		/*
 		** Find a appropriate Z buffer
 		*/
-		if (!Find_Z_Mode(DisplayFormat,_PresentParameters.BackBufferFormat,&_PresentParameters.AutoDepthStencilFormat))
+		if (!Find_Z_Mode(DisplayFormat,SwapChain.BackBufferFormat,&SwapChain.DepthStencilFormat))
 		{
 			// If opening 32 bit mode failed, try 16 bit, even if the desktop happens to be 32 bit
 			if (BitDepth==32) {
 				BitDepth=16;
-				_PresentParameters.BackBufferFormat=D3DFMT_R5G6B5;
-				if (!Find_Z_Mode(_PresentParameters.BackBufferFormat,_PresentParameters.BackBufferFormat,&_PresentParameters.AutoDepthStencilFormat)) {
-					_PresentParameters.AutoDepthStencilFormat=D3DFMT_UNKNOWN;
+				SwapChain.BackBufferFormat=WW3D_FORMAT_R5G6B5;
+				if (!Find_Z_Mode(SwapChain.BackBufferFormat,SwapChain.BackBufferFormat,&SwapChain.DepthStencilFormat)) {
+					SwapChain.DepthStencilFormat=WW3D_ZFORMAT_UNKNOWN;
 				}
 			}
 			else {
-				_PresentParameters.AutoDepthStencilFormat=D3DFMT_UNKNOWN;
+				SwapChain.DepthStencilFormat=WW3D_ZFORMAT_UNKNOWN;
 			}
 		}
 
@@ -3964,53 +3805,40 @@ bool DX8Wrapper::Set_Render_Device(int dev, int width, int height, int bits, int
 		** Try to find a mode that matches the user's desired bit-depth.
 		*/
 		Find_Color_And_Z_Mode(ResolutionWidth,ResolutionHeight,BitDepth,&DisplayFormat,
-			&_PresentParameters.BackBufferFormat,&_PresentParameters.AutoDepthStencilFormat);
+			&SwapChain.BackBufferFormat,&SwapChain.DepthStencilFormat);
 	}
 
 	/*
 	** Set default for depth stencil format if auto Z buffer failed.
 	*/
-	if (_PresentParameters.AutoDepthStencilFormat==D3DFMT_UNKNOWN) {
+	if (SwapChain.DepthStencilFormat==WW3D_ZFORMAT_UNKNOWN) {
 		if (BitDepth==32) {
-			_PresentParameters.AutoDepthStencilFormat=D3DFMT_D32;
+			SwapChain.DepthStencilFormat=WW3D_ZFORMAT_D32;
 		}
 		else {
-			_PresentParameters.AutoDepthStencilFormat=D3DFMT_D16;
+			SwapChain.DepthStencilFormat=WW3D_ZFORMAT_D16;
 		}
 	}
 
 	/*
 	** Check the devices support for the requested MSAA mode then setup the multi sample type
 	*/
-	if (MultiSampleAntiAliasing > D3DMULTISAMPLE_NONE) {
+	if (MultiSampleAntiAliasing > WW3D_MULTISAMPLE_NONE && Adapter != nullptr) {
 
-		HRESULT hrBack = D3DInterface->CheckDeviceMultiSampleType(
-			CurRenderDevice,
-			D3DDEVTYPE_HAL,
-			_PresentParameters.BackBufferFormat,
-			IsWindowed,
-			MultiSampleAntiAliasing,
-			nullptr
-		);
+		const bool back_ok = Adapter->Supports_Multisample(Get_Adapter_Index(),
+			SwapChain.BackBufferFormat, IsWindowed != 0, MultiSampleAntiAliasing);
+		const bool depth_ok = Adapter->Supports_Depth_Multisample(Get_Adapter_Index(),
+			SwapChain.DepthStencilFormat, IsWindowed != 0, MultiSampleAntiAliasing);
 
-		HRESULT hrDepth = D3DInterface->CheckDeviceMultiSampleType(
-			CurRenderDevice,
-			D3DDEVTYPE_HAL,
-			_PresentParameters.AutoDepthStencilFormat,
-			IsWindowed,
-			MultiSampleAntiAliasing,
-			nullptr
-		);
-
-		if (FAILED(hrBack) || FAILED(hrDepth)) {
+		if (!back_ok || !depth_ok) {
 			// IF we fail then disable MSAA entirely.
 			// External code needs to retrieve the configured MSAA mode after device creation
 			WWDEBUG_SAY(("Requested MSAA Mode Not Supported"));
-			MultiSampleAntiAliasing = D3DMULTISAMPLE_NONE;
+			MultiSampleAntiAliasing = WW3D_MULTISAMPLE_NONE;
 		}
 	}
 
-	_PresentParameters.MultiSampleType = MultiSampleAntiAliasing;
+	SwapChain.MultiSample = MultiSampleAntiAliasing;
 
 	/*
 	** Time to actually create the device.
@@ -4018,8 +3846,8 @@ bool DX8Wrapper::Set_Render_Device(int dev, int width, int height, int bits, int
 	StringClass displayFormat;
 	StringClass backbufferFormat;
 
-	Get_Format_Name(DisplayFormat,&displayFormat);
-	Get_Format_Name(_PresentParameters.BackBufferFormat,&backbufferFormat);
+	Get_WW3D_Format_Name(DisplayFormat,displayFormat);
+	Get_WW3D_Format_Name(SwapChain.BackBufferFormat,backbufferFormat);
 
 	WWDEBUG_SAY(("Using Display/BackBuffer Formats: %s/%s",displayFormat.str(),backbufferFormat.str()));
 
@@ -4098,13 +3926,9 @@ bool DX8Wrapper::Toggle_Windowed()
 
 void DX8Wrapper::Set_Swap_Interval(int swap)
 {
-	switch (swap) {
-		case 0: _PresentParameters.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE; break;
-		case 1: _PresentParameters.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_ONE ; break;
-		case 2: _PresentParameters.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_TWO; break;
-		case 3: _PresentParameters.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_THREE; break;
-		default: _PresentParameters.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_ONE ; break;
-	}
+	// How many retraces to wait, straight. Anything outside 0..3 means one, which is what
+	// the D3D9 constants this used to hold mapped to.
+	SwapChain.SwapInterval = (swap >= 0 && swap <= 3) ? swap : 1;
 
 	WWDEBUG_SAY(("DX8Wrapper::Set_Swap_Interval is resetting the device."));
 	Reset_Device();
@@ -4112,14 +3936,13 @@ void DX8Wrapper::Set_Swap_Interval(int swap)
 
 int DX8Wrapper::Get_Swap_Interval()
 {
-	return _PresentParameters.FullScreen_PresentationInterval;
+	return SwapChain.SwapInterval;
 }
 
 bool DX8Wrapper::Has_Stencil()
 {
-	bool has_stencil = (_PresentParameters.AutoDepthStencilFormat == D3DFMT_D24S8 ||
-						_PresentParameters.AutoDepthStencilFormat == D3DFMT_D24X4S4);
-	return has_stencil;
+	return SwapChain.DepthStencilFormat == WW3D_ZFORMAT_D24S8 ||
+		   SwapChain.DepthStencilFormat == WW3D_ZFORMAT_D24X4S4;
 }
 
 int DX8Wrapper::Get_Render_Device_Count()
@@ -4166,10 +3989,10 @@ bool DX8Wrapper::Set_Device_Resolution(int width,int height,int bits,int windowe
 	if (D3DDevice != nullptr) {
 
 		if (width != -1) {
-			_PresentParameters.BackBufferWidth = ResolutionWidth = width;
+			SwapChain.Width = ResolutionWidth = width;
 		}
 		if (height != -1) {
-			_PresentParameters.BackBufferHeight = ResolutionHeight = height;
+			SwapChain.Height = ResolutionHeight = height;
 		}
 		if (resize_window)
 		{
@@ -4354,41 +4177,41 @@ bool DX8Wrapper::Registry_Load_Render_Device( const char * sub_key, char *device
 }
 
 
-bool DX8Wrapper::Find_Color_And_Z_Mode(int resx,int resy,int bitdepth,D3DFORMAT * set_colorbuffer,D3DFORMAT * set_backbuffer,D3DFORMAT * set_zmode)
+bool DX8Wrapper::Find_Color_And_Z_Mode(int resx,int resy,int bitdepth,WW3DFormat * set_colorbuffer,WW3DFormat * set_backbuffer,WW3DZFormat * set_zmode)
 {
-	static D3DFORMAT _formats16[] =
+	static const WW3DFormat _formats16[] =
 	{
-		D3DFMT_R5G6B5,
-		D3DFMT_X1R5G5B5,
-		D3DFMT_A1R5G5B5
+		WW3D_FORMAT_R5G6B5,
+		WW3D_FORMAT_X1R5G5B5,
+		WW3D_FORMAT_A1R5G5B5
 	};
 
-	static D3DFORMAT _formats32[] =
+	static const WW3DFormat _formats32[] =
 	{
-		D3DFMT_A8R8G8B8,
-		D3DFMT_X8R8G8B8,
-		D3DFMT_R8G8B8,
+		WW3D_FORMAT_A8R8G8B8,
+		WW3D_FORMAT_X8R8G8B8,
+		WW3D_FORMAT_R8G8B8,
 	};
 
 	/*
-	** Select the table that we're going to use to search for a valid backbuffer format
+	** Select which list to use
 	*/
-	D3DFORMAT * format_table = nullptr;
+	const WW3DFormat * format_table = nullptr;
 	int format_count = 0;
 
-	if (BitDepth == 16) {
+	if (bitdepth == 16) {
 		format_table = _formats16;
-		format_count = sizeof(_formats16) / sizeof(D3DFORMAT);
+		format_count = sizeof(_formats16) / sizeof(_formats16[0]);
 	} else {
 		format_table = _formats32;
-		format_count = sizeof(_formats32) / sizeof(D3DFORMAT);
+		format_count = sizeof(_formats32) / sizeof(_formats32[0]);
 	}
 
 	/*
 	** now search for a valid format
 	*/
 	bool found = false;
-	unsigned int mode = 0;
+	unsigned mode = 0;
 
 	int format_index=0;
 	for (; format_index < format_count; format_index++) {
@@ -4402,9 +4225,10 @@ bool DX8Wrapper::Find_Color_And_Z_Mode(int resx,int resy,int bitdepth,D3DFORMAT 
 		*set_backbuffer=*set_colorbuffer = format_table[format_index];
 	}
 
-	if (bitdepth==32 && *set_colorbuffer == D3DFMT_X8R8G8B8 && D3DInterface->CheckDeviceType(0,D3DDEVTYPE_HAL,*set_colorbuffer,D3DFMT_A8R8G8B8, TRUE) == D3D_OK)
+	if (bitdepth==32 && *set_colorbuffer == WW3D_FORMAT_X8R8G8B8 && Adapter != nullptr &&
+		Adapter->Supports_Display_Format(Get_Adapter_Index(), *set_colorbuffer, WW3D_FORMAT_A8R8G8B8, true))
 	{	//promote 32-bit modes to include destination alpha when supported
-		*set_backbuffer = D3DFMT_A8R8G8B8;
+		*set_backbuffer = WW3D_FORMAT_A8R8G8B8;
 	}
 
 	/*
@@ -4416,27 +4240,28 @@ bool DX8Wrapper::Find_Color_And_Z_Mode(int resx,int resy,int bitdepth,D3DFORMAT 
 
 // find the resolution mode with at least resx,resy with the highest supported
 // refresh rate
-bool DX8Wrapper::Find_Color_Mode(D3DFORMAT colorbuffer, int resx, int resy, UINT *mode)
+bool DX8Wrapper::Find_Color_Mode(WW3DFormat colorbuffer, int resx, int resy, unsigned *mode)
 {
-	UINT i,j,modemax;
-	UINT rx,ry;
-	D3DDISPLAYMODE dmode;
-	::ZeroMemory(&dmode, sizeof(D3DDISPLAYMODE));
+	if (Adapter == nullptr) return false;
 
-	rx=(unsigned int) resx;
-	ry=(unsigned int) resy;
+	const unsigned rx=(unsigned)resx;
+	const unsigned ry=(unsigned)resy;
 
 	bool found=false;
 
-	modemax=D3DInterface->GetAdapterModeCount(D3DADAPTER_DEFAULT, colorbuffer);
+	// Asked of the adapter the device will actually be created on, and in the order the
+	// adapter reports -- which is by size and then by refresh rate, and the walk below
+	// relies on that.
+	const unsigned adapter = Get_Adapter_Index();
+	const unsigned modemax = Adapter->Get_Display_Mode_Count(adapter, colorbuffer);
 
-	i=0;
-
+	GfxDisplayMode dmode;
+	unsigned i=0;
 	while (i<modemax && !found)
 	{
-		D3DInterface->EnumAdapterModes(D3DADAPTER_DEFAULT, colorbuffer, i, &dmode);
-		if (dmode.Width==rx && dmode.Height==ry && dmode.Format==colorbuffer) {
-			WWDEBUG_SAY(("Found valid color mode.  Width = %d Height = %d Format = %d",dmode.Width,dmode.Height,dmode.Format));
+		if (Adapter->Get_Display_Mode(adapter, colorbuffer, i, dmode) &&
+			dmode.Width==rx && dmode.Height==ry && dmode.Format==colorbuffer) {
+			WWDEBUG_SAY(("Found valid color mode.  Width = %d Height = %d Format = %d",dmode.Width,dmode.Height,(int)dmode.Format));
 			found=true;
 		}
 		i++;
@@ -4453,11 +4278,11 @@ bool DX8Wrapper::Find_Color_Mode(D3DFORMAT colorbuffer, int resx, int resy, UINT
 	// go to the highest refresh rate in this mode
 	bool stillok=true;
 
-	j=i;
+	unsigned j=i;
 	while (j<modemax && stillok)
 	{
-		D3DInterface->EnumAdapterModes(D3DADAPTER_DEFAULT, colorbuffer, j, &dmode);
-		if (dmode.Width==rx && dmode.Height==ry && dmode.Format==colorbuffer)
+		if (Adapter->Get_Display_Mode(adapter, colorbuffer, j, dmode) &&
+			dmode.Width==rx && dmode.Height==ry && dmode.Format==colorbuffer)
 			stillok=true; else stillok=false;
 		j++;
 	}
@@ -4470,49 +4295,27 @@ bool DX8Wrapper::Find_Color_Mode(D3DFORMAT colorbuffer, int resx, int resy, UINT
 
 // Helper function to find a Z buffer mode for the colorbuffer
 // Will look for greatest Z precision
-bool DX8Wrapper::Find_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORMAT *zmode)
+bool DX8Wrapper::Find_Z_Mode(WW3DFormat colorbuffer,WW3DFormat backbuffer, WW3DZFormat *zmode)
 {
-	//MW: Swapped the next 2 tests so that Stencil modes get tested first.
-	if (Test_Z_Mode(colorbuffer,backbuffer,D3DFMT_D24S8))
-	{
-		*zmode=D3DFMT_D24S8;
-		WWDEBUG_SAY(("Found zbuffer mode D3DFMT_D24S8"));
-		return true;
-	}
+	// Stencil modes first, deliberately: the shadow volumes need one and there is no way
+	// to ask for it again later.
+	static const WW3DZFormat _order[] = {
+		WW3D_ZFORMAT_D24S8,
+		WW3D_ZFORMAT_D32,
+		WW3D_ZFORMAT_D24X8,
+		WW3D_ZFORMAT_D24X4S4,
+		WW3D_ZFORMAT_D16,
+		WW3D_ZFORMAT_D15S1
+	};
 
-	if (Test_Z_Mode(colorbuffer,backbuffer,D3DFMT_D32))
-	{
-		*zmode=D3DFMT_D32;
-		WWDEBUG_SAY(("Found zbuffer mode D3DFMT_D32"));
-		return true;
-	}
-
-	if (Test_Z_Mode(colorbuffer,backbuffer,D3DFMT_D24X8))
-	{
-		*zmode=D3DFMT_D24X8;
-		WWDEBUG_SAY(("Found zbuffer mode D3DFMT_D24X8"));
-		return true;
-	}
-
-	if (Test_Z_Mode(colorbuffer,backbuffer,D3DFMT_D24X4S4))
-	{
-		*zmode=D3DFMT_D24X4S4;
-		WWDEBUG_SAY(("Found zbuffer mode D3DFMT_D24X4S4"));
-		return true;
-	}
-
-	if (Test_Z_Mode(colorbuffer,backbuffer,D3DFMT_D16))
-	{
-		*zmode=D3DFMT_D16;
-		WWDEBUG_SAY(("Found zbuffer mode D3DFMT_D16"));
-		return true;
-	}
-
-	if (Test_Z_Mode(colorbuffer,backbuffer,D3DFMT_D15S1))
-	{
-		*zmode=D3DFMT_D15S1;
-		WWDEBUG_SAY(("Found zbuffer mode D3DFMT_D15S1"));
-		return true;
+	for (int i = 0; i < sizeof(_order)/sizeof(_order[0]); ++i) {
+		if (Test_Z_Mode(colorbuffer,backbuffer,_order[i])) {
+			*zmode=_order[i];
+			StringClass name(0,true);
+			Get_WW3D_ZFormat_Name(_order[i],name);
+			WWDEBUG_SAY(("Found zbuffer mode %s",name.str()));
+			return true;
+		}
 	}
 
 	// can't find a match
@@ -4520,11 +4323,11 @@ bool DX8Wrapper::Find_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORM
 	return false;
 }
 
-bool DX8Wrapper::Test_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORMAT zmode)
+bool DX8Wrapper::Test_Z_Mode(WW3DFormat colorbuffer,WW3DFormat backbuffer, WW3DZFormat zmode)
 {
 	// Query the adapter the device will actually be created on, not adapter 0. Create_Device
-	// passes CurRenderDevice to CreateDevice, so validating formats against D3DADAPTER_DEFAULT
-	// asked the wrong GPU on any multi-adapter machine.
+	// passes the same index to the creation call, so validating formats against the default
+	// adapter asked the wrong GPU on any multi-adapter machine.
 	//
 	// This reports what the chosen adapter supports and nothing else. It must not go looking
 	// for an adapter that does support the format: by the time we get here Set_Render_Device
@@ -4532,21 +4335,11 @@ bool DX8Wrapper::Test_Z_Mode(D3DFORMAT colorbuffer,D3DFORMAT backbuffer, D3DFORM
 	// is the user's saved choice, and Registry_Save_Render_Device will persist whatever it
 	// holds. A device created on one adapter with another's display mode is worse than
 	// falling through to the next z format.
-	const UINT adapter = (CurRenderDevice >= 0) ? (UINT)CurRenderDevice : D3DADAPTER_DEFAULT;
+	if (Adapter == nullptr) return false;
 
-	// See if we have this mode first
-	if (FAILED(D3DInterface->CheckDeviceFormat(adapter,WW3D_DEVTYPE,
-		colorbuffer,D3DUSAGE_DEPTHSTENCIL,D3DRTYPE_SURFACE,zmode)))
-	{
-		WWDEBUG_SAY(("CheckDeviceFormat failed.  Colorbuffer format = %d  Zbufferformat = %d",colorbuffer,zmode));
-		return false;
-	}
-
-	// Then see if it matches the color buffer
-	if(FAILED(D3DInterface->CheckDepthStencilMatch(adapter, WW3D_DEVTYPE,
-		colorbuffer,backbuffer,zmode)))
-	{
-		WWDEBUG_SAY(("CheckDepthStencilMatch failed.  Colorbuffer format = %d  Backbuffer format = %d Zbufferformat = %d",colorbuffer,backbuffer,zmode));
+	if (!Adapter->Supports_Depth_Stencil_Format(Get_Adapter_Index(), colorbuffer, backbuffer, zmode)) {
+		WWDEBUG_SAY(("Depth format rejected.  Colorbuffer format = %d  Backbuffer format = %d  Zbufferformat = %d",
+			(int)colorbuffer,(int)backbuffer,(int)zmode));
 		return false;
 	}
 	return true;
@@ -4578,7 +4371,7 @@ unsigned long DX8Wrapper::Get_FrameCount() {return FrameCount;}
 
 void DX8_Assert()
 {
-	WWASSERT(DX8Wrapper::_Get_D3D8());
+	WWASSERT(DX8Wrapper::Get_Adapter());
 	DX8_THREAD_ASSERT();
 }
 
@@ -4881,7 +4674,7 @@ void DX8Wrapper::Flip_To_Primary()
 	if (!IsWindowed) {
 		DX8_Assert();
 
-		int numBuffers = (_PresentParameters.BackBufferCount + 1);
+		int numBuffers = (int)(SwapChain.BackBufferCount + 1);
 		int visibleBuffer = (FrameCount % numBuffers);
 		int flipCount = ((numBuffers - visibleBuffer) % numBuffers);
 		int resetAttempts = 0;
@@ -4934,9 +4727,6 @@ void DX8Wrapper::Clear(bool clear_color, bool clear_z_stencil, const Vector3 &co
 
 	// If we try to clear a stencil buffer which is not there, the entire call will fail
 	// KJM fixed this to get format from back buffer (incase render to texture is used)
-	/*bool has_stencil = (	_PresentParameters.AutoDepthStencilFormat == D3DFMT_D15S1 ||
-								_PresentParameters.AutoDepthStencilFormat == D3DFMT_D24S8 ||
-								_PresentParameters.AutoDepthStencilFormat == D3DFMT_D24X4S4);*/
 	const bool has_stencil = Gfx->Has_Stencil_Target();
 
 	GFXCALL(Clear(clear_color, clear_z_stencil, clear_z_stencil && has_stencil,
@@ -8994,14 +8784,14 @@ DX8Wrapper::Create_Additional_Swap_Chain (HWND render_window)
 	//	Configure the presentation parameters for a windowed render target
 	//
 	D3DPRESENT_PARAMETERS params				= { 0 };
-	params.BackBufferFormat						= _PresentParameters.BackBufferFormat;
+	params.BackBufferFormat						= WW3DFormat_To_D3DFormat(SwapChain.BackBufferFormat);
 	params.BackBufferCount						= 1;
 	params.MultiSampleType						= D3DMULTISAMPLE_NONE;
 	params.SwapEffect								= D3DSWAPEFFECT_COPY_VSYNC;
 	params.hDeviceWindow							= render_window;
 	params.Windowed								= TRUE;
 	params.EnableAutoDepthStencil				= TRUE;
-	params.AutoDepthStencilFormat				= _PresentParameters.AutoDepthStencilFormat;
+	params.AutoDepthStencilFormat				= WW3DZFormat_To_D3DFormat(SwapChain.DepthStencilFormat);
 	params.Flags									= 0;
 	params.FullScreen_RefreshRateInHz		= D3DPRESENT_RATE_DEFAULT;
 	params.FullScreen_PresentationInterval	= D3DPRESENT_INTERVAL_DEFAULT;
@@ -9854,5 +9644,5 @@ const char* DX8Wrapper::Get_DX8_Blend_Op_Name(unsigned value)
 
 WW3DFormat	DX8Wrapper::getBackBufferFormat()
 {
-	return D3DFormat_To_WW3DFormat( _PresentParameters.BackBufferFormat );
+	return SwapChain.BackBufferFormat;
 }

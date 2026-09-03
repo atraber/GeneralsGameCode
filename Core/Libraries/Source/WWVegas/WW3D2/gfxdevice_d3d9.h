@@ -34,10 +34,54 @@
 #include "gfxdevice.h"
 #include "d3d9_compat.h"
 
+/*
+** The D3D9 adapter. Owns the IDirect3D9 interface and the d3d9.dll it came out of,
+** and is the only thing in the engine that creates a device.
+*/
+class GfxAdapterD3D9 : public GfxAdapterClass
+{
+public:
+	GfxAdapterD3D9();
+	virtual ~GfxAdapterD3D9();
+
+	/// False if d3d9.dll is missing or refused to hand back an interface.
+	bool					Is_Valid() const { return m_d3d != nullptr; }
+
+	virtual unsigned		Get_Adapter_Count();
+	virtual bool			Get_Adapter_Info(unsigned adapter, GfxAdapterInfo & info);
+	virtual bool			Get_Current_Display_Mode(unsigned adapter, GfxDisplayMode & mode);
+	virtual unsigned		Get_Display_Mode_Count(unsigned adapter, WW3DFormat format);
+	virtual bool			Get_Display_Mode(unsigned adapter, WW3DFormat format,
+								unsigned index, GfxDisplayMode & mode);
+	virtual bool			Supports_Display_Format(unsigned adapter, WW3DFormat display,
+								WW3DFormat back_buffer, bool windowed);
+	virtual bool			Supports_Depth_Stencil_Format(unsigned adapter, WW3DFormat display,
+								WW3DFormat back_buffer, WW3DZFormat depth);
+	virtual bool			Supports_Multisample(unsigned adapter, WW3DFormat format,
+								bool windowed, WW3DMultiSampleType samples);
+	virtual bool			Supports_Depth_Multisample(unsigned adapter, WW3DZFormat format,
+								bool windowed, WW3DMultiSampleType samples);
+	virtual bool			Supports_Hardware_Transform_And_Lighting(unsigned adapter);
+	virtual bool			Supports_Texture_Format(unsigned adapter, WW3DFormat display,
+								WW3DFormat format, GfxFormatCapability capability);
+	virtual bool			Supports_Depth_Texture_Format(unsigned adapter, WW3DFormat display,
+								WW3DZFormat format);
+	virtual bool			Query_Capabilities(unsigned adapter, GfxDeviceCaps & caps);
+	virtual GfxDeviceClass * Create_Device(unsigned adapter, GfxSwapChainDesc & desc);
+
+	/// The raw interface, for the D3D9-only capability probe in dx8caps.
+	IDirect3D8 *			Peek_D3D() const { return m_d3d; }
+
+private:
+	HMODULE			m_library;
+	IDirect3D8 *	m_d3d;
+};
+
 class GfxDeviceD3D9 : public GfxDeviceClass
 {
 public:
-	explicit GfxDeviceD3D9(IDirect3DDevice8 * device) : m_device(device) {}
+	GfxDeviceD3D9(IDirect3DDevice8 * device, const D3DPRESENT_PARAMETERS & pp)
+		: m_device(device), m_present(pp) {}
 	virtual ~GfxDeviceD3D9() {}
 
 	// ---- frame -----------------------------------------------------------
@@ -180,8 +224,17 @@ public:
 	virtual void			End_Query(GfxQuery * query);
 	virtual bool			Get_Query_Data(GfxQuery * query, void * dest, unsigned size);
 
+	virtual bool			Query_Capabilities(GfxDeviceCaps & caps);
+
+	/// The raw device. DX8Wrapper still keeps one for the DX8CALL macros and for the
+	/// handful of calls that have not moved; it is not handed out anywhere else.
+	IDirect3DDevice8 *		Peek_Device() const { return m_device; }
+	virtual bool			Reset_Swap_Chain(GfxSwapChainDesc & desc);
 	virtual bool			Validate_Draw_State(unsigned & passes);
 
 private:
 	IDirect3DDevice8 *		m_device;
+	// The parameters the swap chain was made with. Reset needs them again, and the
+	// engine no longer keeps a copy in D3D9 vocabulary for it to pass back.
+	D3DPRESENT_PARAMETERS	m_present;
 };

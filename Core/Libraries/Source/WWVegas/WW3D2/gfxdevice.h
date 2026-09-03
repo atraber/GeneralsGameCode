@@ -41,10 +41,13 @@
 //     below are opaque tags that only travel from the engine to the backend and
 //     back again unchanged. That is the resource seam, and it is still open.
 //
-//   * Device creation, mode enumeration and Reset. Those run once at startup and
-//     on a window change, which is exactly the code path the replay harness never
-//     executes -- so moving them could not be verified by the thing that verifies
-//     everything else here.
+// Device creation, capabilities, mode enumeration and Reset used to be the second
+// exclusion here, on the grounds that they run once at startup and on a window change --
+// which is exactly the code path the replay harness never executed, so moving them could
+// not be verified by the thing that verifies everything else. That is no longer true:
+// W3D_FORCE_RESET_FRAME makes a replay reset its device at a nominated frame, and the
+// frames either side are compared like any other change. So they are behind the seam now,
+// as GfxAdapterClass and GfxSwapChainDesc.
 //
 // The render-state vocabulary is still D3D9-numbered: Set_Render_State takes the
 // same state word the engine has always written, because that word IS the engine's
@@ -181,6 +184,220 @@ enum GfxCopyFilter
 	GFX_COPY_RESAMPLE,			// scale them, filtering as it goes
 	GFX_COPY_HALVE				// build the next mip down from this one
 };
+
+
+class GfxDeviceClass;
+
+/*
+** One adapter, as the engine cares about it.
+**
+** The engine wants a name to show the player, a driver name and version to log and to
+** blacklist against, and the three numbers the vendor-specific workarounds in dx8caps
+** are written in terms of. It does not want the API's own identifier struct, which is
+** where those all came from and which nothing outside the backend ever read whole.
+*/
+struct GfxAdapterInfo
+{
+	char		Description[512];
+	char		Driver[512];
+	char		DriverVersion[64];		// "a.b.c.d", already formatted
+	char		DeviceIdentifier[64];	// the driver's own unique id, formatted for the log
+	unsigned	VendorId;
+	unsigned	DeviceId;
+	unsigned	SubSystemId;
+	unsigned	Revision;
+	// The four parts of the driver version, which the blacklists are written against.
+	unsigned	DriverProduct;
+	unsigned	DriverVersionNumber;
+	unsigned	DriverSubVersion;
+	unsigned	DriverBuildVersion;
+};
+
+/*
+** What a device or an adapter can do.
+**
+** Every field here is something the engine actually asks about -- this is the list DX8Caps
+** was reading out of D3DCAPS8, and nothing else. Which is why it is a small struct: of the
+** hundred-odd fields the API reports, sixteen were ever read.
+**
+** The two version numbers are packed major<<8 | minor, as the API packs them and as
+** DX8Caps has always unpacked them.
+*/
+struct GfxDeviceCaps
+{
+	unsigned	AdapterOrdinal;
+
+	bool		HardwareTransformAndLighting;
+	bool		NPatches;
+	bool		FullScreenGamma;
+	bool		CubeMaps;
+	bool		ColorWriteEnable;
+	bool		BumpEnvmap;
+	bool		BumpEnvmapLuminance;
+	bool		ModulateAlphaAddColor;
+	bool		DotProduct3;
+	bool		PointSprites;
+
+	bool		LinearFilter;			// minification and magnification both
+	bool		MipLinearFilter;
+	bool		AnisotropicFilter;		// minification and magnification both
+
+	unsigned	MaxTextureWidth;
+	unsigned	MaxTextureHeight;
+	unsigned	MaxVolumeExtent;
+	unsigned	MaxTextureAspectRatio;	// 0 means unlimited
+	unsigned	MaxSimultaneousTextures;
+
+	unsigned	VertexShaderVersion;
+	unsigned	PixelShaderVersion;
+
+	/*
+	** The fixed-function texture-combine operations, as D3D9 D3DTEXOPCAPS_ bits.
+	**
+	** The one field here that is still spelled in the API's own vocabulary, because
+	** ShaderClass::Apply tests two dozen of these bits one at a time to pick a combiner
+	** setup -- and that whole path is the fixed-function D3DTSS state that is a phase of
+	** its own. A backend with no fixed-function pipeline reports zero, and every one of
+	** those tests then falls to its already-written else branch.
+	*/
+	unsigned	FixedFunctionCombineOps;
+};
+
+/*
+** What a format is wanted for.
+*/
+enum GfxFormatCapability
+{
+	GFX_FORMAT_TEXTURE,			// can hold a texture at all
+	GFX_FORMAT_RENDER_TARGET,	// can be drawn into
+	GFX_FORMAT_BLENDABLE,		// ...and blended into, which is a separate bit
+	GFX_FORMAT_FILTERABLE		// can be sampled with anything but a point fetch
+};
+
+/*
+** One display mode the adapter can be put into.
+*/
+struct GfxDisplayMode
+{
+	unsigned	Width;
+	unsigned	Height;
+	unsigned	RefreshRate;			// 0 means "whatever the adapter defaults to"
+	WW3DFormat	Format;
+};
+
+/*
+** What the engine wants of a swap chain.
+**
+** This is the neutral replacement for the file-static D3DPRESENT_PARAMETERS the wrapper
+** kept and handed to CreateDevice and Reset. It says what the engine wants -- a window, a
+** size, windowed or not, a back-buffer format, a depth format, a sample count, how many
+** retraces to wait -- and leaves the backend to decide what that is in its own API. Which
+** is the whole difference: D3DCREATE_HARDWARE_VERTEXPROCESSING and the software fallback
+** are D3D9 answers to a D3D9 question and have no place above the seam.
+**
+** Window is the platform window handle (an HWND here), passed as void * so that this
+** header needs no windows.h either.
+*/
+struct GfxSwapChainDesc
+{
+	void *				Window;
+	unsigned			Width;
+	unsigned			Height;
+	unsigned			BackBufferCount;
+	WW3DFormat			BackBufferFormat;
+	WW3DZFormat			DepthStencilFormat;
+	WW3DMultiSampleType	MultiSample;
+	bool				Windowed;
+	unsigned			RefreshRate;		// 0 = the adapter's default
+	int					SwapInterval;		// retraces to wait: 0 = do not wait
+};
+
+/*
+** The adapters on this machine, and the device made from one of them.
+**
+** Separate from GfxDeviceClass because everything here happens before a device exists:
+** enumerating what is available, asking what each one supports, and finally creating one.
+** GfxDeviceClass is what you have afterwards.
+**
+** None of this is on the render path. It runs once at startup and again on a window
+** change -- which used to be the reason it stayed outside this header, because the replay
+** harness never executed it. It does now: W3D_FORCE_RESET_FRAME makes a run reset its
+** device at a nominated frame, and the frames either side of that are compared like any
+** other change here.
+*/
+class GfxAdapterClass
+{
+public:
+	virtual ~GfxAdapterClass() {}
+
+	virtual unsigned		Get_Adapter_Count() = 0;
+	virtual bool			Get_Adapter_Info(unsigned adapter, GfxAdapterInfo & info) = 0;
+
+	// The mode the adapter is in now -- the desktop mode, which a windowed device has to
+	// match because it cannot change it.
+	virtual bool			Get_Current_Display_Mode(unsigned adapter, GfxDisplayMode & mode) = 0;
+
+	// The modes it can be put into, for one back-buffer format, in the API's own order --
+	// which is sorted by size and then by refresh rate, and the mode search relies on that.
+	virtual unsigned		Get_Display_Mode_Count(unsigned adapter, WW3DFormat format) = 0;
+	virtual bool			Get_Display_Mode(unsigned adapter, WW3DFormat format,
+								unsigned index, GfxDisplayMode & mode) = 0;
+
+	// Can a device on this adapter present this back buffer while the display is in this
+	// format? The windowed flag matters: a windowed device shares the desktop's format.
+	virtual bool			Supports_Display_Format(unsigned adapter, WW3DFormat display,
+								WW3DFormat back_buffer, bool windowed) = 0;
+
+	// Two separate questions, both of which have to be yes: can the adapter make a depth
+	// buffer in this format at all, and can it be used with that back buffer.
+	virtual bool			Supports_Depth_Stencil_Format(unsigned adapter, WW3DFormat display,
+								WW3DFormat back_buffer, WW3DZFormat depth) = 0;
+
+	virtual bool			Supports_Multisample(unsigned adapter, WW3DFormat format,
+								bool windowed, WW3DMultiSampleType samples) = 0;
+	virtual bool			Supports_Depth_Multisample(unsigned adapter, WW3DZFormat format,
+								bool windowed, WW3DMultiSampleType samples) = 0;
+
+	// Whether the adapter transforms and lights in hardware. The only capability the
+	// creation path itself needs; everything else the engine asks about is in DX8Caps.
+	virtual bool			Supports_Hardware_Transform_And_Lighting(unsigned adapter) = 0;
+
+	// What can be done with a texture in this format, on an adapter whose display is in
+	// that one. Four separate answers, and hardware has historically shipped with some
+	// and not others -- a format that can be drawn into but not blended into is the
+	// case that makes every translucent pass in the game render nonsense.
+	virtual bool			Supports_Texture_Format(unsigned adapter, WW3DFormat display,
+								WW3DFormat format, GfxFormatCapability capability) = 0;
+	// And can a depth buffer in this format be sampled as a texture? That is a
+	// different question from Supports_Depth_Stencil_Format above, which asks about a
+	// plain surface -- the shadow map wants the one that can be read back.
+	virtual bool			Supports_Depth_Texture_Format(unsigned adapter, WW3DFormat display,
+								WW3DZFormat format) = 0;
+
+	// What the adapter can do, before a device has been made on it. Device
+	// enumeration asks this of each one in turn.
+	virtual bool			Query_Capabilities(unsigned adapter, GfxDeviceCaps & caps) = 0;
+
+
+	/*
+	** Make a device on this adapter with this swap chain, or return null.
+	**
+	** The backend owns every choice the API forces at this point -- how vertices are
+	** processed, how the FPU is left, whether the device is multithreaded -- because every
+	** one of those is a question only that API asks.
+	**
+	** It may also adjust the description it was given, in exactly one direction: down.
+	** A depth format the adapter claimed and cannot deliver is the case this has always
+	** handled, and the caller needs to know what it ended up with, so desc is in-out.
+	*/
+	virtual GfxDeviceClass * Create_Device(unsigned adapter, GfxSwapChainDesc & desc) = 0;
+};
+
+/*
+** The one place a concrete backend is named on the way in, as Create_Device is on the way
+** out. A second backend is chosen here and nowhere else.
+*/
+GfxAdapterClass * Gfx_Create_Adapter();
 
 /*
 ** What a query asks the GPU.
@@ -535,6 +752,30 @@ public:
 	virtual void			Begin_Query(GfxQuery * query) = 0;
 	virtual void			End_Query(GfxQuery * query) = 0;
 	virtual bool			Get_Query_Data(GfxQuery * query, void * dest, unsigned size) = 0;
+
+	/*
+	** Rebuild the swap chain, keeping the device.
+	**
+	** This is what a window change asks for, and what alt-tabbing out of a fullscreen
+	** game asks for on the way back in. Every resource the backend cannot recreate for
+	** itself must already have been released: this refuses while any of them is still
+	** outstanding, and once it has refused for that reason it will refuse for ever.
+	**
+	** Returns false without having changed anything if the device is not ready to be
+	** reset yet, which is a state it can be in for several frames after a mode change;
+	** the caller retries next frame.
+	*/
+	/*
+	** What this device can do.
+	**
+	** Asked of the device rather than of the adapter because under D3D9 the answer
+	** depends on how the device is processing vertices, and the device is the only
+	** thing that knows. The backend takes care of asking in the mode whose answer the
+	** engine wants.
+	*/
+	virtual bool			Query_Capabilities(GfxDeviceCaps & caps) = 0;
+
+	virtual bool			Reset_Swap_Chain(GfxSwapChainDesc & desc) = 0;
 
 	// Debug only: asks whether the current state can be drawn in one pass. There is
 	// no obligation to answer -- a backend that cannot returns false.
