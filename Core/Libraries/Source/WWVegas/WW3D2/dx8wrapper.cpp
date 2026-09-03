@@ -9095,13 +9095,16 @@ void DX8Wrapper::Apply_Default_State()
 		Set_DX8_Texture_Stage_State(i, D3DTSS_TEXCOORDINDEX, i);
 
 
-		// The one place the wrapper states its starting model rather than editing it, and
-		// therefore the one place a single sampler word is written directly. A default
-		// SamplerStateClass already reads WRAP on both axes, so going through Set_Sampler
-		// here would emit nothing and leave the tracked words holding zero -- which is not
-		// a D3D addressing mode, and which the device-state audit would then report as
-		// eight stages' worth of drift. Writing them aligns the two models on what the
-		// device already defaults to.
+		// This function states a starting model rather than editing one, which is why the
+		// two addressing words go straight through instead of through Set_Sampler: a
+		// default SamplerStateClass already reads WRAP on both axes, so Set_Sampler would
+		// emit nothing and leave the tracked words holding zero, which is not a D3D
+		// addressing mode. Samplers[] is restated beside them so the two models cannot
+		// drift apart here.
+		//
+		// Nothing calls Apply_Default_State. It has no callers in either game and has not
+		// had for as long as this branch goes back, so none of this runs; it is written to
+		// be correct if it ever does rather than because it is load-bearing.
 		Samplers[i] = SamplerStateClass();
 		Set_DX8_Stage_State_Unguarded(i, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
 		Set_DX8_Stage_State_Unguarded(i, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
