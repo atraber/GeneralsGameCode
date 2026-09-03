@@ -310,45 +310,12 @@ static void Log_Textures(bool inited,unsigned& total_count, unsigned& total_mem)
 		if (!d3d_texture) continue;
 		DX8Wrapper::Describe_DX8_Texture_Level(d3d_texture,0,desc);
 
-		StringClass tex_format="Unknown";
-		switch (desc.Format) {
-		case D3DFMT_A8R8G8B8: tex_format="D3DFMT_A8R8G8B8"; break;
-		case D3DFMT_R8G8B8: tex_format="D3DFMT_R8G8B8"; break;
-		case D3DFMT_A4R4G4B4: tex_format="D3DFMT_A4R4G4B4"; break;
-		case D3DFMT_A1R5G5B5: tex_format="D3DFMT_A1R5G5B5"; break;
-		case D3DFMT_R5G6B5: tex_format="D3DFMT_R5G6B5"; break;
-		case D3DFMT_L8: tex_format="D3DFMT_L8"; break;
-		case D3DFMT_A8: tex_format="D3DFMT_A8"; break;
-		case D3DFMT_P8: tex_format="D3DFMT_P8"; break;
-		case D3DFMT_X8R8G8B8: tex_format="D3DFMT_X8R8G8B8"; break;
-		case D3DFMT_X1R5G5B5: tex_format="D3DFMT_X1R5G5B5"; break;
-		case D3DFMT_R3G3B2: tex_format="D3DFMT_R3G3B2"; break;
-		case D3DFMT_A8R3G3B2: tex_format="D3DFMT_A8R3G3B2"; break;
-		case D3DFMT_X4R4G4B4: tex_format="D3DFMT_X4R4G4B4"; break;
-		case D3DFMT_A8P8: tex_format="D3DFMT_A8P8"; break;
-		case D3DFMT_A8L8: tex_format="D3DFMT_A8L8"; break;
-		case D3DFMT_A4L4: tex_format="D3DFMT_A4L4"; break;
-		case D3DFMT_V8U8: tex_format="D3DFMT_V8U8"; break;
-		case D3DFMT_L6V5U5: tex_format="D3DFMT_L6V5U5"; break;
-		case D3DFMT_X8L8V8U8: tex_format="D3DFMT_X8L8V8U8"; break;
-		case D3DFMT_Q8W8V8U8: tex_format="D3DFMT_Q8W8V8U8"; break;
-		case D3DFMT_V16U16: tex_format="D3DFMT_V16U16"; break;
-		case D3DFMT_UYVY: tex_format="D3DFMT_UYVY"; break;
-		case D3DFMT_YUY2: tex_format="D3DFMT_YUY2"; break;
-		case D3DFMT_DXT1: tex_format="D3DFMT_DXT1"; break;
-		case D3DFMT_DXT2: tex_format="D3DFMT_DXT2"; break;
-		case D3DFMT_DXT3: tex_format="D3DFMT_DXT3"; break;
-		case D3DFMT_DXT4: tex_format="D3DFMT_DXT4"; break;
-		case D3DFMT_DXT5: tex_format="D3DFMT_DXT5"; break;
-		case D3DFMT_D16_LOCKABLE: tex_format="D3DFMT_D16_LOCKABLE"; break;
-		case D3DFMT_D32: tex_format="D3DFMT_D32"; break;
-		case D3DFMT_D15S1: tex_format="D3DFMT_D15S1"; break;
-		case D3DFMT_D24S8: tex_format="D3DFMT_D24S8"; break;
-		case D3DFMT_D16: tex_format="D3DFMT_D16"; break;
-		case D3DFMT_D24X8: tex_format="D3DFMT_D24X8"; break;
-		case D3DFMT_D24X4S4: tex_format="D3DFMT_D24X4S4"; break;
-		default:	break;
-		}
+		// The engine has had its own name for every one of these all along, and the
+		// switch this replaces listed fifty D3DFORMAT constants to reach the same
+		// strings -- including a dozen the tree has never created.
+		StringClass tex_format;
+		Get_WW3D_Format_Name(desc.Format, tex_format);
+
 
 		unsigned texmem=tex->Get_Texture_Memory_Usage();
 		total_mem+=texmem;

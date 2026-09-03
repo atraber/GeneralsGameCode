@@ -126,7 +126,7 @@ int TerrainTextureClass::update(WorldHeightMap *htMap)
 	//DEBUG_ASSERTCRASH(tilesPerRow*numRows >= htMap->m_numBitmapTiles, ("Too many tiles."));
 	DEBUG_ASSERTCRASH((Int)surface_desc.Width >= tilePixelExtent*tilesPerRow, ("Bitmap too small."));
 #endif
-	if (surface_desc.Format == D3DFMT_A8R8G8B8) {
+	if (surface_desc.Format == WW3D_FORMAT_A8R8G8B8) {
 		Int tileNdx;
 		Int pixelBytes = 4;
 		for (tileNdx=0; tileNdx < htMap->m_numBitmapTiles; tileNdx++) {
@@ -238,7 +238,7 @@ Bool TerrainTextureClass::updateFlat(WorldHeightMap *htMap, Int xCell, Int yCell
 	DX8Wrapper::Map_DX8_Surface(surface_level, nullptr, GFX_MAP_WRITE, locked_rect);
 
 
-	if (surface_desc.Format == D3DFMT_A8R8G8B8) {
+	if (surface_desc.Format == WW3D_FORMAT_A8R8G8B8) {
 
 		Int pixelBytes = 4;
 		Int cellX, cellY;
@@ -310,7 +310,7 @@ void TerrainClassMapTextureClass::update(WorldHeightMap *htMap)
 	GfxMappedRect locked_rect;
 	surface_level = DX8Wrapper::Get_DX8_Texture_Surface_Level(Peek_D3D_Base_Texture(), 0);
 	DX8Wrapper::Describe_DX8_Surface(surface_level, surface_desc);
-	if (surface_desc.Format != D3DFMT_A8R8G8B8) {
+	if (surface_desc.Format != WW3D_FORMAT_A8R8G8B8) {
 		DX8Wrapper::Release_DX8_Surface_Resource(surface_level);
 		return;
 	}
@@ -426,7 +426,7 @@ void TerrainDetailTextureClass::update()
 	GfxMappedRect locked_rect;
 	surface_level = DX8Wrapper::Get_DX8_Texture_Surface_Level(Peek_D3D_Base_Texture(), 0);
 	DX8Wrapper::Describe_DX8_Surface(surface_level, surface_desc);
-	if (surface_desc.Format != D3DFMT_A8R8G8B8) {
+	if (surface_desc.Format != WW3D_FORMAT_A8R8G8B8) {
 		DX8Wrapper::Release_DX8_Surface_Resource(surface_level);
 		return;
 	}
@@ -750,7 +750,7 @@ int AlphaEdgeTextureClass::update(WorldHeightMap *htMap)
 
 //	Int numRows = surface_desc.Height/(tilePixelExtent+8);
 
-	if (surface_desc.Format == D3DFMT_A8R8G8B8) {
+	if (surface_desc.Format == WW3D_FORMAT_A8R8G8B8) {
 #if 1
 #if 1
 		Int cellX, cellY;
@@ -856,7 +856,7 @@ void CloudMapTerrainTextureClass::update()
 	GfxMappedRect locked_rect;
 	surface_level = DX8Wrapper::Get_DX8_Texture_Surface_Level(Peek_D3D_Base_Texture(), 0);
 	DX8Wrapper::Describe_DX8_Surface(surface_level, surface_desc);
-	if (surface_desc.Format != D3DFMT_A8R8G8B8) {
+	if (surface_desc.Format != WW3D_FORMAT_A8R8G8B8) {
 		DX8Wrapper::Release_DX8_Surface_Resource(surface_level);
 		return;
 	}

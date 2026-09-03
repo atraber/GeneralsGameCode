@@ -51,7 +51,7 @@ W3DSmudgeManager::W3DSmudgeManager()
 	  m_RGBABuffer(nullptr),
 	  m_sizeBuffer(nullptr),
 	  m_backgroundTexture(nullptr),
-	  m_backgroundFormat((UnsignedInt)D3DFMT_UNKNOWN),
+	  m_backgroundFormat((UnsignedInt)WW3D_FORMAT_UNKNOWN),
 	  m_indexBuffer(nullptr),
 	  m_backBufferWidth(0),
 	  m_backBufferHeight(0)

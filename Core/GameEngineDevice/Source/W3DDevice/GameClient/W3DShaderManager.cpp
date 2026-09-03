@@ -2485,10 +2485,10 @@ void W3DShaderManager::captureBloomBrightPass(GfxSurface *brightSurface, Int wid
 	}
 	if (m_debugBrightTexture == nullptr)
 	{
-		if (FAILED((0 == ((m_debugBrightTexture = DX8Wrapper::Create_DX8_Texture_Resource(sd.Width, sd.Height, 1, sd.Format, GFX_USAGE_RENDER_TARGET)) != nullptr ? S_OK : E_FAIL))) ||
-			m_debugBrightTexture == nullptr)
+		m_debugBrightTexture = DX8Wrapper::Create_DX8_Texture_Resource(sd.Width, sd.Height,
+			1, sd.Format, GFX_USAGE_RENDER_TARGET);
+		if (m_debugBrightTexture == nullptr)
 		{
-			m_debugBrightTexture = nullptr;
 			return;
 		}
 		if (nullptr == (m_debugBrightSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_debugBrightTexture, 0)))
