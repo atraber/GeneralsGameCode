@@ -1702,6 +1702,75 @@ void DX8Wrapper::Debug_Report_FF_Sites()
 	s_ffSiteDropped = 0;
 }
 
+// Depth-pass draws that the routing block declined and Is_Inert_Depth_Pass_Draw would not
+// call inert. Both write masks are off, so the only way one of these can leave a mark is
+// through the stencil buffer -- and on the shadow-map configuration nothing enables stencil
+// during the depth pass, which is why the count is zero there and not here. This says what
+// the stencil is actually set to do, so "enabled" and "writes" can be told apart.
+namespace {
+	struct DepthStencilGroup {
+		unsigned func, pass, fail, zfail, writeMask, ref, count;
+	};
+	enum { MAX_DEPTH_STENCIL_GROUPS = 8 };
+	DepthStencilGroup s_depthStencil[MAX_DEPTH_STENCIL_GROUPS];
+	int      s_depthStencilCount = 0;
+	unsigned s_depthStencilDropped = 0;
+}
+
+void DX8Wrapper::Debug_Note_Depth_Pass_Stencil()
+{
+	const unsigned func      = RenderStates[D3DRS_STENCILFUNC];
+	const unsigned pass      = RenderStates[D3DRS_STENCILPASS];
+	const unsigned fail      = RenderStates[D3DRS_STENCILFAIL];
+	const unsigned zfail     = RenderStates[D3DRS_STENCILZFAIL];
+	const unsigned writeMask = RenderStates[D3DRS_STENCILWRITEMASK];
+	const unsigned ref       = RenderStates[D3DRS_STENCILREF];
+	for (int i = 0; i < s_depthStencilCount; ++i) {
+		DepthStencilGroup& g = s_depthStencil[i];
+		if (g.func == func && g.pass == pass && g.fail == fail && g.zfail == zfail &&
+			g.writeMask == writeMask && g.ref == ref) { ++g.count; return; }
+	}
+	if (s_depthStencilCount >= MAX_DEPTH_STENCIL_GROUPS) { ++s_depthStencilDropped; return; }
+	DepthStencilGroup& g = s_depthStencil[s_depthStencilCount++];
+	g.func = func; g.pass = pass; g.fail = fail; g.zfail = zfail;
+	g.writeMask = writeMask; g.ref = ref; g.count = 1;
+}
+
+static const char* Stencil_Op_Name(unsigned op)
+{
+	switch (op) {
+	case D3DSTENCILOP_KEEP:    return "KEEP";
+	case D3DSTENCILOP_ZERO:    return "ZERO";
+	case D3DSTENCILOP_REPLACE: return "REPLACE";
+	case D3DSTENCILOP_INCRSAT: return "INCRSAT";
+	case D3DSTENCILOP_DECRSAT: return "DECRSAT";
+	case D3DSTENCILOP_INVERT:  return "INVERT";
+	case D3DSTENCILOP_INCR:    return "INCR";
+	case D3DSTENCILOP_DECR:    return "DECR";
+	case 0x12345678:           return "(unknown)";
+	default:                   return "?";
+	}
+}
+
+void DX8Wrapper::Debug_Report_Depth_Pass_Stencil()
+{
+	if (s_depthStencilCount == 0 && s_depthStencilDropped == 0) return;
+	WWDEBUG_SAY(("  depth-pass draws the routing block declined that were still submitted, "
+				 "because stencil was enabled and so they are not provably inert:"));
+	for (int i = 0; i < s_depthStencilCount; ++i) {
+		const DepthStencilGroup& g = s_depthStencil[i];
+		WWDEBUG_SAY(("    x%-7u func=%u ref=%u writeMask=0x%02x  pass=%s fail=%s zfail=%s%s",
+			g.count, g.func, g.ref, g.writeMask,
+			Stencil_Op_Name(g.pass), Stencil_Op_Name(g.fail), Stencil_Op_Name(g.zfail),
+			(g.pass == D3DSTENCILOP_KEEP && g.fail == D3DSTENCILOP_KEEP &&
+			 g.zfail == D3DSTENCILOP_KEEP) ? "   -- keeps every way out, so it writes nothing" : ""));
+	}
+	if (s_depthStencilDropped)
+		WWDEBUG_SAY(("    (%u further draws did not fit the table)", s_depthStencilDropped));
+	s_depthStencilCount = 0;
+	s_depthStencilDropped = 0;
+}
+
 bool DX8Wrapper::Is_Inert_Depth_Pass_Draw()
 {
 	// Only the depth pass, because only there is the answer this cheap. That render
@@ -1845,6 +1914,8 @@ void DX8Wrapper::Debug_Report_FF_Draws()
 	}
 	if (s_ffDropped)
 		WWDEBUG_SAY(("  (%u further draws did not fit the table)", s_ffDropped));
+
+	Debug_Report_Depth_Pass_Stencil();
 
 	s_ffGroupCount = 0;
 	s_ffTotal = 0;
@@ -7541,6 +7612,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// Without them everything that failed a context test reported as reason 0
 			// and the largest groups in the table said nothing at all.
 			else if (m_bShadowDepthPass)   ffReason = 9;
+
+			if (ffReason == 9) Debug_Note_Depth_Pass_Stencil();
 			else if (m_bTerrainShaderPass) ffReason = 10;
 			else if (m_bRoadShaderPass)    ffReason = 11;
 			else if (m_bWaterShaderPass)   ffReason = 12;

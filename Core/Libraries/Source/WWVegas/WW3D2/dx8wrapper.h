@@ -1566,6 +1566,8 @@ public:
 	// draws at all -- so the instrument and the behaviour cannot disagree. A poisoned
 	// tracked word fails all three comparisons, so the error direction is "submit anyway".
 	static bool Is_Inert_Depth_Pass_Draw();
+	static void Debug_Note_Depth_Pass_Stencil();
+	static void Debug_Report_Depth_Pass_Stencil();
 	// Raised by Prepare_Direct_Draw: the vertex stream, index buffer, base vertex index and
 	// FVF standing at the device were bound by a caller that went round the wrapper, so the
 	// wrapper's flags no longer describe what is bound. Draw() consumes it by asking for the
