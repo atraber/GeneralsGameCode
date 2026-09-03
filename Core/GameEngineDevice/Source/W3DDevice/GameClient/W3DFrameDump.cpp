@@ -20,6 +20,8 @@
 #include "W3DDevice/GameClient/W3DScreenshot.h"
 #include "Common/GlobalData.h"
 #include "WW3D2/dx8wrapper.h"
+#include "WW3D2/ww3d.h"
+#include "W3DDevice/GameClient/W3DShaderManager.h"
 #include <vector>
 #include <algorithm>
 
@@ -159,5 +161,15 @@ void W3D_UpdateFrameDump(UnsignedInt runFrame)
 	// Named for the frame actually captured, not the one that was asked for, so the file says
 	// which moment of the game it is a picture of.
 	sprintf(s_pendingLeafname, "frame_%06u", runFrame);
+
+	// Say which render frame this logic frame was drawn on. Anything that accumulates once
+	// per drawn frame -- the cloud drift is the one that shows -- is at a different phase in
+	// two runs that reached the same logic frame in different numbers of render frames, and
+	// the resulting whole-screen brightness difference reads exactly like a rendering bug.
+	// Two captures whose render frames disagree are not comparable pixel-for-pixel.
+	float cloudAX, cloudAY, cloudBX, cloudBY;
+	W3DShaderManager::getCloudScroll(cloudAX, cloudAY, cloudBX, cloudBY);
+	DEBUG_LOG(("FRAME DUMP: capturing %s at render frame %u, cloud drift %.3f %.3f %.3f %.3f",
+		s_pendingLeafname, WW3D::Get_Frame_Count(), cloudAX, cloudAY, cloudBX, cloudBY));
 	DX8Wrapper::Request_Post_Scene_Callback(frameDumpCallback, nullptr);
 }

@@ -120,6 +120,7 @@
 #include "shdlib.h"
 #include "framgrab.h"
 #include "Lib/BaseType.h"
+#include <stdlib.h>
 
 
 const char* DAZZLE_INI_FILENAME="DAZZLE.INI";
@@ -809,6 +810,53 @@ WW3DErrorType WW3D::Begin_Render(bool clear,bool clearz,const Vector3 & color, f
 	SNAPSHOT_SAY(("=========================================="));
 	SNAPSHOT_SAY(("========== WW3D::Begin_Render ============"));
 	SNAPSHOT_SAY(("==========================================\n"));
+
+	// TheSuperHackers @feature andytraber 03/09/2026 Force a device reset at a chosen frame.
+	//
+	// Device creation and Reset are the one part of this renderer with no regression test,
+	// because the replay harness never executes them: a windowed device is never lost, so
+	// nothing ever asks for a reset and nothing ever notices when the reset path breaks.
+	// Reset() itself does not care whether the device was ever lost -- it refuses over any
+	// outstanding D3DPOOL_DEFAULT resource either way -- so calling Reset_Device() here at a
+	// nominated frame reproduces what alt-tabbing out of a fullscreen game does, unattended,
+	// in a run that can then be compared frame-for-frame against a run without it.
+	//
+	// Gated on the environment rather than on a command-line switch or a build flag, so that a
+	// build left behind in the game directory cannot do this to somebody playing: the game
+	// resets its device only for a shell that deliberately exported the variable. A build
+	// carrying a temporary always-on debug trigger has been left in that directory before,
+	// and the user hit it in their own session.
+	//
+	//     set W3D_FORCE_RESET_FRAME=300      one reset, at render frame 300
+	//     set W3D_FORCE_RESET_FRAME=300,900  a reset at each of those frames
+	{
+		static bool forced_reset_parsed = false;
+		static int forced_reset_frames[8];
+		static int forced_reset_count = 0;
+		if (!forced_reset_parsed) {
+			forced_reset_parsed = true;
+			const char * spec = ::getenv("W3D_FORCE_RESET_FRAME");
+			while (spec != nullptr && *spec != '\0' && forced_reset_count < 8) {
+				char * end = nullptr;
+				const long frame = ::strtol(spec, &end, 10);
+				if (end == spec) break;
+				forced_reset_frames[forced_reset_count++] = (int)frame;
+				spec = end;
+				while (*spec == ',' || *spec == ' ') ++spec;
+			}
+			if (forced_reset_count > 0) {
+				WWDEBUG_SAY(("FORCED RESET: armed for %d render frame(s), first at %d",
+					forced_reset_count, forced_reset_frames[0]));
+			}
+		}
+		for (int i = 0; i < forced_reset_count; ++i) {
+			if (forced_reset_frames[i] == FrameCount) {
+				WWDEBUG_SAY(("FORCED RESET: render frame %d -- calling Reset_Device()", FrameCount));
+				const bool ok = DX8Wrapper::Reset_Device();
+				WWDEBUG_SAY(("FORCED RESET: render frame %d -- Reset_Device() returned %d", FrameCount, ok ? 1 : 0));
+			}
+		}
+	}
 
 	if (DX8Wrapper::Gfx != nullptr)
 	{
