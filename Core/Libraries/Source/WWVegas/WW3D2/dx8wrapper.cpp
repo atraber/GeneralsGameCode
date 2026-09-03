@@ -1422,7 +1422,11 @@ void DX8Wrapper::Debug_Report_Lighting()
 	if (s_ffDrawSiteCount > 0) {
 		WWDEBUG_SAY(("  the %u by the drawer that submitted them%s -- these are the draws a "
 					 "second backend would have to be given an input layout and a shader "
-					 "for, since it has no fixed-function pipeline to fall back on:",
+					 "for, since it has no fixed-function pipeline to fall back on. This "
+					 "counts draws through DX8Wrapper::Draw only: a drawer that goes to "
+					 "the device itself never reaches here, so the volumetric shadows are "
+					 "NOT in this table even though they are the largest fixed-function "
+					 "draw left. The call-site census above is where those show up.",
 			s_lightFFDraws, s_ffDrawSiteDropped ? "  -- TABLE FULL" : ""));
 		for (int rank = 0; rank < s_ffDrawSiteCount; ++rank) {
 			int best = -1;
