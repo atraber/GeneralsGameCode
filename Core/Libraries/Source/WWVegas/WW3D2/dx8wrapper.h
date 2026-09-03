@@ -807,6 +807,14 @@ public:
 	static void Set_Vertex_Shader(DWORD vertex_shader);
 	static void Set_Pixel_Shader(DWORD pixel_shader);
 
+	// Compiled bytecode in, a bindable handle out; 0 means the device refused it. The
+	// subsystems that own a shader of their own -- the water, the trees, the profiler
+	// capture, the shader manager's loader -- went to the device for these, and they were
+	// the last device calls left in those files that were not caps or queries.
+	static DWORD Create_Vertex_Shader(const void * bytecode, unsigned size);
+	static DWORD Create_Pixel_Shader(const void * bytecode, unsigned size);
+	static void Release_Vertex_Shader(DWORD vertex_shader);
+	static void Release_Pixel_Shader(DWORD pixel_shader);
 	// What is bound right now. For the callers that draw straight on the device after
 	// Apply_Render_State_Changes: whatever it left standing is what rasterises them.
 	static DWORD Get_Vertex_Shader() { return Vertex_Shader; }

@@ -1087,11 +1087,11 @@ void W3DTreeBuffer::freeTreeBuffers()
 	if (m_dwTreePixelShader)
 		// Needs the device itself: releasing shader handles is resource lifetime. The
 		// tree pass sets its render state through the wrapper.
-		DX8Wrapper::_Get_D3D_Device8()->DeletePixelShader(m_dwTreePixelShader);
+		DX8Wrapper::Release_Pixel_Shader(m_dwTreePixelShader);
 	m_dwTreePixelShader = 0;
 
 	if (m_dwTreeVertexShader)
-		DX8Wrapper::_Get_D3D_Device8()->DeleteVertexShader(m_dwTreeVertexShader);
+		DX8Wrapper::Release_Vertex_Shader(m_dwTreeVertexShader);
 	m_dwTreeVertexShader = 0;
 }
 
@@ -1219,7 +1219,7 @@ void W3DTreeBuffer::allocateTreeBuffers()
 		// bound against fixed-function pixel processing fails at draw time rather than at
 		// bind time -- every tree would silently vanish. Drop back to the fixed-function
 		// path for both, which costs the wind but draws.
-		DX8Wrapper::_Get_D3D_Device8()->DeleteVertexShader(m_dwTreeVertexShader);
+		DX8Wrapper::Release_Vertex_Shader(m_dwTreeVertexShader);
 		m_dwTreeVertexShader = 0;
 		return;
 	}

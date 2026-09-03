@@ -69,6 +69,10 @@ public:
 	virtual void			Set_Texture(unsigned stage, GfxTexture * texture);
 	virtual void			Set_Vertex_Shader(GfxShaderHandle shader);
 	virtual void			Set_Pixel_Shader(GfxShaderHandle shader);
+	virtual GfxShaderHandle	Create_Vertex_Shader(const void * bytecode, unsigned size);
+	virtual GfxShaderHandle	Create_Pixel_Shader(const void * bytecode, unsigned size);
+	virtual void			Release_Vertex_Shader(GfxShaderHandle shader);
+	virtual void			Release_Pixel_Shader(GfxShaderHandle shader);
 	virtual void			Set_Vertex_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count);
 	virtual void			Set_Pixel_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count);
 	virtual void			Set_Vertex_Stream(unsigned stream, GfxVertexBuffer * buffer, unsigned stride);

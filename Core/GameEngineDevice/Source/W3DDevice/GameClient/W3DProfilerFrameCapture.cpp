@@ -37,10 +37,7 @@ W3DProfilerFrameCapture::~W3DProfilerFrameCapture()
 {
 	if (m_swizzleShader)
 	{
-		// Needs the device itself: this is the frame capture tool. It creates its own
-		// textures and shader and reads the render target back; it is not part of the
-		// render path and only runs when a capture is asked for.
-		DX8Wrapper::_Get_D3D_Device8()->DeletePixelShader(m_swizzleShader);
+		DX8Wrapper::Release_Pixel_Shader(m_swizzleShader);
 		m_swizzleShader = 0;
 	}
 }

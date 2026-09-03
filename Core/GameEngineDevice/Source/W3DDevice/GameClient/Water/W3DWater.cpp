@@ -1070,16 +1070,16 @@ void WaterRenderObjClass::ReleaseResources()
 		m_waterTrackSystem->ReleaseResources();
 
 	if (m_dwWavePixelShader)
-		m_pDev->DeletePixelShader(m_dwWavePixelShader);
+		DX8Wrapper::Release_Pixel_Shader(m_dwWavePixelShader);
 
 	if (m_dwWaveVertexShader)
-		m_pDev->DeleteVertexShader(m_dwWaveVertexShader);
+		DX8Wrapper::Release_Vertex_Shader(m_dwWaveVertexShader);
 
 	if (m_trapezoidWaterPixelShader)
-		m_pDev->DeletePixelShader(m_trapezoidWaterPixelShader);
+		DX8Wrapper::Release_Pixel_Shader(m_trapezoidWaterPixelShader);
 
 	if (m_riverWaterPixelShader)
-		m_pDev->DeletePixelShader(m_riverWaterPixelShader);
+		DX8Wrapper::Release_Pixel_Shader(m_riverWaterPixelShader);
 
 	m_dwWavePixelShader=0;
 	m_dwWaveVertexShader=0;

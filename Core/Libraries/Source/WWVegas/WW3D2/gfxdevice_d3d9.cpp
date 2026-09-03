@@ -224,6 +224,38 @@ void GfxDeviceD3D9::Set_Pixel_Shader(GfxShaderHandle shader)
 	D3DCALL(SetPixelShader(reinterpret_cast<IDirect3DPixelShader9*>(shader)));
 }
 
+GfxShaderHandle GfxDeviceD3D9::Create_Vertex_Shader(const void * bytecode, unsigned size)
+{
+	// D3D9 takes no length: the bytecode ends in an END token and the runtime reads to it.
+	(void)size;
+	IDirect3DVertexShader9 * shader = nullptr;
+	if (FAILED(m_device->CreateVertexShader((const DWORD*)bytecode, &shader))) return 0;
+	return (GfxShaderHandle)shader;
+}
+
+GfxShaderHandle GfxDeviceD3D9::Create_Pixel_Shader(const void * bytecode, unsigned size)
+{
+	(void)size;
+	IDirect3DPixelShader9 * shader = nullptr;
+	if (FAILED(m_device->CreatePixelShader((const DWORD*)bytecode, &shader))) return 0;
+	return (GfxShaderHandle)shader;
+}
+
+void GfxDeviceD3D9::Release_Vertex_Shader(GfxShaderHandle shader)
+{
+	if (shader == 0) return;
+	// An FVF code is not an object and there is nothing to release. Set_Vertex_Shader
+	// draws the same line at the same place.
+	if (shader < 0x10000) return;
+	reinterpret_cast<IDirect3DVertexShader9*>(shader)->Release();
+}
+
+void GfxDeviceD3D9::Release_Pixel_Shader(GfxShaderHandle shader)
+{
+	if (shader == 0) return;
+	reinterpret_cast<IDirect3DPixelShader9*>(shader)->Release();
+}
+
 void GfxDeviceD3D9::Set_Vertex_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count)
 {
 	D3DCALL(SetVertexShaderConstantF(reg, data, vec4_count));

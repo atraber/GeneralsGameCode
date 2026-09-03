@@ -825,7 +825,7 @@ void ScreenBWFilter::reset()
 Int ScreenBWFilter::shutdown()
 {
 	if (m_dwBWPixelShader)
-		DX8Wrapper::_Get_D3D_Device8()->DeletePixelShader(m_dwBWPixelShader);
+		DX8Wrapper::Release_Pixel_Shader(m_dwBWPixelShader);
 
 	m_dwBWPixelShader=0;
 
@@ -4535,14 +4535,16 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 		file->close();
 		file = nullptr;
 
-		if (ShaderType) // SHADERTYPE_VERTEX
-		{
-			hr = DX8Wrapper::_Get_D3D_Device8()->CreateVertexShader(pDeclaration, pShader, pHandle, Usage);
-		}
-		else // SHADERTYPE_PIXEL
-		{
-			hr = DX8Wrapper::_Get_D3D_Device8()->CreatePixelShader(pShader, pHandle);
-		}
+		// pDeclaration and Usage are D3D8 vertex-shader creation arguments and neither has
+		// meant anything since the move to D3D9: the declaration was discarded by the
+		// compatibility layer, and every caller passes nullptr and 0. They stay in the
+		// signature only because 30 call sites spell them out.
+		(void)pDeclaration;
+		(void)Usage;
+		*pHandle = ShaderType
+			? DX8Wrapper::Create_Vertex_Shader(pShader, dwFileSize)
+			: DX8Wrapper::Create_Pixel_Shader(pShader, dwFileSize);
+		hr = (*pHandle != 0) ? S_OK : E_FAIL;
 
 		HeapFree(GetProcessHeap(), 0, (void*)pShader);
 

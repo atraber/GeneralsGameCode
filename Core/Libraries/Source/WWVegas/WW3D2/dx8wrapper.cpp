@@ -374,6 +374,30 @@ void DX8Wrapper::Set_Sampler(unsigned stage, const SamplerStateClass & sampler)
 	current = sampler;
 }
 
+DWORD DX8Wrapper::Create_Vertex_Shader(const void * bytecode, unsigned size)
+{
+	if (Gfx == nullptr) return 0;
+	return (DWORD)Gfx->Create_Vertex_Shader(bytecode, size);
+}
+
+DWORD DX8Wrapper::Create_Pixel_Shader(const void * bytecode, unsigned size)
+{
+	if (Gfx == nullptr) return 0;
+	return (DWORD)Gfx->Create_Pixel_Shader(bytecode, size);
+}
+
+void DX8Wrapper::Release_Vertex_Shader(DWORD vertex_shader)
+{
+	if (Gfx == nullptr || vertex_shader == 0) return;
+	Gfx->Release_Vertex_Shader((GfxShaderHandle)vertex_shader);
+}
+
+void DX8Wrapper::Release_Pixel_Shader(DWORD pixel_shader)
+{
+	if (Gfx == nullptr || pixel_shader == 0) return;
+	Gfx->Release_Pixel_Shader((GfxShaderHandle)pixel_shader);
+}
+
 bool DX8Wrapper::Is_Deferred_FF_Stage_State(unsigned state)
 {
 	switch (state) {

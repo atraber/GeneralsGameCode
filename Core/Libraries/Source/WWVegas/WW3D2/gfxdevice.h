@@ -261,6 +261,19 @@ public:
 	virtual void			Set_Vertex_Shader(GfxShaderHandle shader) = 0;
 	virtual void			Set_Pixel_Shader(GfxShaderHandle shader) = 0;
 
+	// Compiled shader bytecode becomes a handle the device can bind. The size is passed
+	// even though D3D9 does not need it -- it reads the length out of the bytecode's own
+	// end token -- because every other API does, and a caller that has the buffer always
+	// has its length.
+	//
+	// Vertex and pixel are separate calls, and so are their releases, because D3D9 hands
+	// back two unrelated COM types and the handle does not say which it is. Returns 0 on
+	// failure; releasing 0 is a no-op.
+	virtual GfxShaderHandle	Create_Vertex_Shader(const void * bytecode, unsigned size) = 0;
+	virtual GfxShaderHandle	Create_Pixel_Shader(const void * bytecode, unsigned size) = 0;
+	virtual void			Release_Vertex_Shader(GfxShaderHandle shader) = 0;
+	virtual void			Release_Pixel_Shader(GfxShaderHandle shader) = 0;
+
 	virtual void			Set_Vertex_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count) = 0;
 	virtual void			Set_Pixel_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count) = 0;
 

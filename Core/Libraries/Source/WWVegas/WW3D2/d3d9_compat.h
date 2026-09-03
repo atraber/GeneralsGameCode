@@ -110,10 +110,10 @@ extern INT g_D3D9_BaseVertexIndex;
 #define D3DENUM_NO_WHQL_LEVEL 0
 #define DX8_LOCK_CAST(x) (void**)(x)
 
-// Direct3D 8 to Direct3D 9 compatibility wrappers for shader creation, binding, constants, and destruction
-#define CreateVertexShader(decl, func, handle, usage) CreateVertexShader(func, reinterpret_cast<IDirect3DVertexShader9**>(handle))
-#define CreatePixelShader(func, handle) CreatePixelShader(func, reinterpret_cast<IDirect3DPixelShader9**>(handle))
-#define DeleteVertexShader(handle) TestCooperativeLevel(), (handle ? ((IUnknown*)(handle))->Release() : 0)
-#define DeletePixelShader(handle) TestCooperativeLevel(), (handle ? ((IUnknown*)(handle))->Release() : 0)
+// Direct3D 8 to Direct3D 9 compatibility wrappers for shader binding and constants.
+// Creation and destruction used to be here as well -- four macros that reshaped D3D8's
+// calls at the call site. Nothing outside the backend creates or releases a shader any
+// more, so the backend spells the D3D9 calls out and the macros are gone; they also
+// silently rewrote the backend's own calls, which is how they announced themselves.
 #define SetVertexShaderConstant(reg, data, count) SetVertexShaderConstantF(reg, (const float*)(data), count)
 #define SetPixelShaderConstant(reg, data, count) SetPixelShaderConstantF(reg, (const float*)(data), count)
