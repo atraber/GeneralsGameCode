@@ -960,6 +960,49 @@ bool GfxDeviceD3D9::Save_Surface_To_File(const char * path, GfxSurface * surface
 	return SUCCEEDED(hr);
 }
 
+GfxQuery * GfxDeviceD3D9::Create_Query(GfxQueryType type)
+{
+	D3DQUERYTYPE d3dType;
+	switch (type) {
+	case GFX_QUERY_TIMESTAMP:           d3dType = D3DQUERYTYPE_TIMESTAMP; break;
+	case GFX_QUERY_TIMESTAMP_FREQUENCY: d3dType = D3DQUERYTYPE_TIMESTAMPFREQ; break;
+	case GFX_QUERY_TIMESTAMP_DISJOINT:  d3dType = D3DQUERYTYPE_TIMESTAMPDISJOINT; break;
+	default: return nullptr;
+	}
+	IDirect3DQuery9 * query = nullptr;
+	// Not an error worth shouting about: plenty of hardware and every reference
+	// rasterizer declines timestamps. The caller goes quiet on a null.
+	if (FAILED(m_device->CreateQuery(d3dType, &query)))
+		return nullptr;
+	return (GfxQuery *)query;
+}
+
+void GfxDeviceD3D9::Release_Query(GfxQuery * query)
+{
+	if (query == nullptr) return;
+	((IDirect3DQuery9 *)query)->Release();
+}
+
+void GfxDeviceD3D9::Begin_Query(GfxQuery * query)
+{
+	if (query == nullptr) return;
+	((IDirect3DQuery9 *)query)->Issue(D3DISSUE_BEGIN);
+}
+
+void GfxDeviceD3D9::End_Query(GfxQuery * query)
+{
+	if (query == nullptr) return;
+	((IDirect3DQuery9 *)query)->Issue(D3DISSUE_END);
+}
+
+bool GfxDeviceD3D9::Get_Query_Data(GfxQuery * query, void * dest, unsigned size)
+{
+	if (query == nullptr) return false;
+	// D3DGETDATA_FLUSH is deliberately not passed: it would push the command buffer to
+	// get an answer sooner, which is exactly the interference this is built to avoid.
+	return ((IDirect3DQuery9 *)query)->GetData(dest, (DWORD)size, 0) == S_OK;
+}
+
 bool GfxDeviceD3D9::Validate_Draw_State(unsigned & passes)
 {
 	DWORD n = 0;

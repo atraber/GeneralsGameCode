@@ -95,7 +95,7 @@ public:
 	static unsigned Get_Disjoint_Count();
 	static void Reset_Disjoint_Count();
 
-	/// Release every query object. Must be called before IDirect3DDevice9::Reset -- a live
+	/// Release every query object. Must be called before the device is reset -- a live
 	/// query is one more thing that can make Reset fail with D3DERR_INVALIDCALL, and this
 	/// codebase has already lost a session to exactly that class of leak. The pool recreates
 	/// itself lazily on the next Begin_Frame, so there is no matching reacquire.

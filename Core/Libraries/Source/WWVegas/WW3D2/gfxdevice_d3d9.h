@@ -174,6 +174,12 @@ public:
 	virtual void			Show_Hardware_Cursor(bool show);
 	virtual void			Set_Hardware_Cursor_Position(unsigned x, unsigned y);
 	virtual bool			Save_Surface_To_File(const char * path, GfxSurface * surface);
+	virtual GfxQuery *		Create_Query(GfxQueryType type);
+	virtual void			Release_Query(GfxQuery * query);
+	virtual void			Begin_Query(GfxQuery * query);
+	virtual void			End_Query(GfxQuery * query);
+	virtual bool			Get_Query_Data(GfxQuery * query, void * dest, unsigned size);
+
 	virtual bool			Validate_Draw_State(unsigned & passes);
 
 private:

@@ -68,6 +68,7 @@ struct GfxTexture;
 struct GfxSurface;
 struct GfxVertexBuffer;
 struct GfxIndexBuffer;
+struct GfxQuery;
 
 /*
 ** A bound shader, as the engine has always carried one: an opaque word that is
@@ -179,6 +180,23 @@ enum GfxCopyFilter
 	GFX_COPY_NO_FILTER = 0,		// take the pixels as they are
 	GFX_COPY_RESAMPLE,			// scale them, filtering as it goes
 	GFX_COPY_HALVE				// build the next mip down from this one
+};
+
+/*
+** What a query asks the GPU.
+**
+** Only the timestamp family, because that is all the engine asks. The three spell
+** the same thing in every API that has them: a point in the command stream, the tick
+** rate those points are counted in, and whether the tick rate changed while the work
+** between them was in flight. The third is the one that matters -- a GPU that clocks
+** up or down mid-frame makes the other two incomparable, silently, and this port has
+** already published one confidently wrong measurement for want of asking.
+*/
+enum GfxQueryType
+{
+	GFX_QUERY_TIMESTAMP,			// where the GPU had got to, in ticks
+	GFX_QUERY_TIMESTAMP_FREQUENCY,	// ticks per second, valid for one bracketed frame
+	GFX_QUERY_TIMESTAMP_DISJOINT	// did the tick rate change inside the bracket?
 };
 
 enum GfxDeviceStatus
@@ -493,6 +511,30 @@ public:
 	// Write a surface out as an image file, which is what the screenshot and the frame
 	// dump are built on. Every measurement in this port has come through here.
 	virtual bool			Save_Surface_To_File(const char * path, GfxSurface * surface) = 0;
+
+	/*
+	** Timestamp queries.
+	**
+	** Four calls: make a query, put it in the command stream, read it back, throw it
+	** away. Begin_Query is only meaningful for the disjoint kind -- the other two are
+	** points, not spans, and are issued with End_Query alone.
+	**
+	** Get_Query_Data never blocks. A timing instrument that stalls the pipeline to
+	** read itself changes the thing it is measuring, so a result that has not arrived
+	** is a false return and not a wait.
+	**
+	** Every query must be released before the device is reset. A live query is one
+	** more object that can make a reset fail, and this codebase has already lost a
+	** session to that class of leak.
+	**
+	** A backend that has no timestamps returns null from Create_Query, and the caller
+	** goes quiet rather than reporting zeroes.
+	*/
+	virtual GfxQuery *		Create_Query(GfxQueryType type) = 0;
+	virtual void			Release_Query(GfxQuery * query) = 0;
+	virtual void			Begin_Query(GfxQuery * query) = 0;
+	virtual void			End_Query(GfxQuery * query) = 0;
+	virtual bool			Get_Query_Data(GfxQuery * query, void * dest, unsigned size) = 0;
 
 	// Debug only: asks whether the current state can be drawn in one pass. There is
 	// no obligation to answer -- a backend that cannot returns false.

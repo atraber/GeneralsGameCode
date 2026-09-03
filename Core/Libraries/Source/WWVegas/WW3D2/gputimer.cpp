@@ -24,6 +24,7 @@
 #if defined(RTS_DEBUG)
 
 #include "dx8wrapper.h"
+#include "gfxdevice.h"
 
 
 namespace
@@ -53,9 +54,9 @@ namespace
 
 	struct FrameQueries
 	{
-		IDirect3DQuery9*	disjoint;
-		IDirect3DQuery9*	frequency;
-		IDirect3DQuery9*	stamps[STAMPS_PER_FRAME];
+		GfxQuery*			disjoint;
+		GfxQuery*			frequency;
+		GfxQuery*			stamps[STAMPS_PER_FRAME];
 		bool				stampIssued[STAMPS_PER_FRAME];
 		int					spanCount[GpuTimer::MAX_SLOTS];	///< closed spans this frame
 		bool				spanOpen[GpuTimer::MAX_SLOTS];	///< a span is currently open
@@ -73,14 +74,21 @@ namespace
 
 	void destroyPool()
 	{
+		// Reachable after the backend has gone -- shutdown, and the failure path in
+		// createPool -- so it drops the pointers either way and only asks the backend to
+		// free them if there is one left to ask.
+		GfxDeviceClass * const gfx = DX8Wrapper::Gfx;
 		for (int f = 0; f < FRAME_DEPTH; ++f)
 		{
 			FrameQueries& fq = s_frames[f];
-			if (fq.disjoint)  { fq.disjoint->Release();  fq.disjoint = nullptr; }
-			if (fq.frequency) { fq.frequency->Release(); fq.frequency = nullptr; }
+			if (gfx) gfx->Release_Query(fq.disjoint);
+			fq.disjoint = nullptr;
+			if (gfx) gfx->Release_Query(fq.frequency);
+			fq.frequency = nullptr;
 			for (int i = 0; i < STAMPS_PER_FRAME; ++i)
 			{
-				if (fq.stamps[i]) { fq.stamps[i]->Release(); fq.stamps[i] = nullptr; }
+				if (gfx) gfx->Release_Query(fq.stamps[i]);
+				fq.stamps[i] = nullptr;
 			}
 			fq.pending = false;
 		}
@@ -98,10 +106,10 @@ namespace
 		if (!s_supported)
 			return false;
 
-		// Needs the device itself: a D3D query is a device object with no wrapper state
-	// behind it, so there is nothing here the tracked state could fall out of step with.
-	IDirect3DDevice9* dev = DX8Wrapper::_Get_D3D_Device8();
-		if (dev == nullptr)
+		// A query is a device object with no wrapper state behind it, so there is nothing
+		// here the tracked state could fall out of step with -- but it is still a device
+		// object, and it goes through the backend like every other one.
+		if (DX8Wrapper::Gfx == nullptr)
 			return false;
 
 		memset(s_frames, 0, sizeof(s_frames));
@@ -109,8 +117,9 @@ namespace
 		for (int f = 0; f < FRAME_DEPTH; ++f)
 		{
 			FrameQueries& fq = s_frames[f];
-			if (FAILED(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPDISJOINT, &fq.disjoint)) ||
-				FAILED(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMPFREQ, &fq.frequency)))
+			fq.disjoint  = DX8Wrapper::Gfx->Create_Query(GFX_QUERY_TIMESTAMP_DISJOINT);
+			fq.frequency = DX8Wrapper::Gfx->Create_Query(GFX_QUERY_TIMESTAMP_FREQUENCY);
+			if (fq.disjoint == nullptr || fq.frequency == nullptr)
 			{
 				// Not an error worth shouting about -- plenty of hardware and every
 				// reference rasterizer declines. Give up permanently and stay silent.
@@ -120,7 +129,8 @@ namespace
 			}
 			for (int i = 0; i < STAMPS_PER_FRAME; ++i)
 			{
-				if (FAILED(dev->CreateQuery(D3DQUERYTYPE_TIMESTAMP, &fq.stamps[i])))
+				fq.stamps[i] = DX8Wrapper::Gfx->Create_Query(GFX_QUERY_TIMESTAMP);
+				if (fq.stamps[i] == nullptr)
 				{
 					destroyPool();
 					s_supported = false;
@@ -137,11 +147,11 @@ namespace
 	/// Non-blocking read. D3DGETDATA_FLUSH is deliberately not passed: it would push the
 	/// command buffer to get an answer sooner, which is exactly the interference this is
 	/// built to avoid.
-	bool tryGetData( IDirect3DQuery9* q, void* dest, DWORD size )
+	bool tryGetData( GfxQuery* q, void* dest, unsigned size )
 	{
-		if (q == nullptr)
+		if (q == nullptr || DX8Wrapper::Gfx == nullptr)
 			return false;
-		return q->GetData(dest, size, 0) == S_OK;
+		return DX8Wrapper::Gfx->Get_Query_Data(q, dest, size);
 	}
 }
 
@@ -177,9 +187,9 @@ void GpuTimer::Begin_Frame()
 		fq.spanOpen[i] = false;
 	}
 
-	fq.disjoint->Issue(D3DISSUE_BEGIN);
-	fq.frequency->Issue(D3DISSUE_END);
-	fq.stamps[STAMP_FRAME_BEGIN]->Issue(D3DISSUE_END);
+	DX8Wrapper::Gfx->Begin_Query(fq.disjoint);
+	DX8Wrapper::Gfx->End_Query(fq.frequency);
+	DX8Wrapper::Gfx->End_Query(fq.stamps[STAMP_FRAME_BEGIN]);
 	fq.stampIssued[STAMP_FRAME_BEGIN] = true;
 
 	s_inFrame = true;
@@ -195,7 +205,7 @@ void GpuTimer::Begin_Slot( int slot )
 		return;		// already inside one, or out of room -- later visits go unmeasured
 
 	const int idx = stampIndex(slot, fq.spanCount[slot], 0);
-	fq.stamps[idx]->Issue(D3DISSUE_END);
+	DX8Wrapper::Gfx->End_Query(fq.stamps[idx]);
 	fq.stampIssued[idx] = true;
 	fq.spanOpen[slot] = true;
 }
@@ -210,7 +220,7 @@ void GpuTimer::End_Slot( int slot )
 		return;		// never opened, or already closed
 
 	const int idx = stampIndex(slot, fq.spanCount[slot], 1);
-	fq.stamps[idx]->Issue(D3DISSUE_END);
+	DX8Wrapper::Gfx->End_Query(fq.stamps[idx]);
 	fq.stampIssued[idx] = true;
 	fq.spanOpen[slot] = false;
 	++fq.spanCount[slot];
@@ -223,9 +233,9 @@ void GpuTimer::End_Frame()
 		return;
 
 	FrameQueries& fq = s_frames[s_writeIndex];
-	fq.stamps[STAMP_FRAME_END]->Issue(D3DISSUE_END);
+	DX8Wrapper::Gfx->End_Query(fq.stamps[STAMP_FRAME_END]);
 	fq.stampIssued[STAMP_FRAME_END] = true;
-	fq.disjoint->Issue(D3DISSUE_END);
+	DX8Wrapper::Gfx->End_Query(fq.disjoint);
 	fq.pending = true;
 
 	s_inFrame = false;
@@ -246,7 +256,7 @@ bool GpuTimer::Resolve( float* out_ms, float& out_total_ms )
 	if (!fq.pending)
 		return false;
 
-	BOOL disjoint = FALSE;
+	int disjoint = 0;
 	if (!tryGetData(fq.disjoint, &disjoint, sizeof(disjoint)))
 		return false;		// still in flight; try again next frame
 
@@ -262,11 +272,11 @@ bool GpuTimer::Resolve( float* out_ms, float& out_total_ms )
 		return false;
 	}
 
-	UINT64 freq = 0;
+	unsigned __int64 freq = 0;
 	if (!tryGetData(fq.frequency, &freq, sizeof(freq)) || freq == 0)
 		return false;
 
-	UINT64 frameBegin = 0, frameEnd = 0;
+	unsigned __int64 frameBegin = 0, frameEnd = 0;
 	if (!tryGetData(fq.stamps[STAMP_FRAME_BEGIN], &frameBegin, sizeof(frameBegin)) ||
 		!tryGetData(fq.stamps[STAMP_FRAME_END], &frameEnd, sizeof(frameEnd)))
 		return false;
@@ -283,7 +293,7 @@ bool GpuTimer::Resolve( float* out_ms, float& out_total_ms )
 			if (!fq.stampIssued[b] || !fq.stampIssued[e])
 				continue;
 
-			UINT64 begin = 0, end = 0;
+			unsigned __int64 begin = 0, end = 0;
 			if (!tryGetData(fq.stamps[b], &begin, sizeof(begin)) ||
 				!tryGetData(fq.stamps[e], &end, sizeof(end)))
 				continue;
