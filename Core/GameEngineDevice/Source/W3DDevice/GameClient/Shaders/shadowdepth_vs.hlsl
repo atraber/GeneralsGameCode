@@ -7,10 +7,8 @@
 
 #include "shadermodel.hlsli"
 
-CONSTANTS_BEGIN(ShadowDepthVsConstants)
-row_major float4x4 SunVP : CREGISTER(0);
-row_major float4x4 World : CREGISTER(4);
-CONSTANTS_END
+row_major float4x4 SunVP : register(c0);
+row_major float4x4 World : register(c4);
 
 // The texture coordinates ride along so the pixel shader can read the base texture's
 // alpha: cut-out foliage has to cast its silhouette rather than its quad.

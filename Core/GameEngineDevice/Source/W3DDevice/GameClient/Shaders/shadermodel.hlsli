@@ -146,32 +146,37 @@
 // Constants
 // ---------------------------------------------------------------------------------------
 
-// Model 3 has a flat file of float4 constant registers; model 4 has constant buffers. The
-// move is free here, and that is worth stating because it is the thing that could most
-// easily have been expensive. Every one of the constants these shaders declare is a float4,
-// a row_major float4x4, or an array of float4 -- so every one occupies whole 16-byte slots
-// in a buffer exactly as it occupies whole registers, and a cbuffer whose members carry
-// their own register numbers is byte-identical to the register file the engine already
-// maintains in Vertex_Shader_Constants[96] and Pixel_Shader_Constants[32]. Nothing repacks,
-// and not one offset had to be recomputed.
+// There is nothing here, and that is the finding.
 //
-// packoffset rather than declaration order, because the registers are neither contiguous
-// nor always ascending -- unit_vs_body declares c21, then c24, then c28, then c22 -- and
-// reordering declarations to make them so would change the model 3 token stream for no gain
-// whatsoever.
+// Model 3 has a flat file of float4 constant registers and model 4 has constant buffers,
+// which looked like the one part of this that would need real work: a macro per declaration
+// to turn `register(cN)` into `packoffset(cN)`, a cbuffer opened and closed around each
+// shader's constants, and three files whose declarations are interleaved with samplers and
+// a function reordered to make one contiguous block possible.
 //
-// row_major is kept on every matrix and has to be. Model 4 defaults to column-major where
-// model 3 defaults to row-major, so dropping the keyword transposes 33 matrices at once,
-// silently, in the model that nothing runs yet.
-#if RTS_SHADER_MODEL >= 4
-#define CONSTANTS_BEGIN(name)   cbuffer name : register(b0) {
-#define CONSTANTS_END           };
-#define CREGISTER(n)            packoffset(c##n)
-#else
-#define CONSTANTS_BEGIN(name)
-#define CONSTANTS_END
-#define CREGISTER(n)            register(c##n)
-#endif
+// None of it is needed. fxc honours `: register(cN)` on a global at model 4 and places it
+// in the automatic $Globals buffer at exactly that register's byte offset. Read back out of
+// the compiled reflection (dxbc_cbuffer.py, which parses the RDEF chunk):
+//
+//   unit_prelit_vs   $Globals is 576 bytes = 36 slots. c0, c4, then a gap to c16 -- the
+//                    c5..c15 hole is padding that survives. WorldAxisX is *listed after*
+//                    TexMatrix1 and placed *before* it, at c22 against c28, so this is not
+//                    declaration-order packing that happens to agree.
+//   tree_vs          Sway[1 + MAX_SWAY_TYPES] is 176 bytes at c8: eleven whole slots.
+//   unit_ps          AlphaTestCtl, declared in alphatest.hlsli, sits at c28 in the same
+//                    buffer as the shader's own c1..c12. Constants from an included header
+//                    need no separate buffer and no second register slot.
+//
+// So the buffer is a straight re-declaration of the register file, and the engine's
+// Vertex_Shader_Constants[96] and Pixel_Shader_Constants[32] map onto it as an offset and
+// a count with nothing recomputed. That holds because every constant these shaders declare
+// is a float4, a row_major float4x4, or an array of float4, and each occupies whole 16-byte
+// slots in a buffer exactly as it occupies whole registers. Had one been a float3 or a
+// float2x2, this paragraph would say something much worse.
+//
+// The one thing that does have to be kept is `row_major` on every matrix. Model 4 defaults
+// to column-major where model 3 defaults to row-major, so dropping the keyword transposes
+// 33 matrices at once, silently, in the model that nothing runs yet.
 
 
 #endif  // RTS_SHADER_MODEL_HLSLI
