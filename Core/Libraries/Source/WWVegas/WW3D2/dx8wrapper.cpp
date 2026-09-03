@@ -141,6 +141,7 @@ Vector3							DX8Wrapper::Ambient_Color;
 bool								DX8Wrapper::world_identity;
 unsigned							DX8Wrapper::RenderStates[256];
 unsigned							DX8Wrapper::TextureStageStates[MAX_TEXTURE_STAGES][32];
+SamplerStateClass				DX8Wrapper::Samplers[MAX_TEXTURE_STAGES];
 unsigned							DX8Wrapper::FFStagePending[MAX_TEXTURE_STAGES] = { 0 };
 unsigned							DX8Wrapper::FFRenderPending[8] = { 0 };
 bool								DX8Wrapper::FFStatePending = false;
@@ -300,6 +301,79 @@ static void NoteFlushedWrite(const char* who)
 // texture combine, the texgen, fixed-function vertex lighting, the material sources and
 // the texture factor, which nothing but a fixed-function combine can read.
 //-----------------------------------------------------------------------------
+//**********************************************************************************************
+// The sampler description, and the one place in the engine where it meets D3D's constants.
+//
+// Set_Sampler emits a state word only for a field that differs from the description the slot
+// is already holding, so a caller that takes the current description and changes four fields
+// produces exactly the four writes it used to make by hand. Nothing here decides whether a
+// write reaches the device: Set_DX8_Texture_Stage_State's own redundancy check still does
+// that, and the tracked state stays the wrapper's single model of the device.
+//
+// Samplers[] is reset to Unknown() wherever that model is invalidated, so that every field of
+// the next description bound is treated as a change and re-sent. It is intent, not a claim
+// about the device, which is why it is a separate array rather than a reading of the tracked
+// one -- a poisoned tracked word says the wrapper knows nothing, and a filter mode has no
+// spelling for that.
+//
+// A backend that binds sampler objects rather than state words replaces the body of this
+// function with a single call taking `sampler` whole, and no caller changes. That is the
+// reason the description exists.
+//**********************************************************************************************
+
+static unsigned Sampler_Filter_To_D3D(SamplerStateClass::FilterType filter)
+{
+	switch (filter) {
+		case SamplerStateClass::FILTER_POINT:		return D3DTEXF_POINT;
+		case SamplerStateClass::FILTER_LINEAR:		return D3DTEXF_LINEAR;
+		case SamplerStateClass::FILTER_ANISOTROPIC:	return D3DTEXF_ANISOTROPIC;
+		case SamplerStateClass::FILTER_NONE:
+		default:									return D3DTEXF_NONE;
+	}
+}
+
+static unsigned Sampler_Address_To_D3D(SamplerStateClass::AddressType address)
+{
+	switch (address) {
+		case SamplerStateClass::ADDRESS_MIRROR:			return D3DTADDRESS_MIRROR;
+		case SamplerStateClass::ADDRESS_CLAMP:			return D3DTADDRESS_CLAMP;
+		case SamplerStateClass::ADDRESS_BORDER:			return D3DTADDRESS_BORDER;
+		case SamplerStateClass::ADDRESS_MIRROR_ONCE:	return D3DTADDRESS_MIRRORONCE;
+		case SamplerStateClass::ADDRESS_WRAP:
+		default:										return D3DTADDRESS_WRAP;
+	}
+}
+
+const SamplerStateClass & DX8Wrapper::Get_Sampler(unsigned stage)
+{
+	WWASSERT(stage < MAX_TEXTURE_STAGES);
+	return Samplers[stage];
+}
+
+void DX8Wrapper::Set_Sampler(unsigned stage, const SamplerStateClass & sampler)
+{
+	WWASSERT(stage < MAX_TEXTURE_STAGES);
+	SamplerStateClass & current = Samplers[stage];
+	if (current == sampler) return;
+
+	if (current.Get_Min_Filter() != sampler.Get_Min_Filter())
+		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_MINFILTER, Sampler_Filter_To_D3D(sampler.Get_Min_Filter()));
+	if (current.Get_Mag_Filter() != sampler.Get_Mag_Filter())
+		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_MAGFILTER, Sampler_Filter_To_D3D(sampler.Get_Mag_Filter()));
+	if (current.Get_Mip_Filter() != sampler.Get_Mip_Filter())
+		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_MIPFILTER, Sampler_Filter_To_D3D(sampler.Get_Mip_Filter()));
+	if (current.Get_U_Address() != sampler.Get_U_Address())
+		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_ADDRESSU, Sampler_Address_To_D3D(sampler.Get_U_Address()));
+	if (current.Get_V_Address() != sampler.Get_V_Address())
+		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_ADDRESSV, Sampler_Address_To_D3D(sampler.Get_V_Address()));
+	if (current.Get_W_Address() != sampler.Get_W_Address())
+		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_ADDRESSW, Sampler_Address_To_D3D(sampler.Get_W_Address()));
+	if (current.Get_Anisotropy() != sampler.Get_Anisotropy())
+		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_MAXANISOTROPY, sampler.Get_Anisotropy());
+
+	current = sampler;
+}
+
 bool DX8Wrapper::Is_Deferred_FF_Stage_State(unsigned state)
 {
 	switch (state) {
@@ -2989,6 +3063,10 @@ void DX8Wrapper::Invalidate_Cached_Render_States(const char * site)
 			}
 			TextureStageStates[a][b]=0x12345678;
 		}
+		// The sampler description is intent rather than a claim about the device, so it
+		// cannot hold the poison above. Unknown() is its equivalent: nothing a caller builds
+		// compares equal to it, so the next description bound is re-sent field by field.
+		Samplers[a] = SamplerStateClass::Unknown();
 		//Need to explicitly set texture to null, otherwise app will not be able to
 		//set it to null because of redundant state checker. MW
 		if (Gfx)
@@ -6402,10 +6480,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// The fixed-function path left stage 0's filter and addressing to whatever the
 			// previous caller happened to leave on the device. State them: linear on a
 			// smooth radial mask, and wrap, which is the D3D default it was inheriting.
-			Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+			Set_Sampler(0, Get_Sampler(0)
+				.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+				.With_Address(SamplerStateClass::ADDRESS_WRAP, SamplerStateClass::ADDRESS_WRAP));
 		}
 		else if (useTerrainShader) {
 			if (!m_bUnitShaderBound) {
@@ -6433,20 +6510,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			if (m_pShadowMap != nullptr) {
 				Set_DX8_Texture(5, m_pShadowMap);
 				s_shadowStage5Bound = true;
-				Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				Set_Sampler(5, Get_Sampler(5)
+					.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			}
 
 			// Smooth (bi/tri-linear) filtering + clamp, matching the fixed-function
 			// terrain path. The base atlas texture's own filter may be point, which
 			// looks jagged; this runs after the texture Apply so it wins.
-			Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			Set_Sampler(0, Get_Sampler(0)
+				.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+				.With_Mip_Filter(SamplerStateClass::FILTER_LINEAR)
+				.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 
 			// Cloud/noise overlay layers: scroll offset (VS c4) + enable mask (PS c0).
 			// These are (near-)constant across draws, so the redundant-set cache in
@@ -6469,11 +6544,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// Stochastic tiling. The class table on stage 1 must be read exactly as it
 			// was written -- its bytes are a width and two slot offsets, and a filtered
 			// tap between two slots decodes to a class that does not exist.
-			Set_DX8_Texture_Stage_State(1, D3DTSS_MINFILTER, D3DTEXF_POINT);
-			Set_DX8_Texture_Stage_State(1, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-			Set_DX8_Texture_Stage_State(1, D3DTSS_MIPFILTER, D3DTEXF_NONE);
-			Set_DX8_Texture_Stage_State(1, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-			Set_DX8_Texture_Stage_State(1, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			Set_Sampler(1, Get_Sampler(1)
+				.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+				.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+				.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			Set_Pixel_Shader_Constant(2, &m_terrainAtlasParams, 1);
 			Set_Pixel_Shader_Constant(3, &m_terrainTilingParams, 1);
 
@@ -6481,24 +6555,21 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// table: its mip chain is what fades the relief out with distance instead of
 			// letting the gradient alias into shimmer. WRAP because the field is built
 			// periodic precisely so it can be projected across the whole map.
-			Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(4, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-			Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+			Set_Sampler(4, Get_Sampler(4)
+				.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+				.With_Mip_Filter(SamplerStateClass::FILTER_LINEAR)
+				.With_Address(SamplerStateClass::ADDRESS_WRAP, SamplerStateClass::ADDRESS_WRAP));
 			Set_Pixel_Shader_Constant(4, &m_terrainDetailParams, 1);
 			Set_Pixel_Shader_Constant(5, &m_terrainSunDir, 1);
 			Set_Pixel_Shader_Constant(6, &m_terrainColourParams, 1);
 
 			// Cloud/noise tile and wrap.
-			Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
-			Set_DX8_Texture_Stage_State(3, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(3, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+			Set_Sampler(2, Get_Sampler(2)
+				.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+				.With_Address(SamplerStateClass::ADDRESS_WRAP, SamplerStateClass::ADDRESS_WRAP));
+			Set_Sampler(3, Get_Sampler(3)
+				.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+				.With_Address(SamplerStateClass::ADDRESS_WRAP, SamplerStateClass::ADDRESS_WRAP));
 		}
 		else if (useUiShader) {
 			if (!m_bUnitShaderBound) {
@@ -6581,19 +6652,17 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			if (m_pShadowMap != nullptr) {
 				Set_DX8_Texture(5, m_pShadowMap);
 				s_shadowStage5Bound = true;
-				Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				Set_Sampler(5, Get_Sampler(5)
+					.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			}
 
 			// The road texture is an atlas: clamp, and filter smoothly (the fixed-function
 			// road path set trilinear here when the terrain was set to, point otherwise).
-			Set_DX8_Texture_Stage_State(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-			Set_DX8_Texture_Stage_State(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+			Set_Sampler(0, Get_Sampler(0)
+				.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+				.With_Mip_Filter(SamplerStateClass::FILTER_LINEAR)
+				.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 
 			// Cloud/noise overlays share the terrain's per-frame parameters: same textures,
 			// same scroll, same projection. Written through the device for the same reason
@@ -6609,14 +6678,12 @@ void DX8Wrapper::Apply_Render_State_Changes()
 									  m_cloudStrength, 0.0f);
 			GFXCALL(Set_Pixel_Shader_Constants(0, reinterpret_cast<const float*>(&overlayEnable), 1));
 			Pixel_Shader_Constants[0] = *reinterpret_cast<const Vector4*>(&overlayEnable);
-			Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-			Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
-			Set_DX8_Texture_Stage_State(3, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(3, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-			Set_DX8_Texture_Stage_State(3, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+			Set_Sampler(2, Get_Sampler(2)
+				.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+				.With_Address(SamplerStateClass::ADDRESS_WRAP, SamplerStateClass::ADDRESS_WRAP));
+			Set_Sampler(3, Get_Sampler(3)
+				.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+				.With_Address(SamplerStateClass::ADDRESS_WRAP, SamplerStateClass::ADDRESS_WRAP));
 		}
 		else if (useWaterShader) {
 			if (!m_bUnitShaderBound) {
@@ -6706,11 +6773,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// Same flag the PBR path raises for its ORM map: it is what makes the next
 				// non-water draw put stage 1 back from the tracked texture state.
 				s_pbrOrmBound = true;
-				Set_DX8_Texture_Stage_State(1, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(1, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(1, D3DTSS_MIPFILTER, D3DTEXF_NONE);
-				Set_DX8_Texture_Stage_State(1, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-				Set_DX8_Texture_Stage_State(1, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				Set_Sampler(1, Get_Sampler(1)
+					.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+					.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			}
 
 			// Stages 0, 2 and 3 (base, noise, edge ramp) are bound and filtered by the
@@ -6719,19 +6785,17 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			if (m_envCubeMap != nullptr) {
 				Set_DX8_Texture(4, m_envCubeMap);
 				s_pbrExtraStagesBound = true;
-				Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(4, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-				Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				Set_Sampler(4, Get_Sampler(4)
+					.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+					.With_Mip_Filter(SamplerStateClass::FILTER_LINEAR)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			}
 			if (m_pShadowMap != nullptr) {
 				Set_DX8_Texture(5, m_pShadowMap);
 				s_shadowStage5Bound = true;
-				Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-				Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				Set_Sampler(5, Get_Sampler(5)
+					.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			}
 			// The shroud on 6, where the PBR path keeps the scene colour. Nothing samples
 			// both, and putting it here leaves 0-3 exactly as the old path arranged them.
@@ -6742,20 +6806,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			if (m_pWaterShroud != nullptr) {
 				Set_DX8_Texture(6, m_pWaterShroud);
 				s_pbrExtraStagesBound = true;
-				Set_DX8_Texture_Stage_State(6, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(6, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-				Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				Set_Sampler(6, Get_Sampler(6)
+					.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			}
 			if (m_pSceneDepth != nullptr) {
 				// Point, as everywhere else packed depth is read: the three channels are
 				// one number and interpolating them blends nonsense.
 				Set_DX8_Texture(7, m_pSceneDepth);
 				s_pbrExtraStagesBound = true;
-				Set_DX8_Texture_Stage_State(7, D3DTSS_MINFILTER, D3DTEXF_POINT);
-				Set_DX8_Texture_Stage_State(7, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-				Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-				Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+				Set_Sampler(7, Get_Sampler(7)
+					.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			}
 		}
 		else if (useUnitShader) {
@@ -6991,11 +7053,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// gets taken off again -- a texture left on a stage a later fixed-function
 				// draw never asked for is a bug this renderer has shipped twice.
 				s_pbrExtraStagesBound = true;
-				Set_DX8_Texture_Stage_State(2, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(2, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(2, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-				Set_DX8_Texture_Stage_State(2, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+				Set_Sampler(2, Get_Sampler(2)
+					.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+					.With_Mip_Filter(SamplerStateClass::FILTER_LINEAR)
+					.With_Address(SamplerStateClass::ADDRESS_WRAP, SamplerStateClass::ADDRESS_WRAP));
 			}
 			const D3DXVECTOR4 cloudScroll(m_cloudScrollAX, m_cloudScrollAY,
 										  m_cloudScrollBX, m_cloudScrollBY);
@@ -7043,10 +7104,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				if (m_pShadowMap != nullptr) {
 					Set_DX8_Texture(5, m_pShadowMap);
 					s_shadowStage5Bound = true;
-					Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
-					Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+					Set_Sampler(5, Get_Sampler(5)
+						.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 				}
 			}
 
@@ -7095,21 +7155,20 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					Set_DX8_Texture(1, m_defaultOrmMap);
 				}
 				s_pbrOrmBound = true;
-				Set_DX8_Texture_Stage_State(1, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(1, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-				Set_DX8_Texture_Stage_State(1, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
+				Set_Sampler(1, Get_Sampler(1)
+					.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+					.With_Mip_Filter(SamplerStateClass::FILTER_LINEAR));
 				// Shared environment cubemap on stage 4 (nothing else uses it, so a
 				// direct bind cannot desync a shared stage). Linear + clamp.
 				if (m_envCubeMap != nullptr) {
 					Set_DX8_Texture(4, m_envCubeMap);
 					s_pbrExtraStagesBound = true;
-					Set_DX8_Texture_Stage_State(4, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-					Set_DX8_Texture_Stage_State(4, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 					// The cubemap carries cloud detail and ships a mip chain; without a
 					// mip filter the minified case undersamples it and sparkles.
-					Set_DX8_Texture_Stage_State(4, D3DTSS_MIPFILTER, D3DTEXF_LINEAR);
-					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-					Set_DX8_Texture_Stage_State(4, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+					Set_Sampler(4, Get_Sampler(4)
+						.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+						.With_Mip_Filter(SamplerStateClass::FILTER_LINEAR)
+						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 					// c22: mean cubemap colour, so the shader's irradiance tap can be
 					// normalised to average 1.0 (see m_envAverage).
 					Set_Pixel_Shader_Constant(22, m_envAverage, 1);
@@ -7120,10 +7179,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				if (m_pShadowMap != nullptr) {
 					Set_DX8_Texture(5, m_pShadowMap);
 					s_shadowStage5Bound = true;
-					Set_DX8_Texture_Stage_State(5, D3DTSS_MINFILTER, D3DTEXF_POINT);
-					Set_DX8_Texture_Stage_State(5, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-					Set_DX8_Texture_Stage_State(5, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+					Set_Sampler(5, Get_Sampler(5)
+						.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 				}
 				Set_Pixel_Shader_Constant(16, m_shadowParams, 1);   // bias + strength
 				// c23: normal offset + the bias left over once the lookup is offset. The
@@ -7140,20 +7198,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				if (m_pSceneColor != nullptr) {
 					Set_DX8_Texture(6, m_pSceneColor);
 					s_pbrExtraStagesBound = true;
-					Set_DX8_Texture_Stage_State(6, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-					Set_DX8_Texture_Stage_State(6, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-					Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-					Set_DX8_Texture_Stage_State(6, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+					Set_Sampler(6, Get_Sampler(6)
+						.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 				}
 				if (m_pSceneDepth != nullptr) {
 					// Point filtering, as for the shadow map: packed depth is three bytes
 					// of one number, and interpolating them blends nonsense.
 					Set_DX8_Texture(7, m_pSceneDepth);
 					s_pbrExtraStagesBound = true;
-					Set_DX8_Texture_Stage_State(7, D3DTSS_MINFILTER, D3DTEXF_POINT);
-					Set_DX8_Texture_Stage_State(7, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+					Set_Sampler(7, Get_Sampler(7)
+						.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 				}
 				Set_Pixel_Shader_Constant(17, m_ssrParams, 1);
 				// The very matrix the depth prepass rendered with, so the shader's
@@ -7205,10 +7261,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					Set_DX8_Texture(7, m_pSceneDepth);
 					// Point filtering: packed depth is three bytes of one number and
 					// interpolating them blends nonsense.
-					Set_DX8_Texture_Stage_State(7, D3DTSS_MINFILTER, D3DTEXF_POINT);
-					Set_DX8_Texture_Stage_State(7, D3DTSS_MAGFILTER, D3DTEXF_POINT);
-					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-					Set_DX8_Texture_Stage_State(7, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+					Set_Sampler(7, Get_Sampler(7)
+						.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 				}
 				D3DXVECTOR4 softCtl(softOn ? 1.0f : 0.0f,
 									(m_softParticleFade > 0.0f) ? m_softParticleFade : 1.0f,
@@ -9001,8 +9056,16 @@ void DX8Wrapper::Apply_Default_State()
 		Set_DX8_Texture_Stage_State(i, D3DTSS_TEXCOORDINDEX, i);
 
 
-		Set_DX8_Texture_Stage_State(i, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
-		Set_DX8_Texture_Stage_State(i, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
+		// The one place the wrapper states its starting model rather than editing it, and
+		// therefore the one place a single sampler word is written directly. A default
+		// SamplerStateClass already reads WRAP on both axes, so going through Set_Sampler
+		// here would emit nothing and leave the tracked words holding zero -- which is not
+		// a D3D addressing mode, and which the device-state audit would then report as
+		// eight stages' worth of drift. Writing them aligns the two models on what the
+		// device already defaults to.
+		Samplers[i] = SamplerStateClass();
+		Set_DX8_Stage_State_Unguarded(i, D3DTSS_ADDRESSU, D3DTADDRESS_WRAP);
+		Set_DX8_Stage_State_Unguarded(i, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
 		Set_DX8_Texture_Stage_State(i, D3DTSS_BORDERCOLOR, 0);
 //		Set_DX8_Texture_Stage_State(i, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
 //		Set_DX8_Texture_Stage_State(i, D3DTSS_MINFILTER, D3DTEXF_LINEAR);

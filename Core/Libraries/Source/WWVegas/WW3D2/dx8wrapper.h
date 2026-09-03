@@ -447,7 +447,40 @@ public:
 	static void Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigned value);
 	static void Set_DX8_Clip_Plane(DWORD Index, CONST float* pPlane);
 	static void Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURESTAGESTATETYPE state, unsigned value);
+	// The same write with no sampler guard. Set_Sampler decomposes a description through
+	// this, and the initial-state loop states the two addressing defaults through it; no
+	// third caller should exist.
+	static void Set_DX8_Stage_State_Unguarded(unsigned stage, D3DTEXTURESTAGESTATETYPE state, unsigned value);
+	// The seven stage states the sampler description owns. Writing one of them directly is
+	// how the engine used to say "linear, clamped", and is what Set_Sampler replaced.
+	static bool Is_Sampler_Stage_State(unsigned state);
 	static void Set_DX8_Texture(unsigned int stage, GfxTexture* texture);
+
+	/*
+	** How the texture at a slot is sampled, as one description rather than ten indexed
+	** state words.
+	**
+	** Set_Texture says *which* texture; this says *how*. They were the same call under
+	** D3D9 because a texture stage is both, and separating them is the piece of work that
+	** has to happen in the engine before a backend can bind an SRV at t# and a sampler
+	** object at s#. The slot number is shared by convention, not by necessity.
+	**
+	** Callers state a whole sampler, and the ordinary way to build one is to read the
+	** slot's current description and change what this pass means to change:
+	**
+	**     SamplerStateClass s = DX8Wrapper::Get_Sampler(stage);
+	**     s.Set_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR);
+	**     s.Set_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP);
+	**     DX8Wrapper::Set_Sampler(stage, s);
+	**
+	** That is deliberate rather than convenient. Filtering is inherited state in this
+	** engine -- a pass that sets minification and magnification and says nothing about the
+	** mip filter really does mean "leave the mip filter as it is" -- and a description
+	** built from nothing would silently overwrite what the previous pass established.
+	** Reading first makes the inheritance explicit and keeps it exact.
+	*/
+	static const SamplerStateClass & Get_Sampler(unsigned stage);
+	static void Set_Sampler(unsigned stage, const SamplerStateClass & sampler);
 
 	/*
 	** The direct drawers' entry points.
@@ -773,6 +806,7 @@ public:
 
 	static void Set_Vertex_Shader(DWORD vertex_shader);
 	static void Set_Pixel_Shader(DWORD pixel_shader);
+
 	// What is bound right now. For the callers that draw straight on the device after
 	// Apply_Render_State_Changes: whatever it left standing is what rasterises them.
 	static DWORD Get_Vertex_Shader() { return Vertex_Shader; }
@@ -1058,6 +1092,7 @@ protected:
 	static bool								world_identity;
 	static unsigned						RenderStates[256];
 	static unsigned						TextureStageStates[MAX_TEXTURE_STAGES][32];
+	static SamplerStateClass			Samplers[MAX_TEXTURE_STAGES];
 	static GfxTexture *	Textures[MAX_TEXTURE_STAGES];
 
 	// Deferred fixed-function state. See Flush_Fixed_Function_State in dx8wrapper.cpp for
@@ -2463,7 +2498,28 @@ WWINLINE void DX8Wrapper::Set_DX8_Clip_Plane(DWORD Index, CONST float* pPlane)
 	GFXCALL(Set_Clip_Plane( Index, pPlane ));
 }
 
+WWINLINE bool DX8Wrapper::Is_Sampler_Stage_State(unsigned state)
+{
+	switch (state) {
+		case D3DTSS_MINFILTER: case D3DTSS_MAGFILTER: case D3DTSS_MIPFILTER:
+		case D3DTSS_ADDRESSU:  case D3DTSS_ADDRESSV:  case D3DTSS_ADDRESSW:
+		case D3DTSS_MAXANISOTROPY:
+			return true;
+		default:
+			return false;
+	}
+}
+
 WWINLINE void DX8Wrapper::Set_DX8_Texture_Stage_State(unsigned stage, D3DTEXTURESTAGESTATETYPE state, unsigned value)
+{
+	// How a texture is filtered and addressed is a sampler description now, not seven
+	// indexed words. Set_Sampler is the only writer; see Get_Sampler for the shape a
+	// caller uses instead.
+	WWASSERT(!Is_Sampler_Stage_State((unsigned)state));
+	Set_DX8_Stage_State_Unguarded(stage, state, value);
+}
+
+WWINLINE void DX8Wrapper::Set_DX8_Stage_State_Unguarded(unsigned stage, D3DTEXTURESTAGESTATETYPE state, unsigned value)
 {
 	if (stage >= MAX_TEXTURE_STAGES)
 	{

@@ -463,11 +463,10 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		DX8Wrapper::Set_DX8_Texture(0,m_backgroundTexture->Peek_D3D_Texture());
 		// Point sampling and clamp: the comparison below is exact, so nothing may filter
 		// the neighbouring texels of the 8x8 block into it.
-		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_MINFILTER,D3DTEXF_POINT);
-		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_MAGFILTER,D3DTEXF_POINT);
-		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_MIPFILTER,D3DTEXF_NONE);
-		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ADDRESSU,D3DTADDRESS_CLAMP);
-		DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ADDRESSV,D3DTADDRESS_CLAMP);
+		DX8Wrapper::Set_Sampler(0, DX8Wrapper::Get_Sampler(0)
+			.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+			.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+			.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 
 		DWORD testData[BLOCK_SIZE*BLOCK_SIZE];
 		memset(testData,0xff,sizeof(testData));
@@ -680,12 +679,11 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 
 	DX8Wrapper::Set_Texture(0,m_backgroundTexture);
 	//Need these states in case texture is non-power-of-2
-	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
-	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ADDRESSW, D3DTADDRESS_CLAMP);
-	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+	DX8Wrapper::Set_Sampler(0, DX8Wrapper::Get_Sampler(0)
+		.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+		.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+		.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP)
+		.With_W_Address(SamplerStateClass::ADDRESS_CLAMP));
 	VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
 	DX8Wrapper::Set_Material(vmat);
 	REF_PTR_RELEASE(vmat);
