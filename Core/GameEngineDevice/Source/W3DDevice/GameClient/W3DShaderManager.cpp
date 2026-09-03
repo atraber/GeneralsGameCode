@@ -1740,12 +1740,16 @@ class TerrainShader2Stage : public W3DShaderInterface
 public:
 	float m_xSlidePerSecond ;	 ///< How far the clouds move per second.
 	float m_ySlidePerSecond ;	 ///< How far the clouds move per second.
-	float m_xOffset;
-	float m_yOffset;
+	// Where the weather has got to. This is simulation state, not a device resource, and it
+	// is initialised here rather than in init() because init() runs again on every device
+	// re-acquire -- alt-tab, a mode change, a Reset. Zeroing it there teleported the whole
+	// cloud field back to its opening position every time the player came back to the game.
+	float m_xOffset = 0.0f;
+	float m_yOffset = 0.0f;
 	// The programmable path drifts the two cloud layers in *world* units instead, so one
 	// wind speed reads the same however the layers are scaled.
-	float m_cloudWorldAX, m_cloudWorldAY;
-	float m_cloudWorldBX, m_cloudWorldBY;
+	float m_cloudWorldAX = 0.0f, m_cloudWorldAY = 0.0f;
+	float m_cloudWorldBX = 0.0f, m_cloudWorldBY = 0.0f;
 
 	virtual Int set(Int pass) override;		///<setup shader for the specified rendering pass.
 	virtual Int init() override;			///<perform any one time initialization and validation
@@ -1772,10 +1776,7 @@ Int TerrainShader2Stage::init()
 	//initialize settings for uv animated clouds
 	m_xSlidePerSecond = -0.02f;
 	m_ySlidePerSecond =  1.50f * m_xSlidePerSecond;
-	m_cloudWorldAX = m_cloudWorldAY = 0.0f;
-	m_cloudWorldBX = m_cloudWorldBY = 0.0f;
-	m_xOffset = 0;
-	m_yOffset = 0;
+	// The cloud offsets are deliberately not reset here -- see where they are declared.
 
 	//no special device validation needed - anything in our min spec should handle this.
 
