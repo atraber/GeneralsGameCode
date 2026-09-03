@@ -10,7 +10,9 @@
 // frame-buffer and raster state that the hardware applies after this shader, exactly as it
 // did after the fixed-function stages. None of it needs reproducing here.
 
-sampler BaseSampler : register(s0);
+#include "shadermodel.hlsli"
+
+DECLARE_SAMPLER(BaseSampler, 0);
 
 // x: 1 when stage 0's *colour* combine samples the texture, 0 when it does not.
 // y: 1 to desaturate (see below), 0 to pass the colour through.
@@ -42,9 +44,9 @@ struct PS_INPUT
     float2 texcoord : TEXCOORD0;
 };
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
-    float4 texel = tex2D(BaseSampler, input.texcoord);
+    float4 texel = SAMPLE_2D(BaseSampler, input.texcoord);
 
     // Folded out with a select rather than a multiply. The stage can be genuinely unbound,
     // and an unbound sampler reads undefined -- a NaN would survive being multiplied by

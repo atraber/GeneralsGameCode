@@ -19,6 +19,8 @@
 //    up to four directional lights (matching the engine's LightEnvironment),
 //  * when lighting is disabled, pass through the pre-lit vertex colour.
 
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c0);  // object -> clip space
 row_major float4x4 WorldView     : register(c4);  // object -> camera (view) space
 

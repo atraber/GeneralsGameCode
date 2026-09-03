@@ -19,10 +19,12 @@
 // saturate() is ps_1_1's per-instruction clamp; see the note in waterriver_ps.hlsl for why
 // the last one is no longer free.
 
-sampler2D WaterMap    : register(s0);
-sampler2D SparkleMap  : register(s1);
-sampler2D SparkleMap2 : register(s2);
-sampler2D ShroudMap   : register(s3);
+#include "shadermodel.hlsli"
+
+DECLARE_SAMPLER_2D(WaterMap, 0);
+DECLARE_SAMPLER_2D(SparkleMap, 1);
+DECLARE_SAMPLER_2D(SparkleMap2, 2);
+DECLARE_SAMPLER_2D(ShroudMap, 3);
 
 struct PS_INPUT
 {
@@ -33,12 +35,12 @@ struct PS_INPUT
     float2 uv3   : TEXCOORD3;
 };
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
-    float4 water    = tex2D(WaterMap,    input.uv0);
-    float4 sparkle  = tex2D(SparkleMap,  input.uv1);
-    float4 sparkle2 = tex2D(SparkleMap2, input.uv2);
-    float4 shroud   = tex2D(ShroudMap,   input.uv3);
+    float4 water    = SAMPLE_2D(WaterMap, input.uv0);
+    float4 sparkle  = SAMPLE_2D(SparkleMap, input.uv1);
+    float4 sparkle2 = SAMPLE_2D(SparkleMap2, input.uv2);
+    float4 shroud   = SAMPLE_2D(ShroudMap, input.uv3);
 
     float4 result = saturate(input.color * water);
     result.rgb = saturate(sparkle.rgb * sparkle2.rgb + result.rgb);

@@ -11,13 +11,15 @@
 // of this frame bloom" is a question about the frame, and an answer that hides it is
 // half an answer.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 
-sampler2D BrightSampler : register(s0);
+DECLARE_SAMPLER_2D(BrightSampler, 0);
 
-float4 main(float2 uv : TEXCOORD0) : COLOR
+float4 main(float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float3 c    = tex2D(BrightSampler, uv).rgb;
+    float3 c    = SAMPLE_2D(BrightSampler, uv).rgb;
     float  luma = dot(c, LUMA);
 
     // bloom_bright_ps multiplies the pixel by a contribution that is exactly zero below

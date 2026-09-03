@@ -16,10 +16,12 @@
 // avoid. So under HDR the scene arrives here straight from the floating-point target, not
 // from the tone mapped copy.
 
+#include "shadermodel.hlsli"
+
 #include "tonemap.hlsli"
 
-sampler2D SceneSampler : register(s0);
-sampler2D BloomSampler : register(s1);
+DECLARE_SAMPLER_2D(SceneSampler, 0);
+DECLARE_SAMPLER_2D(BloomSampler, 1);
 
 // x = exposure. y = 1 when the scene sampled above is the floating-point one and this pass
 //     owns the tone map; 0 when the scene is already the displayable 8-bit image and the
@@ -29,10 +31,10 @@ float4 ToneMapCtl : register(c0);
 // Bloom tuning -- edit and recompile the shader to tweak (no engine rebuild needed).
 static const float BLOOM_INTENSITY = 1.00;  // how strongly the glow is added on top
 
-float4 main(float2 uvScene : TEXCOORD0, float2 uvBloom : TEXCOORD1) : COLOR
+float4 main(float2 uvScene : TEXCOORD0, float2 uvBloom : TEXCOORD1) : PS_TARGET
 {
-    float3 scene = tex2D(SceneSampler, uvScene).rgb;
-    float3 bloom = tex2D(BloomSampler, uvBloom).rgb * BLOOM_INTENSITY;
+    float3 scene = SAMPLE_2D(SceneSampler, uvScene).rgb;
+    float3 bloom = SAMPLE_2D(BloomSampler, uvBloom).rgb * BLOOM_INTENSITY;
 
     [branch] if (ToneMapCtl.y > 0.5)
     {

@@ -6,15 +6,17 @@
 // texture's colour through for the same non-reason. Returning black states that plainly
 // instead of implying the colour matters.
 
-sampler MaskSampler : register(s0);
+#include "shadermodel.hlsli"
+
+DECLARE_SAMPLER(MaskSampler, 0);
 
 struct PS_INPUT
 {
     float2 texcoord : TEXCOORD0;
 };
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
-    float4 texel = tex2D(MaskSampler, input.texcoord);
+    float4 texel = SAMPLE_2D(MaskSampler, input.texcoord);
     return float4(0.0, 0.0, 0.0, texel.a);
 }

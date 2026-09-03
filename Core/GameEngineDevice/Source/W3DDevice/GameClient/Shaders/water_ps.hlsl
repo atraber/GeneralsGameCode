@@ -30,17 +30,19 @@
 // gamma frame buffer, and the terrain and roads underneath it were shaded the same way, so
 // a physically-linear result here would be the only thing in the scene that did not match.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 #include "shadow.hlsli"
 
-sampler2D   WaterTex   : register(s0);
-sampler2D   Refraction : register(s1);
-sampler2D   NoiseTex   : register(s2);
-sampler2D   EdgeTex    : register(s3);
-samplerCUBE EnvSampler : register(s4);
-sampler2D   ShadowMap  : register(s5);
-sampler2D   ShroudTex  : register(s6);
-sampler2D   SceneDepth : register(s7);
+DECLARE_SAMPLER_2D(WaterTex, 0);
+DECLARE_SAMPLER_2D(Refraction, 1);
+DECLARE_SAMPLER_2D(NoiseTex, 2);
+DECLARE_SAMPLER_2D(EdgeTex, 3);
+DECLARE_SAMPLER_CUBE(EnvSampler, 4);
+DECLARE_SAMPLER_2D(ShadowMap, 5);
+DECLARE_SAMPLER_2D(ShroudTex, 6);
+DECLARE_SAMPLER_2D(SceneDepth, 7);
 
 // x = 1 for river water, 0 for standing; y = sparkle strength; z = 1 when the depth
 // prepass ran (0 makes the depth terms stand down rather than read an unbound stage);
@@ -157,7 +159,7 @@ float computeShadow(float3 worldPos)
     // is a horizontal plane, so its depth gradient in shadow-map UV is a constant the
     // blanket bias already covers. Fitting one per pixel would spend ddx/ddy and a divide
     // to rediscover that. Passing zero makes the filter fall back to the constant bias.
-    return lerp(1.0, shadowFilter8(ShadowMap, uv, ndc.z, ShadowParams.z,
+    return lerp(1.0, shadowFilter8(SAMPLER_2D_ARG(ShadowMap), uv, ndc.z, ShadowParams.z,
                                    ShadowParams.w, float2(0.0, 0.0), ShadowParams.x),
                 ShadowParams.y);
 }
@@ -220,7 +222,7 @@ float3 waveNormal(float2 p, float t, float steepness, float freq, float speed, f
     return normalize(float3(-grad * (steepness / wsum) * 6.0, 1.0));
 }
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
     // ---------------------------------------------------------------------------
     // The legacy base. Reproduces the two ps.1.1 combines exactly.
@@ -228,16 +230,16 @@ float4 main(PS_INPUT input) : COLOR
     float2 noiseUv  = input.worldPos.xy * NoiseUV.x + NoiseUV.y;
     float2 shroudUv = input.worldPos.xy * ShroudUV.xy + ShroudUV.zw;
 
-    float4 tex    = tex2D(WaterTex, input.uv0);
-    float3 noise  = tex2D(NoiseTex, noiseUv).rgb;
-    float4 edge   = tex2D(EdgeTex, input.uv1);
-    float3 shroud = tex2D(ShroudTex, shroudUv).rgb;
+    float4 tex    = SAMPLE_2D(WaterTex, input.uv0);
+    float3 noise  = SAMPLE_2D(NoiseTex, noiseUv).rgb;
+    float4 edge   = SAMPLE_2D(EdgeTex, input.uv1);
+    float3 shroud = SAMPLE_2D(ShroudTex, shroudUv).rgb;
 
     // The legacy shimmer, rebuilt from the noise field at two scales drifting against each
     // other. It used to be a dedicated sparkle texture on stage 1; that stage now carries
     // the refraction grab, which is worth more than the overlay was. The product of two
     // decorrelated scales gives the same sparse bright speckle the pair used to.
-    float3 noise2  = tex2D(NoiseTex, noiseUv * 2.7 - NoiseUV.y * 1.6).rgb;
+    float3 noise2  = SAMPLE_2D(NoiseTex, noiseUv * 2.7 - NoiseUV.y * 1.6).rgb;
     float3 sparkle = noise * noise2 * WaterCtl.y;
 
     float3 baseCol;
@@ -275,7 +277,7 @@ float4 main(PS_INPUT input) : COLOR
     float bedZ    = surfaceZ + pathLen;
     if (WaterCtl.z > 0.5)
     {
-        bedZ    = viewDepth(unpackDepth(tex2D(SceneDepth, screenUv)));
+        bedZ    = viewDepth(unpackDepth(SAMPLE_2D(SceneDepth, screenUv)));
         // Clamped at both ends. Below zero is the prepass and the z-buffer disagreeing by
         // a hair at a silhouette; the ceiling is for water over a texel the prepass never
         // rasterised, which reads as the far plane and would otherwise ask for absorption
@@ -321,7 +323,7 @@ float4 main(PS_INPUT input) : COLOR
     // which way it is facing, and the horizon brightening comes out of the Fresnel above
     // for free once there is something on the other end of it.
     float3 R       = reflect(-V, N);
-    float3 reflCol = texCUBE(EnvSampler, R).rgb * shroud;
+    float3 reflCol = SAMPLE_CUBE(EnvSampler, R).rgb * shroud;
 
     // Sun glint. Blinn-Phong rather than a microfacet lobe: the normal here is analytic
     // and already smooth, so the extra terms of a GGX would be describing a roughness
@@ -381,8 +383,8 @@ float4 main(PS_INPUT input) : COLOR
     {
         float band = 1.0 - saturate(vertDepth / FoamCtl.x);   // 1 at the waterline
         float2 fuv = input.worldPos.xy * FoamCtl.z + WaterCtl.w * FoamCtl.w;
-        float  fa  = tex2D(NoiseTex, fuv).r;
-        float  fb  = tex2D(NoiseTex, fuv * 1.9 - WaterCtl.w * FoamCtl.w * 0.6).r;
+        float  fa  = SAMPLE_2D(NoiseTex, fuv).r;
+        float  fb  = SAMPLE_2D(NoiseTex, fuv * 1.9 - WaterCtl.w * FoamCtl.w * 0.6).r;
         // Surf runs up the beach and drains back rather than sitting as a fixed ring, so
         // the band edge is pushed in and out by one of the swell's own phases. Sharing the
         // wave field's frequency is what keeps the two looking like one body of water --
@@ -429,13 +431,13 @@ float4 main(PS_INPUT input) : COLOR
         // this, a unit standing between the camera and this pixel gets dragged across the
         // surface by the offset -- the classic smear that gives hand-rolled refraction
         // away, and the reason the test is on depth rather than on the offset's length.
-        float ozRaw = viewDepth(unpackDepth(tex2Dlod(SceneDepth, float4(ouv, 0, 0))));
+        float ozRaw = viewDepth(unpackDepth(SAMPLE_2D_LOD(SceneDepth, ouv, 0)));
         if (WaterCtl.z < 0.5 || ozRaw < surfaceZ || ouv.x < 0.0 || ouv.x > 1.0 ||
             ouv.y < 0.0 || ouv.y > 1.0)
             ouv = screenUv;
 
-        float3 bent   = tex2D(Refraction, ouv).rgb;
-        float3 plain  = tex2D(Refraction, screenUv).rgb;
+        float3 bent   = SAMPLE_2D(Refraction, ouv).rgb;
+        float3 plain  = SAMPLE_2D(Refraction, screenUv).rgb;
         float3 absorb = exp(-pathLen * AbsorbCtl.rgb);
         refractDelta  = bent * absorb - plain;
     }

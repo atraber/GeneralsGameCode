@@ -10,6 +10,8 @@
 // world-space environment cubemap -- so the wrapper feeds it the plain world
 // matrix and rotates the light directions to match.
 
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c0);
 row_major float4x4 World         : register(c4);
 

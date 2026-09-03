@@ -12,6 +12,8 @@
 // which comes to the same thing (and to the same thing the terrain computes, which is
 // what keeps a cloud shadow continuous across the edge of a road).
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 
 row_major float4x4 WorldViewProj : register(c0);

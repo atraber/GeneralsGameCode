@@ -14,16 +14,18 @@
 //
 // So the engine passes the threshold rather than the shader assuming one.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 
-sampler2D SceneSampler : register(s0);
+DECLARE_SAMPLER_2D(SceneSampler, 0);
 
 // x: luminance above which a pixel blooms. y: width of the soft ramp above it.
 float4 BloomThreshold : register(c0);
 
-float4 main(float2 uv : TEXCOORD0) : COLOR
+float4 main(float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float3 c    = tex2D(SceneSampler, uv).rgb;
+    float3 c    = SAMPLE_2D(SceneSampler, uv).rgb;
     float  luma = dot(c, LUMA);
 
     // Smooth ramp from the threshold upward so the bloom edge is not a hard cut.

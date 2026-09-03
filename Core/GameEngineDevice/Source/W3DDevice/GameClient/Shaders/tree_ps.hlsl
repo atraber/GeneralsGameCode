@@ -13,10 +13,12 @@
 // The blend state around it is unchanged and still does the work it always did: SRCBLEND_ONE
 // / DSTBLEND_ZERO with the alpha test enabled, i.e. opaque with a cutout.
 
+#include "shadermodel.hlsli"
+
 #include "alphatest.hlsli"
 
-sampler2D TreeSampler   : register(s0);
-sampler2D ShroudSampler : register(s1);
+DECLARE_SAMPLER_2D(TreeSampler, 0);
+DECLARE_SAMPLER_2D(ShroudSampler, 1);
 
 // x = 1 when a shroud texture is bound, 0 when there is none.
 //
@@ -29,12 +31,12 @@ float4 ShroudCtl : register(c0);
 
 float4 main(float4 color    : COLOR0,
             float2 texcoord : TEXCOORD0,
-            float2 shroudUV : TEXCOORD1) : COLOR
+            float2 shroudUV : TEXCOORD1) : PS_TARGET
 {
-    float4 tex = tex2D(TreeSampler, texcoord);
+    float4 tex = SAMPLE_2D(TreeSampler, texcoord);
 
     float3 shroud = lerp(float3(1.0, 1.0, 1.0),
-                         tex2D(ShroudSampler, shroudUV).rgb,
+                         SAMPLE_2D(ShroudSampler, shroudUV).rgb,
                          ShroudCtl.x);
 
     // Alpha is the texture's cutout times the vertex alpha, and the shroud stage does not

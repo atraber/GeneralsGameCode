@@ -16,15 +16,17 @@
 // shader relied on that, since all three inputs are already in range and the lerp cannot
 // leave it.
 
-sampler2D SceneSampler : register(s0);
+#include "shadermodel.hlsli"
+
+DECLARE_SAMPLER_2D(SceneSampler, 0);
 
 float4 LumaWeights : register(c0);
 float4 FilterColor : register(c1);
 float4 FadeAmount  : register(c2);
 
-float4 main(float2 uv : TEXCOORD0) : COLOR
+float4 main(float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float4 scene = tex2D(SceneSampler, uv);
+    float4 scene = SAMPLE_2D(SceneSampler, uv);
 
     float  luma   = dot(scene.rgb, LumaWeights.rgb);
     float3 tinted = luma * FilterColor.rgb;

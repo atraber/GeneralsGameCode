@@ -10,7 +10,9 @@
 // hair under 1.0. Shown raw, a depth buffer that is completely wrong and one that is
 // completely right look identical over most of the screen.
 
-sampler2D DepthSampler : register(s0);
+#include "shadermodel.hlsli"
+
+DECLARE_SAMPLER_2D(DepthSampler, 0);
 
 // x = projection _33, y = projection _43. Together these invert the projection's depth
 // term. Handed over as the raw matrix elements rather than as a recovered near/far pair,
@@ -34,9 +36,9 @@ float unpackDepth(float4 packed)
     return dot(packed.rgb, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
 }
 
-float4 main(float2 uv : TEXCOORD0) : COLOR
+float4 main(float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float4 packed = tex2D(DepthSampler, uv);
+    float4 packed = SAMPLE_2D(DepthSampler, uv);
     float  ndcZ   = unpackDepth(packed);
 
     // Untouched texels keep the clear value. Flagged rather than drawn, for the same

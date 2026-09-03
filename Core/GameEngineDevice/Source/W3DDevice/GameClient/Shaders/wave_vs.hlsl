@@ -20,6 +20,8 @@
 // Composite world*view*projection for this patch, uploaded already transposed. Declared
 // row_major and multiplied matrix-first so this reproduces the assembly's four dp4s against
 // c2..c5 exactly; mul(v, M) would silently transpose it. Same convention as tree_vs.
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c2);
 
 // Clip space -> reflection texture space, as a scale and bias pair rather than a matrix:

@@ -17,6 +17,8 @@
 // arrive as a pair of vectors rather than a whole matrix -- the same convention unit_vs
 // uses to find the ground-plane position for cloud shadows.
 
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c0);  // object -> clip space
 float4 WorldAxisX : register(c4);                 // object -> world X
 float4 WorldAxisY : register(c5);                 // object -> world Y

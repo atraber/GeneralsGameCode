@@ -25,6 +25,8 @@
 // coordinate set, which ui_vs does not: the bloom passes sample the scene and the bloom
 // target with different coordinates in a single draw.
 
+#include "shadermodel.hlsli"
+
 row_major float4x4 PixelsToClip : register(c0);
 
 // The FVF doubles as the vertex declaration, so every input declared here must be present in

@@ -11,13 +11,15 @@
 // tile says whether the field is uniform, which is what decides whether the frame is
 // evidence of anything.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 
-sampler2D ShroudSampler : register(s0);
+DECLARE_SAMPLER_2D(ShroudSampler, 0);
 
-float4 main(float2 uv : TEXCOORD0) : COLOR
+float4 main(float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float3 shroud = tex2D(ShroudSampler, uv).rgb;
+    float3 shroud = SAMPLE_2D(ShroudSampler, uv).rgb;
     float  level  = dot(shroud, LUMA);
 
     // The field's own colour, not a remap of it. The shroud modulates scene colour, so it

@@ -13,17 +13,19 @@
 // serves the *other* consumers, which want the scene without the glow. Both apply the same
 // curve out of tonemap.hlsli, which is why the curve lives there.
 
+#include "shadermodel.hlsli"
+
 #include "tonemap.hlsli"
 
-sampler2D SceneSampler : register(s0);
+DECLARE_SAMPLER_2D(SceneSampler, 0);
 
 // x = exposure applied before the curve. y is unused here (the composite uses it to switch
 // the curve off when the scene reaching it is already 8-bit).
 float4 ToneMapCtl : register(c0);
 
-float4 main(float2 uv : TEXCOORD0) : COLOR
+float4 main(float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float4 scene = tex2D(SceneSampler, uv);
+    float4 scene = SAMPLE_2D(SceneSampler, uv);
 
     // Alpha is carried through untouched. It is not brightness and must not be curved: the
     // soft water edge writes the frame buffer's destination alpha during the scene, and the

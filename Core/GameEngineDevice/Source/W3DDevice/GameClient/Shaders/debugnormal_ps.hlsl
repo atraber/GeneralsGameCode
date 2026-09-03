@@ -5,9 +5,11 @@
 // facing the camera is pale blue, facing up in view space is green, facing right is red,
 // and anything facing away is dark.
 
+#include "shadermodel.hlsli"
+
 struct PS_INPUT { float3 normal : TEXCOORD0; };
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
     // Normalised here rather than in the vertex shader. Interpolating unit vectors across
     // a triangle does not produce unit vectors, and the shortfall is largest exactly where

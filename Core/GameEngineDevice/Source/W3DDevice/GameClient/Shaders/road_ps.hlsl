@@ -8,13 +8,15 @@
 // road's soft edges) and the vertex alpha (segment fade) have to reach that blend, where
 // the terrain simply writes 1.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 #include "shadow.hlsli"
 
-sampler BaseSampler  : register(s0);
-sampler CloudSampler : register(s2);
-sampler NoiseSampler : register(s3);
-sampler2D ShadowMap    : register(s5);   // directional shadow map (packed depth)
+DECLARE_SAMPLER(BaseSampler, 0);
+DECLARE_SAMPLER(CloudSampler, 2);
+DECLARE_SAMPLER(NoiseSampler, 3);
+DECLARE_SAMPLER_2D(ShadowMap, 5);   // directional shadow map (packed depth)
 
 float4 OverlayEnable : register(c0); // x = cloud on, y = noise on, z = cloud shade strength
 float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 = off), z = texel
@@ -38,8 +40,8 @@ float3 cloudShade(float4 cloudUV, float enable, float strength)
 {
     // The texture stores brightness so the fixed-function fallback can still multiply by
     // it; coverage is its complement.
-    float a = 1.0 - tex2D(CloudSampler, cloudUV.xy).r;
-    float b = 1.0 - tex2D(CloudSampler, cloudUV.zw).r;
+    float a = 1.0 - SAMPLE_2D(CloudSampler, cloudUV.xy).r;
+    float b = 1.0 - SAMPLE_2D(CloudSampler, cloudUV.zw).r;
     float coverage = 1.0 - (1.0 - a) * (1.0 - b);
     float lit = 1.0 - coverage * strength * enable;
     return lerp(CLOUD_SHADE_TINT, float3(1.0, 1.0, 1.0), lit);
@@ -72,20 +74,20 @@ float roadShadow(float4 lightPos)
     // rather than on a normal offset to survive a kernel wider than a texel.
     float2 dzduv = shadowReceiverGradient(uv, ndc.z);
 
-    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+    float lit = shadowFilter16(SAMPLER_2D_ARG(ShadowMap), uv, ndc.z, ShadowParams.z,
                                ShadowParams.w, dzduv, ShadowParams.x);
     return saturate(lerp(1.0, lit, ShadowParams.y));
 }
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
-    float4 base = tex2D(BaseSampler, input.uv0);
+    float4 base = SAMPLE_2D(BaseSampler, input.uv0);
     float3 col  = base.rgb * input.color.rgb;
 
     // Multiplicative overlays, as the fixed-function road pass applied them (stage 1 and
     // stage 2, both MODULATE against the running colour). Off layers lerp to white.
 
-    float3 noiseTex = tex2D(NoiseSampler, input.noiseUV).rgb;
+    float3 noiseTex = SAMPLE_2D(NoiseSampler, input.noiseUV).rgb;
     float3 cloud = cloudShade(input.cloudUV, OverlayEnable.x, OverlayEnable.z);
     float3 noise = lerp(float3(1.0, 1.0, 1.0), noiseTex, OverlayEnable.y);
 

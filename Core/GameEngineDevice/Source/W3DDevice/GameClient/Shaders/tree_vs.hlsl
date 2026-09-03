@@ -22,6 +22,8 @@
 // `m4x4 oPos, r1, c4` exactly: that instruction dots the position against c4, c5, c6, c7 in
 // turn, and mul(M, v) on a row_major matrix is the same four dot products. Writing the more
 // familiar mul(v, M) here would silently transpose the transform.
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c4);
 
 // Sway offsets, indexed by the vertex's sway type. Entry 0 is a zero vector -- trees are

@@ -18,16 +18,18 @@
 // (s4), re-baked from the scene's dominant light/ambient as time-of-day drifts,
 // supplies the Fresnel-weighted reflection term.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 #include "shadow.hlsli"
 #include "alphatest.hlsli"
 
-sampler2D   AlbedoSampler : register(s0);
-sampler2D   OrmSampler    : register(s1);
-samplerCUBE EnvSampler    : register(s4);   // shared environment cubemap (reflections)
-sampler2D   ShadowMap     : register(s5);   // directional shadow map (packed depth)
-sampler2D   SceneColor    : register(s6);   // previous frame's resolved scene
-sampler2D   SceneDepth    : register(s7);   // this frame's camera-view packed depth
+DECLARE_SAMPLER_2D(AlbedoSampler, 0);
+DECLARE_SAMPLER_2D(OrmSampler, 1);
+DECLARE_SAMPLER_CUBE(EnvSampler, 4);   // shared environment cubemap (reflections)
+DECLARE_SAMPLER_2D(ShadowMap, 5);   // directional shadow map (packed depth)
+DECLARE_SAMPLER_2D(SceneColor, 6);   // previous frame's resolved scene
+DECLARE_SAMPLER_2D(SceneDepth, 7);   // this frame's camera-view packed depth
 
 float4 LightDir0     : register(c0);   // xyz = direction toward the light
 float4 LightDir1     : register(c1);
@@ -59,7 +61,7 @@ float4 ShadowMeshParams : register(c23);
 // here. The tint is a look, picked against the terrain in the space the terrain works in;
 // multiplying linear by 0.66 is a very different darkening from multiplying sRGB by 0.66,
 // and matching the ground matters more than staying in linear for one final multiply.
-sampler2D   CloudSampler : register(s2);
+DECLARE_SAMPLER_2D(CloudSampler, 2);
 float4 CloudScroll : register(c24);  // xy = layer A drift, zw = layer B (world units)
 float4 CloudCtl    : register(c25);  // x = cloud layer on, y = shade strength
 
@@ -69,8 +71,8 @@ float3 cloudShade(float3 worldPos)
     float2 uvB = (worldPos.xy + CloudScroll.zw) / CLOUD_PERIOD_B;
     // The field stores brightness so the fixed-function path can multiply by it directly;
     // coverage is its complement.
-    float a = 1.0 - tex2D(CloudSampler, uvA).r;
-    float b = 1.0 - tex2D(CloudSampler, uvB).r;
+    float a = 1.0 - SAMPLE_2D(CloudSampler, uvA).r;
+    float b = 1.0 - SAMPLE_2D(CloudSampler, uvB).r;
     float coverage = 1.0 - (1.0 - a) * (1.0 - b);
     float lit = 1.0 - coverage * CloudCtl.y * CloudCtl.x;
     return lerp(CLOUD_SHADE_TINT, float3(1.0, 1.0, 1.0), lit);
@@ -156,7 +158,7 @@ float computeShadow(float3 worldPos, float3 worldNormal)
     // world units up on the CPU, and the sun frustum is fitted to the camera, so a texel is
     // worth a different amount of ground at each zoom. A fixed value large enough for the
     // widest frustum erases small casters' shadows entirely once zoomed in.
-    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+    float lit = shadowFilter16(SAMPLER_2D_ARG(ShadowMap), uv, ndc.z, ShadowParams.z,
                                ShadowParams.w, dzduv, ShadowMeshParams.y);
     return lerp(1.0, lit, ShadowParams.y);
 }
@@ -239,7 +241,7 @@ float4 traceSsr(float3 worldPos, float3 R, out float hitMask)
         // implicit derivatives an ordinary sample needs are undefined (and fxc refuses
         // to compile them). The depth is point-sampled anyway and the colour wants no
         // mip selection here, so an explicit LOD 0 costs nothing.
-        float sceneZ = viewDepth(unpackDepth(tex2Dlod(SceneDepth, float4(uv, 0, 0))));
+        float sceneZ = viewDepth(unpackDepth(SAMPLE_2D_LOD(SceneDepth, uv, 0)));
         // The ray's own distance needs no conversion at all: under this projection the
         // clip w *is* the view-space z. Only the stored side was ever non-linear.
         float rayZ   = clip.w;
@@ -257,7 +259,7 @@ float4 traceSsr(float3 worldPos, float3 R, out float hitMask)
                 float3 mid = 0.5 * (lo + hi);
                 float4 mc  = mul(float4(mid, 1.0), CameraVP);
                 float2 muv = (mc.xy / mc.w) * float2(0.5, -0.5) + 0.5;
-                float  msz = viewDepth(unpackDepth(tex2Dlod(SceneDepth, float4(muv, 0, 0))));
+                float  msz = viewDepth(unpackDepth(SAMPLE_2D_LOD(SceneDepth, muv, 0)));
                 if (mc.w > msz) hi = mid; else lo = mid;
             }
             float4 hc  = mul(float4(hi, 1.0), CameraVP);
@@ -269,7 +271,7 @@ float4 traceSsr(float3 worldPos, float3 R, out float hitMask)
             // is more noticeable than the cubemap it would have replaced.
             float2 edge = min(huv, 1.0 - huv);
             float  fade = saturate(min(edge.x, edge.y) * 10.0);
-            return float4(tex2Dlod(SceneColor, float4(huv, 0, 0)).rgb, fade);
+            return float4(SAMPLE_2D_LOD(SceneColor, huv, 0).rgb, fade);
         }
     }
     return 0.0;
@@ -344,15 +346,15 @@ float3 DirectLight(float3 N, float3 V, float3 L, float3 radiance,
     return (kd * diffuseColor / PI + spec) * radiance * NdotL;
 }
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
-    float4 albedoTex = tex2D(AlbedoSampler, input.texcoord);
+    float4 albedoTex = SAMPLE_2D(AlbedoSampler, input.texcoord);
     // Both factors are authored in sRGB, so both are converted. Modulating a linear albedo by
     // a raw sRGB tint applies the tint at the wrong strength -- and always the wrong way for a
     // team colour, which is the only thing that sets MatAmbient to anything but white here.
     float3 albedo    = SrgbToLinear(albedoTex.rgb) * SrgbToLinear(MatAmbient.rgb);
 
-    float4 orm       = tex2D(OrmSampler, input.texcoord);
+    float4 orm       = SAMPLE_2D(OrmSampler, input.texcoord);
     float  ao        = orm.r;
     // The map decides. saturate() only keeps out-of-range texels in [0,1]; there is no
     // artistic scaling here. A map that reads wrong gets fixed in the map, not hidden
@@ -458,7 +460,7 @@ float4 main(PS_INPUT input) : COLOR
     //   ENV_DIFFUSE_IBL  0 = engine ambient only (previous behaviour), 1 = fully directional
     #define ENV_DIFFUSE_IBL     0.60
     #define ENV_IRRADIANCE_LOD  5.0
-    float3 envIrradiance = texCUBElod(EnvSampler, float4(N, ENV_IRRADIANCE_LOD)).rgb;
+    float3 envIrradiance = SAMPLE_CUBE_LOD(EnvSampler, N, ENV_IRRADIANCE_LOD).rgb;
     float3 envRelative   = envIrradiance / max(EnvAverage.rgb, 0.0001);
     float3 ambientLight  = SceneAmbient.rgb * lerp(1.0, envRelative, ENV_DIFFUSE_IBL);
     float3 ambient   = diffuseColor * ambientLight * ao;
@@ -468,7 +470,7 @@ float4 main(PS_INPUT input) : COLOR
     float3 R       = reflect(-V, N);
     // Kept separate from envCol below: SSR overwrites envCol where it finds a hit, so
     // this is the only place the cubemap's own answer survives for the debug modes.
-    float3 cubeCol = texCUBE(EnvSampler, R).rgb;
+    float3 cubeCol = SAMPLE_CUBE(EnvSampler, R).rgb;
     float3 envCol  = cubeCol;
     float  NdotV   = saturate(dot(N, V));
     float3 Fenv    = F_Schlick(NdotV, F0);
@@ -575,8 +577,8 @@ float4 main(PS_INPUT input) : COLOR
         //           length or the thickness is wrong, not the plumbing.
         float4 selfClip = mul(float4(input.worldPos, 1.0), CameraVP);
         float2 selfUv   = (selfClip.xy / selfClip.w) * float2(0.5, -0.5) + 0.5;
-        float  selfDep  = unpackDepth(tex2Dlod(SceneDepth, float4(selfUv, 0, 0)));
-        float3 selfCol  = tex2Dlod(SceneColor, float4(selfUv, 0, 0)).rgb;
+        float  selfDep  = unpackDepth(SAMPLE_2D_LOD(SceneDepth, selfUv, 0));
+        float3 selfCol  = SAMPLE_2D_LOD(SceneColor, selfUv, 0).rgb;
 
         float ssrHit;
         float4 ssr = traceSsr(input.worldPos, R, ssrHit);
@@ -593,7 +595,7 @@ float4 main(PS_INPUT input) : COLOR
         // flat sky-and-ground gradient is the cubemap alone.
         float ssrHit;
         float4 ssr = traceSsr(input.worldPos, R, ssrHit);
-        float3 mirror = lerp(texCUBE(EnvSampler, R).rgb, SrgbToLinear(ssr.rgb), ssr.a);
+        float3 mirror = lerp(SAMPLE_CUBE(EnvSampler, R).rgb, SrgbToLinear(ssr.rgb), ssr.a);
         return float4(LinearToSrgb(mirror), 1.0);
     }
 #elif PBR_DEBUG_MODE == 10
@@ -626,7 +628,7 @@ float4 main(PS_INPUT input) : COLOR
         //   red darkening with distance, G/B banding finely across surfaces -- working
         //   flickering noise     -- not bound at all, and every reading so far has been
         //                           whatever happened to be in that sampler
-        return float4(tex2Dlod(SceneDepth, float4(selfUv, 0, 0)).rgb, 1.0);
+        return float4(SAMPLE_2D_LOD(SceneDepth, selfUv, 0).rgb, 1.0);
     }
 #elif PBR_DEBUG_MODE == 9
     {
@@ -635,7 +637,7 @@ float4 main(PS_INPUT input) : COLOR
         // means the capture ran once and stopped; black means it never ran.
         float4 selfClip = mul(float4(input.worldPos, 1.0), CameraVP);
         float2 selfUv   = (selfClip.xy / selfClip.w) * float2(0.5, -0.5) + 0.5;
-        return float4(tex2Dlod(SceneColor, float4(selfUv, 0, 0)).rgb, 1.0);
+        return float4(SAMPLE_2D_LOD(SceneColor, selfUv, 0).rgb, 1.0);
     }
 #elif PBR_DEBUG_MODE == 11 || PBR_DEBUG_MODE == 12
     {
@@ -659,7 +661,7 @@ float4 main(PS_INPUT input) : COLOR
         float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
             return float4(1.0, 0.0, 0.0, 1.0);
-        float stored = unpackDepth(tex2D(ShadowMap, uv));
+        float stored = unpackDepth(SAMPLE_2D(ShadowMap, uv));
         return float4(0.0, saturate(ndc.z), saturate(stored), 1.0);
     }
 #elif PBR_DEBUG_MODE == 15

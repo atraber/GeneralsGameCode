@@ -12,6 +12,8 @@
 // one in pixel coordinates, say) then routes here unchanged instead of silently drawing
 // nothing.
 
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c0);  // clip space; identity in practice
 
 // The FVF doubles as the vertex declaration, so every input declared here must be present

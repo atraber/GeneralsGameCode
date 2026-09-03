@@ -5,13 +5,21 @@
 // vertex format (position is always the first element). SunVP = sun view * ortho
 // projection; World is the per-draw object transform.
 
-row_major float4x4 SunVP : register(c0);
-row_major float4x4 World : register(c4);
+#include "shadermodel.hlsli"
+
+CONSTANTS_BEGIN(ShadowDepthVsConstants)
+row_major float4x4 SunVP : CREGISTER(0);
+row_major float4x4 World : CREGISTER(4);
+CONSTANTS_END
 
 // The texture coordinates ride along so the pixel shader can read the base texture's
 // alpha: cut-out foliage has to cast its silhouette rather than its quad.
+//
+// The input position stays POSITION -- it names an element of the vertex layout, and that
+// is the same in both models. Only the position handed on to the rasteriser becomes
+// SV_POSITION.
 struct VS_INPUT  { float4 position : POSITION; float2 texcoord : TEXCOORD0; };
-struct VS_OUTPUT { float4 position : POSITION; float4 lightPos : TEXCOORD0;
+struct VS_OUTPUT { float4 position : VS_POSITION; float4 lightPos : TEXCOORD0;
                    float2 texcoord : TEXCOORD1; };
 
 VS_OUTPUT main(VS_INPUT input)

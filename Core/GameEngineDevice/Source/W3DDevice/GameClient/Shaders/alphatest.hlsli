@@ -32,6 +32,8 @@
 // all and is gone. If the water path is ever wanted, this is the constant that has
 // to grow a mode -- the census is what would say so.
 
+#include "shadermodel.hlsli"
+
 #ifndef RTS_SHADER_ALPHATEST_HLSLI
 #define RTS_SHADER_ALPHATEST_HLSLI
 

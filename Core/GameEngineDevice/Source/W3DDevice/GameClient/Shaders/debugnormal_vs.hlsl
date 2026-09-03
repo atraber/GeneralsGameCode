@@ -19,6 +19,8 @@
 // Deliberately the same registers unit_vs declares, so this shader can be substituted for
 // it without re-uploading anything: the routing block has already put this draw's matrices
 // in c0 and c4 by the time the substitution happens. Keep these in step with unit_vs.
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c0);  // object -> clip space
 row_major float4x4 WorldView     : register(c4);  // object -> camera space
 

@@ -5,9 +5,11 @@
 // sampleable, so the lit shaders unpack this instead. Matching unpack lives in the
 // unit / terrain pixel shaders.
 
+#include "shadermodel.hlsli"
+
 #include "alphatest.hlsli"
 
-sampler BaseSampler : register(s0);   // the caster's own texture, for its alpha
+DECLARE_SAMPLER(BaseSampler, 0);   // the caster's own texture, for its alpha
 
 // x = alpha below which a texel casts nothing.
 //
@@ -57,12 +59,12 @@ float bayer4x4(float2 vpos)
     return (m2hi + 4.0 * m2lo + 0.5) / 16.0;
 }
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
     // Clamp below 1.0: packDepth(1.0) wraps to (0,0,0) which unpacks to 0 (near),
     // which would make far geometry cast false shadows.
     float depth = min(input.lightPos.z / input.lightPos.w, 0.9999);
-    float texAlpha = tex2D(BaseSampler, input.texcoord).a;
+    float texAlpha = SAMPLE_2D(BaseSampler, input.texcoord).a;
 
     if (ShadowCastParams.z > 0.0)
     {

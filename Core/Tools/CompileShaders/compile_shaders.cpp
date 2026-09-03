@@ -63,13 +63,21 @@ struct ID3DBlobLite : public IUnknownLite
 	virtual SIZE_T __stdcall GetBufferSize() = 0;
 };
 
-// pDefines and pInclude are typed void* because this passes NULL and the standard
-// include handler respectively, and neither needs the real struct definitions.
+// D3D_SHADER_MACRO under another name. A {NULL, NULL} entry terminates the array,
+// which is how D3DCompile is told where the list stops.
+struct ShaderMacro
+{
+	const char* Name;
+	const char* Definition;
+};
+
+// pInclude is typed void* because this passes the standard include handler and does
+// not need the real struct definition.
 typedef HRESULT (__stdcall *PFN_D3DCompile)(
 	LPCVOID        pSrcData,
 	SIZE_T         SrcDataSize,
 	LPCSTR         pSourceName,
-	const void*    pDefines,
+	const ShaderMacro* pDefines,
 	void*          pInclude,
 	LPCSTR         pEntrypoint,
 	LPCSTR         pTarget,
@@ -130,7 +138,8 @@ static PFN_D3DCompile Load_Compiler(const char* dll_path)
 	return compile;
 }
 
-static bool Compile_One(PFN_D3DCompile compile, const char* hlsl_path, const char* out_path, const char* target)
+static bool Compile_One(PFN_D3DCompile compile, const char* hlsl_path, const char* out_path,
+						const char* target, const ShaderMacro* defines)
 {
 	FILE* file = fopen(hlsl_path, "rb");
 	if (!file) {
@@ -163,7 +172,7 @@ static bool Compile_One(PFN_D3DCompile compile, const char* hlsl_path, const cha
 	// handler has a directory to resolve against.
 	const HRESULT hr = compile(
 		source, (SIZE_T)size, hlsl_path,
-		NULL, STANDARD_FILE_INCLUDE,
+		defines, STANDARD_FILE_INCLUDE,
 		"main", target,
 		OPTIMIZATION_LEVEL1, 0,
 		&code, &errors);
@@ -202,17 +211,45 @@ static bool Compile_One(PFN_D3DCompile compile, const char* hlsl_path, const cha
 	return true;
 }
 
+// Preprocessor definitions, one per trailing argument, spelled NAME=VALUE.
+//
+// Deliberately not passed for the Shader Model 3 build. The shaders default to model 3
+// when nothing is defined, so that invocation's argument list is character for character
+// what it has always been, and the bytecode it produces can be compared byte for byte
+// against the build from before the shaders learned a second model. A define that is
+// only ever absent cannot change the token stream it is absent from.
+#define MAX_DEFINES 16
+
 int main(int argc, char* argv[])
 {
-	if (argc != 5) {
-		printf("Usage: compile_shaders <d3dcompiler_dll> <hlsl_path> <out_path> <target_profile>\n");
+	if (argc < 5 || argc > 5 + MAX_DEFINES) {
+		printf("Usage: compile_shaders <d3dcompiler_dll> <hlsl_path> <out_path> <target_profile> [NAME=VALUE ...]\n");
 		return 1;
 	}
+
+	// Split in place at the '='. argv is writable and lives as long as the process, so
+	// the pointers handed to D3DCompile stay valid for the call.
+	ShaderMacro defines[MAX_DEFINES + 1];
+	int define_count = 0;
+	for (int i = 5; i < argc; ++i) {
+		char* equals = strchr(argv[i], '=');
+		if (!equals) {
+			printf("compile_shaders: '%s' is not NAME=VALUE\n", argv[i]);
+			return 1;
+		}
+		*equals = '\0';
+		defines[define_count].Name = argv[i];
+		defines[define_count].Definition = equals + 1;
+		++define_count;
+	}
+	defines[define_count].Name = NULL;
+	defines[define_count].Definition = NULL;
 
 	const PFN_D3DCompile compile = Load_Compiler(argv[1]);
 	if (!compile) {
 		return 1;
 	}
 
-	return Compile_One(compile, argv[2], argv[3], argv[4]) ? 0 : 1;
+	return Compile_One(compile, argv[2], argv[3], argv[4],
+					   define_count > 0 ? defines : NULL) ? 0 : 1;
 }

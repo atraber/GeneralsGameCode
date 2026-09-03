@@ -13,6 +13,8 @@
 // Constant layout matches unit_vs where it overlaps, so the wrapper feeds both the same
 // way. The lighting and material registers are simply not read here.
 
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c0);  // object -> clip space
 row_major float4x4 WorldView     : register(c4);  // object -> camera (view) space
 

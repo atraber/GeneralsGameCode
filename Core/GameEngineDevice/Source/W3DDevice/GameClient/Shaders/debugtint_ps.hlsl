@@ -15,9 +15,11 @@
 // c26). The engine sets it just before swapping the shader in, and on a draw where
 // the swap does not happen -- the tint shader failed to load -- writing a register
 // nothing declares has to be harmless.
+#include "shadermodel.hlsli"
+
 float4 DebugTint : register(c31);
 
-float4 main() : COLOR
+float4 main() : PS_TARGET
 {
     // Alpha comes from the constant, not from 1.0. The blend mode is left exactly as
     // the draw set it, so an additive or alpha-blended pass still composites the way

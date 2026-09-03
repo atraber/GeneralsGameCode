@@ -16,12 +16,14 @@
 // Bound only when a detail texture is present -- the single-texture shader (unit_ps)
 // never samples stage 1, since sampling a stage with no texture bound is undefined.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 #include "shadow.hlsli"
 #include "alphatest.hlsli"
 
-sampler BaseSampler   : register(s0);
-sampler DetailSampler : register(s1);
+DECLARE_SAMPLER(BaseSampler, 0);
+DECLARE_SAMPLER(DetailSampler, 1);
 
 // x = 1 when a base texture is bound, 0 for an untextured (diffuse-only) pass.
 // y = material diffuse alpha (stealth / translucency opacity), z = 1 for lit meshes,
@@ -41,7 +43,7 @@ float4 Stage1AArg1 : register(c5);
 float4 Stage1AArg2 : register(c6);
 float4 Stage1AOp   : register(c7);
 
-sampler2D ShadowMap : register(s5);      // directional shadow map (packed depth)
+DECLARE_SAMPLER_2D(ShadowMap, 5);      // directional shadow map (packed depth)
 float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow strength (0 = off)
 // y = this mesh's depth bias, small because unit_vs has already lifted the lookup off the
 // surface along its normal. See the note in unit_ps.
@@ -56,7 +58,7 @@ float4 ShadowMeshParams : register(c9);
 // terrain's, which is what makes a unit and the ground under it agree. Tracing back along
 // the sun instead would be more correct for a tall wall and would put the unit out of step
 // with the ground it stands on, which reads far worse than the error it fixes.
-sampler CloudSampler : register(s2);
+DECLARE_SAMPLER(CloudSampler, 2);
 float4 CloudScroll : register(c10);   // xy = layer A drift, zw = layer B (world units)
 float4 CloudCtl    : register(c11);   // x = cloud layer on, y = shade strength
 
@@ -66,8 +68,8 @@ float3 cloudShade(float3 cloudPos)
     float2 uvB = (cloudPos.xy + CloudScroll.zw) / CLOUD_PERIOD_B;
     // The field stores brightness so the fixed-function path can multiply by it directly;
     // coverage is its complement.
-    float a = 1.0 - tex2D(CloudSampler, uvA).r;
-    float b = 1.0 - tex2D(CloudSampler, uvB).r;
+    float a = 1.0 - SAMPLE_2D(CloudSampler, uvA).r;
+    float b = 1.0 - SAMPLE_2D(CloudSampler, uvB).r;
     float coverage = 1.0 - (1.0 - a) * (1.0 - b);
     float lit = 1.0 - coverage * CloudCtl.y * CloudCtl.x * cloudPos.z;
     return lerp(CLOUD_SHADE_TINT, float3(1.0, 1.0, 1.0), lit);
@@ -79,12 +81,12 @@ float3 cloudShade(float3 cloudPos)
 // job: they need ddx/ddy, and main calls this inside dynamic flow control.
 float shadowTerm(float3 ndc, float2 uv, float2 dzduv)
 {
-    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+    float lit = shadowFilter16(SAMPLER_2D_ARG(ShadowMap), uv, ndc.z, ShadowParams.z,
                                ShadowParams.w, dzduv, ShadowMeshParams.y);
     return saturate(lerp(1.0, lit, ShadowParams.y));
 }
 
-sampler SceneDepth : register(s7);    // camera-view packed depth from the SSR prepass
+DECLARE_SAMPLER(SceneDepth, 7);    // camera-view packed depth from the SSR prepass
 // x = 1 when this draw is an airborne sprite that may fade against the scene (see
 //     DX8Wrapper::m_softParticles -- ground decals reach this shader too and must not),
 // y = the view-space distance over which a sprite fades out as it approaches what is
@@ -120,7 +122,7 @@ float softParticleFade(float4 screenPos)
     // read this very map, deliberately: two shaders sampling one target must agree.
     float2 uv = (screenPos.xy / screenPos.w) * float2(0.5, -0.5) + 0.5;
 
-    float sceneZ  = softViewDepth(unpackSceneDepth(tex2D(SceneDepth, uv)));
+    float sceneZ  = softViewDepth(unpackSceneDepth(SAMPLE_2D(SceneDepth, uv)));
     float spriteZ = softViewDepth(screenPos.z / screenPos.w);
 
     // The prepass excludes water and anything else that did not write depth, which comes
@@ -152,9 +154,9 @@ float PickA(float4 sel, float tex, float cur, float dif)
     return sel.x * tex + sel.y * cur + sel.z * dif;
 }
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
-    float4 baseColor = tex2D(BaseSampler, input.texcoord);
+    float4 baseColor = SAMPLE_2D(BaseSampler, input.texcoord);
     baseColor = lerp(float4(1.0, 1.0, 1.0, 1.0), baseColor, TexCtl.x);
 
     // Stage 0 result: texture * diffuse, matching the fixed-function combine. Its alpha
@@ -164,7 +166,7 @@ float4 main(PS_INPUT input) : COLOR
     float diffAlpha = lerp(input.color.a, TexCtl.y, TexCtl.z);
     float texAlpha  = lerp(1.0, baseColor.a, TexCtl.w);
     float4 current = float4(baseColor.rgb * input.color.rgb, texAlpha * diffAlpha);
-    float4 detail  = tex2D(DetailSampler, input.texcoord1);
+    float4 detail  = SAMPLE_2D(DetailSampler, input.texcoord1);
 
     float3 c1 = PickRGB(Stage1CArg1, detail.rgb, current.rgb, input.color.rgb);
     float3 c2 = PickRGB(Stage1CArg2, detail.rgb, current.rgb, input.color.rgb);

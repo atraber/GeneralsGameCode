@@ -40,6 +40,20 @@ endif()
 set(RTS_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/Core/GameEngineDevice/Source/W3DDevice/GameClient/Shaders")
 set(RTS_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders" CACHE INTERNAL "Compiled shader output directory")
 
+# The same sources compiled again at Shader Model 4, purely so the compiler reads them.
+# Nothing loads this directory -- the per-game install() rules copy RTS_SHADER_OUT_DIR and
+# only that -- and D3D9 cannot use model 4 bytecode anyway. It exists to make "these
+# shaders still compile as model 4" a fact the build checks on every edit rather than a
+# claim someone re-verifies by hand when a second backend eventually arrives.
+#
+# A shader model is not a formatting difference. VPOS is the integer pixel coordinate in
+# ps_3_0 and the pixel *centre* in SV_Position, tex2Dlod hides its level in a fourth
+# component that SampleLevel takes as an argument, and SM4 defaults to column-major where
+# these matrices are explicitly row-major. Each of those compiles clean and draws the wrong
+# thing. Compiling both ways every build is what turns them from things to remember into
+# things that fail loudly.
+set(RTS_SHADER_SM4_OUT_DIR "${CMAKE_BINARY_DIR}/shaders-sm4")
+
 # Shaders to compile. The pipeline stage (and therefore the target profile and the
 # output extension) is derived from the "_vs"/"_ps" suffix of each name.
 set(_rts_shaders
@@ -101,6 +115,7 @@ set(_rts_shaders
 )
 
 file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")
+file(MAKE_DIRECTORY "${RTS_SHADER_SM4_OUT_DIR}")
 set(_rts_shader_outputs "")
 # Shared headers (tonemap.hlsli and friends). The compiler resolves #include relative to
 # the including file, so nothing has to be passed on the command line -- but the build has
@@ -135,5 +150,23 @@ foreach(_name ${_rts_shaders})
         VERBATIM
     )
     list(APPEND _rts_shader_outputs "${_out}")
+
+    # ...and the same source at model 4. RTS_SHADER_MODEL is passed only here: the shaders
+    # default to model 3 when it is undefined, so the invocation above keeps the argument
+    # list it has always had and its bytecode stays comparable byte for byte with the build
+    # before any of this. A define that is only ever absent from a compile cannot change it.
+    set(_sm4_profile "ps_4_0")
+    if(_name MATCHES "_vs$")
+        set(_sm4_profile "vs_4_0")
+    endif()
+    set(_sm4_out "${RTS_SHADER_SM4_OUT_DIR}/${_name}.sm4")
+    add_custom_command(
+        OUTPUT "${_sm4_out}"
+        COMMAND ${_rts_shader_launcher} $<TARGET_FILE:compile_shaders> "${RTS_D3DCOMPILER_DLL}" "${_src}" "${_sm4_out}" ${_sm4_profile} RTS_SHADER_MODEL=4
+        DEPENDS "${_src}" ${_rts_shader_headers} compile_shaders
+        COMMENT "hlsl ${_name}.hlsl -> ${_sm4_profile} (checked, not shipped)"
+        VERBATIM
+    )
+    list(APPEND _rts_shader_outputs "${_sm4_out}")
 endforeach()
 add_custom_target(rts_shaders ALL DEPENDS ${_rts_shader_outputs})

@@ -9,5 +9,7 @@
 // Bound only when the vertex format in the stream really has a second set -- see
 // Map_Texture_Coord_Source and needsUvSet1 in dx8wrapper.cpp.
 
+#include "shadermodel.hlsli"
+
 #define UNIT_VS_UV2 1
 #include "unit_vs_body.hlsli"

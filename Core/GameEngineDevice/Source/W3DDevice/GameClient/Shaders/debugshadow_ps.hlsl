@@ -10,7 +10,9 @@
 // 255 times across the frustum -- so the one thing you would want to read off it, how
 // depth is distributed, is the one thing it does not show.
 
-sampler2D ShadowSampler : register(s0);
+#include "shadermodel.hlsli"
+
+DECLARE_SAMPLER_2D(ShadowSampler, 0);
 
 // x = start of the displayed depth range, y = 1/(end - start). The interesting depth
 // in a fitted sun frustum occupies a narrow band, and stretched over the full [0,1] it
@@ -28,9 +30,9 @@ float unpackDepth(float4 packed)
     return dot(packed.rgb, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
 }
 
-float4 main(float2 uv : TEXCOORD0) : COLOR
+float4 main(float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float4 packed = tex2D(ShadowSampler, uv);
+    float4 packed = SAMPLE_2D(ShadowSampler, uv);
 
     if (DebugShadowCtl.z > 0.5)
     {

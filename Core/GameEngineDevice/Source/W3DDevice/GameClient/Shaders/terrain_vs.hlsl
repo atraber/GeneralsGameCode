@@ -6,6 +6,8 @@
 // by STRETCH_FACTOR (the fixed-function camera-space transform cancels the view),
 // with a scroll offset for the cloud layer.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 
 row_major float4x4 WorldViewProj : register(c0);

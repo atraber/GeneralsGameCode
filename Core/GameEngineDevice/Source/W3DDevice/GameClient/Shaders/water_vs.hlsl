@@ -11,6 +11,8 @@
 // and the wave field are all functions of it, which is what lets one shader replace
 // the fixed-function stack of camera-space texture generations the old path used.
 
+#include "shadermodel.hlsli"
+
 row_major float4x4 WorldViewProj : register(c0);
 row_major float4x4 World         : register(c4);
 

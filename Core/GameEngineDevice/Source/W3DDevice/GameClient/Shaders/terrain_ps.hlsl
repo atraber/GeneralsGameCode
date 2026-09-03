@@ -9,15 +9,17 @@
 // map. That has to happen here rather than in the vertex data because the artwork
 // tiles seamlessly from cell to cell -- see the comment on stochasticSample.
 
+#include "shadermodel.hlsli"
+
 #include "constants.hlsli"
 #include "shadow.hlsli"
 
-sampler BaseSampler  : register(s0);
-sampler ClassMap     : register(s1);   // per-slot class table (point sampled)
-sampler CloudSampler : register(s2);
-sampler NoiseSampler : register(s3);
-sampler DetailMap    : register(s4);   // procedural detail: RG = gradient, B = height
-sampler2D ShadowMap    : register(s5);   // directional shadow map (packed depth)
+DECLARE_SAMPLER(BaseSampler, 0);
+DECLARE_SAMPLER(ClassMap, 1);   // per-slot class table (point sampled)
+DECLARE_SAMPLER(CloudSampler, 2);
+DECLARE_SAMPLER(NoiseSampler, 3);
+DECLARE_SAMPLER(DetailMap, 4);   // procedural detail: RG = gradient, B = height
+DECLARE_SAMPLER_2D(ShadowMap, 5);   // directional shadow map (packed depth)
 
 float4 OverlayEnable : register(c0); // x = cloud on, y = noise on, z = cloud shade strength
 float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 = off)
@@ -86,8 +88,8 @@ float3 cloudShade(float4 cloudUV, float enable, float strength)
 {
     // The texture stores brightness so the fixed-function fallback can still multiply by
     // it; coverage is its complement.
-    float a = 1.0 - tex2D(CloudSampler, cloudUV.xy).r;
-    float b = 1.0 - tex2D(CloudSampler, cloudUV.zw).r;
+    float a = 1.0 - SAMPLE_2D(CloudSampler, cloudUV.xy).r;
+    float b = 1.0 - SAMPLE_2D(CloudSampler, cloudUV.zw).r;
     float coverage = 1.0 - (1.0 - a) * (1.0 - b);
     float lit = 1.0 - coverage * strength * enable;
     return lerp(CLOUD_SHADE_TINT, float3(1.0, 1.0, 1.0), lit);
@@ -124,7 +126,7 @@ float3 macroColour(float3 col, float3 worldPos, float scale)
 
     // Not slope-faded, unlike the rest of the layer: at this period the field barely
     // changes across the width of a steep face, so there is nothing to smear.
-    float4 m = tex2D(DetailMap, worldPos.xy / (MACRO_PERIOD * scale));
+    float4 m = SAMPLE_2D(DetailMap, worldPos.xy / (MACRO_PERIOD * scale));
 
     // Height and one gradient channel: two fields off the same texture that vary
     // differently across the map, which is all this needs of them.
@@ -170,8 +172,8 @@ float3 applyTerrainDetail(float3 col, float3 worldPos, float3 Ngeo)
         return col;
     }
 
-    float4 a = tex2D(DetailMap, worldPos.xy / (DETAIL_PERIOD_A * scale));
-    float4 b = tex2D(DetailMap, worldPos.xy / (DETAIL_PERIOD_B * scale));
+    float4 a = SAMPLE_2D(DetailMap, worldPos.xy / (DETAIL_PERIOD_A * scale));
+    float4 b = SAMPLE_2D(DetailMap, worldPos.xy / (DETAIL_PERIOD_B * scale));
 
     // Gradients are 0.5-biased; summing the two octaves gives the finer one its say
     // without letting either dominate.
@@ -205,7 +207,7 @@ float4 classRect(float2 uv)
     float2 texel = uv * AtlasParams.xy;
     float2 slot  = floor((texel - SLOT_ORIGIN) / SLOT_PITCH);
 
-    float4 entry = tex2D(ClassMap, (slot + 0.5) / CLASS_MAP_DIM);
+    float4 entry = SAMPLE_2D(ClassMap, (slot + 0.5) / CLASS_MAP_DIM);
     // Bytes came back as n/255; recover the integers exactly.
     float  width  = floor(entry.r * 255.0 + 0.5);
     float2 offset = floor(entry.gb * 255.0 + 0.5);
@@ -276,7 +278,7 @@ float4 stochasticSample(float2 uv, float2 worldXY, float2 ddxUV, float2 ddyUV)
 {
     float4 rect = classRect(uv);
     if (TilingParams.x < 0.5 || rect.z <= 0.0 || rect.w <= 0.0) {
-        return tex2Dgrad(BaseSampler, uv, ddxUV, ddyUV);
+        return SAMPLE_2D_GRAD(BaseSampler, uv, ddxUV, ddyUV);
     }
 
     // Where this pixel sits inside the class rect, as a repeating [0,1) coordinate.
@@ -296,9 +298,9 @@ float4 stochasticSample(float2 uv, float2 worldXY, float2 ddxUV, float2 ddyUV)
     // the rect's edge read the 4-texel wrapped border TerrainTextureClass::update draws
     // around each class, so the wrap is filtered correctly rather than bleeding into
     // whatever sits next in the atlas.
-    float4 c0 = tex2Dgrad(BaseSampler, rect.xy + frac(local + hash2(v0)) * rect.zw, ddxUV, ddyUV);
-    float4 c1 = tex2Dgrad(BaseSampler, rect.xy + frac(local + hash2(v1)) * rect.zw, ddxUV, ddyUV);
-    float4 c2 = tex2Dgrad(BaseSampler, rect.xy + frac(local + hash2(v2)) * rect.zw, ddxUV, ddyUV);
+    float4 c0 = SAMPLE_2D_GRAD(BaseSampler, rect.xy + frac(local + hash2(v0)) * rect.zw, ddxUV, ddyUV);
+    float4 c1 = SAMPLE_2D_GRAD(BaseSampler, rect.xy + frac(local + hash2(v1)) * rect.zw, ddxUV, ddyUV);
+    float4 c2 = SAMPLE_2D_GRAD(BaseSampler, rect.xy + frac(local + hash2(v2)) * rect.zw, ddxUV, ddyUV);
 
     return w.x * c0 + w.y * c1 + w.z * c2;
 }
@@ -329,14 +331,14 @@ float terrainShadow(float4 lightPos)
     // Radius and bias both arrive per frame: the sun frustum is fitted to the camera, so a
     // texel's world size changes with the zoom, and both a penumbra quoted in world units
     // and a bias that fights a texel's worth of ground have to follow it.
-    float lit = shadowFilter16(ShadowMap, uv, ndc.z, ShadowParams.z,
+    float lit = shadowFilter16(SAMPLER_2D_ARG(ShadowMap), uv, ndc.z, ShadowParams.z,
                                ShadowParams.w, dzduv, ShadowParams.x);
 
     // With shadowing off, everything is lit.
     return saturate(lerp(1.0, lit, ShadowParams.y));
 }
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
     // Cross-blend the base tile (uv0) and neighbour tile (uv1). Both go through the
     // same lattice: uv1 is the neighbouring terrain type's own quadrant, so if only
@@ -372,7 +374,7 @@ float4 main(PS_INPUT input) : COLOR
     // the darkening up by a "strength" factor to make the overlays more visible, but
     // that pushed the terrain noticeably darker and cooler than the original; the
     // faithful match is a straight multiply.)
-    float3 noiseTex = tex2D(NoiseSampler, input.noiseUV).rgb;
+    float3 noiseTex = SAMPLE_2D(NoiseSampler, input.noiseUV).rgb;
 
     // Off layers lerp to white (no effect); safe with an unbound sampler and no
     // ps_2_0 dynamic branching.

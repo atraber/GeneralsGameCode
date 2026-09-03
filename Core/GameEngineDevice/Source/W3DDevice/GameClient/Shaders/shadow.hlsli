@@ -15,6 +15,8 @@
 // the map on stage 5, but ShadowParams lands on a different register in each shader
 // (c1 terrain/road, c8 unit, c16 unit_pbr), so the caller passes those in.
 
+#include "shadermodel.hlsli"
+
 #ifndef RTS_SHADER_SHADOW_HLSLI
 #define RTS_SHADER_SHADOW_HLSLI
 
@@ -33,9 +35,9 @@
 // approximation: the map is a single-level render target sampled with point filtering, so
 // level 0 is the only level there has ever been. Using it everywhere means the filter has
 // one form and any receiver may branch around it without the filter caring.
-float shadowSampleDepth(sampler2D shadowMap, float2 uv)
+float shadowSampleDepth(SAMPLER_2D_PARAM(shadowMap), float2 uv)
 {
-    float4 rgba = tex2Dlod(shadowMap, float4(uv, 0.0, 0.0));
+    float4 rgba = SAMPLE_2D_LOD(shadowMap, uv, 0.0);
     return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
 }
 
@@ -181,14 +183,14 @@ float2 shadowReceiverGradient(float2 uv, float z)
 // ---------------------------------------------------------------------------
 
 // One tap: offset within the kernel, plane-corrected compare, and the out-of-map guard.
-float shadowTap(sampler2D shadowMap, float2 uv, float2 offsetUv,
+float shadowTap(SAMPLER_2D_PARAM(shadowMap), float2 uv, float2 offsetUv,
                 float zRef, float2 dzduv, float bias, float planeLimit)
 {
     float2 t = uv + offsetUv;
 
     // The depth this same surface would have at the tap, not the depth it has here.
     float plane = clamp(dot(dzduv, offsetUv), -planeLimit, planeLimit);
-    float lit = ((zRef + plane) - bias > shadowSampleDepth(shadowMap, t)) ? 0.0 : 1.0;
+    float lit = ((zRef + plane) - bias > shadowSampleDepth(SAMPLER_2D_ARG(shadowMap), t)) ? 0.0 : 1.0;
 
     // Taps that leave the map are the wide kernel's own problem: stage 5 is CLAMP, so an
     // out-of-range tap silently reads the border texel, which holds some unrelated
@@ -207,7 +209,7 @@ float shadowTap(sampler2D shadowMap, float2 uv, float2 offsetUv,
 //
 // zRef is the pixel's own depth in sun-clip units; bias is what is left for numerical
 // slack once the normal offset (meshes) or the slope allowance (terrain) has done its job.
-float shadowFilter16(sampler2D shadowMap, float2 uv, float zRef,
+float shadowFilter16(SAMPLER_2D_PARAM(shadowMap), float2 uv, float zRef,
                      float texel, float radiusTexels, float2 dzduv, float bias)
 {
     float2 rot   = shadowRotation(uv, texel);
@@ -220,7 +222,7 @@ float shadowFilter16(sampler2D shadowMap, float2 uv, float zRef,
         float2 p = POISSON_16[i];
         float2 o = float2(p.x * rot.x - p.y * rot.y,
                           p.x * rot.y + p.y * rot.x) * scale;
-        lit += shadowTap(shadowMap, uv, o, zRef, dzduv, bias, limit);
+        lit += shadowTap(SAMPLER_2D_ARG(shadowMap), uv, o, zRef, dzduv, bias, limit);
     }
     return lit * (1.0 / 16.0);
 }
@@ -228,7 +230,7 @@ float shadowFilter16(sampler2D shadowMap, float2 uv, float zRef,
 // Eight taps, for water. Half the cost, and the surface it shades is large, smooth and
 // already broken up by its own normals -- there is nothing on the water sharp enough to
 // show the difference. It also only gates a specular highlight and a partial darkening.
-float shadowFilter8(sampler2D shadowMap, float2 uv, float zRef,
+float shadowFilter8(SAMPLER_2D_PARAM(shadowMap), float2 uv, float zRef,
                     float texel, float radiusTexels, float2 dzduv, float bias)
 {
     float2 rot   = shadowRotation(uv, texel);
@@ -241,7 +243,7 @@ float shadowFilter8(sampler2D shadowMap, float2 uv, float zRef,
         float2 p = POISSON_8[i];
         float2 o = float2(p.x * rot.x - p.y * rot.y,
                           p.x * rot.y + p.y * rot.x) * scale;
-        lit += shadowTap(shadowMap, uv, o, zRef, dzduv, bias, limit);
+        lit += shadowTap(SAMPLER_2D_ARG(shadowMap), uv, o, zRef, dzduv, bias, limit);
     }
     return lit * (1.0 / 8.0);
 }

@@ -22,7 +22,9 @@
 // a patch of ground keeps the same texels as the camera scrolls, so the pattern does not
 // crawl beneath a stationary cloud.
 
-sampler BaseSampler : register(s0);   // the sprite's own texture, for its alpha
+#include "shadermodel.hlsli"
+
+DECLARE_SAMPLER(BaseSampler, 0);   // the sprite's own texture, for its alpha
 
 // y = density ceiling: the most of the sun a fully opaque sprite texel may take. Short of
 // 1 deliberately -- see the note where it is set. x is the plain shader's hard cutoff and
@@ -64,14 +66,14 @@ float bayer4x4(float2 vpos)
     return (m2hi + 4.0 * m2lo + 0.5) / 16.0;
 }
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
     // Clamp below 1.0: packDepth(1.0) wraps to (0,0,0), which unpacks to the near plane
     // and would shadow everything under it.
     float depth = min(input.lightPos.z / input.lightPos.w, 0.9999);
 
     // Both halves of the sprite's opacity, and the ceiling on the pair.
-    float coverage = tex2D(BaseSampler, input.texcoord).a * input.alpha * ShadowCastParams.y;
+    float coverage = SAMPLE_2D(BaseSampler, input.texcoord).a * input.alpha * ShadowCastParams.y;
     clip(coverage - bayer4x4(input.vpos));
 
     // Alpha out is 1.0, not the coverage. The scene's alpha test is left as the particle

@@ -12,10 +12,12 @@
 // Alpha is the source's, untouched -- the ps_1_4 version wrote only .rgb after the texld,
 // so r0.a kept the sampled alpha.
 
-sampler2D SourceMap : register(s0);
+#include "shadermodel.hlsli"
 
-float4 main(float2 uv : TEXCOORD0) : COLOR
+DECLARE_SAMPLER_2D(SourceMap, 0);
+
+float4 main(float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float4 source = tex2D(SourceMap, uv);
+    float4 source = SAMPLE_2D(SourceMap, uv);
     return float4(source.b, source.g, source.r, source.a);
 }

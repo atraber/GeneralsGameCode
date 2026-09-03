@@ -28,10 +28,12 @@
 // the final sum exceeds 1 over bright water. The second used to be clamped for free by an
 // 8-bit render target and is not any more -- the scene target is fp16 under HDR.
 
-sampler2D RiverMap   : register(s0);
-sampler2D SparkleMap : register(s1);
-sampler2D NoiseMap   : register(s2);
-sampler2D EdgeMap    : register(s3);
+#include "shadermodel.hlsli"
+
+DECLARE_SAMPLER_2D(RiverMap, 0);
+DECLARE_SAMPLER_2D(SparkleMap, 1);
+DECLARE_SAMPLER_2D(NoiseMap, 2);
+DECLARE_SAMPLER_2D(EdgeMap, 3);
 
 struct PS_INPUT
 {
@@ -42,12 +44,12 @@ struct PS_INPUT
     float2 uv3   : TEXCOORD3;
 };
 
-float4 main(PS_INPUT input) : COLOR
+float4 main(PS_INPUT input) : PS_TARGET
 {
-    float4 river   = tex2D(RiverMap,   input.uv0);
-    float4 sparkle = tex2D(SparkleMap, input.uv1);
-    float4 noise   = tex2D(NoiseMap,   input.uv2);
-    float4 edge    = tex2D(EdgeMap,    input.uv3);
+    float4 river   = SAMPLE_2D(RiverMap, input.uv0);
+    float4 sparkle = SAMPLE_2D(SparkleMap, input.uv1);
+    float4 noise   = SAMPLE_2D(NoiseMap, input.uv2);
+    float4 edge    = SAMPLE_2D(EdgeMap, input.uv3);
 
     float3 base  = saturate(input.color.rgb * river.rgb);
     float  alpha = saturate(river.a * edge.a);

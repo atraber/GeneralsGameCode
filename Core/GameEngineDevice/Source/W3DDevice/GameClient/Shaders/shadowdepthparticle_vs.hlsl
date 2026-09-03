@@ -10,6 +10,8 @@
 // strength right up to the frame it vanished, and a dust cloud would end with a shadow
 // snapping off the ground.
 
+#include "shadermodel.hlsli"
+
 row_major float4x4 SunVP : register(c0);
 row_major float4x4 World : register(c4);
 
