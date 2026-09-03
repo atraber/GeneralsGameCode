@@ -953,6 +953,13 @@ namespace {
 	// would misstate it, and folding them into the fixed-function side is exactly what
 	// made the suppression look like it had done nothing.
 	unsigned s_ffSuppressed = 0;
+	// The same draws counted where they are actually dropped, at the submission rather
+	// than at the routing block's verdict. The two differ, and the gap is the point of the
+	// change that introduced this: a run of draws whose render state has not moved never
+	// re-enters the routing block, so it never reaches the verdict above, but every one of
+	// them still arrives at the submission with the declined caster's write masks standing
+	// at the device. s_ffSuppressed counts verdicts; this counts draw calls not made.
+	unsigned s_ffUnsubmitted = 0;
 
 	// Texture names are only ever used as examples, so a name that is not printable ASCII
 	// is dropped rather than written to the log. Some of them are not names at all: the
@@ -1695,6 +1702,20 @@ void DX8Wrapper::Debug_Report_FF_Sites()
 	s_ffSiteDropped = 0;
 }
 
+bool DX8Wrapper::Is_Inert_Depth_Pass_Draw()
+{
+	// Only the depth pass, because only there is the answer this cheap. That render
+	// target is packed depth written as colour, with a depth buffer behind it and
+	// stencil unused, so these three words are the complete list of ways a draw could
+	// leave a mark on it. Elsewhere a draw with both write masks off can still be doing
+	// something -- filling stencil for the player-colour pass or the shadow volumes --
+	// and the same three reads would not settle it.
+	if (!m_bShadowDepthPass) return false;
+	return RenderStates[D3DRS_COLORWRITEENABLE] == 0 &&
+		   RenderStates[D3DRS_ZWRITEENABLE] == FALSE &&
+		   RenderStates[D3DRS_STENCILENABLE] == FALSE;
+}
+
 const char* DX8Wrapper::Debug_Current_Pass_Name()
 {
 	if (m_bShadowDepthPass)     return "(shadow depth pass)";
@@ -1715,6 +1736,11 @@ void DX8Wrapper::Debug_Note_Routed_Draw()
 void DX8Wrapper::Debug_Note_Suppressed_Draw()
 {
 	++s_ffSuppressed;
+}
+
+void DX8Wrapper::Debug_Note_Unsubmitted_Draw()
+{
+	++s_ffUnsubmitted;
 }
 
 void DX8Wrapper::Debug_Note_FF_Draw(TextureBaseClass* tex0, unsigned fvf,
@@ -1784,11 +1810,15 @@ void DX8Wrapper::Debug_Report_FF_Draws()
 	WWDEBUG_SAY(("FIXED-FUNCTION DRAWS (via DX8Wrapper::Draw; direct-device drawers not counted): "
 				 "%u of %u draws (%u%%) over 600 frames, "
 				 "%d groups (caller x vertex format)%s "
-				 "[+%u depth-pass draws suppressed, not submitted at all]",
+				 "[+%u depth-pass draws declined by the routing block, %u draw calls not "
+				 "made -- the second is the larger because a run of draws whose state has "
+				 "not moved inherits the declined caster's write masks without re-entering "
+				 "the block. Their state still reaches the device; only the submission is "
+				 "skipped, and that distinction is worth 20485 pixels]",
 		s_ffTotal, all, all ? (unsigned)((unsigned __int64)s_ffTotal * 100 / all) : 0,
 		s_ffGroupCount,
 		s_ffDropped ? " -- TABLE FULL, some draws uncounted" : "",
-		s_ffSuppressed));
+		s_ffSuppressed, s_ffUnsubmitted));
 	// reasons is a bitmask of which gate sent the draw here, one bit per code. Bit 0 is
 	// left over for a draw no gate claims, and should not appear.
 	WWDEBUG_SAY(("  reason bits: 2=effects-held-back 3=no-position/normal 4=foreign-vs "
@@ -1821,6 +1851,7 @@ void DX8Wrapper::Debug_Report_FF_Draws()
 	s_ffDropped = 0;
 	s_ffRouted = 0;
 	s_ffSuppressed = 0;
+	s_ffUnsubmitted = 0;
 }
 
 //-----------------------------------------------------------------------------
@@ -2422,7 +2453,6 @@ GfxTexture*			DX8Wrapper::m_pCloudMap = nullptr;
 float							DX8Wrapper::m_sunVP[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
 float							DX8Wrapper::m_shadowParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 float							DX8Wrapper::m_shadowMeshParams[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-bool							DX8Wrapper::m_bSuppressDraw = false;
 bool							DX8Wrapper::m_bForeignDeviceBindings = false;
 bool							DX8Wrapper::m_bShadowDepthPass = false;
 float							DX8Wrapper::m_hdrEffectGain = 1.0f;
@@ -5129,13 +5159,6 @@ void DX8Wrapper::Draw(
 	// spends a draw call, a state validation and a pass over its triangles to produce
 	// nothing. So do not.
 	//
-	// Set by the branch that writes those masks, so the flag and the masks cannot
-	// disagree about which draws they describe. The first attempt asked instead whether
-	// the depth vertex shader was bound, on the reasoning that the device cannot lie --
-	// but nothing *unbinds* it for a declined draw, so it was still bound from the
-	// previous caster and the test came out false for exactly the draws it was meant to
-	// catch. It suppressed 21048 of the 46444 it should have.
-	if (m_bSuppressDraw) return;
 
 #ifdef RTS_DEBUG
 	// Alpha test and fog, counted for every draw regardless of which pipeline claimed
@@ -5195,9 +5218,9 @@ void DX8Wrapper::Draw(
 	//
 	// Tested on the bound shaders rather than on the routing block's own verdict, because
 	// they are what the device will actually use and cannot disagree with themselves.
-	// The same reasoning corrected m_bSuppressDraw above, in the other direction: there
-	// the bound shader was the wrong question because nothing unbinds it. Here it is the
-	// right one, because binding is exactly what did or did not happen.
+	// The same reasoning corrected the suppression test above, in the other direction:
+	// there the bound shader was the wrong question because nothing unbinds it. Here it is
+	// the right one, because binding is exactly what did or did not happen.
 	//
 	// Both halves of the pipeline are asked, and they fail differently. No pixel shader
 	// means the combine decides the colour. A vertex shader below 0x10000 is not a shader
@@ -5227,6 +5250,33 @@ void DX8Wrapper::Draw(
 	}
 #endif	// MESH_RENDER_SNAPSHOT_ENABLED
 
+
+	// Here, and not one line higher. A depth-pass draw the depth shaders declined writes
+	// nothing -- the census says all of them hold a zero colour mask, depth writes off and
+	// stencil off, and those are the only three things that render target records -- so the
+	// submission below is a draw call, a state validation and a pass over its triangles
+	// spent on producing nothing. Skipping it is free: measured on civ_buildings frames 540
+	// and 900, 0 differing pixels.
+	//
+	// But everything above this line still has to run, and that was not free. Moving this
+	// return up past Flush_Fixed_Function_State -- which looks obviously right, since a draw
+	// that is not submitted cannot need state -- changed 20485 pixels across the same two
+	// frames. The declined draws are the only fixed-function draws left in the frame, so
+	// they are the only thing that ever flushes the accumulated D3DTSS combine words, and
+	// `scorches` and `terrainTracks` draw with what they left behind. Bisected: with the
+	// return above the flush, 0 words reach the device and the 20485 pixels move; with it
+	// here, 10680 words reach it and the frame is identical.
+	//
+	// So this is not a draw whose state is inert, only one whose *rasterisation* is. The
+	// fixed-function burn-down reads those 1391 words as the residue of no-op draws; they
+	// are load-bearing, and the drawer that depends on them does not appear in the census
+	// that counts them, because it is device state and outlives the draw that carried it.
+	if (Is_Inert_Depth_Pass_Draw()) {
+#ifdef RTS_DEBUG
+		Debug_Note_Unsubmitted_Draw();
+#endif
+		return;
+	}
 
 	SNAPSHOT_SAY(("DX8 - draw %d polygons (%d vertices)",polygon_count,vertex_count));
 
@@ -5458,12 +5508,6 @@ static bool Map_Texture_Coord_Source(DWORD coordIndex, DWORD transformFlags,
 void DX8Wrapper::Apply_Render_State_Changes()
 {
 	SNAPSHOT_SAY(("DX8Wrapper::Apply_Render_State_Changes()"));
-
-	// Cleared before the early return, not after it. A draw whose state is unchanged since
-	// the last one does not re-run the decision below, so the honest value for it is "do
-	// not suppress" -- submitting a masked draw wastes a draw call, suppressing one that
-	// should have rendered loses geometry, and only one of those two is recoverable.
-	m_bSuppressDraw = false;
 
 	if (!render_state_changed) return;
 	if (render_state_changed&SHADER_CHANGED) {
@@ -6483,9 +6527,11 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// The masks are still written. They cost two cached state changes and they are
 			// what keeps this safe if the suppression is ever bypassed -- Draw_Sorting_IB_VB
 			// has its own path to the device, and a future one might too.
+			// The masks are the decision, not a note about it: Draw() re-reads them for
+			// every draw, so they suppress this one and every following one that inherits
+			// them, and they stop suppressing the moment somebody writes them back.
 			Set_DX8_Render_State(D3DRS_COLORWRITEENABLE, 0);
 			Set_DX8_Render_State(D3DRS_ZWRITEENABLE, FALSE);
-			m_bSuppressDraw = true;
 		}
 		else if (useMaskShader) {
 			if (!m_bUnitShaderBound) {
@@ -7471,7 +7517,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		//
 		// Counting these was worth 58984 of the 106067 in the first window after the
 		// suppression landed, which read as the change having done nothing.
-		const bool suppressedDraw = m_bSuppressDraw;
+		const bool suppressedDraw = Is_Inert_Depth_Pass_Draw();
 
 		// Everything below counts draws, so none of it runs for an application of state
 		// that is not one. See the note in Draw() for what that excludes and why.
@@ -7561,7 +7607,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// s_applyIsDraw and the suppression flag, for the same reason the census carries
 		// them: most calls here are not draws, and recolouring state that no draw is
 		// about to use paints nothing while still leaving the fill mode behind it.
-		if (m_debugVisMode != DEBUG_VIS_OFF && s_applyIsDraw && !m_bSuppressDraw) {
+		if (m_debugVisMode != DEBUG_VIS_OFF && s_applyIsDraw && !Is_Inert_Depth_Pass_Draw()) {
 			// The excluded passes used to be identified by D3DFVF_XYZRHW, which was only
 			// ever a proxy for "the interface" -- and it stops being one here, now that the
 			// interface is drawn by a vertex shader from untransformed positions. Ask the

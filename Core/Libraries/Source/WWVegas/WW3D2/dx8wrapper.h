@@ -1283,7 +1283,8 @@ public:
 	static void Debug_Note_FF_Draw(TextureBaseClass* tex0, unsigned fvf,
 								   bool viewIdentity, unsigned ffReason);
 	static void Debug_Note_Routed_Draw();   // the control: a draw a shader claimed
-	static void Debug_Note_Suppressed_Draw();   // a draw dropped before submission
+	static void Debug_Note_Suppressed_Draw();   // the routing block declined a caster
+	static void Debug_Note_Unsubmitted_Draw();  // ...and a draw call was not made
 	// Which pass of the frame is being drawn, for a draw that declared no technique
 	// scope of its own. Same fallback chain the fixed-function draw census uses, so the
 	// two tables name the same things.
@@ -1544,12 +1545,27 @@ public:
 	// in world units, and y = the depth-compare bias left over once it is. Terrain and
 	// roads carry no vertex normal and stay on m_shadowParams[0]'s blanket bias.
 	static float						m_shadowMeshParams[4];
-	// Raised by Apply_Render_State_Changes for a draw it has masked off colour and depth
-	// writes for, i.e. one that cannot affect any render target. Draw() drops those
-	// rather than submitting them. Cleared at the top of every Apply_Render_State_Changes,
-	// before its early return, so a stale value can only ever cost a wasted draw call and
-	// can never swallow one that should have rendered.
-	static bool							m_bSuppressDraw;
+	// Whether the draw about to be submitted can write anything at all: true for a
+	// shadow-depth-pass draw with the colour mask at zero, depth writes off and stencil
+	// off, which between them are everything that render target records. Draw() drops
+	// those rather than spending a draw call, a state validation and a pass over their
+	// triangles to produce nothing.
+	//
+	// Derived at the draw rather than latched when the routing block declines a caster,
+	// and that is the whole design. A latched flag stands for the two write masks, and
+	// those masks are written directly -- BaseHeightMap, W3DScene, HeightMap,
+	// W3DVolumetricShadow and W3DShaderManager all call Set_DX8_Render_State on them --
+	// which raises no bit in render_state_changed. So a latch either has to be cleared on
+	// every draw, in which case it only ever catches the first declined caster in a run
+	// of unchanged state, or it has to survive one, in which case it can outlive the masks
+	// it stands for and drop a draw that would have rendered. Measured: the surviving
+	// version moved 20485 pixels across frames 540 and 900 of civ_buildings.
+	//
+	// Reading the masks themselves has neither failure. It is the same test the strict
+	// half of the fixed-function draw census makes -- the one that licensed dropping these
+	// draws at all -- so the instrument and the behaviour cannot disagree. A poisoned
+	// tracked word fails all three comparisons, so the error direction is "submit anyway".
+	static bool Is_Inert_Depth_Pass_Draw();
 	// Raised by Prepare_Direct_Draw: the vertex stream, index buffer, base vertex index and
 	// FVF standing at the device were bound by a caller that went round the wrapper, so the
 	// wrapper's flags no longer describe what is bound. Draw() consumes it by asking for the
