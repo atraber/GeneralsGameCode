@@ -419,9 +419,8 @@ Int ScreenBloomFilter::init()
 	if (!W3DShaderManager::canRenderToTexture())
 		return FALSE;   // bloom needs the scene rendered into a texture
 
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
 	GfxTexture *sceneTex = W3DShaderManager::getRenderTexture();
-	if (!dev || !sceneTex)
+	if (!DX8Wrapper::Has_Device() || !sceneTex)
 		return FALSE;
 
 	// Need at least SM1.1-class hardware for the fullscreen pixel shaders.
@@ -469,9 +468,9 @@ Int ScreenBloomFilter::shutdown()
 	DX8Wrapper::Release_DX8_Resource(m_surfB);
 	DX8Wrapper::Release_DX8_Resource(m_texA);
 	DX8Wrapper::Release_DX8_Resource(m_texB);
-	if (m_brightPS)    { reinterpret_cast<IDirect3DPixelShader9*>(m_brightPS)->Release();    m_brightPS = 0; }
-	if (m_blurPS)      { reinterpret_cast<IDirect3DPixelShader9*>(m_blurPS)->Release();      m_blurPS = 0; }
-	if (m_compositePS) { reinterpret_cast<IDirect3DPixelShader9*>(m_compositePS)->Release(); m_compositePS = 0; }
+	DX8Wrapper::Release_Pixel_Shader(m_brightPS);    m_brightPS = 0;
+	DX8Wrapper::Release_Pixel_Shader(m_blurPS);      m_blurPS = 0;
+	DX8Wrapper::Release_Pixel_Shader(m_compositePS); m_compositePS = 0;
 	return TRUE;
 }
 
@@ -488,8 +487,7 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	if (!sceneTex)
 		return false;
 
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (!dev || !m_surfA || !m_surfB || !m_brightPS || !m_blurPS || !m_compositePS)
+	if (!DX8Wrapper::Has_Device() || !m_surfA || !m_surfB || !m_brightPS || !m_blurPS || !m_compositePS)
 		return true;   // bloom unavailable this frame; scene already in the back buffer target
 
 	// Capture the restored back buffer + depth so the composite can return to them
@@ -596,8 +594,7 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 
 void ScreenBloomFilter::reset()
 {
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev)
+	if (DX8Wrapper::Has_Device())
 	{
 		DX8Wrapper::Set_Pixel_Shader(0);   // unbind the bloom pixel shader
 		DX8Wrapper::Set_DX8_Texture(0, nullptr);
@@ -2183,7 +2180,7 @@ void W3DShaderManager::init()
 //=============================================================================
 void W3DShaderManager::initUnitShaders()
 {
-	if (DX8Wrapper::_Get_D3D_Device8() == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	// options.ini "ShaderRouting" selects which draw categories the programmable path
@@ -2316,53 +2313,31 @@ void W3DShaderManager::initUnitShaders()
 //=============================================================================
 void W3DShaderManager::shutdownUnitShaders()
 {
-	if (DX8Wrapper::m_dwUnitVS != 0) {
-		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwUnitVS)->Release();
-		DX8Wrapper::m_dwUnitVS = 0;
-	}
-	if (DX8Wrapper::m_dwUnitPS != 0) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwUnitPS)->Release();
-		DX8Wrapper::m_dwUnitPS = 0;
-	}
-	if (DX8Wrapper::m_dwUnitDetailPS != 0) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwUnitDetailPS)->Release();
-		DX8Wrapper::m_dwUnitDetailPS = 0;
-	}
-	if (DX8Wrapper::m_dwTerrainVS != 0) {
-		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwTerrainVS)->Release();
-		DX8Wrapper::m_dwTerrainVS = 0;
-	}
-	if (DX8Wrapper::m_dwTerrainPS != 0) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwTerrainPS)->Release();
-		DX8Wrapper::m_dwTerrainPS = 0;
-	}
-	if (DX8Wrapper::m_dwRoadVS != 0) {
-		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwRoadVS)->Release();
-		DX8Wrapper::m_dwRoadVS = 0;
-	}
-	if (DX8Wrapper::m_dwRoadPS != 0) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwRoadPS)->Release();
-		DX8Wrapper::m_dwRoadPS = 0;
-	}
-	if (DX8Wrapper::m_dwWaterVS != 0) {
-		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwWaterVS)->Release();
-		DX8Wrapper::m_dwWaterVS = 0;
-	}
-	if (DX8Wrapper::m_dwWaterPS != 0) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwWaterPS)->Release();
-		DX8Wrapper::m_dwWaterPS = 0;
-	}
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwUnitVS);
+	DX8Wrapper::m_dwUnitVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwUnitPS);
+	DX8Wrapper::m_dwUnitPS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwUnitDetailPS);
+	DX8Wrapper::m_dwUnitDetailPS = 0;
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwTerrainVS);
+	DX8Wrapper::m_dwTerrainVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwTerrainPS);
+	DX8Wrapper::m_dwTerrainPS = 0;
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwRoadVS);
+	DX8Wrapper::m_dwRoadVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwRoadPS);
+	DX8Wrapper::m_dwRoadPS = 0;
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwWaterVS);
+	DX8Wrapper::m_dwWaterVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwWaterPS);
+	DX8Wrapper::m_dwWaterPS = 0;
 	// The water publishes its shroud pointer per frame; drop it so a device reset cannot
 	// leave a released texture bound on stage 6.
 	DX8Wrapper::Set_Water_Shroud(nullptr, 0.0f, 0.0f, 0.0f, 0.0f);
-	if (DX8Wrapper::m_dwUnitPbrVS != 0) {
-		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwUnitPbrVS)->Release();
-		DX8Wrapper::m_dwUnitPbrVS = 0;
-	}
-	if (DX8Wrapper::m_dwUnitPbrPS != 0) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwUnitPbrPS)->Release();
-		DX8Wrapper::m_dwUnitPbrPS = 0;
-	}
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwUnitPbrVS);
+	DX8Wrapper::m_dwUnitPbrVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwUnitPbrPS);
+	DX8Wrapper::m_dwUnitPbrPS = 0;
 	DX8Wrapper::Set_Orm_Resolver(nullptr);
 	clearOrmCache();
 	if (DX8Wrapper::m_defaultOrmMap != nullptr) {
@@ -2424,39 +2399,25 @@ void W3DShaderManager::initDebugVis()
 
 void W3DShaderManager::shutdownDebugVis()
 {
-	if (m_debugDepthPS) {
-		reinterpret_cast<IDirect3DPixelShader9*>(m_debugDepthPS)->Release();
-		m_debugDepthPS = 0;
-	}
-	if (m_debugShadowPS) {
-		reinterpret_cast<IDirect3DPixelShader9*>(m_debugShadowPS)->Release();
-		m_debugShadowPS = 0;
-	}
-	if (m_debugBloomPS) {
-		reinterpret_cast<IDirect3DPixelShader9*>(m_debugBloomPS)->Release();
-		m_debugBloomPS = 0;
-	}
-	if (m_debugShroudPS) {
-		reinterpret_cast<IDirect3DPixelShader9*>(m_debugShroudPS)->Release();
-		m_debugShroudPS = 0;
-	}
+	DX8Wrapper::Release_Pixel_Shader(m_debugDepthPS);
+	m_debugDepthPS = 0;
+	DX8Wrapper::Release_Pixel_Shader(m_debugShadowPS);
+	m_debugShadowPS = 0;
+	DX8Wrapper::Release_Pixel_Shader(m_debugBloomPS);
+	m_debugBloomPS = 0;
+	DX8Wrapper::Release_Pixel_Shader(m_debugShroudPS);
+	m_debugShroudPS = 0;
 	// Released here as well as at device reset: this is a D3DPOOL_DEFAULT render target,
 	// and one of those outliving a Reset() is exactly the leak that pinned the device
 	// shut on alt-tab once already.
 	DX8Wrapper::Release_DX8_Resource(m_debugBrightSurface);
 	DX8Wrapper::Release_DX8_Resource(m_debugBrightTexture);
-	if (DX8Wrapper::m_dwDebugNormalVS) {
-		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwDebugNormalVS)->Release();
-		DX8Wrapper::m_dwDebugNormalVS = 0;
-	}
-	if (DX8Wrapper::m_dwDebugNormalPS) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwDebugNormalPS)->Release();
-		DX8Wrapper::m_dwDebugNormalPS = 0;
-	}
-	if (DX8Wrapper::m_dwDebugTintPS) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwDebugTintPS)->Release();
-		DX8Wrapper::m_dwDebugTintPS = 0;
-	}
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwDebugNormalVS);
+	DX8Wrapper::m_dwDebugNormalVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwDebugNormalPS);
+	DX8Wrapper::m_dwDebugNormalPS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwDebugTintPS);
+	DX8Wrapper::m_dwDebugTintPS = 0;
 }
 
 void W3DShaderManager::captureBloomBrightPass(GfxSurface *brightSurface, Int width, Int height)
@@ -2465,8 +2426,7 @@ void W3DShaderManager::captureBloomBrightPass(GfxSurface *brightSurface, Int wid
 	if (DX8Wrapper::Get_Debug_Vis_Mode() != DEBUG_VIS_BLOOM || brightSurface == nullptr)
 		return;
 
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	// Create on first use, in the bright target's own format, and recreate if that target
@@ -2554,8 +2514,7 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 		mode != DEBUG_VIS_SHADOW_MAP && mode != DEBUG_VIS_DEPTH)
 		return;   // the remaining modes are per-draw and have already happened
 
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	// What each mode wants to look at, resolved before any state is touched so that a
@@ -2905,8 +2864,7 @@ void W3DShaderManager::initDefaultOrmMap()
 {
 	if (DX8Wrapper::m_defaultOrmMap != nullptr)
 		return;
-	IDirect3DDevice8* dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	GfxTexture* tex = DX8Wrapper::Create_DX8_Texture_Resource(1, 1, 1,
@@ -3227,8 +3185,7 @@ void W3DShaderManager::initShadowMap()
 {
 	if (m_pShadowMapTexture != nullptr)
 		return;
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	if (DX8Wrapper::m_dwShadowDepthVS == 0)
@@ -3282,22 +3239,14 @@ void W3DShaderManager::shutdownShadowMap()
 	DX8Wrapper::Release_DX8_Resource(m_pShadowMapDepthSurface);
 	DX8Wrapper::Release_DX8_Resource(m_pShadowMapSurface);
 	DX8Wrapper::Release_DX8_Resource(m_pShadowMapTexture);
-	if (DX8Wrapper::m_dwShadowDepthVS) {
-		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwShadowDepthVS)->Release();
-		DX8Wrapper::m_dwShadowDepthVS = 0;
-	}
-	if (DX8Wrapper::m_dwShadowDepthPS) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwShadowDepthPS)->Release();
-		DX8Wrapper::m_dwShadowDepthPS = 0;
-	}
-	if (DX8Wrapper::m_dwShadowDepthParticleVS) {
-		reinterpret_cast<IDirect3DVertexShader9*>(DX8Wrapper::m_dwShadowDepthParticleVS)->Release();
-		DX8Wrapper::m_dwShadowDepthParticleVS = 0;
-	}
-	if (DX8Wrapper::m_dwShadowDepthParticlePS) {
-		reinterpret_cast<IDirect3DPixelShader9*>(DX8Wrapper::m_dwShadowDepthParticlePS)->Release();
-		DX8Wrapper::m_dwShadowDepthParticlePS = 0;
-	}
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwShadowDepthVS);
+	DX8Wrapper::m_dwShadowDepthVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwShadowDepthPS);
+	DX8Wrapper::m_dwShadowDepthPS = 0;
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwShadowDepthParticleVS);
+	DX8Wrapper::m_dwShadowDepthParticleVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwShadowDepthParticlePS);
+	DX8Wrapper::m_dwShadowDepthParticlePS = 0;
 }
 
 #ifdef RTS_DEBUG
@@ -3401,8 +3350,7 @@ void W3DShaderManager::initSsr()
 {
 	if (m_ssrDepthTexture != nullptr)
 		return;
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 	// The depth pass is the shadow map's, pointed elsewhere. Without those shaders
 	// there is nothing to render depth with, and SSR simply stays off.
@@ -3488,8 +3436,7 @@ void W3DShaderManager::initRefraction()
 {
 	if (m_refractionTexture != nullptr)
 		return;
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	GfxSurface *rt = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
@@ -3702,8 +3649,7 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 	if (!m_hdrActive || m_hdrTexture == nullptr || m_toneMapPS == 0 || m_renderTexture == nullptr)
 		return;
 
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	// The 8-bit destination. Without MSAA that is m_newRenderSurface (which is the texture's
@@ -3797,19 +3743,15 @@ void W3DShaderManager::shutdownHdr()
 	DX8Wrapper::Release_DX8_Resource(m_hdrResolveSurface);
 	DX8Wrapper::Release_DX8_Resource(m_hdrRenderSurface);
 	DX8Wrapper::Release_DX8_Resource(m_hdrTexture);
-	if (m_toneMapPS)
-	{
-		reinterpret_cast<IDirect3DPixelShader9*>(m_toneMapPS)->Release();
-		m_toneMapPS = 0;
-	}
+	DX8Wrapper::Release_Pixel_Shader(m_toneMapPS);
+	m_toneMapPS = 0;
 }
 
 void W3DShaderManager::captureRefraction()
 {
 	if (m_refractionSurface == nullptr)
 		return;
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	// Whatever is the render target right now -- the back buffer normally, the filter
@@ -3843,8 +3785,7 @@ void W3DShaderManager::startCameraDepthRendering()
 {
 	if (m_ssrDepthSurface == nullptr || m_ssrDepthStencil == nullptr)
 		return;
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	// The saved render target and state slots are the shadow pass's. Sharing them is
@@ -3899,8 +3840,7 @@ void W3DShaderManager::captureSceneHistory()
 {
 	if (m_sceneHistorySurface == nullptr || m_renderTexture == nullptr)
 		return;
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 	// m_renderTexture is the scene already resolved out of MSAA by endRenderToTexture,
 	// so this is a straight copy. It exists because that texture is the render target
@@ -3928,8 +3868,7 @@ void W3DShaderManager::captureSceneHistoryFromBackBuffer()
 {
 	if (m_sceneHistorySurface == nullptr)
 		return;
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	GfxSurface *back = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
@@ -3945,8 +3884,7 @@ void W3DShaderManager::startShadowMapRendering()
 {
 	if (m_pShadowMapSurface == nullptr || m_pShadowMapDepthSurface == nullptr)
 		return;
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	m_shadowSavedRT = nullptr;
@@ -4021,8 +3959,7 @@ void W3DShaderManager::initEnvMap()
 {
 	if (DX8Wrapper::m_envCubeMap != nullptr)
 		return;
-	IDirect3DDevice8* dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	// Levels = 0 asks for a full mip chain; bakeEnvMapFaces fills level 0 and filters

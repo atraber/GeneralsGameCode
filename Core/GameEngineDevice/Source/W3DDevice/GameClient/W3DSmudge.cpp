@@ -112,8 +112,7 @@ void W3DSmudgeManager::createBackgroundTexture()
 	REF_PTR_RELEASE(m_backgroundTexture);
 	m_backgroundFormat = (UnsignedInt)WW3D_FORMAT_UNKNOWN;
 
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	// Dimensions off the back buffer, format off the scene. The two are the same size --
@@ -184,8 +183,7 @@ Bool W3DSmudgeManager::captureBackground(SurfaceClass *sceneSurface)
 	if (src == nullptr)
 		return FALSE;
 
-	LPDIRECT3DDEVICE8 dev = DX8Wrapper::_Get_D3D_Device8();
-	if (dev == nullptr)
+	if (!DX8Wrapper::Has_Device())
 		return FALSE;
 
 	GfxTexture *tex = m_backgroundTexture->Peek_D3D_Texture();
@@ -264,9 +262,8 @@ Int copyRect(unsigned char *buf, Int bufSize, int oX, int oY, int width, int hei
  	GfxSurface *tempSurface=nullptr;
 	Int result = 0;
 
- 	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
-	if (!m_pDev)
+	if (!DX8Wrapper::Has_Device())
 		goto error;
 
  	surface = DX8Wrapper::Get_DX8_Render_Target_Surface(0);

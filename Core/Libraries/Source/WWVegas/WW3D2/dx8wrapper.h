@@ -845,6 +845,17 @@ public:
 	*/
 	static GfxDeviceClass * Gfx;
 
+	/*
+	** Is there a device to draw on?
+	**
+	** Almost every caller that ever took _Get_D3D_Device8() into a local only compared
+	** it against null -- 35 of the 36 outside this file, in eight files -- and none of
+	** them wanted a D3D pointer for that. Asking here instead keeps the question and
+	** drops the API type, which is the whole difference between a subsystem that can be
+	** compiled against a second backend and one that cannot.
+	*/
+	static bool Has_Device() { return Gfx != nullptr && D3DDevice != nullptr; }
+
 	static IDirect3DDevice8* _Get_D3D_Device8() { return D3DDevice; }
 	static IDirect3D8* _Get_D3D8() { return D3DInterface; }
 	/// Returns the display format - added by TR for video playback - not part of W3D

@@ -110,9 +110,8 @@ W3DMouse::~W3DMouse()
 {
 	// Needs the device itself: the hardware cursor is a device property with no
 	// render state behind it, and the wrapper tracks nothing about it.
-	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
-	if (m_pDev)
+	if (DX8Wrapper::Has_Device())
 	{
 		DX8Wrapper::Show_DX8_Hardware_Cursor(false);	//kill DX8 cursor
 		Win32Mouse::setCursor(ARROW); //enable default windows cursor
@@ -391,10 +390,9 @@ void W3DMouse::setCursor( MouseCursor cursor )
 	{
 		SetCursor(nullptr);	//Kill Windows Cursor
 
-		LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 		Bool doImageChange=FALSE;
 
-		if (m_pDev != nullptr)
+		if (DX8Wrapper::Has_Device())
 		{
 			DX8Wrapper::Show_DX8_Hardware_Cursor(false);	//disable DX8 cursor
 			if (cursor != m_currentD3DCursor)
@@ -489,8 +487,7 @@ void W3DMouse::draw()
 	{
 		//called from update thread or rendering loop.  Tells D3D where
 		//to draw the mouse cursor.
-		LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
-		if (m_pDev)
+		if (DX8Wrapper::Has_Device())
 		{	DX8Wrapper::Show_DX8_Hardware_Cursor(true);	//Enable DX8 cursor
 
 			if (TheDisplay && !TheDisplay->getWindowed())

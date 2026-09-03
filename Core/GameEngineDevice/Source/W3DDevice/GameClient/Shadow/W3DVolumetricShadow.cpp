@@ -1337,9 +1337,8 @@ void W3DVolumetricShadow::RenderMeshVolume(Int meshIndex, Int lightIndex, const 
 	// below, which flushes deferred fixed-function state and tells the wrapper its
 	// bindings are no longer ours. Every render state this used to set now goes through
 	// the wrapper instead.
-	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
-	if (!m_pDev)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	geometry = m_shadowVolume[lightIndex][ meshIndex ];
@@ -1408,9 +1407,8 @@ void W3DVolumetricShadow::RenderDynamicMeshVolume(Int meshIndex, Int lightIndex,
 	// below, which flushes deferred fixed-function state and tells the wrapper its
 	// bindings are no longer ours. Every render state this used to set now goes through
 	// the wrapper instead.
-	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
-	if (!m_pDev)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 
@@ -1556,9 +1554,8 @@ void W3DVolumetricShadow::RenderMeshVolumeBounds(Int meshIndex, Int lightIndex, 
 	// below, which flushes deferred fixed-function state and tells the wrapper its
 	// bindings are no longer ours. Every render state this used to set now goes through
 	// the wrapper instead.
-	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
-	if (!m_pDev)
+	if (!DX8Wrapper::Has_Device())
 		return;
 
 	Vector3 meshPosition;
@@ -3372,9 +3369,7 @@ void W3DVolumetricShadowManager::renderStencilShadows()
 	FF_SITE("W3DVolumetricShadow::renderStencilShadows");
 	// The device, for the DrawPrimitiveUP that paints the stencilled area. Announced with
 	// Prepare_Direct_Draw; the state around it goes through the wrapper.
-	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
-
-	if (!m_pDev)
+	if (!DX8Wrapper::Has_Device())
 		return;	//need device to render anything.
 
 	struct _TRANSLITVERTEX {
@@ -3466,7 +3461,7 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 		// Only to ask whether there is a device at all. Nothing in this function talks to one
 		// any more -- the state it sets up goes through the wrapper, so the wrapper's idea of
 		// what the device holds stays true across it.
-		if (!DX8Wrapper::_Get_D3D_Device8())
+		if (!DX8Wrapper::Has_Device())
 			return;	//need device to render anything.
 
  		//According to Nvidia there's a D3D bug that happens if you don't start with a
@@ -3801,9 +3796,7 @@ Bool W3DVolumetricShadowManager::ReAcquireResources()
 
 	// Resource lifetime: the device is what vertex and index buffers are created from, and
 	// the wrapper holds no state behind that.
-	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
-
-	DEBUG_ASSERTCRASH(m_pDev, ("Trying to ReAcquireResources on W3DVolumetricShadowManager without device"));
+	DEBUG_ASSERTCRASH(DX8Wrapper::Has_Device(), ("Trying to ReAcquireResources on W3DVolumetricShadowManager without device"));
 
 	shadowIndexBufferD3D=DX8Wrapper::Create_DX8_Index_Buffer(SHADOW_INDEX_SIZE, GFX_USAGE_DYNAMIC);
 	if (shadowIndexBufferD3D == nullptr)

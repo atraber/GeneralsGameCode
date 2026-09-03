@@ -1119,7 +1119,6 @@ void WaterRenderObjClass::ReAcquireResources()
 	// those is render state, and every direct draw here announces itself with
 	// Prepare_Direct_Draw("waterDirect"), which is what flushes the deferred
 	// fixed-function words and tells the wrapper its bindings were taken over.
-	m_pDev=DX8Wrapper::_Get_D3D_Device8();
 
 	//We're using the same grid for either 3D Water Mesh or Pixel/Vertex shader.  Just
 	//allocate the right size depending on usage
@@ -1274,7 +1273,6 @@ Int WaterRenderObjClass::init(Real waterLevel, Real dx, Real dy, SceneClass *par
 #if 0	//MD does not support the old bump-mapped water at all so no point loading textures. -MW 8-11-03
 	if (type == WATER_TYPE_2_PVSHADER || (W3DShaderManager::getChipset() >= DC_GENERIC_PIXEL_SHADER_1_1))
 	{	//geforce3 specific water requires some extra D3D assets
-		m_pDev=DX8Wrapper::_Get_D3D_Device8();
 		//save previous thumbnail mode
 		bool thumbnails_enabled = WW3D::Get_Thumbnail_Enabled();
 		WW3D::Set_Thumbnail_Enabled(false);
