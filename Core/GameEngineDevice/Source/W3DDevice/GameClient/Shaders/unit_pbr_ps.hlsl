@@ -81,7 +81,7 @@ float3 cloudShade(float3 worldPos)
 
 struct PS_INPUT
 {
-    float4 position : POSITION;
+    float4 position : VS_POSITION;
     float4 color    : COLOR0;
     float2 texcoord : TEXCOORD0;
     float3 worldPos : TEXCOORD1;

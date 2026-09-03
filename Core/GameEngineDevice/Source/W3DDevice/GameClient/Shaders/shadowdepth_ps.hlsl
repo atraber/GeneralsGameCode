@@ -23,7 +23,7 @@ DECLARE_SAMPLER(BaseSampler, 0);   // the caster's own texture, for its alpha
 float4 ShadowCastParams : register(c0);
 
 struct PS_INPUT { float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1;
-                  float2 vpos     : VPOS; };
+                  PIXEL_POSITION_TYPE vpos     : PS_PIXEL_POSITION; };
 
 // Split the depth across three 8-bit channels, coarse to fine.
 //
@@ -89,7 +89,17 @@ float4 main(PS_INPUT input) : PS_TARGET
         // opaque geometry this path also admits still dithers to solid. See where it is
         // set.
         float coverage = texAlpha * ShadowCastParams.z;
-        clip(coverage - bayer4x4(input.vpos));
+        // vpos is the pixel's own coordinate, and it is the one semantic here whose *value*
+        // differs between the models: VPOS in ps_3_0 is the integer pixel coordinate, while
+        // SV_Position is the pixel centre, half a texel further on in each axis.
+        //
+        // bayer4x4 happens to be immune -- it floors before it takes the modulus, and
+        // floor(i + 0.5) is i -- so the dither pattern would come out identical either way.
+        // PIXEL_POSITION is applied at the call anyway, because that immunity is a property of
+        // one line of arithmetic inside the function rather than of the value being passed to
+        // it, and a later reader tuning the pattern should not have to rediscover it. Under
+        // model 3 the macro is the bare argument, so this costs nothing and moves no bytecode.
+        clip(coverage - bayer4x4(PIXEL_POSITION(input.vpos)));
 
         // Alpha out is 1.0, not the coverage: the scene's alpha test is left as the mesh
         // set it, and letting it cut a second time -- against a reference chosen for

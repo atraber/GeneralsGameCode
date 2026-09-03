@@ -133,7 +133,7 @@ float softParticleFade(float4 screenPos)
 
 struct PS_INPUT
 {
-    float4 position  : POSITION;
+    float4 position  : VS_POSITION;
     // TEXCOORD4, not COLOR0: a ps_3_0 COLOR interpolator clamps to [0,1] and the lit colour
     // may exceed it now that the scene target is floating point. See unit_vs.
     float4 color     : TEXCOORD4;

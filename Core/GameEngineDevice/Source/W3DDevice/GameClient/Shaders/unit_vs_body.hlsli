@@ -90,7 +90,7 @@ struct VS_INPUT
 
 struct VS_OUTPUT
 {
-    float4 position  : POSITION;
+    float4 position  : VS_POSITION;
     // The lit colour travels in a TEXCOORD and not in COLOR0, which is where it belongs by
     // name and where it lived until HDR. A ps_3_0 COLOR interpolator is defined to clamp to
     // [0,1]: a vertex colour of 4.0 arrives at the pixel shader as 1.0, silently, and no

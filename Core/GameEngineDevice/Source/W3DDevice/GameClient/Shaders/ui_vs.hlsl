@@ -30,7 +30,7 @@ struct VS_INPUT
 
 struct VS_OUTPUT
 {
-    float4 position : POSITION;
+    float4 position : VS_POSITION;
     float4 color    : COLOR0;
     float2 texcoord : TEXCOORD0;
 };

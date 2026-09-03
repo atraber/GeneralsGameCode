@@ -17,7 +17,7 @@ row_major float4x4 World : register(c4);
 
 struct VS_INPUT  { float4 position : POSITION; float4 color : COLOR0;
                    float2 texcoord : TEXCOORD0; };
-struct VS_OUTPUT { float4 position : POSITION; float4 lightPos : TEXCOORD0;
+struct VS_OUTPUT { float4 position : VS_POSITION; float4 lightPos : TEXCOORD0;
                    float2 texcoord : TEXCOORD1; float  alpha    : TEXCOORD2; };
 
 VS_OUTPUT main(VS_INPUT input)

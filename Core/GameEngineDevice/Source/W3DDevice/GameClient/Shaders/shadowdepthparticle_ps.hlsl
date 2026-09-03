@@ -33,7 +33,7 @@ DECLARE_SAMPLER(BaseSampler, 0);   // the sprite's own texture, for its alpha
 float4 ShadowCastParams : register(c0);
 
 struct PS_INPUT { float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1;
-                  float  alpha    : TEXCOORD2; float2 vpos     : VPOS; };
+                  float  alpha    : TEXCOORD2; PIXEL_POSITION_TYPE vpos     : PS_PIXEL_POSITION; };
 
 // Split the depth across three 8-bit channels, coarse to fine. Identical to
 // shadowdepth_ps's -- the receivers unpack both with one function, so the two must agree
@@ -74,7 +74,17 @@ float4 main(PS_INPUT input) : PS_TARGET
 
     // Both halves of the sprite's opacity, and the ceiling on the pair.
     float coverage = SAMPLE_2D(BaseSampler, input.texcoord).a * input.alpha * ShadowCastParams.y;
-    clip(coverage - bayer4x4(input.vpos));
+    // vpos is the pixel's own coordinate, and it is the one semantic here whose *value*
+    // differs between the models: VPOS in ps_3_0 is the integer pixel coordinate, while
+    // SV_Position is the pixel centre, half a texel further on in each axis.
+    //
+    // bayer4x4 happens to be immune -- it floors before it takes the modulus, and
+    // floor(i + 0.5) is i -- so the dither pattern would come out identical either way.
+    // PIXEL_POSITION is applied at the call anyway, because that immunity is a property of
+    // one line of arithmetic inside the function rather than of the value being passed to
+    // it, and a later reader tuning the pattern should not have to rediscover it. Under
+    // model 3 the macro is the bare argument, so this costs nothing and moves no bytecode.
+    clip(coverage - bayer4x4(PIXEL_POSITION(input.vpos)));
 
     // Alpha out is 1.0, not the coverage. The scene's alpha test is left as the particle
     // shader set it, and for an alpha-tested system it would test whatever went here --

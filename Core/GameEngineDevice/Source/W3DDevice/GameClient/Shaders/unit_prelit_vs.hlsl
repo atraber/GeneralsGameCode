@@ -52,7 +52,7 @@ struct VS_INPUT
 
 struct VS_OUTPUT
 {
-    float4 position  : POSITION;
+    float4 position  : VS_POSITION;
     // TEXCOORD, not COLOR0 -- ps_3_0 clamps COLOR interpolators to [0,1] and this colour
     // may now exceed it. See the note on the same field in unit_vs; both feed the same
     // pixel shaders, so the two signatures have to agree.

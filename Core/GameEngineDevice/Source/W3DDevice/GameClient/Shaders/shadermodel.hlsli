@@ -125,12 +125,20 @@
 // PIXEL_POSITION takes the coordinate back to the integer one the dither was written for.
 // Its model 3 expansion is the bare parameter and not `(v)`, because parentheses are tokens
 // and the bytecode has to come out identical.
+//
+// The type has to move with the semantic. VPOS is a float2; SV_Position must be declared
+// float4 with all four components, and fxc refuses the shader outright rather than warning
+// -- "type must be float32 and mask must be xyzw". That refusal is the model 4 build
+// earning its place: it is a compile error in the model nothing runs, on a line that was
+// correct in the model everything runs.
 #if RTS_SHADER_MODEL >= 4
-#define PS_PIXEL_POSITION   SV_Position
-#define PIXEL_POSITION(v)   ((v) - 0.5)
+#define PS_PIXEL_POSITION     SV_Position
+#define PIXEL_POSITION_TYPE   float4
+#define PIXEL_POSITION(v)     ((v).xy - 0.5)
 #else
-#define PS_PIXEL_POSITION   VPOS
-#define PIXEL_POSITION(v)   v
+#define PS_PIXEL_POSITION     VPOS
+#define PIXEL_POSITION_TYPE   float2
+#define PIXEL_POSITION(v)     v
 #endif
 
 

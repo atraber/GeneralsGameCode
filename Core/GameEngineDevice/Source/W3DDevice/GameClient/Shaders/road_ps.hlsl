@@ -51,7 +51,7 @@ float3 cloudShade(float4 cloudUV, float enable, float strength)
 // filter is: a road is a decal on the ground and must take exactly the ground's shade.
 struct PS_INPUT
 {
-    float4 position : POSITION;
+    float4 position : VS_POSITION;
     float4 color    : COLOR0;
     float2 uv0      : TEXCOORD0;
     float4 cloudUV  : TEXCOORD2;   // xy = cloud layer A, zw = layer B

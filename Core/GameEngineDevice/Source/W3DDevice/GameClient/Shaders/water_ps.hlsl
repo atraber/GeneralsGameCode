@@ -114,7 +114,7 @@ float4 AbsorbCtl  : register(c27);
 
 struct PS_INPUT
 {
-    float4 position : POSITION;
+    float4 position : VS_POSITION;
     float4 color    : COLOR0;
     float2 uv0      : TEXCOORD0;
     float2 uv1      : TEXCOORD1;

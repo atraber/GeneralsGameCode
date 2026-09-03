@@ -32,7 +32,7 @@ struct VS_INPUT
 
 struct VS_OUTPUT
 {
-    float4 position : POSITION;
+    float4 position : VS_POSITION;
     float3 normal   : TEXCOORD0;   // camera space, unnormalised (the PS normalises)
 };
 
