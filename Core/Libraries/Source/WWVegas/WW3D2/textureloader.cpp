@@ -358,7 +358,7 @@ void TextureLoader::Validate_Texture_Size
 	unsigned& depth
 )
 {
-	const D3DCAPS8& dx8caps=DX8Wrapper::Get_Current_Caps()->Get_DX8_Caps();
+	const DX8Caps& dx8caps=*DX8Wrapper::Get_Current_Caps();
 
 	unsigned poweroftwowidth = 1;
 	while (poweroftwowidth < width)
@@ -378,20 +378,20 @@ void TextureLoader::Validate_Texture_Size
 		poweroftwodepth <<= 1;
 	}
 
-	if (poweroftwowidth>dx8caps.MaxTextureWidth)
+	if (poweroftwowidth>dx8caps.Get_Max_Texture_Width())
 	{
-		poweroftwowidth=dx8caps.MaxTextureWidth;
+		poweroftwowidth=dx8caps.Get_Max_Texture_Width();
 	}
-	if (poweroftwoheight>dx8caps.MaxTextureHeight)
+	if (poweroftwoheight>dx8caps.Get_Max_Texture_Height())
 	{
-		poweroftwoheight=dx8caps.MaxTextureHeight;
+		poweroftwoheight=dx8caps.Get_Max_Texture_Height();
 	}
-	if (poweroftwodepth>dx8caps.MaxVolumeExtent)
+	if (poweroftwodepth>dx8caps.Get_Max_Volume_Extent())
 	{
-		poweroftwodepth=dx8caps.MaxVolumeExtent;
+		poweroftwodepth=dx8caps.Get_Max_Volume_Extent();
 	}
 
-	const unsigned maxTextureAspectRatio = dx8caps.MaxTextureAspectRatio;
+	const unsigned maxTextureAspectRatio = dx8caps.Get_Max_Texture_Aspect_Ratio();
 	if (maxTextureAspectRatio != 0)
 	{
 		if (poweroftwowidth>poweroftwoheight)

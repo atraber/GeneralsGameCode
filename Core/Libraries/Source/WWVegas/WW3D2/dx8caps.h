@@ -43,6 +43,14 @@
 #include "ww3dformat.h"
 #include "d3d9_compat.h"
 
+/*
+** The D3D9-shaped half of this: the raw capability struct and the interface used to
+** ask about formats. Defined in dx8caps.cpp so that nothing including this header sees
+** a D3D type or needs d3d9.h in scope. Eleven files include it and none of them wants
+** either -- they want the questions above, which are now all answered without one.
+*/
+struct DX8CapsPrivate;
+
 class DX8Caps
 {
 public:
@@ -205,11 +213,16 @@ public:
 	};
 
 
-	DX8Caps(IDirect3D8* direct3d, const D3DCAPS8& caps,WW3DFormat display_format, const D3DADAPTER_IDENTIFIER8& adapter_id);
-	DX8Caps(IDirect3D8* direct3d, IDirect3DDevice8* D3DDevice,WW3DFormat display_format, const D3DADAPTER_IDENTIFIER8& adapter_id);
+	// Takes nothing from D3D. The adapter, the device and the adapter identifier all
+	// come from DX8Wrapper, which is where they already lived; passing them in only
+	// put three D3D types in the signature of a header eleven files include. The
+	// second constructor, which took a D3DCAPS8 already filled in, had no callers.
+	DX8Caps(WW3DFormat display_format);
+	/// Device enumeration, before an adapter has been chosen and while there is no
+	/// device to probe: reads the named adapter's caps instead.
+	DX8Caps(WW3DFormat display_format, unsigned adapter_index);
+	~DX8Caps();
 	static void Shutdown();
-
-	void Compute_Caps(WW3DFormat display_format, const D3DADAPTER_IDENTIFIER8& adapter_id);
 	bool Support_TnL() const { return SupportTnL; };
 	bool Support_DXTC() const { return SupportDXTC; }
 	bool Support_Gamma() const { return supportGamma; }
@@ -246,7 +259,32 @@ public:
 	bool Support_Render_To_Texture_Format(WW3DFormat format) const { return SupportRenderToTextureFormat[format]; }
 	bool Support_Depth_Stencil_Format(WW3DZFormat format) const { return SupportDepthStencilFormat[format]; }
 
-	D3DCAPS8 const & Get_DX8_Caps() const { return Caps; }
+	// -------------------------------------------------------------------------
+	//
+	// What the adapter can do, asked one question at a time.
+	//
+	// This used to hand the raw D3DCAPS8 back and let every caller pick a field out of
+	// it, which put a D3D struct in the public API of a header eleven files include.
+	// Every reader outside this file wanted one of these seven answers.
+	//
+	// -------------------------------------------------------------------------
+
+	unsigned Get_Max_Texture_Width() const { return MaxTextureWidth; }
+	unsigned Get_Max_Texture_Height() const { return MaxTextureHeight; }
+	unsigned Get_Max_Volume_Extent() const { return MaxVolumeExtent; }
+	/// Zero means unlimited, which is what D3D means by it too.
+	unsigned Get_Max_Texture_Aspect_Ratio() const { return MaxTextureAspectRatio; }
+
+	bool Support_Linear_Filter() const { return SupportLinearFilter; }
+	bool Support_Mip_Linear_Filter() const { return SupportMipLinearFilter; }
+	bool Support_Anisotropic_Filter() const { return SupportAnisotropicFilter; }
+	bool Support_Color_Write_Enable() const { return SupportColorWriteEnable; }
+
+	/// The fixed-function texture-combine ops the adapter has, as D3DTEXOPCAPS_ bits.
+	/// Still a D3D bitmask because ShaderClass::Apply -- the fixed-function combine path,
+	/// which is a phase of its own -- tests two dozen of them one at a time. A number,
+	/// not a struct, so no header outside this one has to know the shape of anything.
+	unsigned Get_Texture_Op_Caps() const { return TextureOpCaps; }
 
 	const StringClass& Get_Log() const { return CapsLog; }
 	const StringClass& Get_Compact_Log() const { return CompactLog; }
@@ -270,21 +308,34 @@ private:
 	static DeviceTypeS3 Get_S3_Device(unsigned device_id);
 	static DeviceTypeIntel Get_Intel_Device(unsigned device_id);
 
-	void Init_Caps(IDirect3DDevice8* D3DDevice);
-	void Check_Texture_Format_Support(WW3DFormat display_format,const D3DCAPS8& caps);
-	void Check_Render_To_Texture_Support(WW3DFormat display_format,const D3DCAPS8& caps);
-	void Check_Depth_Stencil_Support(WW3DFormat display_format, const D3DCAPS8& caps);
-	void Check_Texture_Compression_Support(const D3DCAPS8& caps);
-	void Check_Bumpmap_Support(const D3DCAPS8& caps);
-	void Check_Shader_Support(const D3DCAPS8& caps);
-	void Check_Maximum_Texture_Support(const D3DCAPS8& caps);
+	// Every one of these was handed the same member the caller already had.
+	void Compute_Caps(WW3DFormat display_format);
+	void Init_Caps();
+	void Check_Texture_Format_Support(WW3DFormat display_format);
+	void Check_Render_To_Texture_Support(WW3DFormat display_format);
+	void Check_Depth_Stencil_Support(WW3DFormat display_format);
+	void Check_Texture_Compression_Support();
+	void Check_Bumpmap_Support();
+	void Check_Shader_Support();
+	void Check_Maximum_Texture_Support();
 	void Check_Driver_Version_Status();
-	void Vendor_Specific_Hacks(const D3DADAPTER_IDENTIFIER8& adapter_id);
+	void Vendor_Specific_Hacks();
 
 	int MaxDisplayWidth;
 	int MaxDisplayHeight;
 
-	D3DCAPS8 Caps;
+	// Copied out of D3DCAPS8 at Compute_Caps, so nothing outside this file needs the
+	// struct to read them.
+	unsigned MaxTextureWidth;
+	unsigned MaxTextureHeight;
+	unsigned MaxVolumeExtent;
+	unsigned MaxTextureAspectRatio;
+	unsigned TextureOpCaps;
+	bool SupportLinearFilter;
+	bool SupportMipLinearFilter;
+	bool SupportAnisotropicFilter;
+	bool SupportColorWriteEnable;
+
 	bool SupportTnL;
 	bool SupportDXTC;
 	bool supportGamma;
@@ -311,7 +362,7 @@ private:
 	DriverVersionStatusType DriverVersionStatus;
 	VendorIdType VendorId;
 	StringClass DriverDLL;
-	IDirect3D8* Direct3D; // warning XDK name conflict KJM
+	DX8CapsPrivate * Private;
 	StringClass CapsLog;
 	StringClass CompactLog;
 };

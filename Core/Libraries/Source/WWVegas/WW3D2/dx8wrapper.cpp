@@ -3085,21 +3085,23 @@ inline DWORD F2DW(float f) { return *((unsigned*)&f); }
 void DX8Wrapper::Set_Default_Global_Render_States()
 {
 	DX8_THREAD_ASSERT();
-	const D3DCAPS8 &caps = Get_Current_Caps()->Get_DX8_Caps();
-
-	Set_DX8_Render_State(D3DRS_RANGEFOGENABLE, (caps.RasterCaps & D3DPRASTERCAPS_FOGRANGE) ? TRUE : FALSE);
-	Set_DX8_Render_State(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
-	Set_DX8_Render_State(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
-	// ...and fog itself off, which nothing else says any more.
+	// Fog off for the life of the device, and nothing else about fog said at all.
+	//
+	// D3DRS_RANGEFOGENABLE, FOGTABLEMODE and FOGVERTEXMODE were written here too, the
+	// first of them out of D3DCAPS8::RasterCaps. All three only mean anything while fog
+	// is enabled, and it never is: Phase 2 deleted fog, this line is the only thing that
+	// writes D3DRS_FOGENABLE on the render path, and the fog census reads 0 of 1070690
+	// draws with it set. So they configured a feature nothing can reach -- and the
+	// RasterCaps read was the last thing outside dx8caps.cpp that wanted the raw
+	// D3DCAPS8 struct for anything but a texture limit.
 	//
 	// ShaderClass::Apply used to write this on every shader change, and that is what
 	// re-established it after Invalidate_Cached_Render_States poisoned the tracked word:
 	// the poison does not compare equal to FALSE, so the write reached the device. That
 	// block is gone -- fog is dead, see the note there -- and without this line the
 	// device's fog state would rest on the D3D9 default rather than on anything the
-	// engine said. The default is FALSE, so nothing moved; but the three states above
-	// have been asserted here since the port and it makes no sense for the one that
-	// decides whether any of them matter to be the one left to chance.
+	// engine said. The default is FALSE, so nothing moved; the point is that it rests on
+	// something the engine said, and keeps resting on it across a reset.
 	//
 	// Here rather than in the invalidation, which was the first attempt: this function
 	// runs once per device with the device up, whereas the invalidation is reached from
@@ -3642,7 +3644,7 @@ void DX8Wrapper::Enumerate_Devices()
 			D3DInterface->GetDeviceCaps(adapter_index,WW3D_DEVTYPE,&desc.Caps);
 			D3DInterface->GetAdapterIdentifier(adapter_index,D3DENUM_NO_WHQL_LEVEL,&desc.AdapterIdentifier);
 
-			DX8Caps dx8caps(D3DInterface,desc.Caps,WW3D_FORMAT_UNKNOWN,desc.AdapterIdentifier);
+			DX8Caps dx8caps(WW3D_FORMAT_UNKNOWN,(unsigned)adapter_index);
 
 			/*
 			** Enumerate the resolutions
@@ -8329,7 +8331,7 @@ void DX8Wrapper::Compute_Caps(WW3DFormat display_format)
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
 	delete CurrentCaps;
-	CurrentCaps=new DX8Caps(_Get_D3D8(),D3DDevice,display_format,Get_Current_Adapter_Identifier());
+	CurrentCaps=new DX8Caps(display_format);
 }
 
 
@@ -8577,18 +8579,18 @@ DX8Wrapper::Create_Render_Target (int width, int height, WW3DFormat format)
 	//
 	//	Note: We're going to force the width and height to be powers of two and equal
 	//
-	const D3DCAPS8& dx8caps=Get_Current_Caps()->Get_DX8_Caps();
+	const DX8Caps& dx8caps=*Get_Current_Caps();
 	float poweroftwosize = width;
 	if (height > 0 && height < width) {
 		poweroftwosize = height;
 	}
 	poweroftwosize = ::Find_POT (poweroftwosize);
 
-	if (poweroftwosize>dx8caps.MaxTextureWidth) {
-		poweroftwosize=dx8caps.MaxTextureWidth;
+	if (poweroftwosize>dx8caps.Get_Max_Texture_Width()) {
+		poweroftwosize=dx8caps.Get_Max_Texture_Width();
 	}
-	if (poweroftwosize>dx8caps.MaxTextureHeight) {
-		poweroftwosize=dx8caps.MaxTextureHeight;
+	if (poweroftwosize>dx8caps.Get_Max_Texture_Height()) {
+		poweroftwosize=dx8caps.Get_Max_Texture_Height();
 	}
 
 	width = height = poweroftwosize;
@@ -8647,7 +8649,7 @@ void DX8Wrapper::Create_Render_Target
 	}
 
 	//	Note: We're going to force the width and height to be powers of two and equal
-	const D3DCAPS8& dx8caps=Get_Current_Caps()->Get_DX8_Caps();
+	const DX8Caps& dx8caps=*Get_Current_Caps();
 	float poweroftwosize = width;
 	if (height > 0 && height < width)
 	{
@@ -8655,14 +8657,14 @@ void DX8Wrapper::Create_Render_Target
 	}
 	poweroftwosize = ::Find_POT (poweroftwosize);
 
-	if (poweroftwosize>dx8caps.MaxTextureWidth)
+	if (poweroftwosize>dx8caps.Get_Max_Texture_Width())
 	{
-		poweroftwosize=dx8caps.MaxTextureWidth;
+		poweroftwosize=dx8caps.Get_Max_Texture_Width();
 	}
 
-	if (poweroftwosize>dx8caps.MaxTextureHeight)
+	if (poweroftwosize>dx8caps.Get_Max_Texture_Height())
 	{
-		poweroftwosize=dx8caps.MaxTextureHeight;
+		poweroftwosize=dx8caps.Get_Max_Texture_Height();
 	}
 
 	width = height = poweroftwosize;

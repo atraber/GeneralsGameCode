@@ -3522,7 +3522,7 @@ void W3DVolumetricShadowManager::renderShadows( Bool forceStencilFill )
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
 	#else
 		//disable writes to color buffer
-		if (DX8Wrapper::Get_Current_Caps()->Get_DX8_Caps().PrimitiveMiscCaps & D3DPMISCCAPS_COLORWRITEENABLE)
+		if (DX8Wrapper::Get_Current_Caps()->Support_Color_Write_Enable())
 		{	// Read off the device, deliberately, and this one is worth stating because getting
 			// it wrong costs the shadows. It could now be read from the tracked word --
 			// nothing in the render path poisons state any more, and COLORWRITEENABLE has no
