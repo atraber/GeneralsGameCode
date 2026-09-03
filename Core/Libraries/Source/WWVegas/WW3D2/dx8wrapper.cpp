@@ -1198,6 +1198,7 @@ namespace {
 		unsigned    fvf;        // an example vertex format, for the vertex-side ones
 		unsigned    routed;     // ...for which the routing block actually ran
 		unsigned    masked;     // ...that may write neither colour nor depth
+		unsigned    inert;      // ...and does not touch stencil either
 	};
 	FFDrawSite s_ffDrawSites[MAX_FF_DRAW_SITES];
 	int      s_ffDrawSiteCount = 0;
@@ -1455,6 +1456,7 @@ void DX8Wrapper::Debug_Note_Lighting_Draw()
 				e = &s_ffDrawSites[s_ffDrawSiteCount++];
 				e->who = who; e->draws = 0; e->vertexOnly = 0; e->pixelOnly = 0;
 				e->both = 0; e->lit = 0; e->fvf = 0; e->routed = 0; e->masked = 0;
+				e->inert = 0;
 			}
 			++e->draws;
 			const bool v = Is_Fixed_Function_Vertex_Draw();
@@ -1474,8 +1476,21 @@ void DX8Wrapper::Debug_Note_Lighting_Draw()
 			// than to write a shader for it. Read from the tracked states, which is
 			// what the device is holding: the masks are cached and stay set until
 			// something changes them.
+			//
+			// Both write masks off is not the same as writing nothing: stencil is live in
+			// this engine (the player-colour pass, the shadow volumes and the shadow decals
+			// all enable it) and a draw with colour and depth masked can still increment a
+			// stencil buffer. `inert` is the test that actually licenses deleting a draw;
+			// `masked` is kept beside it as the control, so the difference between the two
+			// is the set that does something after all.
+			//
+			// A poisoned tracked word fails every one of these comparisons, so both figures
+			// can only under-report.
 			if (RenderStates[D3DRS_COLORWRITEENABLE] == 0 &&
-				RenderStates[D3DRS_ZWRITEENABLE] == FALSE) ++e->masked;
+				RenderStates[D3DRS_ZWRITEENABLE] == FALSE) {
+				++e->masked;
+				if (RenderStates[D3DRS_STENCILENABLE] == FALSE) ++e->inert;
+			}
 		}
 	}
 
@@ -1538,9 +1553,9 @@ void DX8Wrapper::Debug_Report_Lighting()
 			const FFDrawSite& d = s_ffDrawSites[best];
 			WWDEBUG_SAY(("    %-32s %8u draws  (vertex only %u, pixel only %u, both %u; "
 						 "%u lit; example FVF 0x%x; %u routed, %u inherited; "
-						 "%u write neither colour nor depth)",
+						 "%u write neither colour nor depth, %u of those with stencil off too)",
 				d.who, d.draws, d.vertexOnly, d.pixelOnly, d.both, d.lit, d.fvf,
-				d.routed, d.draws - d.routed, d.masked));
+				d.routed, d.draws - d.routed, d.masked, d.inert));
 			s_ffDrawSites[best].draws = 0;
 		}
 	}
