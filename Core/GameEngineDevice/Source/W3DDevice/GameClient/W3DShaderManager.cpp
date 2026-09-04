@@ -243,7 +243,7 @@ Bool ScreenDefaultFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
-	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+	DX8Wrapper::Prepare_Direct_Draw("filterDefault");
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -368,7 +368,7 @@ HRESULT W3DShaderManager::drawScreenQuad(
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2);
 	if (!DX8Wrapper::Bind_Screen_Quad_Shader())
 		return E_FAIL;   // no vertex shader means no post-process; the caller skips the pass
-	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+	DX8Wrapper::Prepare_Direct_Draw("screenQuad");
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
 	return S_OK;
 }
@@ -709,7 +709,7 @@ Bool ScreenBWFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doE
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
-	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+	DX8Wrapper::Prepare_Direct_Draw("filterBW");
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -924,7 +924,7 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 
 	DX8Wrapper::Set_DX8_Texture(0,tex);	//previously rendered frame inside this texture
 
-	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+	DX8Wrapper::Prepare_Direct_Draw("filterBWDot3Gray");
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	//Draw normal view blended by current fade level
@@ -936,7 +936,7 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 	//replace texture alpha with vertex alpha
 	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
 
-	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+	DX8Wrapper::Prepare_Direct_Draw("filterBWDot3Blend");
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -1194,7 +1194,7 @@ Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bo
 //		m_pDev->SetTextureStageState(0,D3DTSS_MAGFILTER,D3DTEXF_POINT);
 //		m_pDev->SetTextureStageState(0,D3DTSS_MINFILTER,D3DTEXF_POINT);
 
-	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+	DX8Wrapper::Prepare_Direct_Draw("filterCrossFade");
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 	reset();
@@ -1421,7 +1421,7 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAARG1, D3DTA_CURRENT);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAARG2, D3DTA_TEXTURE);
 	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+	DX8Wrapper::Prepare_Direct_Draw("filterMotionBlurBase");
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE,true);
 
@@ -1450,7 +1450,7 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 					v[i].v = ((v[i].v-center.y)*factor) + center.y;
 				}
 			}
-			DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+			DX8Wrapper::Prepare_Direct_Draw("filterMotionBlurTrail");
 			DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
 
 		}
@@ -4195,7 +4195,7 @@ void W3DShaderManager::drawViewport(Int color)
 	if (!DX8Wrapper::Bind_Screen_Quad_Shader())
 		return;   // no vertex shader means this pass cannot be drawn at all
 
-	DX8Wrapper::Prepare_Direct_Draw("screenFilter");
+	DX8Wrapper::Prepare_Direct_Draw("viewportQuad");
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREEN_QUAD_VERTEX));
 }
 

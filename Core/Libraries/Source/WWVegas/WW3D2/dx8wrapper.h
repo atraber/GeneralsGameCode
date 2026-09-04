@@ -1097,6 +1097,21 @@ protected:
 	static DWORD							Vertex_Shader;
 	static DWORD							Pixel_Shader;
 
+#ifdef RTS_DEBUG
+	// The vertex *declaration* standing at the device, which Vertex_Shader stops being the
+	// moment a real shader is bound over it.
+	//
+	// Set_Vertex_Shader overloads one word for two things: below 0x10000 it is an FVF and
+	// the backend calls SetFVF, above it a compiled shader and the backend calls
+	// SetVertexShader. SetFVF is sticky and SetVertexShader does not clear it, so a
+	// programmable draw still reads its attributes through the last FVF anybody set -- and
+	// that FVF, not the shader handle, is what a D3D11 input layout has to describe.
+	// Apply_Render_State_Changes sets it from the bound vertex buffer and the routing block
+	// then binds a shader over the top, so by the time a draw happens the two are routinely
+	// different values and Vertex_Shader only remembers the second.
+	static DWORD							Debug_Vertex_FVF;
+#endif
+
 	static Vector4							Vertex_Shader_Constants[MAX_VERTEX_SHADER_CONSTANTS];
 	static Vector4							Pixel_Shader_Constants[MAX_PIXEL_SHADER_CONSTANTS];
 
@@ -1309,6 +1324,23 @@ public:
 	// These are the last drawers not accounted for, so each one names itself here.
 	static void Debug_Note_Direct_Draw(const char * site);
 	static void Debug_Report_Direct_Draws();
+	// (vertex format x vertex shader) per drawer -- the one question no other census here
+	// answers, and the table a D3D11 backend is built from.
+	//
+	// D3D11 has no FVF and no implicit declaration: an input layout is created from a
+	// vertex layout *and* a compiled vertex shader's input signature together, and the set
+	// of layouts a backend must create is therefore the set of distinct pairs, not the set
+	// of formats and not the set of shaders. Nothing else here reports the pair. The
+	// routing census reports the block's verdict; the lighting census reports one example
+	// format per drawer and only for fixed-function draws through Draw(); the direct-device
+	// census reports which half was programmable and no format at all.
+	//
+	// Fed from both ways to draw, so a drawer that goes straight at the device is in the
+	// same table as one that does not, and marked with which it was. `submitted` is false
+	// for a draw Draw() drops before it reaches a device -- those need no layout, and
+	// counting them in would put the depth pass at the top of a table meant to size work.
+	static void Debug_Note_Vertex_Layout(const char * site, bool direct, bool submitted);
+	static void Debug_Report_Vertex_Layouts();
 	// The first wrapper draw after a direct-device drawer, measured at the moment Draw()
 	// takes the device's bindings back -- before the repair, because after it there is
 	// nothing left to see. Says how many of those draws would have used the wrong base
@@ -1954,6 +1986,11 @@ WWINLINE void DX8Wrapper::Set_Vertex_Shader(DWORD vertex_shader)
 #endif
 
 	Vertex_Shader=vertex_shader;
+#ifdef RTS_DEBUG
+	// Only an FVF changes the declaration; a compiled shader leaves the last one standing,
+	// which is exactly the fact the vertex-layout census exists to record.
+	if (vertex_shader < 0x10000) Debug_Vertex_FVF = vertex_shader;
+#endif
 	GFXCALL(Set_Vertex_Shader((GfxShaderHandle)Vertex_Shader));
 }
 

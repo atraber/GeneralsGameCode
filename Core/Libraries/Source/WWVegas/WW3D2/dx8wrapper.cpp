@@ -567,6 +567,9 @@ void DX8Wrapper::Prepare_Direct_Draw(const char * site)
 
 #ifdef RTS_DEBUG
 	Debug_Note_Direct_Draw(site);
+	// A direct drawer always reaches a device -- nothing downstream can decline it, because
+	// there is no downstream: it issues the draw call itself.
+	Debug_Note_Vertex_Layout(site, true, true);
 #else
 	(void)site;
 #endif
@@ -625,7 +628,7 @@ struct DirectDrawGroup
 	unsigned     ffPixel;    // no pixel shader bound
 	unsigned     ffVertex;   // an FVF rather than a vertex shader
 };
-static DirectDrawGroup s_directDraws[16];
+static DirectDrawGroup s_directDraws[32];
 static int      s_directDrawCount = 0;
 static unsigned s_directDrawFrames = 0;
 
@@ -651,7 +654,7 @@ struct ForeignBindingGroup
 	unsigned     wrongStream; // ...and how many had somebody else's vertex buffer, or none
 	int          worstDelta;  // largest inherited-minus-expected base seen
 };
-static ForeignBindingGroup s_foreign[16];
+static ForeignBindingGroup s_foreign[32];
 static int            s_foreignCount = 0;
 static const char *   s_lastDirectDrawSite = nullptr;
 static int            s_foreignReported = 0;
@@ -688,7 +691,7 @@ void DX8Wrapper::Debug_Note_Foreign_Bindings(int expectedBase, int inheritedBase
 			return;
 		}
 	}
-	if (s_foreignCount >= 16) return;
+	if (s_foreignCount >= 32) return;
 	ForeignBindingGroup & g = s_foreign[s_foreignCount++];
 	g.site = site;
 	g.draws = 1;
@@ -711,7 +714,7 @@ void DX8Wrapper::Debug_Note_Direct_Draw(const char * site)
 			return;
 		}
 	}
-	if (s_directDrawCount >= 16) return;
+	if (s_directDrawCount >= 32) return;
 	DirectDrawGroup & g = s_directDraws[s_directDrawCount++];
 	g.site = site;
 	g.total = 1;
@@ -749,6 +752,152 @@ void DX8Wrapper::Debug_Report_Direct_Draws()
 		}
 		s_foreignCount = 0;
 	}
+}
+
+
+//-----------------------------------------------------------------------------
+// Vertex layouts: (vertex format x vertex shader) per drawer.
+//
+// D3D11 builds an input layout from a vertex layout and a compiled vertex shader's input
+// signature *together* -- CreateInputLayout takes both -- so the set of layouts a backend
+// has to create is the set of distinct pairs. Neither half on its own is the answer, and
+// until this census existed nothing in the tree reported the pair at all.
+//
+// The format is read from Debug_Vertex_FVF rather than from Vertex_Shader, because those
+// stop being the same word as soon as a shader is bound: Set_Vertex_Shader overloads one
+// DWORD for FVF and shader handle, and only the FVF branch changes the declaration. A draw
+// with unit_vs bound over DX8_FVF_XYZNDUV2 reports its shader in Vertex_Shader and its
+// format nowhere else.
+//
+// A row with shader 0 is a fixed-function vertex draw: no vertex shader at all, the
+// transform done by a pipeline stage D3D11 does not have. Those rows are the conversion
+// work. Every other row is a layout to create.
+//-----------------------------------------------------------------------------
+namespace {
+	struct VertexLayoutRow
+	{
+		const char * site;
+		unsigned     fvf;        // the declaration standing at the device
+		unsigned     shader;     // the bound vertex shader, or 0 for fixed function
+		unsigned     draws;
+		unsigned     submitted;  // ...of those, how many reached a device
+		bool         direct;     // straight at the device rather than through Draw()
+	};
+	// 195 is the static ceiling -- 15 FVF codes named in the tree by 13 compiled vertex
+	// shaders -- so a table that cannot overflow costs nothing worth economising on.
+	VertexLayoutRow s_vertexLayouts[256];
+	int      s_vertexLayoutCount = 0;
+	unsigned s_vertexLayoutFrames = 0;
+	unsigned s_vertexLayoutDropped = 0;
+
+	// FVF codes are a bitfield plus a two-bit-per-set texture coordinate size, and reading
+	// one off a hex number by eye is how the wrong layout gets written. Spell it out.
+	void Describe_FVF(unsigned fvf, char * out, unsigned outSize)
+	{
+		StringClass s;
+		const unsigned pos = fvf & D3DFVF_POSITION_MASK;
+		if (pos == D3DFVF_XYZRHW)      s += "XYZRHW";
+		else if (pos == D3DFVF_XYZ)    s += "XYZ";
+		else if (pos == 0)             s += "(no position)";
+		else                           s += "XYZB?";
+		if (fvf & D3DFVF_NORMAL)   s += "|N";
+		if (fvf & D3DFVF_DIFFUSE)  s += "|D";
+		if (fvf & D3DFVF_SPECULAR) s += "|S";
+		if (fvf & D3DFVF_PSIZE)    s += "|PSIZE";
+		const unsigned texCount = (fvf & D3DFVF_TEXCOUNT_MASK) >> D3DFVF_TEXCOUNT_SHIFT;
+		for (unsigned t = 0; t < texCount && t < 8; ++t) {
+			// Two bits per set, and the encoding is rotated: 0 means 2 floats, not 0.
+			static const unsigned sizes[4] = { 2, 3, 4, 1 };
+			StringClass one;
+			one.Format("|UV%u", sizes[(fvf >> (16 + t * 2)) & 3]);
+			s += one;
+		}
+		if (texCount == 0 && pos != 0) s += "|no UV";
+		strncpy(out, s.Peek_Buffer(), outSize - 1);
+		out[outSize - 1] = 0;
+	}
+}
+
+void DX8Wrapper::Debug_Note_Vertex_Layout(const char * site, bool direct, bool submitted)
+{
+	if (site == nullptr) site = "(unattributed)";
+	const unsigned fvf = Debug_Vertex_FVF;
+	// Below 0x10000 the handle is an FVF and not a shader, so there is no shader: that is
+	// the whole distinction this table is being built to measure.
+	const unsigned shader = Is_Fixed_Function_Vertex_Draw() ? 0u : (unsigned)Vertex_Shader;
+
+	for (int i = 0; i < s_vertexLayoutCount; ++i) {
+		VertexLayoutRow & r = s_vertexLayouts[i];
+		if (r.site == site && r.fvf == fvf && r.shader == shader && r.direct == direct) {
+			++r.draws;
+			if (submitted) ++r.submitted;
+			return;
+		}
+	}
+	if (s_vertexLayoutCount >= 256) { ++s_vertexLayoutDropped; return; }
+	VertexLayoutRow & r = s_vertexLayouts[s_vertexLayoutCount++];
+	r.site = site;
+	r.fvf = fvf;
+	r.shader = shader;
+	r.draws = 1;
+	r.submitted = submitted ? 1 : 0;
+	r.direct = direct;
+}
+
+void DX8Wrapper::Debug_Report_Vertex_Layouts()
+{
+	if (++s_vertexLayoutFrames < 600) return;
+	s_vertexLayoutFrames = 0;
+	if (s_vertexLayoutCount == 0) {
+		WWDEBUG_SAY(("VERTEX LAYOUT CENSUS: no draws this window -- CONTROL FAILED, the "
+					 "figures below are not a measurement of anything."));
+		return;
+	}
+
+	// Distinct pairs first, because that is the number Phase 5 sizes an input-layout cache
+	// against; the per-drawer rows below it are what each pair is for.
+	unsigned pairs = 0;
+	for (int i = 0; i < s_vertexLayoutCount; ++i) {
+		bool seen = false;
+		for (int j = 0; j < i; ++j) {
+			if (s_vertexLayouts[j].fvf == s_vertexLayouts[i].fvf &&
+				s_vertexLayouts[j].shader == s_vertexLayouts[i].shader) { seen = true; break; }
+		}
+		if (!seen) ++pairs;
+	}
+
+	WWDEBUG_SAY(("VERTEX LAYOUT CENSUS over 600 frames: %u distinct (vertex format x vertex "
+				 "shader) pairs across %d drawer rows%s. This is the set of input layouts a "
+				 "D3D11 backend has to create, since CreateInputLayout takes a layout and a "
+				 "shader signature together and neither half alone identifies one. A row "
+				 "with shader (none) is a fixed-function vertex draw and has no shader to "
+				 "build a layout from at all -- those are the conversions, not the layouts. "
+				 "`direct` means the drawer went straight at the device; `submitted` is "
+				 "draws that reached one, which is fewer where the depth pass declined.",
+		pairs, s_vertexLayoutCount, s_vertexLayoutDropped ? "  -- TABLE FULL" : ""));
+
+	for (int rank = 0; rank < s_vertexLayoutCount; ++rank) {
+		int best = -1;
+		unsigned bestDraws = 0;
+		for (int i = 0; i < s_vertexLayoutCount; ++i) {
+			if (s_vertexLayouts[i].draws > bestDraws) {
+				bestDraws = s_vertexLayouts[i].draws; best = i;
+			}
+		}
+		if (best < 0) break;
+		const VertexLayoutRow & r = s_vertexLayouts[best];
+		char desc[128];
+		Describe_FVF(r.fvf, desc, sizeof(desc));
+		const char * shaderName = r.shader != 0 ? Debug_Shader_Name(r.shader) : nullptr;
+		WWDEBUG_SAY(("  %-26s %-7s fvf 0x%-6x %-26s shader %-18s x%-7u submitted %u",
+			r.site, r.direct ? "direct" : "wrapper", r.fvf, desc,
+			r.shader == 0 ? "(none: FIXED FUNCTION)"
+				: (shaderName != nullptr ? shaderName : "(unregistered)"),
+			r.draws, r.submitted));
+		s_vertexLayouts[best].draws = 0;
+	}
+	s_vertexLayoutCount = 0;
+	s_vertexLayoutDropped = 0;
 }
 
 
@@ -2638,6 +2787,7 @@ bool							DX8Wrapper::m_bMeshRendererDraw = false;
 MeshTechnique					DX8Wrapper::m_meshTechnique = MESH_TECHNIQUE_UNCLASSIFIED;
 #ifdef RTS_DEBUG
 const char*						DX8Wrapper::s_declarationSite = nullptr;
+DWORD							DX8Wrapper::Debug_Vertex_FVF = 0;
 #endif
 void DX8Wrapper::Set_Sun_VP(const float* m16)
 {
@@ -4721,6 +4871,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Invalidations();
 	Debug_Report_Unclassified_Draws();
 	Debug_Report_Direct_Draws();
+	Debug_Report_Vertex_Layouts();
 	Debug_Report_Technique_Check();
 	Debug_Report_Particle_Shadows();
 	Debug_Report_Alpha_Fog();
@@ -5205,6 +5356,15 @@ void DX8Wrapper::Draw(
 #ifdef RTS_DEBUG
 	// After the flush, so what the census reads is what the device will draw with.
 	Debug_Note_Lighting_Draw();
+	{
+		// Same identity the fixed-function draw census uses, so the two tables name the
+		// same drawers. Is_Inert_Depth_Pass_Draw is asked here rather than inferred later:
+		// a draw that is dropped below needs no input layout, and 53428 dropped depth-pass
+		// draws would otherwise sit at the top of a table meant to size a backend's work.
+		const char* who = s_declarationSite;
+		if (who == nullptr) who = Debug_Current_Pass_Name();
+		Debug_Note_Vertex_Layout(who, false, !Is_Inert_Depth_Pass_Draw());
+	}
 #endif
 
 #ifdef MESH_RENDER_SNAPSHOT_ENABLED
