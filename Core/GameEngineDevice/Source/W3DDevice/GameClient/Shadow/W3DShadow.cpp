@@ -77,9 +77,9 @@ void DoShadows(RenderInfoClass & rinfo, Bool stencilPass)
 	shadowCameraFrustum=&rinfo.Camera.Get_Frustum();
 	Int projectionCount=0;
 
-	// The directional shadow map already casts every shadow in the scene, so the volume
-	// and decal shadows stand down while it is active (options.ini UseShadowMapping) --
-	// running both would double-darken every caster.
+	// The directional shadow map already casts every shadow in the scene, so the decal
+	// shadows stand down while it is active (options.ini UseShadowMapping) -- running
+	// both would double-darken every caster.
 	//
 	// Not by skipping this function, though: the projected-shadow manager also draws
 	// m_decalList, which is not shadows at all. Radius cursors, special-power targeting
@@ -87,24 +87,12 @@ void DoShadows(RenderInfoClass & rinfo, Bool stencilPass)
 	// decals-only mode instead.
 	const Bool shadowMapping = W3DShaderManager::isShadowMappingActive();
 
-	//Projected shadows render first because they may fill the stencil buffer
-	//which will be used by the shadow volumes
 	if (stencilPass == FALSE  && TheW3DProjectedShadowManager)
 	{
 			if (TheW3DShadowManager->isShadowScene())
 				projectionCount=TheW3DProjectedShadowManager->renderShadows(rinfo, shadowMapping);
 	}
 
-	if (stencilPass == TRUE && TheW3DVolumetricShadowManager && !shadowMapping)
-	{
-
-//		TheW3DShadowManager->loadTerrainShadows();
-
-			//This function gets called many times by the W3D renderer
-			//so we use this flag to make sure shadows rendered only once per frame.
-			if (TheW3DShadowManager->isShadowScene())
-				TheW3DVolumetricShadowManager->renderShadows(projectionCount);
-	}
 	if (TheW3DShadowManager && stencilPass)	//reset so no more shadow processing this frame.
 		TheW3DShadowManager->queueShadows(FALSE);
 
@@ -198,9 +186,10 @@ Shadow *W3DShadowManager::addShadow( RenderObjClass *robj, Shadow::ShadowTypeInf
 	switch(type)
 	{
 		case	SHADOW_VOLUME:
-			if (TheW3DVolumetricShadowManager)
-				return (Shadow *)TheW3DVolumetricShadowManager->addShadow(robj, shadowInfo, draw);
-			break;
+			// Stencil shadow volumes are gone. The token still parses -- 1244 shipped object
+			// definitions declare it -- but it no longer builds a shadow object; the
+			// directional shadow map already casts these casters' shadows.
+			return nullptr;
 		case	SHADOW_PROJECTION:
 		case	SHADOW_DECAL:
 			if (TheW3DProjectedShadowManager)
