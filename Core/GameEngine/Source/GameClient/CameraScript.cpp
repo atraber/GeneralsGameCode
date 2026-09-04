@@ -22,6 +22,7 @@
 #include "Common/GlobalData.h"
 #include "Common/UnattendedRun.h"
 
+#include "GameClient/CommandXlat.h"   // FilterTypes / FilterModes, for the filter cue
 #include "GameClient/Display.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/View.h"
@@ -50,6 +51,7 @@ enum CameraCueType CPP_11(: Int)
 	CUE_UNFOLLOW,
 	CUE_HUD,
 	CUE_DEBUGVIS,
+	CUE_FILTER,
 	CUE_QUIT,
 };
 
@@ -288,6 +290,41 @@ static void parseCue(char** tokens, Int count, const char* source, Int line)
 		else
 		{
 			DEBUG_LOG(("CAMERA SCRIPT: %s line %d: unknown debugvis mode '%s'", source, line, tokens[2]));
+			return;
+		}
+	}
+	// Screen filters, which nothing else can reach in an unattended run.
+	//
+	// They are turned on by demo meta-messages bound to keys -- MSG_META_DEMO_TOGGLE_BW_VIEW
+	// and its neighbours -- so a replay that was recorded without somebody pressing one draws
+	// none of them, and none of the shipped corpus does. That made every screen filter a path
+	// a change could be made to, reported as verified because no counter moved, and never
+	// once executed. This is the hand on that key.
+	//
+	// Two enums, one word: the filter type and its mode are always set together and there is
+	// no useful pairing that crosses them, so the cue names the pair.
+	else if (stricmp(command, "filter") == 0)
+	{
+		cue.type = CUE_FILTER;
+		if (count < 3)
+		{
+			DEBUG_LOG(("CAMERA SCRIPT: %s line %d: 'filter' wants a name", source, line));
+			return;
+		}
+		const char* f = tokens[2];
+		if      (stricmp(f, "off") == 0)            { cue.args[0] = FT_NULL_FILTER;            cue.args[1] = FM_NULL_MODE; }
+		else if (stricmp(f, "bw") == 0)             { cue.args[0] = FT_VIEW_BW_FILTER;         cue.args[1] = FM_VIEW_BW_BLACK_AND_WHITE; }
+		else if (stricmp(f, "bwred") == 0)          { cue.args[0] = FT_VIEW_BW_FILTER;         cue.args[1] = FM_VIEW_BW_RED_AND_WHITE; }
+		else if (stricmp(f, "bwgreen") == 0)        { cue.args[0] = FT_VIEW_BW_FILTER;         cue.args[1] = FM_VIEW_BW_GREEN_AND_WHITE; }
+		else if (stricmp(f, "crossfade") == 0)      { cue.args[0] = FT_VIEW_CROSSFADE;         cue.args[1] = FM_VIEW_CROSSFADE_CIRCLE; }
+		else if (stricmp(f, "crossfademask") == 0)  { cue.args[0] = FT_VIEW_CROSSFADE;         cue.args[1] = FM_VIEW_CROSSFADE_FB_MASK; }
+		else if (stricmp(f, "motionblur") == 0)     { cue.args[0] = FT_VIEW_MOTION_BLUR_FILTER; cue.args[1] = FM_VIEW_MB_IN_AND_OUT_ALPHA; }
+		else if (stricmp(f, "motionblurpan") == 0)  { cue.args[0] = FT_VIEW_MOTION_BLUR_FILTER; cue.args[1] = FM_VIEW_MB_PAN_ALPHA; }
+		else if (stricmp(f, "default") == 0)        { cue.args[0] = FT_VIEW_DEFAULT;           cue.args[1] = FM_VIEW_DEFAULT; }
+		else if (stricmp(f, "bloom") == 0)          { cue.args[0] = FT_VIEW_BLOOM;             cue.args[1] = FM_VIEW_BLOOM; }
+		else
+		{
+			DEBUG_LOG(("CAMERA SCRIPT: %s line %d: unknown filter '%s'", source, line, f));
 			return;
 		}
 	}
@@ -562,6 +599,14 @@ static void executeCue(const CameraCue& cue)
 					TheDisplay->cycleDebugVisualization((Int)cue.args[0]);
 			}
 #endif
+			break;
+
+		case CUE_FILTER:
+			// Mode before type: setViewFilter is what starts the filter running, and a
+			// filter that starts before its mode is set draws one frame of the mode the
+			// previous one left behind. The demo meta-messages set them in this order too.
+			view->setViewFilterMode((FilterModes)(Int)cue.args[1]);
+			view->setViewFilter((FilterTypes)(Int)cue.args[0]);
 			break;
 
 		case CUE_QUIT:

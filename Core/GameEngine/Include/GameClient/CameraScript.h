@@ -46,6 +46,9 @@
 //   34.0    follow    Bulldozer01       lock the camera onto a named object of the map
 //   40.0    unfollow
 //   40.0    hud       off               hide the control bar, for a clean capture
+//   42.0    filter    bw                turn on a screen filter: bw, bwred, bwgreen,
+//                                       crossfade, crossfademask, motionblur, motionblurpan,
+//                                       default, bloom, or off
 //   45.0    quit                        end the run here
 //
 // Every duration is in seconds and may be left off, in which case the move happens at once.
