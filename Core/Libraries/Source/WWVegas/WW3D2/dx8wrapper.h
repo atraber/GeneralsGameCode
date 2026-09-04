@@ -754,26 +754,6 @@ public:
 	static bool _Is_Triangle_Draw_Enabled() { return _EnableTriangleDraw; }
 
 	/*
-	** Additional swap chain interface
-	**
-	**		Use this interface to render to multiple windows (in windowed mode).
-	**	To render to an additional window, the sequence of calls should look
-	**	something like this:
-	**
-	**	DX8Wrapper::Set_Render_Target (swap_chain_ptr);
-	**
-	**	WW3D::Begin_Render (true, true, Vector3 (0, 0, 0));
-	**	WW3D::Render (scene, camera, FALSE, FALSE);
-	**	WW3D::End_Render ();
-	**
-	**	swap_chain_ptr->Present (nullptr, nullptr, nullptr, nullptr);
-	**
-	**	DX8Wrapper::Set_Render_Target ((GfxSurface *)nullptr);
-	**
-	*/
-	static IDirect3DSwapChain8 *	Create_Additional_Swap_Chain (HWND render_window);
-
-	/*
 	** Render target interface. If render target format is WW3D_FORMAT_UNKNOWN, current display format is used.
 	*/
 	static TextureClass *	Create_Render_Target (int width, int height, WW3DFormat format = WW3D_FORMAT_UNKNOWN);
@@ -781,7 +761,6 @@ public:
 	static void					Set_Render_Target (GfxSurface *render_target, bool use_default_depth_buffer = false);
 	static void					Set_Render_Target (GfxSurface* render_target, GfxSurface* dpeth_buffer);
 
-	static void					Set_Render_Target (IDirect3DSwapChain8 *swap_chain);
 	static bool					Is_Render_To_Texture() { return IsRenderToTexture; }
 
 	// for depth map support KJM V

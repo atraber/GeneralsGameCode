@@ -8519,34 +8519,6 @@ void DX8Wrapper::Set_Render_Target_With_Z
 }
 
 void
-DX8Wrapper::Set_Render_Target(IDirect3DSwapChain8 *swap_chain)
-{
-	DX8_THREAD_ASSERT();
-	WWASSERT (swap_chain != nullptr);
-
-	//
-	//	Get the back buffer for the swap chain
-	//
-	LPDIRECT3DSURFACE8 render_target = nullptr;
-	swap_chain->GetBackBuffer (0, D3DBACKBUFFER_TYPE_MONO, &render_target);
-
-	//
-	//	Set this back buffer as the render target
-	//
-	Set_Render_Target ((GfxSurface*)render_target, true);
-
-	//
-	//	Release our hold on the back buffer
-	//
-	if (render_target != nullptr) {
-		render_target->Release ();
-		render_target = nullptr;
-	}
-
-	IsRenderToTexture = false;
-}
-
-void
 DX8Wrapper::Set_Render_Target(GfxSurface *render_target, bool use_default_depth_buffer)
 {
 	DX8_THREAD_ASSERT();
@@ -8774,35 +8746,6 @@ void DX8Wrapper::Set_Render_Target
 	IsRenderToTexture=true;
 }
 
-
-IDirect3DSwapChain8 *
-DX8Wrapper::Create_Additional_Swap_Chain (HWND render_window)
-{
-	DX8_Assert();
-
-	//
-	//	Configure the presentation parameters for a windowed render target
-	//
-	D3DPRESENT_PARAMETERS params				= { 0 };
-	params.BackBufferFormat						= WW3DFormat_To_D3DFormat(SwapChain.BackBufferFormat);
-	params.BackBufferCount						= 1;
-	params.MultiSampleType						= D3DMULTISAMPLE_NONE;
-	params.SwapEffect								= D3DSWAPEFFECT_COPY_VSYNC;
-	params.hDeviceWindow							= render_window;
-	params.Windowed								= TRUE;
-	params.EnableAutoDepthStencil				= TRUE;
-	params.AutoDepthStencilFormat				= WW3DZFormat_To_D3DFormat(SwapChain.DepthStencilFormat);
-	params.Flags									= 0;
-	params.FullScreen_RefreshRateInHz		= D3DPRESENT_RATE_DEFAULT;
-	params.FullScreen_PresentationInterval	= D3DPRESENT_INTERVAL_DEFAULT;
-
-	//
-	//	Create the swap chain
-	//
-	IDirect3DSwapChain8 *swap_chain = nullptr;
-	DX8CALL(CreateAdditionalSwapChain(&params, &swap_chain));
-	return swap_chain;
-}
 
 void DX8Wrapper::Flush_DX8_Resource_Manager(unsigned int bytes)
 {
