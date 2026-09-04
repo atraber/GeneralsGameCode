@@ -94,10 +94,24 @@ bool DX8WebBrowser::Initialize(	const char* badpageurl,
 		// Initialize the browser.
 		if(hr == S_OK)
 		{
+			// Needs the device itself: the control renders into it from outside this
+			// engine entirely, so there is nothing here to translate -- it wants a D3D9
+			// device or it wants nothing. Peek_Native_Device is the seam saying whether
+			// the running backend is one that can be handed to it; a backend that is not
+			// answers null and this feature is simply off.
+			void * const native = (DX8Wrapper::Gfx != nullptr)
+				? DX8Wrapper::Gfx->Peek_Native_Device() : nullptr;
+			if (native == nullptr) {
+				WWDEBUG_SAY(("Embedded browser: the graphics backend does not hand out a "
+					"native device, so the browser control cannot render. Disabled."));
+				pBrowser->Shutdown();
+				pBrowser = 0;
+				CoUninitialize();
+				return false;
+			}
+
 			hWnd = (HWND)WW3D::Get_Window();
-			// Needs the device itself: the embedded browser control is handed the device to
-		// render into and is outside this engine entirely. Nothing the wrapper tracks.
-		pBrowser->Initialize(reinterpret_cast<long*>(DX8Wrapper::_Get_D3D_Device8()));
+			pBrowser->Initialize(reinterpret_cast<long*>(native));
 
 			if(badpageurl)
 				pBrowser->put_BadPageURL(_bstr_t(badpageurl));

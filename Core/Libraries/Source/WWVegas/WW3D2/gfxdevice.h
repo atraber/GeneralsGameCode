@@ -780,4 +780,20 @@ public:
 	// Debug only: asks whether the current state can be drawn in one pass. There is
 	// no obligation to answer -- a backend that cannot returns false.
 	virtual bool			Validate_Draw_State(unsigned & passes) = 0;
+
+	/*
+	** The device itself, for code outside this engine that renders into it.
+	**
+	** The one exception to the rule at the top of this header, and it is an exception
+	** rather than a hole because of who asks: DX8WebBrowser hands the raw device to an
+	** ActiveX control (EA's FEBrowserEngine2) which draws the in-game browser into it
+	** from outside this codebase entirely. There is nothing to translate -- the control
+	** wants a D3D9 device or it wants nothing.
+	**
+	** So this is not "get the device"; it is "is there a device this out-of-engine thing
+	** can be handed". It is void*, nothing above the seam may dereference it, and the
+	** default is null: a backend that cannot be interoperated with this way answers null
+	** and the caller turns the feature off, which is exactly what a D3D11 backend does.
+	*/
+	virtual void *			Peek_Native_Device() { return nullptr; }
 };

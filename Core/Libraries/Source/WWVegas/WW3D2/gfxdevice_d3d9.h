@@ -82,7 +82,9 @@ class GfxDeviceD3D9 : public GfxDeviceClass
 public:
 	GfxDeviceD3D9(IDirect3DDevice8 * device, const D3DPRESENT_PARAMETERS & pp)
 		: m_device(device), m_present(pp) {}
-	virtual ~GfxDeviceD3D9() {}
+	// Owns the reference Create_Device took out. DX8Wrapper used to hold a second one
+	// and release it just before deleting this; it no longer holds a device at all.
+	virtual ~GfxDeviceD3D9() { if (m_device != nullptr) m_device->Release(); }
 
 	// ---- frame -----------------------------------------------------------
 
@@ -226,9 +228,10 @@ public:
 
 	virtual bool			Query_Capabilities(GfxDeviceCaps & caps);
 
-	/// The raw device. DX8Wrapper still keeps one for the DX8CALL macros and for the
-	/// handful of calls that have not moved; it is not handed out anywhere else.
-	IDirect3DDevice8 *		Peek_Device() const { return m_device; }
+	/// The raw device, for the out-of-engine interop described at the base class. The
+	/// engine itself no longer has one: everything it does to a device goes through the
+	/// virtuals above.
+	virtual void *			Peek_Native_Device() { return m_device; }
 	virtual bool			Reset_Swap_Chain(GfxSwapChainDesc & desc);
 	virtual bool			Validate_Draw_State(unsigned & passes);
 

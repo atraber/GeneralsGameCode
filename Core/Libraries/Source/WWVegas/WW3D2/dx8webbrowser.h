@@ -37,6 +37,20 @@
 // ***********************************
 // Set this to 0 to remove all embedded browser code.
 //
+// Left on. It is a D3D9-only feature and not a porting problem: the control renders
+// into the device itself from outside this codebase, so there is nothing to translate
+// -- see Peek_Native_Device in gfxdevice.h, which is how Initialize now asks whether
+// the running backend is one it can be handed. A backend that is not answers null and
+// the browser turns itself off.
+//
+// Whether it has run in this decade is a separate question, and the answer here is no:
+// FEBrowserEngine2 (CLSID {2B2CC8B0-2DC0-48C6-B6FD-C07820A6477E}) is not registered on
+// this machine, and the LoadLibrary("BrowserEngine.DLL") fallback in Initialize cannot
+// find one either because the deployed game directory has no such DLL -- only the
+// repository's GeneralsMD/Run does. So CreateInstance fails, pBrowser stays null, and
+// every other entry point here is already guarded on it. That is a reason to leave the
+// switch alone rather than to design the seam around the feature.
+//
 #define ENABLE_EMBEDDED_BROWSER		1
 //
 // ***********************************
