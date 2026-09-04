@@ -4357,20 +4357,42 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 	if (getChipset() < DC_GENERIC_PIXEL_SHADER_1_1)
 		return E_FAIL;	//don't allow loading any shaders if hardware can't handle it.
 
+	// Which bytecode the active backend can actually load.
+	//
+	// The 42 call sites all name "shaders\<name>.pso" or ".vso", which is the Shader Model
+	// 3 build and the only one that existed until there was a second backend. D3D11 cannot
+	// load a byte of it -- model 3 bytecode is a bare token stream and model 4 is a DXBC
+	// container, and CreateVertexShader rejects the one it was not given. The same source
+	// is already compiled both ways on every build (cmake/shaders.cmake) and both
+	// directories are installed now, so the whole of the choice is a directory and an
+	// extension. No call site changes, and no .hlsl does.
+	AsciiString resolvedPath(strFilePath);
+	if (Gfx_Active_Backend() == GFX_BACKEND_D3D11)
+	{
+		const char *leaf = strrchr(strFilePath, '\\');
+		leaf = (leaf != nullptr) ? leaf + 1 : strFilePath;
+		AsciiString name(leaf);
+		const char *dot = strrchr(name.str(), '.');
+		if (dot != nullptr)
+			name.truncateBy((Int)strlen(dot));
+		resolvedPath.format("shaders-sm4\\%s.sm4", name.str());
+	}
+	const char *loadPath = resolvedPath.str();
+
 	try
 	{
 		File *file = nullptr;
 		HRESULT hr;
 
-		file = TheFileSystem->openFile(strFilePath, File::READ | File::BINARY);
+		file = TheFileSystem->openFile(loadPath, File::READ | File::BINARY);
 		if (file == nullptr)
 		{
-			OutputDebugString("Could not find file \n" );
+			DEBUG_LOG(("SHADERS: could not open %s\n", loadPath));
 			return E_FAIL;
 		}
 
 		FileInfo fileInfo;
-		TheFileSystem->getFileInfo(AsciiString(strFilePath), &fileInfo);
+		TheFileSystem->getFileInfo(AsciiString(loadPath), &fileInfo);
 		DWORD dwFileSize = fileInfo.sizeLow;
 
 		const DWORD* pShader = (DWORD*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwFileSize);

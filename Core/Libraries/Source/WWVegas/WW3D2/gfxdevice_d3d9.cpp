@@ -1389,7 +1389,9 @@ GfxDeviceClass * GfxAdapterD3D9::Create_Device(unsigned adapter, GfxSwapChainDes
 	return new GfxDeviceD3D9(device, pp);
 }
 
-GfxAdapterClass * Gfx_Create_Adapter()
+// Named rather than anonymous now that there are two of these. The choice between them is
+// in gfxdevice_create.cpp; this is only the D3D9 half of it.
+GfxAdapterClass * Gfx_Create_Adapter_D3D9()
 {
 	GfxAdapterD3D9 * adapter = new GfxAdapterD3D9;
 	if (!adapter->Is_Valid()) {

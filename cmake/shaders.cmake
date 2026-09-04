@@ -40,11 +40,13 @@ endif()
 set(RTS_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/Core/GameEngineDevice/Source/W3DDevice/GameClient/Shaders")
 set(RTS_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders" CACHE INTERNAL "Compiled shader output directory")
 
-# The same sources compiled again at Shader Model 4, purely so the compiler reads them.
-# Nothing loads this directory -- the per-game install() rules copy RTS_SHADER_OUT_DIR and
-# only that -- and D3D9 cannot use model 4 bytecode anyway. It exists to make "these
-# shaders still compile as model 4" a fact the build checks on every edit rather than a
-# claim someone re-verifies by hand when a second backend eventually arrives.
+# The same sources compiled again at Shader Model 4. This was "checked, not shipped" for
+# one phase: it existed so that "these shaders still compile as model 4" was a fact the
+# build checked on every edit rather than a claim someone re-verified by hand when a
+# second backend eventually arrived. The second backend has arrived, so the directory is
+# installed alongside the model 3 one now, and W3DShaderManager::LoadAndCreateD3DShader
+# picks between the two from the active backend. D3D9 still cannot use model 4 bytecode
+# and still never loads a byte of it.
 #
 # A shader model is not a formatting difference. VPOS is the integer pixel coordinate in
 # ps_3_0 and the pixel *centre* in SV_Position, tex2Dlod hides its level in a fourth
@@ -52,7 +54,7 @@ set(RTS_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders" CACHE INTERNAL "Compiled sh
 # these matrices are explicitly row-major. Each of those compiles clean and draws the wrong
 # thing. Compiling both ways every build is what turns them from things to remember into
 # things that fail loudly.
-set(RTS_SHADER_SM4_OUT_DIR "${CMAKE_BINARY_DIR}/shaders-sm4")
+set(RTS_SHADER_SM4_OUT_DIR "${CMAKE_BINARY_DIR}/shaders-sm4" CACHE INTERNAL "Compiled Shader Model 4 output directory")
 
 # Shaders to compile. The pipeline stage (and therefore the target profile and the
 # output extension) is derived from the "_vs"/"_ps" suffix of each name.

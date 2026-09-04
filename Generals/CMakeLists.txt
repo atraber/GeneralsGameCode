@@ -48,6 +48,14 @@ if(RTS_INSTALL_PREFIX_GENERALS)
         install(DIRECTORY "${RTS_SHADER_OUT_DIR}/" DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}/shaders")
     endif()
 
+    # ...and the same shaders at Shader Model 4, which is what the D3D11 backend
+    # loads. Two directories rather than one because both backends stay compiled in
+    # and either can be selected at run time with W3D_BACKEND; the loader picks the
+    # directory and the extension from whichever is active.
+    if(EXISTS "${RTS_SHADER_SM4_OUT_DIR}")
+        install(DIRECTORY "${RTS_SHADER_SM4_OUT_DIR}/" DESTINATION "${RTS_INSTALL_PREFIX_GENERALS}/shaders-sm4")
+    endif()
+
     # Loose game data: the INI patches under mod/. Installed with the executable because
     # they are the data half of features the executable carries -- without
     # Data\INI\Patch\HazardFields.ini, for instance, HazardFieldDecalClientUpdate is

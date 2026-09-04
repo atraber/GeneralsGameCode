@@ -73,8 +73,12 @@ set(WW3D2_SRC
     formconv.cpp
     formconv.h
     gfxdevice.h
+    gfxdevice_create.cpp
     gfxdevice_d3d9.cpp
     gfxdevice_d3d9.h
+    gfxdevice_d3d11.cpp
+    gfxdevice_d3d11.h
+    gfxdevice_png.cpp
     FramGrab.cpp
     framgrab.h
     hanim.cpp
@@ -257,4 +261,8 @@ target_link_libraries(corei_ww3d2 INTERFACE
     core_browserengine
     core_wwlib
     core_wwmath
+    # For gfxdevice_png.cpp, which writes the frame dumps the D3D11 backend produces --
+    # there is no D3DXSaveSurfaceToFile over there. Header-only, and built with
+    # STB_IMAGE_WRITE_STATIC so it cannot collide with GameEngineDevice's own copy.
+    stb
 )

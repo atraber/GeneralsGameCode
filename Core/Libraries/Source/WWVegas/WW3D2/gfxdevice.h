@@ -406,10 +406,32 @@ public:
 };
 
 /*
+** Which backend is running.
+**
+** There are two now. The choice is made once, before the adapter exists, and everything
+** downstream reads it rather than re-deciding it: the shader loader has to know which
+** directory the bytecode for this API lives in, and nothing else above the seam does.
+** It is deliberately not a device method -- it is asked before a device exists.
+*/
+enum GfxBackendKind
+{
+	GFX_BACKEND_D3D9 = 0,
+	GFX_BACKEND_D3D11
+};
+
+/*
 ** The one place a concrete backend is named on the way in, as Create_Device is on the way
-** out. A second backend is chosen here and nowhere else.
+** out. A second backend is chosen here and nowhere else -- see gfxdevice_create.cpp, which
+** is the whole of the choice.
 */
 GfxAdapterClass * Gfx_Create_Adapter();
+
+/*
+** What Gfx_Create_Adapter picked, or would pick. Answering before the adapter exists is
+** deliberate: the answer comes from what the run asked for, not from whether a device
+** happened to be created successfully.
+*/
+GfxBackendKind Gfx_Active_Backend();
 
 /*
 ** What a query asks the GPU.

@@ -52,6 +52,7 @@
 
 #include "dx8wrapper.h"
 #include "gfxdevice_d3d9.h"
+#include "gfxdevice_d3d11.h"
 #include "gputimer.h"
 #include "dx8webbrowser.h"
 #include "dx8fvf.h"
@@ -4941,6 +4942,11 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Lighting();
 	SortingRendererClass::Debug_Report_Sorted_Lights();
 	GfxDeviceD3D9::Report_Nondynamic_Discards();
+	// Both backends report on the same 600-frame window, and each one's report is
+	// silent under the other -- the D3D9 counters do not move under D3D11 and the
+	// D3D11 ones do not move under D3D9. Calling both unconditionally is what makes
+	// the two logs line up beside each other.
+	GfxDeviceD3D11::Report_Absorbed_State();
 	Debug_Report_Shader_Names();
 	Debug_Report_Texture_Requirements();
 	Mesh_Technique_Report_Registrations();
@@ -9706,4 +9712,20 @@ const char* DX8Wrapper::Get_DX8_Blend_Op_Name(unsigned value)
 WW3DFormat	DX8Wrapper::getBackBufferFormat()
 {
 	return SwapChain.BackBufferFormat;
+}
+
+
+//============================================================================
+// The device-call counter, reachable without this class's header.
+//
+// The D3D11 backend counts its device calls the way the D3D9 one does, but it cannot
+// include dx8wrapper.h to reach Increment_DX8_CallCount: that header pulls in
+// d3d9_compat.h, and keeping the two graphics APIs in separate translation units is
+// what makes its fixed-arity CreateTexture / CreateVertexBuffer macros a non-question.
+// One free function is a smaller price than either alternative.
+//============================================================================
+
+void DX8Wrapper_Increment_Call_Count()
+{
+	DX8Wrapper::Increment_DX8_CallCount();
 }

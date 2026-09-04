@@ -16,36 +16,50 @@
 **	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-// The D3D9 implementation of the graphics backend interface.
+// The Direct3D 11 implementation of the graphics backend interface.
 //
-// This is the only file besides dx8wrapper's own that is allowed to know the game
-// draws through Direct3D 9. It does not own the device: DX8Wrapper creates one,
-// hands it here, and destroys it, because device creation and mode selection are
-// still on the wrapper's side of the seam (see the note in gfxdevice.h).
+// The second backend. It implements exactly the same 15 + 106 virtuals the D3D9 one does,
+// and the engine above the seam cannot tell which of them it is talking to -- that was the
+// point of the nine phases before this one.
 //
-// Every method here is the body that used to sit inline at a DX8CALL, moved rather
-// than rewritten. The three translations that came with them -- D3DRS_ZBIAS into a
-// real depth bias, the D3D8 stage states that became D3D9 sampler states, and the
-// legacy render states D3D9 dropped -- belong to this backend and not to the
-// engine, so they moved here too.
+// This header names no D3D11 type. Everything with a size lives in one pimpl defined in
+// the .cpp, which is the only translation unit in the tree that includes <d3d11.h>. That
+// matters for one caller in particular: gfxdevice_create.cpp picks between the two
+// backends and so includes both of their headers, and it must be able to do that without
+// pulling either graphics API in.
+//
+// What is different about this backend, stated once here rather than repeated at each
+// method:
+//
+//   * D3D9 sets render state one word at a time; D3D11 has four immutable state objects.
+//     Set_Render_State and Set_Texture_Stage_State therefore only record. The objects are
+//     materialised at draw time and cached on a hash of the words that feed them.
+//   * There is no fixed-function pipeline, so Set_Transform's fixed-function half and the
+//     D3DTSS combiner words have nowhere to go. They are swallowed, and counted under
+//     RTS_DEBUG so that what was swallowed can be read rather than assumed.
+//   * A draw with no vertex shader cannot be made and is dropped with a count.
+//   * There is no front buffer, no hardware cursor and no D3DX, so Capture_Front_Buffer
+//     reads the back buffer, Set_Hardware_Cursor answers false (W3DMouse then takes its
+//     software path) and Save_Surface_To_File writes a PNG through stb_image_write.
 
 #pragma once
 
 #include "gfxdevice.h"
-#include "d3d9_compat.h"
+
+struct GfxD3D11Impl;
 
 /*
-** The D3D9 adapter. Owns the IDirect3D9 interface and the d3d9.dll it came out of,
-** and is the only thing in the engine that creates a device.
+** The D3D11 adapter. Owns the DXGI factory and the two libraries it came out of, and is
+** the only thing here that creates a device.
 */
-class GfxAdapterD3D9 : public GfxAdapterClass
+class GfxAdapterD3D11 : public GfxAdapterClass
 {
 public:
-	GfxAdapterD3D9();
-	virtual ~GfxAdapterD3D9();
+	GfxAdapterD3D11();
+	virtual ~GfxAdapterD3D11();
 
-	/// False if d3d9.dll is missing or refused to hand back an interface.
-	bool					Is_Valid() const { return m_d3d != nullptr; }
+	/// False if d3d11.dll or dxgi.dll is missing, or DXGI refused a factory.
+	bool					Is_Valid() const;
 
 	virtual unsigned		Get_Adapter_Count();
 	virtual bool			Get_Adapter_Info(unsigned adapter, GfxAdapterInfo & info);
@@ -69,28 +83,22 @@ public:
 	virtual bool			Query_Capabilities(unsigned adapter, GfxDeviceCaps & caps);
 	virtual GfxDeviceClass * Create_Device(unsigned adapter, GfxSwapChainDesc & desc);
 
-	/// The raw interface, for the D3D9-only capability probe in dx8caps.
-	IDirect3D8 *			Peek_D3D() const { return m_d3d; }
-
 private:
-	HMODULE			m_library;
-	IDirect3D8 *	m_d3d;
+	struct Impl;
+	Impl *	m_impl;
 };
 
 /*
-** Make the D3D9 adapter, or null if d3d9.dll is missing. gfxdevice_create.cpp calls
+** Make the D3D11 adapter, or null if this machine has no D3D11. gfxdevice_create.cpp calls
 ** this; nothing else does.
 */
-GfxAdapterClass * Gfx_Create_Adapter_D3D9();
+GfxAdapterClass * Gfx_Create_Adapter_D3D11();
 
-class GfxDeviceD3D9 : public GfxDeviceClass
+class GfxDeviceD3D11 : public GfxDeviceClass
 {
 public:
-	GfxDeviceD3D9(IDirect3DDevice8 * device, const D3DPRESENT_PARAMETERS & pp)
-		: m_device(device), m_present(pp) {}
-	// Owns the reference Create_Device took out. DX8Wrapper used to hold a second one
-	// and release it just before deleting this; it no longer holds a device at all.
-	virtual ~GfxDeviceD3D9() { if (m_device != nullptr) m_device->Release(); }
+	explicit GfxDeviceD3D11(GfxD3D11Impl * impl) : m_impl(impl) {}
+	virtual ~GfxDeviceD3D11();
 
 	// ---- frame -----------------------------------------------------------
 
@@ -162,22 +170,20 @@ public:
 	virtual bool			Generate_Mips(GfxTexture * texture, unsigned base_level);
 	virtual void			Set_Texture_Detail_Level(GfxTexture * texture, unsigned skip_levels);
 	virtual bool			Capture_Front_Buffer(GfxSurface * dest);
+
+	// ---- buffers ---------------------------------------------------------
+
 	virtual GfxVertexBuffer * Create_Vertex_Buffer(unsigned size_in_bytes, unsigned fvf,
 								unsigned usage);
 	virtual GfxIndexBuffer *  Create_Index_Buffer(unsigned index_count, unsigned usage);
 	virtual void			Release_Vertex_Buffer(GfxVertexBuffer * buffer);
 	virtual void			Release_Index_Buffer(GfxIndexBuffer * buffer);
-
 	virtual bool			Map_Vertex_Buffer(GfxVertexBuffer * buffer, unsigned offset_in_bytes,
 								unsigned size_in_bytes, GfxMapMode mode, void ** data);
 	virtual void			Unmap_Vertex_Buffer(GfxVertexBuffer * buffer);
 	virtual bool			Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
 								unsigned size_in_bytes, GfxMapMode mode, void ** data);
 	virtual void			Unmap_Index_Buffer(GfxIndexBuffer * buffer);
-
-	// Debug only. Says how many maps asked to discard or append against a buffer that
-	// was not created dynamic -- legal under D3D9, a failed Map under D3D11.
-	static void				Report_Nondynamic_Discards();
 
 	// ---- textures and surfaces -------------------------------------------
 
@@ -214,14 +220,18 @@ public:
 	virtual bool			Map_Cube_Texture(GfxTexture * texture, unsigned face, unsigned level,
 								const GfxRect * rect, GfxMapMode mode, GfxMappedRect & mapped);
 	virtual void			Unmap_Cube_Texture(GfxTexture * texture, unsigned face, unsigned level);
-	virtual bool			Describe_Depth_Texture_Level(GfxTexture * texture, unsigned level,
-								WW3DZFormat & format);
+
+	// ---- describing a resource -------------------------------------------
 
 	virtual bool			Describe_Surface(GfxSurface * surface, WW3DSurfaceDescription & desc);
 	virtual bool			Describe_Texture_Level(GfxTexture * texture, unsigned level,
 								WW3DSurfaceDescription & desc);
 	virtual bool			Describe_Volume_Level(GfxTexture * texture, unsigned level,
 								WW3DSurfaceDescription & desc, unsigned & depth);
+	virtual bool			Describe_Depth_Texture_Level(GfxTexture * texture, unsigned level,
+								WW3DZFormat & format);
+
+	// ---- the rest --------------------------------------------------------
 
 	virtual bool			Get_Display_Mode(unsigned & width, unsigned & height, WW3DFormat & format);
 	virtual unsigned		Get_Available_Texture_Memory();
@@ -236,19 +246,18 @@ public:
 	virtual void			Begin_Query(GfxQuery * query);
 	virtual void			End_Query(GfxQuery * query);
 	virtual bool			Get_Query_Data(GfxQuery * query, void * dest, unsigned size);
-
 	virtual bool			Query_Capabilities(GfxDeviceCaps & caps);
-
-	/// The raw device, for the out-of-engine interop described at the base class. The
-	/// engine itself no longer has one: everything it does to a device goes through the
-	/// virtuals above.
-	virtual void *			Peek_Native_Device() { return m_device; }
 	virtual bool			Reset_Swap_Chain(GfxSwapChainDesc & desc);
 	virtual bool			Validate_Draw_State(unsigned & passes);
 
+	/// Null, and deliberately. DX8WebBrowser hands the device to an ActiveX control that
+	/// wants a D3D9 device or nothing; the caller turns the in-game browser off.
+	virtual void *			Peek_Native_Device() { return nullptr; }
+
+	/// Debug only: what this backend had to swallow, and what it had to drop. Printed on
+	/// the same 600-frame window as every other census here so the figures read beside them.
+	static void				Report_Absorbed_State();
+
 private:
-	IDirect3DDevice8 *		m_device;
-	// The parameters the swap chain was made with. Reset needs them again, and the
-	// engine no longer keeps a copy in D3D9 vocabulary for it to pass back.
-	D3DPRESENT_PARAMETERS	m_present;
+	GfxD3D11Impl *	m_impl;
 };
