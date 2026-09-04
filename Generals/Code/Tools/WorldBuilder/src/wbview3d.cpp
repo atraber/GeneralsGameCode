@@ -517,7 +517,10 @@ void WbView3d::ReAcquireResources()
 		TheTerrainRenderObject->loadRoadsAndBridges(nullptr,FALSE);
 		TheTerrainRenderObject->worldBuilderUpdateBridgeTowers( m_assetManager, m_scene );
 	}
-	IDirect3DDevice8* pDev = DX8Wrapper::_Get_D3D_Device8();
+	// See the note at the other D3DXCreateFontIndirect below: this is D3D9-only tool
+	// chrome, asked for through the seam rather than by holding a device.
+	IDirect3DDevice8* pDev = (DX8Wrapper::Gfx != nullptr)
+		? (IDirect3DDevice8*)DX8Wrapper::Gfx->Peek_Native_Device() : nullptr;
 	if (pDev) {
 
 //		CDC* pDC = GetDC();
@@ -2183,7 +2186,11 @@ void WbView3d::initWW3D()
 			}
 		}
 
-		IDirect3DDevice8* pDev = DX8Wrapper::_Get_D3D_Device8();
+		// WorldBuilder draws its overlay text with D3DXFont, which is D3D9-only and has no
+		// successor; Peek_Native_Device is the seam saying whether the running backend is
+		// one that can be handed to it. Null means no overlay font, not a broken tool.
+		IDirect3DDevice8* pDev = (DX8Wrapper::Gfx != nullptr)
+			? (IDirect3DDevice8*)DX8Wrapper::Gfx->Peek_Native_Device() : nullptr;
 		if (pDev) {
 
 //			CDC* pDC = GetDC();

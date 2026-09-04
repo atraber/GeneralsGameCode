@@ -78,22 +78,28 @@ END_MESSAGE_MAP()
 #define PREVIEW_WIDTH 128
 #define PREVIEW_HEIGHT 128
 
+// GfxSurface is an opaque handle -- nothing outside the backend may call a method on
+// one -- so the describe, the staging copy and the readback all go through the seam.
+// This used to reach for the device and hand it to a helper on DX8Wrapper that took an
+// IDirect3DDevice9; there is no device on that side of the seam any more.
 static UnsignedByte * saveSurface(GfxSurface *surface)
 {
-	D3DSURFACE_DESC desc;
-	GfxSurface *tempSurface;
+	GfxDeviceClass * const gfx = DX8Wrapper::Gfx;
+	if (gfx == nullptr) return nullptr;
 
-	surface->GetDesc(&desc);
+	WW3DSurfaceDescription desc;
+	if (!gfx->Describe_Surface(surface, desc)) return nullptr;
 
-	LPDIRECT3DDEVICE8 m_pDev=DX8Wrapper::_Get_D3D_Device8();
+	GfxSurface *tempSurface = gfx->Create_Offscreen_Surface(desc.Width, desc.Height, desc.Format);
+	if (tempSurface == nullptr) return nullptr;
 
-	HRESULT hr=DX8Wrapper::D3D9_CreateImageSurface_Helper(m_pDev, desc.Width, desc.Height, desc.Format, &tempSurface);
+	DX8Wrapper::_Copy_DX8_Rects(surface,nullptr,0,tempSurface,nullptr);
 
-	hr=DX8Wrapper::_Copy_DX8_Rects(surface,nullptr,0,tempSurface,nullptr);
-
-	D3DLOCKED_RECT lrect;
-
-	DX8_ErrorCode(tempSurface->LockRect(&lrect,nullptr,D3DLOCK_READONLY));
+	GfxMappedRect lrect;
+	if (!gfx->Map_Surface(tempSurface, nullptr, GFX_MAP_READ, lrect)) {
+		gfx->Release_Surface(tempSurface);
+		return nullptr;
+	}
 
 	unsigned int x,y,index,index2,width,height;
 
@@ -112,9 +118,9 @@ static UnsignedByte * saveSurface(GfxSurface *surface)
 			// index for fb
 			index2=y*lrect.Pitch+4*x;
 
-			image[index]=*((char *) lrect.pBits + index2+2);
-			image[index+1]=*((char *) lrect.pBits + index2+1);
-			image[index+2]=*((char *) lrect.pBits + index2+0);
+			image[index]=*((char *) lrect.Data + index2+2);
+			image[index+1]=*((char *) lrect.Data + index2+1);
+			image[index+2]=*((char *) lrect.Data + index2+0);
 		}
 	}
 
@@ -129,6 +135,8 @@ static UnsignedByte * saveSurface(GfxSurface *surface)
 
 	targ.Save("ObjectPreview.tga",TGAF_IMAGE,false);
 
+	gfx->Unmap_Surface(tempSurface);
+	gfx->Release_Surface(tempSurface);
 	return nullptr;
 
 #else
@@ -144,9 +152,9 @@ static UnsignedByte * saveSurface(GfxSurface *surface)
 			// index for fb
 			index2=y*lrect.Pitch+4*x;
 
-			bgraImage[index]=*((UnsignedByte *) lrect.pBits + index2+0);
-			bgraImage[index+1]=*((UnsignedByte *) lrect.pBits + index2+1);
-			bgraImage[index+2]=*((UnsignedByte *) lrect.pBits + index2+2);
+			bgraImage[index]=*((UnsignedByte *) lrect.Data + index2+0);
+			bgraImage[index+1]=*((UnsignedByte *) lrect.Data + index2+1);
+			bgraImage[index+2]=*((UnsignedByte *) lrect.Data + index2+2);
 			//bgraImage[index+3]=0;
 		}
 	}
@@ -174,7 +182,8 @@ static UnsignedByte * saveSurface(GfxSurface *surface)
 			}
 	}
 
-	tempSurface->Release();
+	gfx->Unmap_Surface(tempSurface);
+	gfx->Release_Surface(tempSurface);
 
 	return bgraImage;
 #endif
