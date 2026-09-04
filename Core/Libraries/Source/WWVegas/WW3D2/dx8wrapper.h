@@ -831,7 +831,7 @@ public:
 	** drops the API type, which is the whole difference between a subsystem that can be
 	** compiled against a second backend and one that cannot.
 	*/
-	static bool Has_Device() { return Gfx != nullptr && D3DDevice != nullptr; }
+	static bool Has_Device() { return Gfx != nullptr; }
 
 	static IDirect3DDevice8* _Get_D3D_Device8() { return D3DDevice; }
 	/*

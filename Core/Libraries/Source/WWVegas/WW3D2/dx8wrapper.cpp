@@ -2876,10 +2876,9 @@ bool DX8Wrapper::Bind_Ui_Shader_World(const D3DXMATRIX & world, bool sampleColou
 	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
 
 	D3DXMATRIX view, proj;
-	LPDIRECT3DDEVICE8 dev = _Get_D3D_Device8();
-	if (dev == nullptr) return false;
-	if (FAILED(dev->GetTransform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX*>(&view))) ||
-		FAILED(dev->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&proj))))
+	if (Gfx == nullptr) return false;
+	if (!Gfx->Get_Transform(D3DTS_VIEW, reinterpret_cast<float*>(&view)) ||
+		!Gfx->Get_Transform(D3DTS_PROJECTION, reinterpret_cast<float*>(&proj)))
 		return false;
 
 	// Row-vector order, matching both D3D9's fixed-function transform (position * W * V * P)
@@ -3409,7 +3408,7 @@ bool DX8Wrapper::Create_Device()
 	if (Gfx == nullptr) {
 		return false;
 	}
-	D3DDevice = ((GfxDeviceD3D9 *)Gfx)->Peek_Device();
+	D3DDevice = (IDirect3DDevice8 *)Gfx->Peek_Native_Device();
 
 	/*
 	** Initialize all subsystems
@@ -3560,10 +3559,9 @@ void DX8Wrapper::Release_Device()
 		Do_Onetime_Device_Dependent_Shutdowns();
 
 		/*
-		** Release the device
+		** Release the device. The backend owns the reference now, so deleting it is
+		** the release; there is no second handle here to drop first.
 		*/
-
-		D3DDevice->Release();
 		D3DDevice=nullptr;
 
 		delete Gfx;
