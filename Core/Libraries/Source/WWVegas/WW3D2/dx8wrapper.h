@@ -163,15 +163,14 @@ WWINLINE void DX8_ErrorCode(unsigned res)
 	Log_DX8_ErrorCode(res);
 }
 
+// DX8CALL, DX8CALL_HRES and DX8CALL_D3D used to be here: "call this method on the
+// device", with the error check and the call count wrapped around it. They are gone
+// because there is no device on this side of the seam to call one on -- GFXCALL below
+// is what replaced them, and the last DX8CALL in the tree went with the additional
+// swap chain.
 #ifdef WWDEBUG
-#define DX8CALL_HRES(x,res) DX8_Assert(); res = DX8Wrapper::_Get_D3D_Device8()->x; DX8_ErrorCode(res); DX8Wrapper::Increment_DX8_CallCount();
-#define DX8CALL(x) DX8_Assert(); DX8_ErrorCode(DX8Wrapper::_Get_D3D_Device8()->x); DX8Wrapper::Increment_DX8_CallCount();
-#define DX8CALL_D3D(x) DX8_Assert(); DX8_ErrorCode(DX8Wrapper::_Get_D3D8()->x); DX8Wrapper::Increment_DX8_CallCount();
 #define DX8_THREAD_ASSERT() if (_DX8SingleThreaded) { WWASSERT_PRINT(DX8Wrapper::_Get_Main_Thread_ID()==ThreadClass::_Get_Current_Thread_ID(),"DX8Wrapper::DX8 calls must be called from the main thread!"); }
 #else
-#define DX8CALL_HRES(x,res) res = DX8Wrapper::_Get_D3D_Device8()->x; DX8Wrapper::Increment_DX8_CallCount();
-#define DX8CALL(x) DX8Wrapper::_Get_D3D_Device8()->x; DX8Wrapper::Increment_DX8_CallCount();
-#define DX8CALL_D3D(x) DX8Wrapper::_Get_D3D8()->x; DX8Wrapper::Increment_DX8_CallCount();
 #define DX8_THREAD_ASSERT() ;
 #endif
 
@@ -708,14 +707,6 @@ public:
 			CONST POINT* pDestPointsArray
 	);
 
-	static HRESULT D3D9_CreateImageSurface_Helper(
-		IDirect3DDevice9* device,
-		unsigned int width,
-		unsigned int height,
-		D3DFORMAT format,
-		IDirect3DSurface9** ppSurface
-	);
-
 
 	static HRESULT Set_DX8_Render_Target(
 			GfxSurface* pRenderTarget,
@@ -816,24 +807,26 @@ public:
 	/*
 	** The graphics backend. Every device call on the render path goes through this;
 	** see gfxdevice.h for what is behind the seam and what is not. It is created in
-	** Create_Device once the D3D9 device exists and destroyed in Release_Device, so
-	** it is null before Init and after Shutdown -- the same window in which
-	** _Get_D3D_Device8 returns null, and the sites that check for that check for this.
+	** Create_Device and destroyed in Release_Device, so it is null before Init and
+	** after Shutdown. It is also the only thing in this tree that knows which graphics
+	** API this is: no D3D interface type is named anywhere in this class any more, and
+	** a second backend is a new implementation of gfxdevice.h plus a line in the
+	** adapter factory, not a change to this file.
 	*/
 	static GfxDeviceClass * Gfx;
 
 	/*
 	** Is there a device to draw on?
 	**
-	** Almost every caller that ever took _Get_D3D_Device8() into a local only compared
-	** it against null -- 35 of the 36 outside this file, in eight files -- and none of
-	** them wanted a D3D pointer for that. Asking here instead keeps the question and
-	** drops the API type, which is the whole difference between a subsystem that can be
-	** compiled against a second backend and one that cannot.
+	** Almost every caller that ever took the device into a local only compared it
+	** against null -- 35 of the 36 outside this file, in eight files -- and none of them
+	** wanted a D3D pointer for that. Asking here instead keeps the question and drops
+	** the API type, which is the whole difference between a subsystem that can be
+	** compiled against a second backend and one that cannot. The device itself is now
+	** reachable only through Gfx, and only as an opaque word (Peek_Native_Device).
 	*/
 	static bool Has_Device() { return Gfx != nullptr; }
 
-	static IDirect3DDevice8* _Get_D3D_Device8() { return D3DDevice; }
 	/*
 	** The adapter this device was made on, and which one of them it is.
 	**
@@ -929,11 +922,19 @@ public:
 	// The same pair with a transform the caller supplies, for direct-device drawers whose
 	// geometry is in world space rather than screen space (the shadow decals, the projected
 	// terrain shadow). Screen space is one caller of this.
-	static bool Bind_Ui_Shader_Direct(const D3DXMATRIX & wvp, bool sampleColour, bool sampleAlpha);
+	//
+	// The matrix is 16 floats in row-major order -- the same vocabulary Gfx::Set_Transform
+	// and Gfx::Get_Transform use across the seam, and for the same reason. It used to be a
+	// D3DXMATRIX, which put a D3D9-only type in this class's public API and made every
+	// caller include d3dx9.h to say anything to it. It is deliberately NOT WWMath's
+	// Matrix4x4: that is column-major, so the conversion is a transpose, and these values
+	// go straight out as vertex-shader constants where a transpose does not draw the
+	// geometry wrong, it draws nothing at all.
+	static bool Bind_Ui_Shader_Direct(const float * wvp, bool sampleColour, bool sampleAlpha);
 	// As above, but concatenating the caller's world matrix with the view and projection the
 	// device currently holds -- which for these callers is the pair Apply_Render_State_Changes
 	// just put there.
-	static bool Bind_Ui_Shader_World(const D3DXMATRIX & world, bool sampleColour, bool sampleAlpha);
+	static bool Bind_Ui_Shader_World(const float * world, bool sampleColour, bool sampleAlpha);
 
 	// Bind the screen-space quad *vertex* shader and give it the pixels-to-clip matrix,
 	// leaving the pixel shader alone for the caller to set. The FVF must already be set --
@@ -945,7 +946,7 @@ public:
 	// The pixels-to-clip matrix itself, built from the current viewport. Shared by both
 	// binds above; exposed because a caller that builds its own constant set still needs
 	// exactly this mapping and must not reinvent the sign convention.
-	static bool Build_Pixels_To_Clip(D3DXMATRIX & out);
+	static bool Build_Pixels_To_Clip(float * out);
 	// Names of the specific values of render states and texture stage states
 	static void Get_DX8_Texture_Stage_State_Value_Name(StringClass& name, D3DTEXTURESTAGESTATETYPE state, unsigned value);
 	static void Get_DX8_Render_State_Value_Name(StringClass& name, D3DRENDERSTATETYPE state, unsigned value);
@@ -1001,6 +1002,20 @@ protected:
 
 	static bool	Create_Device();
 	static void Release_Device();
+
+	/*
+	** What D3DXCreateTexture did before it reached CreateTexture: bring a requested
+	** size, format and mip count inside what the device can actually make. It lives on
+	** this side of the seam because every question it asks -- how big a texture may be,
+	** what aspect ratio is allowed, which formats exist -- is one DX8Caps already
+	** answers, and because there is no D3DX11 to defer it into.
+	*/
+	static void Adjust_Texture_Requirements(unsigned & width, unsigned & height,
+					WW3DFormat & format, unsigned & levels);
+	/// The engine's three texture homes, said in the seam's vocabulary. The pool stays
+	/// in these helpers' public signatures because 30 call sites across the tree name
+	/// one; it stops here.
+	static unsigned Texture_Pool_To_Usage(D3DPOOL pool, bool rendertarget);
 
 	static void Reset_Statistics();
 	static void Enumerate_Devices();
@@ -1145,7 +1160,6 @@ protected:
 	// gfxdevice.h. The API's own present parameters live inside the backend now.
 	static GfxAdapterClass *			Adapter;
 	static GfxSwapChainDesc				SwapChain;
-	static IDirect3DDevice8 *			D3DDevice;				//d3ddevice8;
 
 	static GfxSurface *			CurrentRenderTarget;
 	static GfxSurface *			CurrentDepthBuffer;

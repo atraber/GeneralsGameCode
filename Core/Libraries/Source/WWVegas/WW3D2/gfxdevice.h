@@ -118,7 +118,19 @@ enum GfxResourceUsage
 	GFX_USAGE_NPATCHES = 4,				// will be fed to a tessellator
 	GFX_USAGE_POINT_SPRITES = 8,		// each vertex is expanded into a screen-facing quad
 	GFX_USAGE_RENDER_TARGET = 16,		// the GPU will draw into it
-	GFX_USAGE_DYNAMIC_TEXTURE = 32		// the CPU rewrites its pixels while the GPU reads them
+	GFX_USAGE_DYNAMIC_TEXTURE = 32,		// the CPU rewrites its pixels while the GPU reads them
+	// The two placements a texture can want that are not "wherever is fastest to draw
+	// from". They exist because the engine's texture path genuinely distinguishes three
+	// homes, and collapsing them would break the one thing that depends on it: a system
+	// -memory texture is the source of Update_Texture and a device-memory one is its
+	// destination, and D3D9 will not do that copy in either other direction.
+	//
+	// Absence of both is the third home -- the API keeps its own copy and puts the
+	// texture back after a device loss. That is D3DPOOL_MANAGED under D3D9 and does not
+	// exist under D3D11, where it and GPU_RESIDENT are the same D3D11_USAGE_DEFAULT and
+	// the engine's own restore path is the one that runs.
+	GFX_USAGE_STAGING = 64,				// CPU-side; nothing draws from it (D3D9 SYSTEMMEM)
+	GFX_USAGE_GPU_RESIDENT = 128		// device memory the API will not restore (D3D9 DEFAULT)
 };
 
 /*
@@ -581,6 +593,15 @@ public:
 								WW3DFormat format, unsigned usage) = 0;
 	virtual GfxTexture *	Create_Cube_Texture(unsigned edge_length, unsigned levels,
 								WW3DFormat format, unsigned usage) = 0;
+	virtual GfxTexture *	Create_Volume_Texture(unsigned width, unsigned height,
+								unsigned depth, unsigned levels, WW3DFormat format,
+								unsigned usage) = 0;
+	// A texture the depth test writes into and a shader samples afterwards, which is
+	// what the shadow map is. Separate from Create_Texture because its format vocabulary
+	// is separate -- WW3DZFormat, not WW3DFormat -- exactly as it already is for
+	// Create_Depth_Stencil_Surface and Describe_Depth_Texture_Level below.
+	virtual GfxTexture *	Create_Depth_Texture(unsigned width, unsigned height,
+								unsigned levels, WW3DZFormat format, unsigned usage) = 0;
 	virtual void			Release_Texture(GfxTexture * texture) = 0;
 	// The wrapper keeps its own reference to whatever is bound at each stage, so that an
 	// engine-side owner going away does not free a texture the device is still pointing

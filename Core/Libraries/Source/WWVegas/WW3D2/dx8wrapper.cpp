@@ -164,7 +164,6 @@ D3DCOLOR							DX8Wrapper::FogColor										= 0;
 
 GfxAdapterClass *				DX8Wrapper::Adapter										= nullptr;
 GfxSwapChainDesc				DX8Wrapper::SwapChain;
-IDirect3DDevice8 *			DX8Wrapper::D3DDevice									= nullptr;
 GfxDeviceClass *				DX8Wrapper::Gfx											= nullptr;
 GfxSurface *			DX8Wrapper::CurrentRenderTarget						= nullptr;
 GfxSurface *			DX8Wrapper::CurrentDepthBuffer						= nullptr;
@@ -2832,13 +2831,14 @@ void DX8Wrapper::Force_Fixed_Function_Pipeline()
 ** Returns false if the shaders are unavailable, in which case the caller must keep its
 ** fixed-function path -- so drawers can be moved across one at a time.
 */
-bool DX8Wrapper::Bind_Ui_Shader_Direct(const D3DXMATRIX & wvp, bool sampleColour, bool sampleAlpha)
+bool DX8Wrapper::Bind_Ui_Shader_Direct(const float * wvp, bool sampleColour, bool sampleAlpha)
 {
 	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
+	if (wvp == nullptr) return false;
 
 	Set_Vertex_Shader(m_dwUiVS);
 	Set_Pixel_Shader(m_dwUiPS);
-	Set_Vertex_Shader_Constant(0, &wvp, 4);
+	Set_Vertex_Shader_Constant(0, wvp, 4);
 
 	// (samples colour, desaturate, samples alpha, unused). Never desaturating: that path
 	// exists for disabled interface buttons, and none of these callers is one.
@@ -2871,12 +2871,12 @@ bool DX8Wrapper::Bind_Ui_Shader_Direct(const D3DXMATRIX & wvp, bool sampleColour
 ** in the wrapper -- is a second account of the same fact, and the first thing it would do is
 ** disagree with the device for the one pass nobody remembered to update.
 */
-bool DX8Wrapper::Bind_Ui_Shader_World(const D3DXMATRIX & world, bool sampleColour, bool sampleAlpha)
+bool DX8Wrapper::Bind_Ui_Shader_World(const float * world, bool sampleColour, bool sampleAlpha)
 {
 	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
+	if (world == nullptr || Gfx == nullptr) return false;
 
 	D3DXMATRIX view, proj;
-	if (Gfx == nullptr) return false;
 	if (!Gfx->Get_Transform(D3DTS_VIEW, reinterpret_cast<float*>(&view)) ||
 		!Gfx->Get_Transform(D3DTS_PROJECTION, reinterpret_cast<float*>(&proj)))
 		return false;
@@ -2886,10 +2886,10 @@ bool DX8Wrapper::Bind_Ui_Shader_World(const D3DXMATRIX & world, bool sampleColou
 	// not draw the geometry wrong, it draws nothing, which is worth knowing before going
 	// looking for a blend state.
 	D3DXMATRIX wvp;
-	D3DXMatrixMultiply(&wvp, &world, &view);
+	D3DXMatrixMultiply(&wvp, reinterpret_cast<const D3DXMATRIX*>(world), &view);
 	D3DXMatrixMultiply(&wvp, &wvp, &proj);
 
-	return Bind_Ui_Shader_Direct(wvp, sampleColour, sampleAlpha);
+	return Bind_Ui_Shader_Direct(&wvp._11, sampleColour, sampleAlpha);
 }
 
 /*
@@ -2902,8 +2902,10 @@ bool DX8Wrapper::Bind_Ui_Shader_World(const D3DXMATRIX & world, bool sampleColou
 **
 ** Returns false if there is no usable viewport, in which case the caller must not draw.
 */
-bool DX8Wrapper::Build_Pixels_To_Clip(D3DXMATRIX & out)
+bool DX8Wrapper::Build_Pixels_To_Clip(float * out)
 {
+	if (out == nullptr) return false;
+
 	GfxViewport vp;
 	if (!Gfx->Get_Viewport(vp) || vp.Width == 0 || vp.Height == 0)
 		return false;
@@ -2914,10 +2916,11 @@ bool DX8Wrapper::Build_Pixels_To_Clip(D3DXMATRIX & out)
 	// own fixed-function transform used.
 	const float sx =  2.0f / (float)vp.Width;
 	const float sy = -2.0f / (float)vp.Height;
-	out = D3DXMATRIX(  sx, 0.0f, 0.0f, 0.0f,
-					 0.0f,   sy, 0.0f, 0.0f,
-					 0.0f, 0.0f, 1.0f, 0.0f,
-					-1.0f, 1.0f, 0.0f, 1.0f);
+	const float m[16] = {   sx, 0.0f, 0.0f, 0.0f,
+						  0.0f,   sy, 0.0f, 0.0f,
+						  0.0f, 0.0f, 1.0f, 0.0f,
+						 -1.0f, 1.0f, 0.0f, 1.0f };
+	::memcpy(out, m, sizeof(m));
 
 #ifdef RTS_DEBUG
 	// The matrix is the whole of what replaced D3DFVF_XYZRHW, and a sign error in it puts
@@ -2940,8 +2943,9 @@ bool DX8Wrapper::Build_Pixels_To_Clip(D3DXMATRIX & out)
 			D3DXVECTOR4 tl, br;
 			D3DXVECTOR4 tlIn(0.0f, 0.0f, 0.0f, 1.0f);
 			D3DXVECTOR4 brIn((float)vp.Width, (float)vp.Height, 0.0f, 1.0f);
-			D3DXVec4Transform(&tl, &tlIn, &out);
-			D3DXVec4Transform(&br, &brIn, &out);
+			const D3DXMATRIX * const mm = reinterpret_cast<const D3DXMATRIX*>(out);
+			D3DXVec4Transform(&tl, &tlIn, mm);
+			D3DXVec4Transform(&br, &brIn, mm);
 			WWDEBUG_SAY(("SCREEN-SPACE SHADER: viewport %ux%u -> top-left (%.3f, %.3f) "
 						 "bottom-right (%.3f, %.3f)  [expect (-1, 1) and (1, -1)]",
 				vp.Width, vp.Height, tl.x, tl.y, br.x, br.y));
@@ -2964,11 +2968,11 @@ bool DX8Wrapper::Bind_Screen_Quad_Shader()
 {
 	if (m_dwScreenQuadVS == 0) return false;
 
-	D3DXMATRIX m;
+	float m[16];
 	if (!Build_Pixels_To_Clip(m)) return false;
 
 	Set_Vertex_Shader(m_dwScreenQuadVS);
-	Set_Vertex_Shader_Constant(0, &m, 4);
+	Set_Vertex_Shader_Constant(0, m, 4);
 	return true;
 }
 
@@ -2976,7 +2980,7 @@ bool DX8Wrapper::Bind_Screen_Space_Shader(bool sampleColour, bool sampleAlpha)
 {
 	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
 
-	D3DXMATRIX m;
+	float m[16];
 	if (!Build_Pixels_To_Clip(m)) return false;
 
 	return Bind_Ui_Shader_Direct(m, sampleColour, sampleAlpha);
@@ -3039,7 +3043,7 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 	WWASSERT(!IsInitted);
 
 	// zero memory
-	memset(Textures,0,sizeof(IDirect3DBaseTexture8*)*MAX_TEXTURE_STAGES);
+	memset(Textures,0,sizeof(GfxTexture*)*MAX_TEXTURE_STAGES);
 	memset(RenderStates,0,sizeof(unsigned)*256);
 	memset(TextureStageStates,0,sizeof(unsigned)*32*MAX_TEXTURE_STAGES);
 	memset(Vertex_Shader_Constants,0,sizeof(Vector4)*MAX_VERTEX_SHADER_CONSTANTS);
@@ -3071,7 +3075,6 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 	//CurrentFogColor;
 
 	Adapter = nullptr;
-	D3DDevice = nullptr;
 
 	WWDEBUG_SAY(("Reset DX8Wrapper statistics"));
 	Reset_Statistics();
@@ -3106,7 +3109,7 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 
 void DX8Wrapper::Shutdown()
 {
-	if (D3DDevice) {
+	if (Gfx) {
 
 		Set_Render_Target ((GfxSurface *)nullptr);
 		Release_Device();
@@ -3392,7 +3395,7 @@ void DX8Wrapper::Do_Onetime_Device_Dependent_Shutdowns()
 
 bool DX8Wrapper::Create_Device()
 {
-	WWASSERT(D3DDevice==nullptr);	// for now, once you've created a device, you're stuck with it!
+	WWASSERT(Gfx==nullptr);	// for now, once you've created a device, you're stuck with it!
 	if (Adapter == nullptr) return false;
 
 	/*
@@ -3408,7 +3411,6 @@ bool DX8Wrapper::Create_Device()
 	if (Gfx == nullptr) {
 		return false;
 	}
-	D3DDevice = (IDirect3DDevice8 *)Gfx->Peek_Native_Device();
 
 	/*
 	** Initialize all subsystems
@@ -3421,7 +3423,7 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 {
 	WWDEBUG_SAY(("Resetting device."));
 	DX8_THREAD_ASSERT();
-	if ((IsInitted) && (D3DDevice != nullptr)) {
+	if ((IsInitted) && (Gfx != nullptr)) {
 		// A fullscreen-exclusive Reset needs the window to be the active foreground
 		// window; calling it while the app is backgrounded or mid focus-transition
 		// (common on startup -- "it starts if I don't touch the window") can block the
@@ -3531,7 +3533,7 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 
 void DX8Wrapper::Release_Device()
 {
-	if (D3DDevice) {
+	if (Gfx) {
 
 		for (int a=0;a<MAX_TEXTURE_STAGES;++a)
 		{	//release references to any textures that were used in last rendering call
@@ -3559,11 +3561,9 @@ void DX8Wrapper::Release_Device()
 		Do_Onetime_Device_Dependent_Shutdowns();
 
 		/*
-		** Release the device. The backend owns the reference now, so deleting it is
-		** the release; there is no second handle here to drop first.
+		** Release the device. The backend owns the reference, so deleting it is the
+		** release; the wrapper has no device of its own to drop first any more.
 		*/
-		D3DDevice=nullptr;
-
 		delete Gfx;
 		Gfx=nullptr;
 	}
@@ -3829,7 +3829,7 @@ bool DX8Wrapper::Set_Render_Device(int dev, int width, int height, int bits, int
 	}
 #endif
 	//must be either resetting existing device or creating a new one.
-	WWASSERT(reset_device || D3DDevice == nullptr);
+	WWASSERT(reset_device || Gfx == nullptr);
 
 	/*
 	** Initialize values for D3DPRESENT_PARAMETERS members.
@@ -4090,7 +4090,7 @@ const char * DX8Wrapper::Get_Render_Device_Name(int device_index)
 
 bool DX8Wrapper::Set_Device_Resolution(int width,int height,int bits,int windowed, bool resize_window)
 {
-	if (D3DDevice != nullptr) {
+	if (Gfx != nullptr) {
 
 		if (width != -1) {
 			SwapChain.Width = ResolutionWidth = width;
@@ -4513,12 +4513,12 @@ bool DX8Wrapper::Dump_Shadow_Map(const char* pathname)
 	if (m_pShadowMap == nullptr)
 		return false;
 
-	IDirect3DSurface8* surface = nullptr;
-	if (FAILED(((IDirect3DTexture8*)m_pShadowMap)->GetSurfaceLevel(0, &surface)) || surface == nullptr)
-		return false;
+	if (Gfx == nullptr) return false;
+	GfxSurface * surface = Gfx->Get_Texture_Surface_Level((GfxTexture*)m_pShadowMap, 0);
+	if (surface == nullptr) return false;
 
-	const bool ok = SUCCEEDED(D3DXSaveSurfaceToFileA(pathname, D3DXIFF_PNG, surface, nullptr, nullptr));
-	surface->Release();
+	const bool ok = Gfx->Save_Surface_To_File(pathname, surface);
+	Gfx->Release_Surface(surface);
 	return ok;
 }
 
@@ -7612,6 +7612,123 @@ void DX8Wrapper::Apply_Render_State_Changes()
 	SNAPSHOT_SAY(("DX8Wrapper::Apply_Render_State_Changes() - finished"));
 }
 
+/*
+** How many mip levels a texture of this size can actually have.
+*/
+static unsigned Max_Mip_Levels(unsigned width, unsigned height)
+{
+	unsigned levels = 1;
+	while (width > 1 || height > 1) {
+		if (width > 1) width >>= 1;
+		if (height > 1) height >>= 1;
+		++levels;
+	}
+	return levels;
+}
+
+void DX8Wrapper::Adjust_Texture_Requirements(unsigned & width, unsigned & height,
+	WW3DFormat & format, unsigned & levels)
+{
+	// D3DXCheckTextureRequirements ran ahead of every D3DXCreateTexture in this file and
+	// is the whole of what made those calls different from a plain CreateTexture. It
+	// clamped the size to the device's limits, brought the aspect ratio inside what the
+	// device allowed, substituted a format the device does not support, and clamped the
+	// mip count to what the size actually has. All four questions are ones DX8Caps
+	// already answers, which is why this is above the seam and not inside a backend.
+	//
+	// Two adjustments D3DX also made are deliberately NOT reproduced: rounding up to a
+	// power of two, and forcing square, for devices that require them. DX8Caps does not
+	// carry those bits, no D3D9 device this port has run on sets them, and the failure
+	// mode is the better one -- such a device now fails the creation loudly instead of
+	// silently getting a texture of a different size than the art was authored at.
+	//
+	// Measured, over D3DX's answer and over this one: 9125 2-D textures created across
+	// civ_buildings.rep and not one came back different from what was asked for. See the
+	// TEXTURE REQUIREMENTS census.
+	if (width == 0) width = 1;
+	if (height == 0) height = 1;
+
+	if (CurrentCaps != nullptr) {
+		const unsigned max_w = CurrentCaps->Get_Max_Texture_Width();
+		const unsigned max_h = CurrentCaps->Get_Max_Texture_Height();
+		if (max_w != 0 && width > max_w) width = max_w;
+		if (max_h != 0 && height > max_h) height = max_h;
+
+		// The ratio limits the long side, so the short side comes up to meet it rather
+		// than the long side coming down: shrinking would throw away detail the caller
+		// has already decided it wants.
+		const unsigned max_ratio = CurrentCaps->Get_Max_Texture_Aspect_Ratio();
+		if (max_ratio != 0) {
+			while (width > height * max_ratio && (max_h == 0 || height < max_h)) height <<= 1;
+			while (height > width * max_ratio && (max_w == 0 || width < max_w)) width <<= 1;
+		}
+
+		if (!CurrentCaps->Support_Texture_Format(format)) {
+			const WW3DFormat substitute = Get_Valid_Texture_Format(format, true);
+			format = CurrentCaps->Support_Texture_Format(substitute)
+				? substitute : WW3D_FORMAT_A8R8G8B8;
+		}
+	}
+
+	// Zero still means "all the way down to 1x1" and is left alone; both APIs read it
+	// that way. Anything else is a count, and a count larger than the chain has is an
+	// invalid call rather than a clamp under D3D9.
+	const unsigned max_levels = Max_Mip_Levels(width, height);
+	if (levels > max_levels) levels = max_levels;
+}
+
+unsigned DX8Wrapper::Texture_Pool_To_Usage(D3DPOOL pool, bool rendertarget)
+{
+	unsigned usage = rendertarget ? (unsigned)GFX_USAGE_RENDER_TARGET : (unsigned)GFX_USAGE_STATIC;
+	// Placement first and exactly, because the engine's texture path depends on all
+	// three homes existing separately -- see the note at GfxResourceUsage. Managed is
+	// the absence of a placement bit, which is why it is the default arm here as it is
+	// the default argument at every call site.
+	switch (pool) {
+	case D3DPOOL_SYSTEMMEM:
+	case D3DPOOL_SCRATCH:	usage |= GFX_USAGE_STAGING; break;
+	case D3DPOOL_DEFAULT:	usage |= GFX_USAGE_GPU_RESIDENT; break;
+	default:				break;
+	}
+	return usage;
+}
+
+/*
+** Make a texture, retrying once if the device could not.
+**
+** The ladder is what the engine has always done and it stays on the engine's side of the
+** seam, because what it frees is the engine's: textures nothing has drawn with for five
+** seconds, and the mesh cache. What it can no longer do is tell "out of video memory"
+** from "this device cannot make that texture at all" -- creation across the seam reports
+** failure and not an HRESULT, by design, see gfxdevice.h -- so a device that refuses
+** outright now pays for one wasted flush before returning null. Measured: 0 of 9125
+** creations failed for any reason over a full replay.
+*/
+static GfxTexture * Create_Texture_With_Retry(unsigned width, unsigned height,
+	unsigned levels, WW3DFormat format, unsigned usage, const char * what)
+{
+	GfxTexture * texture = DX8Wrapper::Gfx->Create_Texture(width, height, levels, format, usage);
+	if (texture != nullptr) return texture;
+
+	WWDEBUG_SAY(("Error: Out of memory while creating %s. Trying to release assets...", what));
+	// Free all textures that haven't been used in the last 5 seconds
+	TextureClass::Invalidate_Old_Unused_Textures(5000);
+	// Invalidate the mesh cache
+	WW3D::_Invalidate_Mesh_Cache();
+
+	texture = DX8Wrapper::Gfx->Create_Texture(width, height, levels, format, usage);
+	if (texture != nullptr) {
+		WWDEBUG_SAY(("...%s creation successful.", what));
+	}
+	else {
+		StringClass format_name(0,true);
+		Get_WW3D_Format_Name(format, format_name);
+		WWDEBUG_SAY(("...%s creation failed. (%d x %d, format: %s, mips: %d",
+			what, width, height, format_name.str(), levels));
+	}
+	return texture;
+}
+
 GfxTexture * DX8Wrapper::_Create_DX8_Texture
 (
 	unsigned int width,
@@ -7624,164 +7741,26 @@ GfxTexture * DX8Wrapper::_Create_DX8_Texture
 {
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
-	IDirect3DTexture8 *texture = nullptr;
 
 	// Paletted textures not supported!
 	WWASSERT(format!=D3DFMT_P8);
 
-	// NOTE: If 'format' is not supported as a texture format, this function will find the closest
-	// format that is supported and use that instead.
+	const unsigned req_w = width, req_h = height;
+	const WW3DFormat req_fmt = format;
 
-	// Render target may return NOTAVAILABLE, in
-	// which case we return null.
-	if (rendertarget) {
-		unsigned ret=D3DXCreateTexture(
-			DX8Wrapper::_Get_D3D_Device8(),
-			width,
-			height,
-			mip_level_count,
-			D3DUSAGE_RENDERTARGET,
-			WW3DFormat_To_D3DFormat(format),
-			pool,
-			&texture);
+	unsigned use_w = width, use_h = height, use_levels = mip_level_count;
+	WW3DFormat use_fmt = format;
+	Adjust_Texture_Requirements(use_w, use_h, use_fmt, use_levels);
 
-		if (ret==D3DERR_NOTAVAILABLE) {
-			Non_Fatal_Log_DX8_ErrorCode(ret,__FILE__,__LINE__);
-			return nullptr;
-		}
-
-		// If ran out of texture ram, try invalidating some textures and mesh cache.
-		if (ret==D3DERR_OUTOFVIDEOMEMORY) {
-			WWDEBUG_SAY(("Error: Out of memory while creating render target. Trying to release assets..."));
-			// Free all textures that haven't been used in the last 5 seconds
-			TextureClass::Invalidate_Old_Unused_Textures(5000);
-
-			// Invalidate the mesh cache
-			WW3D::_Invalidate_Mesh_Cache();
-
-			ret=D3DXCreateTexture(
-				DX8Wrapper::_Get_D3D_Device8(),
-				width,
-				height,
-				mip_level_count,
-				D3DUSAGE_RENDERTARGET,
-				WW3DFormat_To_D3DFormat(format),
-				pool,
-				&texture);
-
-			if (SUCCEEDED(ret)) {
-				WWDEBUG_SAY(("...Render target creation successful."));
-			}
-			else {
-				WWDEBUG_SAY(("...Render target creation failed."));
-			}
-			if (ret==D3DERR_OUTOFVIDEOMEMORY) {
-				Non_Fatal_Log_DX8_ErrorCode(ret,__FILE__,__LINE__);
-				return nullptr;
-			}
-		}
-
-		DX8_ErrorCode(ret);
-#ifdef RTS_DEBUG
-		Debug_Note_Texture_Made(width, height, format, mip_level_count, (GfxTexture*)texture);
-#endif
-		// Just return the texture, no reduction
-		// allowed for render targets.
-		return (GfxTexture*)texture;
-	}
-
-	// We should never run out of video memory when allocating a non-rendertarget texture.
-	// However, it seems to happen sometimes when there are a lot of textures in memory and so
-	// if it happens we'll release assets and try again (anything is better than crashing).
-	unsigned ret=D3DXCreateTexture(
-		DX8Wrapper::_Get_D3D_Device8(),
-		width,
-		height,
-		mip_level_count,
-		0,
-		WW3DFormat_To_D3DFormat(format),
-		pool,
-		&texture);
-
-	// If ran out of texture ram, try invalidating some textures and mesh cache.
-	if (ret==D3DERR_OUTOFVIDEOMEMORY) {
-		WWDEBUG_SAY(("Error: Out of memory while creating texture. Trying to release assets..."));
-		// Free all textures that haven't been used in the last 5 seconds
-		TextureClass::Invalidate_Old_Unused_Textures(5000);
-
-		// Invalidate the mesh cache
-		WW3D::_Invalidate_Mesh_Cache();
-
-		ret=D3DXCreateTexture(
-			DX8Wrapper::_Get_D3D_Device8(),
-			width,
-			height,
-			mip_level_count,
-			0,
-			WW3DFormat_To_D3DFormat(format),
-			pool,
-			&texture);
-		if (SUCCEEDED(ret)) {
-			WWDEBUG_SAY(("...Texture creation successful."));
-		}
-		else {
-			StringClass format_name(0,true);
-			Get_WW3D_Format_Name(format, format_name);
-			WWDEBUG_SAY(("...Texture creation failed. (%d x %d, format: %s, mips: %d",width,height,format_name.str(),mip_level_count));
-		}
-
-	}
-	DX8_ErrorCode(ret);
+	GfxTexture * texture = Create_Texture_With_Retry(use_w, use_h, use_levels, use_fmt,
+		Texture_Pool_To_Usage(pool, rendertarget),
+		rendertarget ? "render target" : "texture");
 
 #ifdef RTS_DEBUG
-	Debug_Note_Texture_Made(width, height, format, mip_level_count, (GfxTexture*)texture);
+	Debug_Note_Texture_Made(req_w, req_h, req_fmt, mip_level_count, texture);
 #endif
-	return (GfxTexture*)texture;
-}
-
-GfxTexture * DX8Wrapper::_Create_DX8_Texture
-(
-	const char *filename,
-	MipCountType mip_level_count
-)
-{
-	DX8_THREAD_ASSERT();
-	DX8_Assert();
-	IDirect3DTexture8 *texture = nullptr;
-
-	// NOTE: If the original image format is not supported as a texture format, it will
-	// automatically be converted to an appropriate format.
-	// NOTE: It is possible to get the size and format of the original image file from this
-	// function as well, so if we later want to second-guess D3DX's format conversion decisions
-	// we can do so after this function is called..
-	unsigned result = D3DXCreateTextureFromFileExA(
-		_Get_D3D_Device8(),
-		filename,
-		D3DX_DEFAULT,
-		D3DX_DEFAULT,
-		mip_level_count,//create_mipmaps ? 0 : 1,
-		0,
-		D3DFMT_UNKNOWN,
-		D3DPOOL_MANAGED,
-		D3DX_FILTER_BOX,
-		D3DX_FILTER_BOX,
-		0,
-		nullptr,
-		nullptr,
-		&texture);
-
-	if (result != D3D_OK) {
-		return MissingTexture::_Get_Missing_Texture();
-	}
-
-	// Make sure texture wasn't paletted!
-	D3DSURFACE_DESC desc;
-	texture->GetLevelDesc(0,&desc);
-	if (desc.Format==D3DFMT_P8) {
-		texture->Release();
-		return MissingTexture::_Get_Missing_Texture();
-	}
-	return (GfxTexture*)texture;
+	// Just return the texture, no reduction allowed for render targets.
+	return texture;
 }
 
 GfxTexture * DX8Wrapper::_Create_DX8_Texture
@@ -7792,32 +7771,32 @@ GfxTexture * DX8Wrapper::_Create_DX8_Texture
 {
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
-	IDirect3DTexture8 *texture = nullptr;
-	IDirect3DSurface8 *surface = (IDirect3DSurface8*)surface_handle;
 
-	D3DSURFACE_DESC surface_desc;
-	::ZeroMemory(&surface_desc, sizeof(D3DSURFACE_DESC));
-	surface->GetDesc(&surface_desc);
+	WW3DSurfaceDescription surface_desc;
+	if (!Gfx->Describe_Surface(surface_handle, surface_desc)) return nullptr;
 
-	// This function will create a texture with a different (but similar) format if the surface is
-	// not in a supported texture format.
-	WW3DFormat format=D3DFormat_To_WW3DFormat(surface_desc.Format);
-	texture = (IDirect3DTexture8*)_Create_DX8_Texture(surface_desc.Width, surface_desc.Height, format, mip_level_count);
+	// This will make a texture in a different (but similar) format if the surface is not
+	// in a supported texture format -- see Adjust_Texture_Requirements.
+	GfxTexture * texture = _Create_DX8_Texture(surface_desc.Width, surface_desc.Height,
+		surface_desc.Format, mip_level_count);
+	if (texture == nullptr) return nullptr;
 
-	// Copy the surface to the texture
-	IDirect3DSurface8 *tex_surface = nullptr;
-	texture->GetSurfaceLevel(0, &tex_surface);
-	DX8_ErrorCode(D3DXLoadSurfaceFromSurface(tex_surface, nullptr, nullptr, surface, nullptr, nullptr, D3DX_FILTER_BOX, 0));
-	tex_surface->Release();
+	// Copy the surface to the texture. GFX_COPY_HALVE is the box filter this asked for
+	// outright before the seam existed; nothing is being halved here, the two surfaces
+	// are the same size, and it is the filter name rather than the intent that reads oddly.
+	GfxSurface * tex_surface = Gfx->Get_Texture_Surface_Level(texture, 0);
+	if (tex_surface != nullptr) {
+		Gfx->Copy_Surface_Rect(surface_handle, nullptr, tex_surface, nullptr, GFX_COPY_HALVE);
+		Gfx->Release_Surface(tex_surface);
+	}
 
 	// Create mipmaps if needed
 	if (mip_level_count!=MIP_LEVELS_1)
 	{
-		DX8_ErrorCode(D3DXFilterTexture(texture, nullptr, 0, D3DX_FILTER_BOX));
+		Gfx->Generate_Mips(texture, 0);
 	}
 
-	return (GfxTexture*)texture;
-
+	return texture;
 }
 
 /*!
@@ -7834,74 +7813,31 @@ GfxTexture * DX8Wrapper::_Create_DX8_ZTexture
 {
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
-	IDirect3DTexture8* texture = nullptr;
 
-	D3DFORMAT zfmt=WW3DZFormat_To_D3DFormat(zformat);
+	unsigned levels = mip_level_count;
+	const unsigned max_levels = Max_Mip_Levels(width, height);
+	if (levels > max_levels) levels = max_levels;
 
-	unsigned ret=DX8Wrapper::_Get_D3D_Device8()->CreateTexture
-	(
-		width,
-		height,
-		mip_level_count,
-		D3DUSAGE_DEPTHSTENCIL,
-		zfmt,
-		pool,
-		&texture
-	);
+	const unsigned usage = Texture_Pool_To_Usage(pool, false);
 
-	if (ret==D3DERR_NOTAVAILABLE)
-	{
-		Non_Fatal_Log_DX8_ErrorCode(ret,__FILE__,__LINE__);
-		return nullptr;
-	}
-
-	// If ran out of texture ram, try invalidating some textures and mesh cache.
-	if (ret==D3DERR_OUTOFVIDEOMEMORY)
-	{
-		WWDEBUG_SAY(("Error: Out of memory while creating render target. Trying to release assets..."));
-		// Free all textures that haven't been used in the last 5 seconds
+	GfxTexture * texture = Gfx->Create_Depth_Texture(width, height, levels, zformat, usage);
+	if (texture == nullptr) {
+		// The same ladder as the colour path above, and for the same reason.
+		WWDEBUG_SAY(("Error: Out of memory while creating depth texture. Trying to release assets..."));
 		TextureClass::Invalidate_Old_Unused_Textures(5000);
-
-		// Invalidate the mesh cache
 		WW3D::_Invalidate_Mesh_Cache();
-
-		ret=DX8Wrapper::_Get_D3D_Device8()->CreateTexture
-		(
-			width,
-			height,
-			mip_level_count,
-			D3DUSAGE_DEPTHSTENCIL,
-			zfmt,
-			pool,
-			&texture
-		);
-
-		if (SUCCEEDED(ret))
-		{
-			WWDEBUG_SAY(("...Render target creation successful."));
-		}
-		else
-		{
-			WWDEBUG_SAY(("...Render target creation failed."));
-		}
-		if (ret==D3DERR_OUTOFVIDEOMEMORY)
-		{
-			Non_Fatal_Log_DX8_ErrorCode(ret,__FILE__,__LINE__);
-			return nullptr;
-		}
+		texture = Gfx->Create_Depth_Texture(width, height, levels, zformat, usage);
+		WWDEBUG_SAY(("...depth texture creation %s.", texture ? "successful" : "failed"));
+		if (texture == nullptr) return nullptr;
 	}
-
-	DX8_ErrorCode(ret);
 
 #ifdef RTS_DEBUG
 	Debug_Note_Texture_Made_Other("z");
 #endif
-	texture->AddRef(); // don't release this texture
+	Gfx->Reference_Texture(texture); // don't release this texture
 
-	// Just return the texture, no reduction
-	// allowed for render targets.
-
-	return (GfxTexture*)texture;
+	// Just return the texture, no reduction allowed for render targets.
+	return texture;
 }
 
 /*!
@@ -7920,132 +7856,34 @@ GfxTexture* DX8Wrapper::_Create_DX8_Cube_Texture
 	WWASSERT(width==height);
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
-	IDirect3DCubeTexture8* texture=nullptr;
 
 	// Paletted textures not supported!
 	WWASSERT(format!=D3DFMT_P8);
 
-	// NOTE: If 'format' is not supported as a texture format, this function will find the closest
-	// format that is supported and use that instead.
+	unsigned use_w = width, use_h = height, use_levels = mip_level_count;
+	WW3DFormat use_fmt = format;
+	Adjust_Texture_Requirements(use_w, use_h, use_fmt, use_levels);
+	// A cube's faces are square by definition -- the assert above says the caller knows
+	// that -- so the edge is whichever of the two survived, and they can only differ if
+	// a device limit clamped one of them.
+	const unsigned edge = use_w < use_h ? use_w : use_h;
 
-	// Render target may return NOTAVAILABLE, in
-	// which case we return null.
-	if (rendertarget)
-	{
-		unsigned ret=D3DXCreateCubeTexture
-		(
-			DX8Wrapper::_Get_D3D_Device8(),
-			width,
-			mip_level_count,
-			D3DUSAGE_RENDERTARGET,
-			WW3DFormat_To_D3DFormat(format),
-			pool,
-			&texture
-		);
+	const unsigned usage = Texture_Pool_To_Usage(pool, rendertarget);
+	const char * const what = rendertarget ? "cube render target" : "cube texture";
 
-		if (ret==D3DERR_NOTAVAILABLE)
-		{
-			Non_Fatal_Log_DX8_ErrorCode(ret,__FILE__,__LINE__);
-			return nullptr;
-		}
-
-		// If ran out of texture ram, try invalidating some textures and mesh cache.
-		if (ret==D3DERR_OUTOFVIDEOMEMORY)
-		{
-			WWDEBUG_SAY(("Error: Out of memory while creating render target. Trying to release assets..."));
-			// Free all textures that haven't been used in the last 5 seconds
-			TextureClass::Invalidate_Old_Unused_Textures(5000);
-
-			// Invalidate the mesh cache
-			WW3D::_Invalidate_Mesh_Cache();
-
-			ret=D3DXCreateCubeTexture
-			(
-				DX8Wrapper::_Get_D3D_Device8(),
-				width,
-				mip_level_count,
-				D3DUSAGE_RENDERTARGET,
-				WW3DFormat_To_D3DFormat(format),
-				pool,
-				&texture
-			);
-
-			if (SUCCEEDED(ret))
-			{
-				WWDEBUG_SAY(("...Render target creation successful."));
-			}
-			else
-			{
-				WWDEBUG_SAY(("...Render target creation failed."));
-			}
-			if (ret==D3DERR_OUTOFVIDEOMEMORY)
-			{
-				Non_Fatal_Log_DX8_ErrorCode(ret,__FILE__,__LINE__);
-				return nullptr;
-			}
-		}
-
-		DX8_ErrorCode(ret);
-#ifdef RTS_DEBUG
-		Debug_Note_Texture_Made_Other("c");
-#endif
-		// Just return the texture, no reduction
-		// allowed for render targets.
-		return (GfxTexture*)texture;
-	}
-
-	// We should never run out of video memory when allocating a non-rendertarget texture.
-	// However, it seems to happen sometimes when there are a lot of textures in memory and so
-	// if it happens we'll release assets and try again (anything is better than crashing).
-	unsigned ret=D3DXCreateCubeTexture
-	(
-		DX8Wrapper::_Get_D3D_Device8(),
-		width,
-		mip_level_count,
-		0,
-		WW3DFormat_To_D3DFormat(format),
-		pool,
-		&texture
-	);
-
-	// If ran out of texture ram, try invalidating some textures and mesh cache.
-	if (ret==D3DERR_OUTOFVIDEOMEMORY)
-	{
-		WWDEBUG_SAY(("Error: Out of memory while creating texture. Trying to release assets..."));
-		// Free all textures that haven't been used in the last 5 seconds
+	GfxTexture * texture = Gfx->Create_Cube_Texture(edge, use_levels, use_fmt, usage);
+	if (texture == nullptr) {
+		WWDEBUG_SAY(("Error: Out of memory while creating %s. Trying to release assets...", what));
 		TextureClass::Invalidate_Old_Unused_Textures(5000);
-
-		// Invalidate the mesh cache
 		WW3D::_Invalidate_Mesh_Cache();
-
-		ret=D3DXCreateCubeTexture
-		(
-			DX8Wrapper::_Get_D3D_Device8(),
-			width,
-			mip_level_count,
-			0,
-			WW3DFormat_To_D3DFormat(format),
-			pool,
-			&texture
-		);
-		if (SUCCEEDED(ret))
-		{
-			WWDEBUG_SAY(("...Texture creation successful."));
-		}
-		else
-		{
-			StringClass format_name(0,true);
-			Get_WW3D_Format_Name(format, format_name);
-			WWDEBUG_SAY(("...Texture creation failed. (%d x %d, format: %s, mips: %d",width,height,format_name.str(),mip_level_count));
-		}
-
+		texture = Gfx->Create_Cube_Texture(edge, use_levels, use_fmt, usage);
+		WWDEBUG_SAY(("...%s creation %s.", what, texture ? "successful" : "failed"));
 	}
-	DX8_ErrorCode(ret);
+
 #ifdef RTS_DEBUG
 	Debug_Note_Texture_Made_Other("c");
 #endif
-
-	return (GfxTexture*)texture;
+	return texture;
 }
 
 /*!
@@ -8063,71 +7901,30 @@ GfxTexture* DX8Wrapper::_Create_DX8_Volume_Texture
 {
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
-	IDirect3DVolumeTexture8* texture=nullptr;
 
 	// Paletted textures not supported!
 	WWASSERT(format!=D3DFMT_P8);
 
-	// NOTE: If 'format' is not supported as a texture format, this function will find the closest
-	// format that is supported and use that instead.
+	unsigned use_w = width, use_h = height, use_levels = mip_level_count;
+	WW3DFormat use_fmt = format;
+	Adjust_Texture_Requirements(use_w, use_h, use_fmt, use_levels);
 
+	const unsigned usage = Texture_Pool_To_Usage(pool, false);
 
-	// We should never run out of video memory when allocating a non-rendertarget texture.
-	// However, it seems to happen sometimes when there are a lot of textures in memory and so
-	// if it happens we'll release assets and try again (anything is better than crashing).
-	unsigned ret=D3DXCreateVolumeTexture
-	(
-		DX8Wrapper::_Get_D3D_Device8(),
-		width,
-		height,
-		depth,
-		mip_level_count,
-		0,
-		WW3DFormat_To_D3DFormat(format),
-		pool,
-		&texture
-	);
-
-	// If ran out of texture ram, try invalidating some textures and mesh cache.
-	if (ret==D3DERR_OUTOFVIDEOMEMORY)
-	{
-		WWDEBUG_SAY(("Error: Out of memory while creating texture. Trying to release assets..."));
-		// Free all textures that haven't been used in the last 5 seconds
+	GfxTexture * texture = Gfx->Create_Volume_Texture(use_w, use_h, depth, use_levels,
+		use_fmt, usage);
+	if (texture == nullptr) {
+		WWDEBUG_SAY(("Error: Out of memory while creating volume texture. Trying to release assets..."));
 		TextureClass::Invalidate_Old_Unused_Textures(5000);
-
-		// Invalidate the mesh cache
 		WW3D::_Invalidate_Mesh_Cache();
-
-		ret=D3DXCreateVolumeTexture
-		(
-			DX8Wrapper::_Get_D3D_Device8(),
-			width,
-			height,
-			depth,
-			mip_level_count,
-			0,
-			WW3DFormat_To_D3DFormat(format),
-			pool,
-			&texture
-		);
-		if (SUCCEEDED(ret))
-		{
-			WWDEBUG_SAY(("...Texture creation successful."));
-		}
-		else
-		{
-			StringClass format_name(0,true);
-			Get_WW3D_Format_Name(format, format_name);
-			WWDEBUG_SAY(("...Texture creation failed. (%d x %d, format: %s, mips: %d",width,height,format_name.str(),mip_level_count));
-		}
-
+		texture = Gfx->Create_Volume_Texture(use_w, use_h, depth, use_levels, use_fmt, usage);
+		WWDEBUG_SAY(("...volume texture creation %s.", texture ? "successful" : "failed"));
 	}
-	DX8_ErrorCode(ret);
+
 #ifdef RTS_DEBUG
 	Debug_Note_Texture_Made_Other("v");
 #endif
-
-	return (GfxTexture*)texture;
+	return texture;
 }
 
 
@@ -8136,32 +7933,15 @@ GfxSurface * DX8Wrapper::_Create_DX8_Surface(unsigned int width, unsigned int he
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
 
-	IDirect3DSurface8 *surface = nullptr;
-
 	// Paletted surfaces not supported!
 	WWASSERT(format!=D3DFMT_P8);
 
-	DX8_Assert();
-	HRESULT hr = D3D9_CreateImageSurface_Helper(_Get_D3D_Device8(), width, height, WW3DFormat_To_D3DFormat(format), &surface);
-	DX8_ErrorCode(hr);
+	// The two-pool ladder D3D9 needs when a driver refuses a format in system memory is
+	// the backend's, not this function's -- it is already written there.
+	GfxSurface * surface = Gfx->Create_Offscreen_Surface(width, height, format);
 	Increment_DX8_CallCount();
 
-	return (GfxSurface*)surface;
-}
-
-HRESULT DX8Wrapper::D3D9_CreateImageSurface_Helper(
-	IDirect3DDevice9* device,
-	unsigned int width,
-	unsigned int height,
-	D3DFORMAT format,
-	IDirect3DSurface9** ppSurface
-)
-{
-	HRESULT hr = device->CreateOffscreenPlainSurface(width, height, format, D3DPOOL_SYSTEMMEM, ppSurface, nullptr);
-	if (FAILED(hr)) {
-		hr = device->CreateOffscreenPlainSurface(width, height, format, D3DPOOL_SCRATCH, ppSurface, nullptr);
-	}
-	return hr;
+	return surface;
 }
 
 
@@ -8170,16 +7950,10 @@ GfxSurface * DX8Wrapper::_Create_DX8_Surface(const char *filename_)
 	DX8_THREAD_ASSERT();
 	DX8_Assert();
 
-	// Note: Since there is no "D3DXCreateSurfaceFromFile" and no "GetSurfaceInfoFromFile" (the
-	// latter is supposed to be added to D3DX in a future version), we create a texture from the
-	// file (w/o mipmaps), check that its surface is equal to the original file data (which it
-	// will not be if the file is not in a texture-supported format or size). If so, copy its
-	// surface (we might be able to just get its surface and add a ref to it but I'm not sure so
-	// I'm not going to risk it) and release the texture. If not, create a surface according to
-	// the file data and use D3DXLoadSurfaceFromFile. This is a horrible hack, but it saves us
-	// having to write file loaders. Will fix this when D3DX provides us with the right functions.
-	// Create a surface the size of the file image data
-	IDirect3DSurface8 *surface = nullptr;
+	// The D3DX hack this comment used to describe -- make a texture from the file, check
+	// its surface against the file data, copy or fall back -- is long gone: the body below
+	// only decides whether the file exists at all (trying the .dds spelling of a .tga name)
+	// and then hands the load to TextureLoader, which has its own decoders.
 
 	{
 
@@ -8428,15 +8202,13 @@ GfxSurface * DX8Wrapper::_Get_DX8_Front_Buffer()
 	WW3DFormat display_format=WW3D_FORMAT_UNKNOWN;
 	if (!Gfx->Get_Display_Mode(width,height,display_format)) return nullptr;
 
-	IDirect3DSurface8 * fb=nullptr;
-
 	DX8_Assert();
-	HRESULT hr = D3D9_CreateImageSurface_Helper(_Get_D3D_Device8(), width, height, D3DFMT_A8R8G8B8, &fb);
-	DX8_ErrorCode(hr);
+	GfxSurface * fb = Gfx->Create_Offscreen_Surface(width, height, WW3D_FORMAT_A8R8G8B8);
 	Increment_DX8_CallCount();
+	if (fb == nullptr) return nullptr;
 
-	GFXCALL(Capture_Front_Buffer((GfxSurface*)fb));
-	return (GfxSurface*)fb;
+	GFXCALL(Capture_Front_Buffer(fb));
+	return fb;
 }
 
 SurfaceClass * DX8Wrapper::_Get_DX8_Back_Buffer(unsigned int num)

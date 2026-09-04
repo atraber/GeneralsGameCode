@@ -179,6 +179,11 @@ public:
 								WW3DFormat format, unsigned usage);
 	virtual GfxTexture *	Create_Cube_Texture(unsigned edge_length, unsigned levels,
 								WW3DFormat format, unsigned usage);
+	virtual GfxTexture *	Create_Volume_Texture(unsigned width, unsigned height,
+								unsigned depth, unsigned levels, WW3DFormat format,
+								unsigned usage);
+	virtual GfxTexture *	Create_Depth_Texture(unsigned width, unsigned height,
+								unsigned levels, WW3DZFormat format, unsigned usage);
 	virtual void			Release_Texture(GfxTexture * texture);
 	virtual void			Reference_Texture(GfxTexture * texture);
 	virtual GfxSurface *	Create_Render_Target_Surface(unsigned width, unsigned height,

@@ -577,8 +577,11 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 	// in the constant. Built as an identity rather than converted from mWorld beside it --
 	// mWorld *is* the identity, and Matrix4x4 is in Westwood convention, so a cast between
 	// the two would be a transpose waiting to matter the day this stops being identity.
-	D3DXMATRIX decalWorld;
-	D3DXMatrixIdentity(&decalWorld);
+	// Sixteen floats, row-major, which is what Bind_Ui_Shader_World takes.
+	static const float decalWorld[16] = { 1.0f, 0.0f, 0.0f, 0.0f,
+										  0.0f, 1.0f, 0.0f, 0.0f,
+										  0.0f, 0.0f, 1.0f, 0.0f,
+										  0.0f, 0.0f, 0.0f, 1.0f };
 	if (!DX8Wrapper::Bind_Ui_Shader_World(decalWorld, true, true))
 	{
 		// No interface shader: keep the fixed-function path exactly as it was. The
@@ -590,7 +593,7 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 		// ...and with no vertex shader bound, D3DTS_WORLD is consulted again. This draw never
 		// reaches an Apply, so the identity Set_World_Identity recorded has to be put on the
 		// device here, or the decal is transformed by whatever mesh drew last.
-		DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD, decalWorld);
+		DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD, *reinterpret_cast<const D3DMATRIX*>(decalWorld));
 	}
 
 //Hard Shadows using stencil

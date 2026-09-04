@@ -636,11 +636,17 @@ static unsigned Texture_Usage_To_D3D(unsigned usage)
 
 static D3DPOOL Texture_Usage_To_D3D_Pool(unsigned usage)
 {
-	// A render target and a dynamic texture both have to live where the GPU writes,
-	// which under D3D9 is the default pool and nowhere else. Everything else is
-	// managed, which is what the engine has always asked for and what has no D3D11
-	// equivalent -- see the note at GfxResourceUsage.
+	// The placement bits are asked first and answered exactly, because the engine's
+	// texture path distinguishes all three pools and the pairing that matters --
+	// UpdateTexture from system memory into device memory -- fails if either end lands
+	// somewhere else. Only when the caller has said nothing about placement do the
+	// usage bits decide, and then a render target or a dynamic texture has to be in
+	// the default pool because D3D9 has nowhere else to put one.
+	if (usage & GFX_USAGE_STAGING) return D3DPOOL_SYSTEMMEM;
+	if (usage & GFX_USAGE_GPU_RESIDENT) return D3DPOOL_DEFAULT;
 	if (usage & (GFX_USAGE_RENDER_TARGET | GFX_USAGE_DYNAMIC_TEXTURE)) return D3DPOOL_DEFAULT;
+	// Managed, which is what the engine has always asked for and what has no D3D11
+	// equivalent -- see the note at GfxResourceUsage.
 	return D3DPOOL_MANAGED;
 }
 
@@ -660,6 +666,29 @@ GfxTexture * GfxDeviceD3D9::Create_Cube_Texture(unsigned edge_length, unsigned l
 	IDirect3DCubeTexture8 * texture = nullptr;
 	HRESULT hr = m_device->CreateCubeTexture(edge_length, levels, Texture_Usage_To_D3D(usage),
 		WW3DFormat_To_D3DFormat(format), Texture_Usage_To_D3D_Pool(usage), &texture);
+	if (FAILED(hr)) return nullptr;
+	return (GfxTexture*)texture;
+}
+
+GfxTexture * GfxDeviceD3D9::Create_Volume_Texture(unsigned width, unsigned height,
+	unsigned depth, unsigned levels, WW3DFormat format, unsigned usage)
+{
+	IDirect3DVolumeTexture8 * texture = nullptr;
+	HRESULT hr = m_device->CreateVolumeTexture(width, height, depth, levels,
+		Texture_Usage_To_D3D(usage), WW3DFormat_To_D3DFormat(format),
+		Texture_Usage_To_D3D_Pool(usage), &texture);
+	if (FAILED(hr)) return nullptr;
+	return (GfxTexture*)texture;
+}
+
+GfxTexture * GfxDeviceD3D9::Create_Depth_Texture(unsigned width, unsigned height,
+	unsigned levels, WW3DZFormat format, unsigned usage)
+{
+	IDirect3DTexture8 * texture = nullptr;
+	// D3DUSAGE_DEPTHSTENCIL rather than the usage bits' own flags: a depth texture is
+	// written by the depth test and not by a draw, and D3D9 wants to be told which.
+	HRESULT hr = m_device->CreateTexture(width, height, levels, D3DUSAGE_DEPTHSTENCIL,
+		WW3DZFormat_To_D3DFormat(format), Texture_Usage_To_D3D_Pool(usage), &texture);
 	if (FAILED(hr)) return nullptr;
 	return (GfxTexture*)texture;
 }
@@ -697,14 +726,29 @@ GfxSurface * GfxDeviceD3D9::Create_Depth_Stencil_Surface(unsigned width, unsigne
 	return (GfxSurface*)surface;
 }
 
+// The two-pool ladder D3D9 needs: system memory first, because a surface there can be
+// the source of an UpdateSurface, and scratch only if the driver refuses the format
+// there. Scratch accepts any format but can be the source of nothing.
+//
+// This was public API on DX8Wrapper taking an IDirect3DDevice9 and handing back an
+// IDirect3DSurface9. It has always belonged here.
+static HRESULT Create_Image_Surface(IDirect3DDevice8 * device, unsigned width,
+	unsigned height, D3DFORMAT format, IDirect3DSurface8 ** surface)
+{
+	HRESULT hr = device->CreateOffscreenPlainSurface(width, height, format,
+		D3DPOOL_SYSTEMMEM, surface, nullptr);
+	if (FAILED(hr)) {
+		hr = device->CreateOffscreenPlainSurface(width, height, format,
+			D3DPOOL_SCRATCH, surface, nullptr);
+	}
+	return hr;
+}
+
 GfxSurface * GfxDeviceD3D9::Create_Offscreen_Surface(unsigned width, unsigned height,
 	WW3DFormat format)
 {
 	IDirect3DSurface8 * surface = nullptr;
-	// The two-pool ladder D3D9 needs: system memory first, because a surface there can
-	// be the source of an UpdateSurface, and scratch only if the driver refuses the
-	// format there. Scratch accepts any format but can be the source of nothing.
-	HRESULT hr = DX8Wrapper::D3D9_CreateImageSurface_Helper(m_device, width, height,
+	HRESULT hr = Create_Image_Surface(m_device, width, height,
 		WW3DFormat_To_D3DFormat(format), &surface);
 	if (FAILED(hr)) return nullptr;
 	return (GfxSurface*)surface;
