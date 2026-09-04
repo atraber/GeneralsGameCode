@@ -1572,8 +1572,8 @@ public:
 	//
 	// Derived at the draw rather than latched when the routing block declines a caster,
 	// and that is the whole design. A latched flag stands for the two write masks, and
-	// those masks are written directly -- BaseHeightMap, W3DScene, HeightMap,
-	// W3DVolumetricShadow and W3DShaderManager all call Set_DX8_Render_State on them --
+	// those masks are written directly -- BaseHeightMap, W3DScene, HeightMap and
+	// W3DShaderManager all call Set_DX8_Render_State on them --
 	// which raises no bit in render_state_changed. So a latch either has to be cleared on
 	// every draw, in which case it only ever catches the first declined caster in a run
 	// of unchanged state, or it has to survive one, in which case it can outlive the masks
@@ -2193,8 +2193,8 @@ WWINLINE void DX8Wrapper::Set_DX8_Render_State(D3DRENDERSTATETYPE state, unsigne
 		//
 		// Suppressing it here rather than at the call sites is what makes it complete.
 		// Every live writer goes through this function -- ShaderClass::Apply twice,
-		// dx8renderer's alpha-override scaling of the reference, W3DVolumetricShadow, and
-		// W3DWater's legacy clip-plane path -- and editing five call sites would have left
+		// dx8renderer's alpha-override scaling of the reference, and W3DWater's legacy
+		// clip-plane path -- and editing four call sites would have left
 		// the sixth to be found later, with the state sticky in between: nothing would
 		// have turned the device's test back off.
 		//

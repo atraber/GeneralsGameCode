@@ -44,7 +44,6 @@
 #include "W3DDevice/GameClient/HeightMap.h"
 #include "d3dx8math.h"
 #include "Common/GlobalData.h"
-#include "W3DDevice/GameClient/W3DVolumetricShadow.h"
 #include "W3DDevice/GameClient/W3DProjectedShadow.h"
 #include "W3DDevice/GameClient/W3DShadow.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
@@ -75,7 +74,6 @@ void DoShadows(RenderInfoClass & rinfo, Bool stencilPass)
 {
 	//USE_PERF_TIMER(shadowsRender)
 	shadowCameraFrustum=&rinfo.Camera.Get_Frustum();
-	Int projectionCount=0;
 
 	// The directional shadow map already casts every shadow in the scene, so the decal
 	// shadows stand down while it is active (options.ini UseShadowMapping) -- running
@@ -90,7 +88,7 @@ void DoShadows(RenderInfoClass & rinfo, Bool stencilPass)
 	if (stencilPass == FALSE  && TheW3DProjectedShadowManager)
 	{
 			if (TheW3DShadowManager->isShadowScene())
-				projectionCount=TheW3DProjectedShadowManager->renderShadows(rinfo, shadowMapping);
+				TheW3DProjectedShadowManager->renderShadows(rinfo, shadowMapping);
 	}
 
 	if (TheW3DShadowManager && stencilPass)	//reset so no more shadow processing this frame.
@@ -100,8 +98,8 @@ void DoShadows(RenderInfoClass & rinfo, Bool stencilPass)
 
 W3DShadowManager::W3DShadowManager()
 {
-	DEBUG_ASSERTCRASH(TheW3DVolumetricShadowManager == nullptr && TheW3DProjectedShadowManager == nullptr,
-		("Creating new shadow managers without deleting old ones"));
+	DEBUG_ASSERTCRASH(TheW3DProjectedShadowManager == nullptr,
+		("Creating a new shadow manager without deleting the old one"));
 
 	m_shadowColor = 0x7fa0a0a0;
 	m_isShadowScene = FALSE;
@@ -113,14 +111,11 @@ W3DShadowManager::W3DShadowManager()
 
 	LightPosWorld[0]=lightRay*SUN_DISTANCE_FROM_GROUND;
 
-	TheW3DVolumetricShadowManager = NEW W3DVolumetricShadowManager;
 	TheProjectedShadowManager = TheW3DProjectedShadowManager = NEW W3DProjectedShadowManager;
 }
 
 W3DShadowManager::~W3DShadowManager()
 {
-	delete TheW3DVolumetricShadowManager;
-	TheW3DVolumetricShadowManager = nullptr;
 	delete TheW3DProjectedShadowManager;
 	TheProjectedShadowManager = TheW3DProjectedShadowManager = nullptr;
 }
@@ -131,11 +126,6 @@ Bool W3DShadowManager::init()
 {
 	Bool result=TRUE;
 
-	if	(TheW3DVolumetricShadowManager && TheW3DVolumetricShadowManager->init())
-	{
-		if (TheW3DVolumetricShadowManager->ReAcquireResources())
-			result = TRUE;
-	}
 	if ( TheW3DProjectedShadowManager && TheW3DProjectedShadowManager->init())
 	{
 		if (TheW3DProjectedShadowManager->ReAcquireResources())
@@ -150,8 +140,6 @@ they may not exist on the next map*/
 void W3DShadowManager::Reset()
 {
 
-	if (TheW3DVolumetricShadowManager)
-		TheW3DVolumetricShadowManager->reset();
 	if (TheW3DProjectedShadowManager)
 		TheW3DProjectedShadowManager->reset();
 }
@@ -160,8 +148,6 @@ Bool W3DShadowManager::ReAcquireResources()
 {
 	Bool result = TRUE;
 
-	if (TheW3DVolumetricShadowManager && !TheW3DVolumetricShadowManager->ReAcquireResources())
-		result = FALSE;
 	if (TheW3DProjectedShadowManager && !TheW3DProjectedShadowManager->ReAcquireResources())
 		result = FALSE;
 
@@ -170,8 +156,6 @@ Bool W3DShadowManager::ReAcquireResources()
 
 void W3DShadowManager::ReleaseResources()
 {
-	if (TheW3DVolumetricShadowManager)
-		TheW3DVolumetricShadowManager->ReleaseResources();
 	if (TheW3DProjectedShadowManager)
 		TheW3DProjectedShadowManager->ReleaseResources();
 }
@@ -209,8 +193,6 @@ void W3DShadowManager::removeShadow(Shadow *shadow)
 
 void W3DShadowManager::removeAllShadows()
 {
-	if (TheW3DVolumetricShadowManager)
-		TheW3DVolumetricShadowManager->removeAllShadows();
 	if (TheW3DProjectedShadowManager)
 		TheW3DProjectedShadowManager->removeAllShadows();
 }
@@ -218,8 +200,6 @@ void W3DShadowManager::removeAllShadows()
 /**Force update of all shadows even when light source and object have not moved*/
 void W3DShadowManager::invalidateCachedLightPositions()
 {
-	if (TheW3DVolumetricShadowManager)
-		TheW3DVolumetricShadowManager->invalidateCachedLightPositions();
 	if (TheW3DProjectedShadowManager)
 		TheW3DProjectedShadowManager->invalidateCachedLightPositions();
 }
