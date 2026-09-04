@@ -41,7 +41,6 @@
 
 #include "WWLib/always.h"
 #include "ww3dformat.h"
-#include "d3d9_compat.h"
 
 /*
 ** The D3D9-shaped half of this: the raw capability struct and the interface used to

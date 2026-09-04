@@ -44,7 +44,6 @@
 
 class DX8Wrapper;
 class SortingRendererClass;
-#include "d3d9_compat.h"
 #include "gfxdevice.h"
 class DX8IndexBufferClass;
 class SortingIndexBufferClass;

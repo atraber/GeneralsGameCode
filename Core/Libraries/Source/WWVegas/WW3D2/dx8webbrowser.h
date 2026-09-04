@@ -33,7 +33,6 @@
 #pragma once
 
 #include <windows.h>
-#include "d3d9_compat.h"
 
 // ***********************************
 // Set this to 0 to remove all embedded browser code.
@@ -49,7 +48,6 @@
 #define BROWSEROPTION_SCROLLBARS		0x0001
 #define BROWSEROPTION_3DBORDER		0x0002
 
-#include "d3d9_compat.h"
 
 /**
 ** DX8WebBrowser
