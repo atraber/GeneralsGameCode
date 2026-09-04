@@ -781,6 +781,7 @@ namespace {
 		unsigned     shader;     // the bound vertex shader, or 0 for fixed function
 		unsigned     draws;
 		unsigned     submitted;  // ...of those, how many reached a device
+		unsigned     noPixel;    // ...and how many had no pixel shader either
 		bool         direct;     // straight at the device rather than through Draw()
 	};
 	// 195 is the static ceiling -- 15 FVF codes named in the tree by 13 compiled vertex
@@ -831,6 +832,7 @@ void DX8Wrapper::Debug_Note_Vertex_Layout(const char * site, bool direct, bool s
 		if (r.site == site && r.fvf == fvf && r.shader == shader && r.direct == direct) {
 			++r.draws;
 			if (submitted) ++r.submitted;
+			if (submitted && Is_Fixed_Function_Pixel_Draw()) ++r.noPixel;
 			return;
 		}
 	}
@@ -841,6 +843,7 @@ void DX8Wrapper::Debug_Note_Vertex_Layout(const char * site, bool direct, bool s
 	r.shader = shader;
 	r.draws = 1;
 	r.submitted = submitted ? 1 : 0;
+	r.noPixel = (submitted && Is_Fixed_Function_Pixel_Draw()) ? 1 : 0;
 	r.direct = direct;
 }
 
@@ -857,6 +860,8 @@ void DX8Wrapper::Debug_Report_Vertex_Layouts()
 	// Distinct pairs first, because that is the number Phase 5 sizes an input-layout cache
 	// against; the per-drawer rows below it are what each pair is for.
 	unsigned pairs = 0;
+	unsigned ffVertexSubmitted = 0;
+	unsigned ffPixelSubmitted = 0;
 	for (int i = 0; i < s_vertexLayoutCount; ++i) {
 		bool seen = false;
 		for (int j = 0; j < i; ++j) {
@@ -864,6 +869,8 @@ void DX8Wrapper::Debug_Report_Vertex_Layouts()
 				s_vertexLayouts[j].shader == s_vertexLayouts[i].shader) { seen = true; break; }
 		}
 		if (!seen) ++pairs;
+		if (s_vertexLayouts[i].shader == 0) ffVertexSubmitted += s_vertexLayouts[i].submitted;
+		ffPixelSubmitted += s_vertexLayouts[i].noPixel;
 	}
 
 	WWDEBUG_SAY(("VERTEX LAYOUT CENSUS over 600 frames: %u distinct (vertex format x vertex "
@@ -875,6 +882,14 @@ void DX8Wrapper::Debug_Report_Vertex_Layouts()
 				 "`direct` means the drawer went straight at the device; `submitted` is "
 				 "draws that reached one, which is fewer where the depth pass declined.",
 		pairs, s_vertexLayoutCount, s_vertexLayoutDropped ? "  -- TABLE FULL" : ""));
+	// The two figures this census exists to drive to zero, said plainly rather than left
+	// to be summed out of the rows. A fixed-function draw that is never submitted is not
+	// work for a second backend: it reaches no device, so there is nothing to write a
+	// shader for. Only the submitted ones are.
+	WWDEBUG_SAY(("  of those, draws that reached a device with NO VERTEX SHADER: %u, and "
+				 "with no pixel shader: %u. Both must be 0 before a backend with no "
+				 "fixed-function pipeline can draw this frame.",
+		ffVertexSubmitted, ffPixelSubmitted));
 
 	for (int rank = 0; rank < s_vertexLayoutCount; ++rank) {
 		int best = -1;
@@ -889,11 +904,12 @@ void DX8Wrapper::Debug_Report_Vertex_Layouts()
 		char desc[128];
 		Describe_FVF(r.fvf, desc, sizeof(desc));
 		const char * shaderName = r.shader != 0 ? Debug_Shader_Name(r.shader) : nullptr;
-		WWDEBUG_SAY(("  %-26s %-7s fvf 0x%-6x %-26s shader %-18s x%-7u submitted %u",
+		WWDEBUG_SAY(("  %-26s %-7s fvf 0x%-6x %-26s shader %-18s x%-7u submitted %u%s",
 			r.site, r.direct ? "direct" : "wrapper", r.fvf, desc,
 			r.shader == 0 ? "(none: FIXED FUNCTION)"
 				: (shaderName != nullptr ? shaderName : "(unregistered)"),
-			r.draws, r.submitted));
+			r.draws, r.submitted,
+			r.noPixel ? "  *** and no pixel shader either" : ""));
 		s_vertexLayouts[best].draws = 0;
 	}
 	s_vertexLayoutCount = 0;
