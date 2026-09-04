@@ -1298,36 +1298,11 @@ Int playerIndexToColorIndex(Int playerIndex)
 stencil mask*/
 void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool clear=FALSE)
 {
-	// Untransformed rather than D3DFVF_XYZRHW, because a vertex shader cannot consume a
-	// transformed position -- D3D9 reserves POSITIONT for the fixed-function pipeline. The
-	// pixel coordinates below are unchanged; Bind_Screen_Space_Shader carries the mapping
-	// to clip space that XYZRHW used to imply, and the shader does the multiply.
-	//
-	// The texture coordinate is present only to satisfy the declaration: the interface
-	// shader reads one, and this quad is a flat colour with nothing to sample. Its value is
-	// discarded there by UiCtl, not multiplied by zero, so it never has to be meaningful.
-	struct _SCREENVERTEX {
-		float x, y, z;
-		DWORD color;   // diffuse color
-		float u, v;
-	} v[4];
-
 	Int xpos, ypos, width, height;
 
 	TheTacticalView->getOrigin(&xpos,&ypos);
 	width=TheTacticalView->getWidth();
 	height=TheTacticalView->getHeight();
-
-	for (Int i = 0; i < 4; ++i) {
-		v[i].z = 0.0f;
-		v[i].color = color;
-		v[i].u = 0.0f;
-		v[i].v = 0.0f;
-	}
-	v[0].x = (float)(xpos+width); v[0].y = (float)(ypos+height);
-	v[1].x = (float)(xpos+width); v[1].y = 0.0f;
-	v[2].x = (float)xpos;         v[2].y = (float)(ypos+height);
-	v[3].x = (float)xpos;         v[3].y = 0.0f;
 
 	DX8Wrapper::Set_Shader(PlayerColorShader);
 	VertexMaterialClass *vmat=VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
@@ -1338,25 +1313,6 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 
 	if (!DX8Wrapper::Has_Device())
 		return;	//need device to render anything.
-
-	//draw polygons like this is very inefficient but for only 2 triangles, it's
-	//not worth bothering with index/vertex buffers.
-	// The FVF is still set, and still matters -- it is the vertex declaration the shader
-	// reads through. Set it first, because Set_Vertex_Shader clears the bound shader when
-	// handed an FVF, and binding the real one has to come after that.
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1);
-	// This quad used to be the last thing in the frame drawing on the fixed-function
-	// pipeline, along with the shadow decal flush -- and one such draw is enough to make
-	// every deferred fixed-function state word real again, because the pipeline it renders
-	// from has to be rebuilt out of whatever the tracked state has accumulated since the
-	// previous one. It is a flat colour over a stencil test, which the interface shader
-	// already expresses exactly.
-	//
-	// Before that it was worse than fixed function: XYZRHW puts these vertices past the
-	// vertex pipeline but says nothing about the pixel one, so the quad ran under whichever
-	// pixel shader the previous draw left bound -- two of every three per frame.
-	if (!DX8Wrapper::Bind_Screen_Space_Shader())
-		return;   // no interface shader means no interface either; nothing to fall back to
 
 	// Set stencil states
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_STENCILENABLE, TRUE );
@@ -1414,8 +1370,30 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
 	{
-		DX8Wrapper::Prepare_Direct_Draw("sceneOverlayQuad");
-		DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREENVERTEX));
+		// This quad used to be the last thing in the frame drawing on the fixed-function
+		// pipeline, along with the shadow decal flush -- and one such draw is enough to
+		// make every deferred fixed-function state word real again, because the pipeline
+		// it renders from has to be rebuilt out of whatever the tracked state has
+		// accumulated since the previous one. It is a flat colour over a stencil test,
+		// which the interface shader already expresses exactly.
+		//
+		// Before that it was worse than fixed function: D3DFVF_XYZRHW puts these vertices
+		// past the vertex pipeline but says nothing about the pixel one, so the quad ran
+		// under whichever pixel shader the previous draw left bound -- two of every three
+		// per frame.
+		//
+		// It was converted for that, and kept its own copy of the quad; it goes through
+		// the one builder now. The top edge is the top of the screen and not the top of
+		// the view, which is what the hand-rolled version said and is deliberate: the
+		// player colour has to cover the strip above the tactical view as well.
+		W3DShaderManager::drawScreenQuad(
+			(float)xpos, 0.0f, (float)width, (float)(ypos+height),
+			0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+			color, W3DShaderManager::SCREEN_QUAD_PIXEL_DIFFUSE, "sceneOverlayQuad",
+			// No half-pixel offset: this quad samples nothing, so there is no texel grid
+			// to align to, and the hand-rolled version it replaces did not have one. It
+			// is not free either way -- applying it moves two pixels.
+			false);
 	}
 
 	// turn off the stencil buffer

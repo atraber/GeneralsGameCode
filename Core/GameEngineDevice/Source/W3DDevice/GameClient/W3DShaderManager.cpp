@@ -360,7 +360,8 @@ HRESULT W3DShaderManager::drawScreenQuad(
 	float bU0, float bV0, float bU1, float bV1,
 	DWORD diffuse,
 	ScreenQuadPixel pixel,
-	const char * site)
+	const char * site,
+	bool alignToTexels)
 {
 	// The half-pixel offset, in the one place it now exists.
 	//
@@ -369,7 +370,15 @@ HRESULT W3DShaderManager::drawScreenQuad(
 	// exact pixel boundaries reads each texel half a texel off and the whole post-process
 	// chain blurs. D3D10 changed the rule, so a D3D11 backend wants this gone -- and
 	// because it is here rather than in twelve callers, removing it there is one line.
-	const float ox = dx - 0.5f, oy = dy - 0.5f;
+	//
+	// It is a *sampling* alignment, which is why alignToTexels exists rather than the
+	// offset being unconditional. A quad that samples nothing has no sampling grid to line
+	// up with, and shifting it half a pixel only moves which pixel centres its edges fall
+	// on -- for a full-screen overlay that is a column of coverage, not a sharper image.
+	// Measured on the player-colour overlay, which never had the offset: applying it moved
+	// two pixels at (1102,82), reproducibly, against a same-binary control of nothing.
+	const float half = alignToTexels ? 0.5f : 0.0f;
+	const float ox = dx - half, oy = dy - half;
 	BloomVtx v[4];
 	v[0].x = ox + dw; v[0].y = oy + dh; v[0].z = 0.0f; v[0].u0 = sU1; v[0].v0 = sV1; v[0].u1 = bU1; v[0].v1 = bV1;
 	v[1].x = ox + dw; v[1].y = oy;      v[1].z = 0.0f; v[1].u0 = sU1; v[1].v0 = sV0; v[1].u1 = bU1; v[1].v1 = bV0;
@@ -399,7 +408,8 @@ HRESULT W3DShaderManager::drawScreenQuad(
 		if (!DX8Wrapper::Bind_Screen_Quad_Shader())
 			return E_FAIL;   // no vertex shader means no post-process; the caller skips the pass
 	} else {
-		if (!DX8Wrapper::Bind_Screen_Space_Shader(true,
+		if (!DX8Wrapper::Bind_Screen_Space_Shader(
+				pixel != SCREEN_QUAD_PIXEL_DIFFUSE,
 				pixel == SCREEN_QUAD_PIXEL_TEXTURE,
 				pixel == SCREEN_QUAD_PIXEL_GREY))
 			return E_FAIL;

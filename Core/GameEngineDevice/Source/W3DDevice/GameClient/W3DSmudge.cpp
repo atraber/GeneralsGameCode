@@ -386,52 +386,25 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		DX8Wrapper::Set_Texture(0,nullptr);
 		DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
 
-		struct _TRANS_LIT_TEX_VERTEX {
-			Vector4 p;
-			DWORD color;   // diffuse color
-			float	u;
-			float	v;
-		} v[4];
+		const float su1 = BLOCK_SIZE/(Real)TheDisplay->getWidth();
+		const float sv1 = BLOCK_SIZE/(Real)TheDisplay->getHeight();
 
-		//bottom right
-		v[0].p = Vector4( BLOCK_SIZE-0.5f, BLOCK_SIZE-0.5f, 0.0f, 1.0f );
-		v[0].u = BLOCK_SIZE/(Real)TheDisplay->getWidth();
-		v[0].v = BLOCK_SIZE/(Real)TheDisplay->getHeight();
-		//top right
-		v[1].p = Vector4( BLOCK_SIZE-0.5f, 0-0.5f, 0.0f, 1.0f );
-		v[1].u = BLOCK_SIZE/(Real)TheDisplay->getWidth();
-		v[1].v = 0;
-		//bottom left
-		v[2].p = Vector4(  0-0.5f, BLOCK_SIZE-0.5f, 0.0f, 1.0f );
-		v[2].u = 0;
-		v[2].v = BLOCK_SIZE/(Real)TheDisplay->getHeight();
-		//top left
-		v[3].p = Vector4(  0-0.5f,  0-0.5f, 0.0f, 1.0f );
-		v[3].u = 0;
-		v[3].v = 0;
-
-		v[0].color = UNIQUE_COLOR;
-		v[1].color = UNIQUE_COLOR;
-		v[2].color = UNIQUE_COLOR;
-		v[3].color = UNIQUE_COLOR;
-
-		// Both draws in this function stay on fixed function on purpose. This is not the
-		// render path -- it is the hardware probe that decides whether the smudge feature
-		// works at all, and it works by drawing a known quad, reading the pixels back and
-		// comparing them against a reference it computed itself. What it is testing is
-		// that the device can render to a texture and that the texture can be read back;
-		// binding a shader over it would make the answer depend on the shader, which is
-		// the one thing the test must not measure. Two draws, once, at startup.
+		// Both draws in this function used to stay on fixed function on purpose: this is
+		// not the render path but the hardware probe that decides whether the smudge
+		// feature works at all, and the argument was that binding a shader would make the
+		// answer depend on the shader rather than on the device.
 		//
-		//draw polygons like this is very inefficient but for only 2 triangles, it's
-		//not worth bothering with index/vertex buffers.
-		DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
-
-		// Drawn on the device, so it inherits whatever the wrapper last bound. See
-		// Force_Fixed_Function_Pipeline.
-		DX8Wrapper::Force_Fixed_Function_Pipeline();
-		DX8Wrapper::Prepare_Direct_Draw("smudge");
-		DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+		// That argument stops being available on a backend with no fixed-function
+		// pipeline, where the draw cannot be made at all and the probe answers nothing.
+		// And the dependency it was avoiding is not a real risk: what the probe actually
+		// asks is whether this device can render to a texture, copy it and sample the
+		// copy, and if the interface shader cannot put a flat colour on a quad then
+		// nothing else in the frame draws either. So it asks the same question through
+		// the one screen-space quad, with the same two draws in the same order -- a known
+		// flat colour, then that colour sampled back out of the copy.
+		W3DShaderManager::drawScreenQuad(0.0f, 0.0f, (float)BLOCK_SIZE, (float)BLOCK_SIZE,
+			0.0f, 0.0f, su1, sv1, 0.0f, 0.0f, 0.0f, 0.0f,
+			UNIQUE_COLOR, W3DShaderManager::SCREEN_QUAD_PIXEL_DIFFUSE, "smudgeProbe");
 
 		DWORD refData[BLOCK_SIZE*BLOCK_SIZE];
 		memset(refData,0,sizeof(refData));
@@ -468,16 +441,11 @@ Bool W3DSmudgeManager::testHardwareSupport()
 		DWORD testData[BLOCK_SIZE*BLOCK_SIZE];
 		memset(testData,0xff,sizeof(testData));
 
-		v[0].color = 0xffffffff;
-		v[1].color = 0xffffffff;
-		v[2].color = 0xffffffff;
-		v[3].color = 0xffffffff;
-
-		// Drawn on the device, so it inherits whatever the wrapper last bound. See
-		// Force_Fixed_Function_Pipeline.
-		DX8Wrapper::Force_Fixed_Function_Pipeline();
-		DX8Wrapper::Prepare_Direct_Draw("smudge");
-		DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+		// The second draw: white diffuse over the copied background, so what lands is the
+		// texture and the comparison below is against what the first draw wrote.
+		W3DShaderManager::drawScreenQuad(0.0f, 0.0f, (float)BLOCK_SIZE, (float)BLOCK_SIZE,
+			0.0f, 0.0f, su1, sv1, 0.0f, 0.0f, 0.0f, 0.0f,
+			0xffffffff, W3DShaderManager::SCREEN_QUAD_PIXEL_TEXTURE, "smudgeProbe");
 		bufSize=copyRect((unsigned char *)testData,sizeof(testData),0,0,BLOCK_SIZE,BLOCK_SIZE);
 
 		DX8Wrapper::Set_DX8_Texture(0,nullptr);

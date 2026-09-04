@@ -700,19 +700,49 @@ void DX8Wrapper::Debug_Note_Foreign_Bindings(int expectedBase, int inheritedBase
 	g.worstDelta  = delta;
 }
 
+// Two sites are the same site when they are spelled the same, not when the compiler
+// happened to give them the same address.
+//
+// These tables used to compare the char* itself, which is right for a name that reaches
+// them from one place and wrong the moment two call sites pass the same literal: string
+// pooling is off in a debug build, so each gets its own address and one drawer reports as
+// several. It showed up as soon as the screen-space quads were collapsed onto one builder
+// -- its default site name is a literal in a header, so the five callers that took the
+// default reported five rows of 559 where there is one drawer doing 2795.
+//
+// The pointer comparison stays as the fast path, because it hits for every draw after the
+// first and this runs on every draw in the frame; the compare only happens on the miss
+// that would otherwise open a new row.
+static int Find_Site_Row_By_Name(const char * site, const char * const * names,
+								 int count, int stride)
+{
+	const char * base = (const char *)names;
+	for (int i = 0; i < count; ++i) {
+		const char * other = *(const char * const *)(base + (size_t)i * stride);
+		if (other != nullptr && strcmp(other, site) == 0) return i;
+	}
+	return -1;
+}
+
 void DX8Wrapper::Debug_Note_Direct_Draw(const char * site)
 {
 	if (site == nullptr) site = "?";
 	s_lastDirectDrawSite = site;
 	const bool ffPixel  = Is_Fixed_Function_Pixel_Draw();
 	const bool ffVertex = Is_Fixed_Function_Vertex_Draw();
+	int found = -1;
 	for (int i = 0; i < s_directDrawCount; ++i) {
-		if (s_directDraws[i].site == site) {
-			++s_directDraws[i].total;
-			if (ffPixel)  ++s_directDraws[i].ffPixel;
-			if (ffVertex) ++s_directDraws[i].ffVertex;
-			return;
-		}
+		if (s_directDraws[i].site == site) { found = i; break; }
+	}
+	if (found < 0) {
+		found = Find_Site_Row_By_Name(site, &s_directDraws[0].site,
+									  s_directDrawCount, sizeof(DirectDrawGroup));
+	}
+	if (found >= 0) {
+		++s_directDraws[found].total;
+		if (ffPixel)  ++s_directDraws[found].ffPixel;
+		if (ffVertex) ++s_directDraws[found].ffVertex;
+		return;
 	}
 	if (s_directDrawCount >= 32) return;
 	DirectDrawGroup & g = s_directDraws[s_directDrawCount++];
@@ -827,14 +857,28 @@ void DX8Wrapper::Debug_Note_Vertex_Layout(const char * site, bool direct, bool s
 	// the whole distinction this table is being built to measure.
 	const unsigned shader = Is_Fixed_Function_Vertex_Draw() ? 0u : (unsigned)Vertex_Shader;
 
+	int found = -1;
 	for (int i = 0; i < s_vertexLayoutCount; ++i) {
-		VertexLayoutRow & r = s_vertexLayouts[i];
+		const VertexLayoutRow & r = s_vertexLayouts[i];
 		if (r.site == site && r.fvf == fvf && r.shader == shader && r.direct == direct) {
-			++r.draws;
-			if (submitted) ++r.submitted;
-			if (submitted && Is_Fixed_Function_Pixel_Draw()) ++r.noPixel;
-			return;
+			found = i; break;
 		}
+	}
+	// Same-name-different-address, as above -- but only among the rows this draw's format
+	// and shader would have matched, so a name compare cannot merge two different layouts.
+	if (found < 0) {
+		for (int i = 0; i < s_vertexLayoutCount; ++i) {
+			const VertexLayoutRow & r = s_vertexLayouts[i];
+			if (r.fvf == fvf && r.shader == shader && r.direct == direct &&
+				r.site != nullptr && strcmp(r.site, site) == 0) { found = i; break; }
+		}
+	}
+	if (found >= 0) {
+		VertexLayoutRow & r = s_vertexLayouts[found];
+		++r.draws;
+		if (submitted) ++r.submitted;
+		if (submitted && Is_Fixed_Function_Pixel_Draw()) ++r.noPixel;
+		return;
 	}
 	if (s_vertexLayoutCount >= 256) { ++s_vertexLayoutDropped; return; }
 	VertexLayoutRow & r = s_vertexLayouts[s_vertexLayoutCount++];

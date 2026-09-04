@@ -84,6 +84,7 @@ public:
 		SCREEN_QUAD_PIXEL_TEXTURE,		///<texture * vertex diffuse, in colour and alpha
 		SCREEN_QUAD_PIXEL_TEXTURE_RGB,	///<texture * diffuse in colour, diffuse alpha alone
 		SCREEN_QUAD_PIXEL_GREY,			///<the luma of the texture; diffuse alpha alone
+		SCREEN_QUAD_PIXEL_DIFFUSE,		///<flat vertex diffuse; the texture is not sampled
 	};
 	///Draw a screen-space quad over [dx,dy]..[dx+dw,dy+dh], sampling source UVs on
 	///TEXCOORD0 and a second set on TEXCOORD1.
@@ -105,7 +106,12 @@ public:
 		///of the nine had run and nothing about which. The default names the chain this
 		///was written for -- the bloom passes, the tone map, the debug visualizations --
 		///and every caller outside it passes its own.
-		const char * site = "screenQuad");
+		const char * site = "screenQuad",
+		///Whether to apply the half-pixel offset. On for anything that samples a texture,
+		///which is what the offset is for; off for a quad whose edges are geometry rather
+		///than a sampling grid, because there it moves coverage instead of aligning it.
+		///Measured: leaving it on for the player-colour overlay moved 2 pixels.
+		bool alignToTexels = true);
 	///Keep a copy of the bloom bright-pass result for DEBUG_VIS_BLOOM to draw.
 	///
 	///Called by the bloom filter immediately after its bright pass, and does nothing
