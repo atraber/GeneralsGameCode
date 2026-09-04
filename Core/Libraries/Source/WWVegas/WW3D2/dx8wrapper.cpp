@@ -3323,18 +3323,12 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 
 void DX8Wrapper::Shutdown()
 {
-	if (Gfx) {
-
-		Set_Render_Target ((GfxSurface *)nullptr);
-		Release_Device();
-	}
-
-	if (Adapter) {
-		delete Adapter;
-		Adapter=nullptr;
-	}
-
-	if (CurrentCaps)
+	// Before the device, not after it. This block used to sit below Release_Device, which
+	// deletes Gfx *and* CurrentCaps -- so the guard was false, the loop never ran, and had
+	// it run it would have called Release_Texture through a null backend. Release_Device
+	// unbinds the stages from the device but does not drop the wrapper's own references,
+	// so this is the only thing that does.
+	if (Gfx != nullptr && CurrentCaps != nullptr)
 	{
 		int max=CurrentCaps->Get_Max_Textures_Per_Pass();
 		for (int i = 0; i < max; i++)
@@ -3345,6 +3339,17 @@ void DX8Wrapper::Shutdown()
 				Textures[i] = nullptr;
 			}
 		}
+	}
+
+	if (Gfx) {
+
+		Set_Render_Target ((GfxSurface *)nullptr);
+		Release_Device();
+	}
+
+	if (Adapter) {
+		delete Adapter;
+		Adapter=nullptr;
 	}
 
 	_RenderDeviceNameTable.Clear();		 // note - Delete_All() resizes the vector, causing a reallocation.  Clear is better. jba.

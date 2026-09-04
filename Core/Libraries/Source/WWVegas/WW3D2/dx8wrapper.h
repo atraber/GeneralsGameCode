@@ -2342,14 +2342,21 @@ WWINLINE GfxIndexBuffer* DX8Wrapper::Create_DX8_Index_Buffer(unsigned index_coun
 	return (GfxIndexBuffer*)Gfx->Create_Index_Buffer(index_count, usage);
 }
 
+// The two releases below guard on Gfx the way the rest of the release family does,
+// rather than going through GFXCALL. GFXCALL is for the render path, where a device must
+// exist and asserting is the right answer; a *release* legitimately outlives the device.
+// GameEngine's subsystem shutdown destroys its clients after DX8Wrapper::Shutdown has
+// already deleted the backend -- ~W3DSnowManager is the one that reaches here -- and the
+// buffer went with the device. That was the EXCEPTION_ACCESS_VIOLATION at the end of
+// every run, under both backends, at the same address: a virtual call through a null Gfx.
 WWINLINE void DX8Wrapper::Release_DX8_Vertex_Buffer(GfxVertexBuffer* buffer)
 {
-	GFXCALL(Release_Vertex_Buffer((GfxVertexBuffer*)buffer));
+	if (Gfx != nullptr) Gfx->Release_Vertex_Buffer((GfxVertexBuffer*)buffer);
 }
 
 WWINLINE void DX8Wrapper::Release_DX8_Index_Buffer(GfxIndexBuffer* buffer)
 {
-	GFXCALL(Release_Index_Buffer((GfxIndexBuffer*)buffer));
+	if (Gfx != nullptr) Gfx->Release_Index_Buffer((GfxIndexBuffer*)buffer);
 }
 
 WWINLINE bool DX8Wrapper::Map_DX8_Vertex_Buffer(GfxVertexBuffer* buffer,
