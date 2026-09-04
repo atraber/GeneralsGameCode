@@ -90,6 +90,14 @@ void INI::parseWaterTransparencyDefinition( INI *ini )
 {
 	if (TheWaterTransparency == nullptr) {
 		TheWaterTransparency = newInstance(WaterTransparencySetting);
+	} else if (ini->isPatchLoad()) {
+		// A patch edits the settings already here, in place, and makes no new override --
+		// the same gap the Weather block had, in the same shape. Falling through leaves
+		// waterTrans pointing at the final override for initFromINI to write over.
+		//
+		// AdditiveBlending is the reason this matters beyond tidiness: it is what decides
+		// whether the water takes the programmable path or the legacy direct-device one,
+		// and the legacy path was otherwise reachable only by editing W3DWater.cpp.
 	} else if (ini->getLoadType() == INI_LOAD_CREATE_OVERRIDES) {
 		WaterTransparencySetting* wt = (WaterTransparencySetting*) (TheWaterTransparency.getNonOverloadedPointer());
 		WaterTransparencySetting* wtOverride = newInstance(WaterTransparencySetting);
