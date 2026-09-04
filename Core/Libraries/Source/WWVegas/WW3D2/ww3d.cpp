@@ -119,6 +119,7 @@
 #include "static_sort_list.h"
 #include "shdlib.h"
 #include "framgrab.h"
+#include "gfxdevice.h"
 #include "Lib/BaseType.h"
 #include <stdlib.h>
 
@@ -2151,6 +2152,16 @@ void WW3D::Enable_Sorting(bool onoff)
 	// Have to invalidate mesh rendering system because
 	// meshes are put into different fvfs depending on their sort state
 	TheDX8MeshRenderer.Invalidate();
+}
+
+bool WW3D::Is_Screen_UV_Biased()
+{
+	// The flag is the caller's request -- "I am drawing 2D pixel work and I want it to
+	// line up with the texel grid" -- and it is still true under every backend. Whether
+	// lining up means moving the geometry half a pixel is the API's answer, not the
+	// caller's: D3D9 samples a texel at its corner and needs the shift, D3D10 and later
+	// sample at the centre and are made wrong by it. See Gfx_Samples_At_Texel_Corner.
+	return IsScreenUVBiased && Gfx_Samples_At_Texel_Corner();
 }
 
 void WW3D::Override_Current_Static_Sort_Lists(StaticSortListClass * sort_list)

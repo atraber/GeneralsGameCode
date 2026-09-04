@@ -434,6 +434,26 @@ GfxAdapterClass * Gfx_Create_Adapter();
 GfxBackendKind Gfx_Active_Backend();
 
 /*
+** Where the API puts a texel's sample point.
+**
+** D3D9 samples a texel at its top-left CORNER, so screen-space geometry drawn on exact
+** pixel boundaries reads every texel half a texel off, and 2D work compensates by moving
+** the geometry half a pixel back. Direct3D 10 moved the sample point to the texel CENTRE,
+** and there the compensation is itself the error: the font atlas is point sampled
+** (FILTER_TYPE_NONE on min, mag and mip -- render2dsentence.cpp), so half a pixel rounds
+** to a whole texel and every glyph picks up a column of its neighbour. That is what the
+** top-left clock reading "22[30] |20:36:2|6" was, and it is not texture corruption.
+**
+** Two readers, and they are the whole family: WW3D::Is_Screen_UV_Biased, which the 2D
+** vertex path asks per quad and per glyph, and W3DShaderManager::drawScreenQuad, whose
+** half-pixel Phase 4.0 collapsed out of twelve callers into one line for exactly this.
+**
+** A property of the API and not of a device, which is why it is answerable here, before
+** a device exists, and why a third backend answers it in one place.
+*/
+bool Gfx_Samples_At_Texel_Corner();
+
+/*
 ** What a query asks the GPU.
 **
 ** Only the timestamp family, because that is all the engine asks. The three spell

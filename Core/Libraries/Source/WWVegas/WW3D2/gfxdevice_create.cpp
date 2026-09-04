@@ -30,8 +30,12 @@
 // Why an environment variable and not an Options.ini key: the replay harness already sets
 // environment variables, so a measured run needs nothing new to select a backend -- and a
 // setting the player can reach from a menu is a promise this phase is not ready to make.
-// D3D9 is the default and stays the default; only the exact string "d3d11" selects the
-// other one, so a typo falls back to the backend that works rather than to a black screen.
+//
+// D3D11 is the default as of Phase 6. Only the exact string "d3d9" selects the old
+// backend, which is now what a verification run has to ask for by name: every recipe in
+// the notes written before this says "with no W3D_BACKEND set" and means the opposite of
+// what it meant when it was written. D3D9 remains the reference the frame is measured
+// against and is still verified at zero differing pixels.
 
 #include "gfxdevice.h"
 #include "gfxdevice_d3d9.h"
@@ -49,9 +53,9 @@ namespace
 	GfxBackendKind Read_Requested_Backend()
 	{
 		const char * requested = getenv("W3D_BACKEND");
-		if (requested != nullptr && _stricmp(requested, "d3d11") == 0)
-			return GFX_BACKEND_D3D11;
-		return GFX_BACKEND_D3D9;
+		if (requested != nullptr && _stricmp(requested, "d3d9") == 0)
+			return GFX_BACKEND_D3D9;
+		return GFX_BACKEND_D3D11;
 	}
 }
 
@@ -59,6 +63,14 @@ GfxBackendKind Gfx_Active_Backend()
 {
 	static const GfxBackendKind kind = Read_Requested_Backend();
 	return kind;
+}
+
+bool Gfx_Samples_At_Texel_Corner()
+{
+	// D3D9 samples at the texel corner; every API after it samples at the centre. See the
+	// comment on the declaration in gfxdevice.h, which is where the half-pixel rule and
+	// its two readers are written down.
+	return Gfx_Active_Backend() == GFX_BACKEND_D3D9;
 }
 
 GfxAdapterClass * Gfx_Create_Adapter()

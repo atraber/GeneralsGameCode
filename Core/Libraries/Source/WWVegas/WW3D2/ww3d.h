@@ -245,7 +245,11 @@ public:
 	static bool					Is_Sorting_Enabled()					{ return IsSortingEnabled; }
 
 	static void					Set_Screen_UV_Bias( bool onoff )			{ IsScreenUVBiased = onoff; }
-	static bool					Is_Screen_UV_Biased()				{ return IsScreenUVBiased; }
+	// Whether 2D screen geometry should be shifted half a pixel. The caller's request is
+	// only half the answer -- the shift compensates for D3D9's texel-corner sampling and
+	// is an error under an API that samples at the texel centre -- so this is out of line
+	// and asks Gfx_Samples_At_Texel_Corner for the other half. See gfxdevice.h.
+	static bool					Is_Screen_UV_Biased();
 
 	static void					Set_Collision_Box_Display_Mask(int mask);
 	static int					Get_Collision_Box_Display_Mask();

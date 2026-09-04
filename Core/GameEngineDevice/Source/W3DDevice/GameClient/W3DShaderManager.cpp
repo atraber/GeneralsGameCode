@@ -363,13 +363,16 @@ HRESULT W3DShaderManager::drawScreenQuad(
 	const char * site,
 	bool alignToTexels)
 {
-	// The half-pixel offset, in the one place it now exists.
+	// The half-pixel offset, in the one place it exists -- and now asking the backend
+	// whether it is wanted at all.
 	//
 	// Under D3D9 it is correct and removing it is a visible regression: D3D9 samples a
 	// texel at its top-left corner rather than its centre, so a screen-space quad drawn on
 	// exact pixel boundaries reads each texel half a texel off and the whole post-process
-	// chain blurs. D3D10 changed the rule, so a D3D11 backend wants this gone -- and
-	// because it is here rather than in twelve callers, removing it there is one line.
+	// chain blurs. D3D10 changed the rule. Phase 4.0 collapsed twelve callers into this
+	// line so that the change would be one line, and this is it: measured on
+	// civ_buildings, dropping it under D3D11 moved 216141 pixels of the post-process chain
+	// towards the D3D9 frame rather than away from it.
 	//
 	// It is a *sampling* alignment, which is why alignToTexels exists rather than the
 	// offset being unconditional. A quad that samples nothing has no sampling grid to line
@@ -377,7 +380,7 @@ HRESULT W3DShaderManager::drawScreenQuad(
 	// on -- for a full-screen overlay that is a column of coverage, not a sharper image.
 	// Measured on the player-colour overlay, which never had the offset: applying it moved
 	// two pixels at (1102,82), reproducibly, against a same-binary control of nothing.
-	const float half = alignToTexels ? 0.5f : 0.0f;
+	const float half = (alignToTexels && Gfx_Samples_At_Texel_Corner()) ? 0.5f : 0.0f;
 	const float ox = dx - half, oy = dy - half;
 	BloomVtx v[4];
 	v[0].x = ox + dw; v[0].y = oy + dh; v[0].z = 0.0f; v[0].u0 = sU1; v[0].v0 = sV1; v[0].u1 = bU1; v[0].v1 = bV1;
