@@ -2963,6 +2963,11 @@ GfxTexture * GfxDeviceD3D11::Create_Texture(unsigned width, unsigned height, uns
 	ID3D11Texture2D * texture = nullptr;
 	HRESULT hr = m_impl->device->CreateTexture2D(&desc, nullptr, &texture);
 	if (FAILED(hr) && (desc.MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS) != 0) {
+		// Say which texture lost its mip flags and what the device said, because
+		// "the driver refused" is a guess until an HRESULT says so.
+		WWDEBUG_SAY(("D3D11: CreateTexture2D refused %ux%u %u-level DXGI %d with "
+			"RENDER_TARGET|GENERATE_MIPS (hr 0x%08X); retrying without them.",
+			width, height, levels, (int)dxgi, (unsigned)hr));
 		desc.MiscFlags &= ~D3D11_RESOURCE_MISC_GENERATE_MIPS;
 		desc.BindFlags &= ~D3D11_BIND_RENDER_TARGET;
 		hr = m_impl->device->CreateTexture2D(&desc, nullptr, &texture);
@@ -3019,10 +3024,28 @@ GfxTexture * GfxDeviceD3D11::Create_Cube_Texture(unsigned edge_length, unsigned 
 		desc.Usage = D3D11_USAGE_DEFAULT;
 		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 		desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
+		// The same two flags Create_Texture asks for, and for the same reason. This is
+		// the one cube texture the engine builds a face at a time and then asks to have
+		// filtered down -- the environment map, which W3DShaderManager bakes on the CPU
+		// at 256 and mips because a reflection vector can sweep a whole face across one
+		// pixel. Without them GenerateMips is refused and the lower mips stay empty.
+		if (levels > 1 && Can_Generate_Mips(dxgi)) {
+			desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
+			desc.MiscFlags |= D3D11_RESOURCE_MISC_GENERATE_MIPS;
+		}
 	}
 
 	ID3D11Texture2D * texture = nullptr;
-	if (FAILED(m_impl->device->CreateTexture2D(&desc, nullptr, &texture))) return nullptr;
+	HRESULT hr = m_impl->device->CreateTexture2D(&desc, nullptr, &texture);
+	if (FAILED(hr) && (desc.MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS) != 0) {
+		WWDEBUG_SAY(("D3D11: CreateTexture2D refused a %u cube, %u levels, DXGI %d with "
+			"RENDER_TARGET|GENERATE_MIPS (hr 0x%08X); retrying without them.",
+			edge_length, levels, (int)dxgi, (unsigned)hr));
+		desc.MiscFlags &= ~D3D11_RESOURCE_MISC_GENERATE_MIPS;
+		desc.BindFlags &= ~D3D11_BIND_RENDER_TARGET;
+		hr = m_impl->device->CreateTexture2D(&desc, nullptr, &texture);
+	}
+	if (FAILED(hr)) return nullptr;
 
 	D3D11Texture * t = New_Texture(levels, 6);
 	t->resource = texture;
@@ -3034,6 +3057,7 @@ GfxTexture * GfxDeviceD3D11::Create_Cube_Texture(unsigned edge_length, unsigned 
 	t->usage = usage;
 	t->cube = true;
 	t->mappable = staging;
+	t->can_generate_mips = (desc.MiscFlags & D3D11_RESOURCE_MISC_GENERATE_MIPS) != 0;
 
 	if (!staging) {
 		D3D11_SHADER_RESOURCE_VIEW_DESC srv;
@@ -3953,9 +3977,13 @@ bool GfxDeviceD3D11::Generate_Mips(GfxTexture * texture, unsigned base_level)
 		// D3D11 needs the flag at creation and it cannot be added afterwards. Asking
 		// anyway is not harmless: the call is refused and the mip chain below the base
 		// level keeps whatever it was created with, which for an atlas is nothing.
-		WWDEBUG_SAY(("D3D11: Generate_Mips on a %ux%u texture created without "
-			"D3D11_RESOURCE_MISC_GENERATE_MIPS -- its lower mips stay empty.",
-			t->width, t->height));
+		// Name the format too. Which two textures these are is not answerable from the
+		// size alone, and the format is also the reason: Can_Generate_Mips only admits
+		// the three formats D3D11 will let be a render target here.
+		WWDEBUG_SAY(("D3D11: Generate_Mips on a %ux%u %u-level texture in WW3D format %d "
+			"(DXGI %d), created without D3D11_RESOURCE_MISC_GENERATE_MIPS -- its lower "
+			"mips stay empty.",
+			t->width, t->height, t->levels, (int)t->ww, (int)t->dxgi));
 		return false;
 	}
 	(void)base_level;
