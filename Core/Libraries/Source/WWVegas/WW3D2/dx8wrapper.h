@@ -917,7 +917,8 @@ public:
 	// sampleColour / sampleAlpha say whether the combine reads the bound texture, matching
 	// the stage-0 COLORARG/ALPHAARG the caller would otherwise have written. Both default
 	// off, which is a flat vertex-diffuse quad.
-	static bool Bind_Screen_Space_Shader(bool sampleColour = false, bool sampleAlpha = false);
+	static bool Bind_Screen_Space_Shader(bool sampleColour = false, bool sampleAlpha = false,
+										 bool desaturate = false);
 
 	// The same pair with a transform the caller supplies, for direct-device drawers whose
 	// geometry is in world space rather than screen space (the shadow decals, the projected
@@ -930,7 +931,14 @@ public:
 	// Matrix4x4: that is column-major, so the conversion is a transpose, and these values
 	// go straight out as vertex-shader constants where a transpose does not draw the
 	// geometry wrong, it draws nothing at all.
-	static bool Bind_Ui_Shader_Direct(const float * wvp, bool sampleColour, bool sampleAlpha);
+	//
+	// desaturate takes ui_ps's greyscale path: the luma of the texture, with the vertex
+	// diffuse not reaching the colour at all. That is not a new effect -- it is the
+	// recovered meaning of the two-stage MULTIPLYADD/DOTPRODUCT3 combine against
+	// TFACTOR 0x80A5CA8E that the black-and-white filter and the disabled interface
+	// buttons both wrote, and the weights in the shader were derived from that constant.
+	static bool Bind_Ui_Shader_Direct(const float * wvp, bool sampleColour, bool sampleAlpha,
+									  bool desaturate = false);
 	// As above, but concatenating the caller's world matrix with the view and projection the
 	// device currently holds -- which for these callers is the pair Apply_Render_State_Changes
 	// just put there.

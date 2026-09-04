@@ -75,12 +75,37 @@ public:
 	///Set stage to linear filtering with clamped addressing -- what every screen-space
 	///quad wants, and what none of them should be re-deriving for itself.
 	static void setLinearClampSampler(DWORD stage);
+	///What the quad's pixel side should be. Most callers bring their own pixel shader;
+	///the ones that were relying on the fixed-function texture stages instead do not, and
+	///for them the interface pixel shader expresses the same combine.
+	enum ScreenQuadPixel CPP_11(: Int)
+	{
+		SCREEN_QUAD_PIXEL_CALLER = 0,	///<the caller bound a pixel shader; leave it alone
+		SCREEN_QUAD_PIXEL_TEXTURE,		///<texture * vertex diffuse, in colour and alpha
+		SCREEN_QUAD_PIXEL_TEXTURE_RGB,	///<texture * diffuse in colour, diffuse alpha alone
+		SCREEN_QUAD_PIXEL_GREY,			///<the luma of the texture; diffuse alpha alone
+	};
 	///Draw a screen-space quad over [dx,dy]..[dx+dw,dy+dh], sampling source UVs on
-	///TEXCOORD0 and a second set on TEXCOORD1. The caller binds its own pixel shader.
+	///TEXCOORD0 and a second set on TEXCOORD1.
+	///
+	///The one screen-space quad builder. Every subsystem that puts a rectangle over the
+	///frame comes through here: the bloom chain, the tone map, the screen filters, the
+	///smudge, the scene overlay, the debug visualizations. It owns the vertex layout, the
+	///half-pixel offset, the fill mode and the choice of shader, none of which a caller
+	///should be re-deriving -- twelve of them were, out of four vertex structs, and nobody
+	///could say which had been converted off D3DFVF_XYZRHW and which had not.
 	static HRESULT drawScreenQuad(
 		float dx, float dy, float dw, float dh,
 		float sU0, float sV0, float sU1, float sV1,
-		float bU0, float bV0, float bU1, float bV1);
+		float bU0, float bV0, float bU1, float bV1,
+		DWORD diffuse = 0xffffffff,
+		ScreenQuadPixel pixel = SCREEN_QUAD_PIXEL_CALLER,
+		///The name this draw reports itself under. One builder must not mean one label:
+		///nine sites in this file shared "screenFilter" and the census could say that some
+		///of the nine had run and nothing about which. The default names the chain this
+		///was written for -- the bloom passes, the tone map, the debug visualizations --
+		///and every caller outside it passes its own.
+		const char * site = "screenQuad");
 	///Keep a copy of the bloom bright-pass result for DEBUG_VIS_BLOOM to draw.
 	///
 	///Called by the bloom filter immediately after its bright pass, and does nothing

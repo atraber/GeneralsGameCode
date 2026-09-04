@@ -2997,7 +2997,8 @@ void DX8Wrapper::Force_Fixed_Function_Pipeline()
 ** Returns false if the shaders are unavailable, in which case the caller must keep its
 ** fixed-function path -- so drawers can be moved across one at a time.
 */
-bool DX8Wrapper::Bind_Ui_Shader_Direct(const float * wvp, bool sampleColour, bool sampleAlpha)
+bool DX8Wrapper::Bind_Ui_Shader_Direct(const float * wvp, bool sampleColour, bool sampleAlpha,
+									   bool desaturate)
 {
 	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
 	if (wvp == nullptr) return false;
@@ -3006,9 +3007,11 @@ bool DX8Wrapper::Bind_Ui_Shader_Direct(const float * wvp, bool sampleColour, boo
 	Set_Pixel_Shader(m_dwUiPS);
 	Set_Vertex_Shader_Constant(0, wvp, 4);
 
-	// (samples colour, desaturate, samples alpha, unused). Never desaturating: that path
-	// exists for disabled interface buttons, and none of these callers is one.
-	const D3DXVECTOR4 uiCtl(sampleColour ? 1.0f : 0.0f, 0.0f, sampleAlpha ? 1.0f : 0.0f, 0.0f);
+	// (samples colour, desaturate, samples alpha, unused). The desaturate path exists for
+	// disabled interface buttons and for the black-and-white screen filter, which asked
+	// two texture stages for the same thing.
+	const D3DXVECTOR4 uiCtl(sampleColour ? 1.0f : 0.0f, desaturate ? 1.0f : 0.0f,
+							sampleAlpha ? 1.0f : 0.0f, 0.0f);
 	Set_Pixel_Shader_Constant(0, &uiCtl, 1);
 
 	// Say what the fixed-function baseline is, or the next caller will get this shader
@@ -3142,14 +3145,14 @@ bool DX8Wrapper::Bind_Screen_Quad_Shader()
 	return true;
 }
 
-bool DX8Wrapper::Bind_Screen_Space_Shader(bool sampleColour, bool sampleAlpha)
+bool DX8Wrapper::Bind_Screen_Space_Shader(bool sampleColour, bool sampleAlpha, bool desaturate)
 {
 	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
 
 	float m[16];
 	if (!Build_Pixels_To_Clip(m)) return false;
 
-	return Bind_Ui_Shader_Direct(m, sampleColour, sampleAlpha);
+	return Bind_Ui_Shader_Direct(m, sampleColour, sampleAlpha, desaturate);
 }
 
 bool								_DX8SingleThreaded										= false;

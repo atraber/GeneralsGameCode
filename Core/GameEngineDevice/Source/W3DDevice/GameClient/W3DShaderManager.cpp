@@ -137,6 +137,29 @@ unsigned W3DShaderManager::m_shadowSavedStates[W3DShaderManager::NUM_SHADOW_SAVE
 /*=========      Screen Shaders	=============================================================*/
 /*===========================================================================================*/
 
+// Every screen filter draws the same rectangle: the tactical view, sampling the
+// render-to-texture surface at the view's own position within the whole display. The five
+// of them had five copies of it -- five vertex structs, five half-pixel offsets, five
+// D3DFVF_XYZRHW declarations -- differing only in the diffuse colour, the pixel side and
+// whether a second coordinate set meant anything. Those are the arguments; the rest is one
+// call to the one screen-space quad builder.
+//
+// Defined here rather than as another member of W3DShaderManager because it is about what
+// a *filter* draws, and the filters are all in this file.
+static HRESULT drawFilterQuad(Int xpos, Int ypos, Int width, Int height,
+	Real bU0, Real bV0, Real bU1, Real bV1,
+	DWORD diffuse, W3DShaderManager::ScreenQuadPixel pixel, const char * site)
+{
+	const Real du = 1.0f / (Real)TheDisplay->getWidth();
+	const Real dv = 1.0f / (Real)TheDisplay->getHeight();
+	return W3DShaderManager::drawScreenQuad(
+		(float)xpos, (float)ypos, (float)width, (float)height,
+		(float)(xpos * du), (float)(ypos * dv),
+		(float)((xpos + width) * du), (float)((ypos + height) * dv),
+		(float)bU0, (float)bV0, (float)bU1, (float)bV1,
+		diffuse, pixel, site);
+}
+
 class ScreenDefaultFilter : public W3DFilterInterface
 {
 public:
@@ -208,13 +231,6 @@ Bool ScreenDefaultFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
 	if (!set(mode)) return false;
 
 
-	struct _TRANS_LIT_TEX_VERTEX {
-		D3DXVECTOR4 p;
-		DWORD color;   // diffuse color
-		float	u;
-		float	v;
-	} v[4];
-
 	Int xpos, ypos, width, height;
 
 	DX8Wrapper::Set_DX8_Texture(0,tex);	//previously rendered frame inside this texture
@@ -222,29 +238,12 @@ Bool ScreenDefaultFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool
 	width=TheTacticalView->getWidth();
 	height=TheTacticalView->getHeight();
 
-	//bottom right
-	v[0].p = D3DXVECTOR4( xpos+width-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[0].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[0].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top right
-	v[1].p = D3DXVECTOR4( xpos+width-0.5f, ypos-0.5f, 0.0f, 1.0f );
-	v[1].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[1].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	//bottom left
-	v[2].p = D3DXVECTOR4(  xpos-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[2].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[2].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top left
-	v[3].p = D3DXVECTOR4(  xpos-0.5f,  ypos-0.5f, 0.0f, 1.0f );
-	v[3].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[3].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	v[0].color = 0xffffffff;
-	v[1].color = 0xffffffff;
-	v[2].color = 0xffffffff;
-	v[3].color = 0xffffffff;
-
-	//draw polygons like this is very inefficient but for only 2 triangles, it's
-	//not worth bothering with index/vertex buffers.
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
-
-	DX8Wrapper::Prepare_Direct_Draw("filterDefault");
-	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	// This filter only puts the rendered frame back on the screen, so its combine is the
+	// texture and nothing else -- which is ui_ps with both samples on and a white diffuse.
+	// It had no pixel shader at all and a D3DFVF_XYZRHW position, so it was fixed function
+	// on both halves; the builder makes it neither.
+	drawFilterQuad(xpos, ypos, width, height, 0.0f, 0.0f, 0.0f, 0.0f,
+		0xffffffff, W3DShaderManager::SCREEN_QUAD_PIXEL_TEXTURE, "filterDefault");
 
 	reset();
 	return true;
@@ -341,22 +340,42 @@ void W3DShaderManager::setLinearClampSampler(DWORD stage)
 // Draw a screen-space quad over [dx,dy]..[dx+dw,dy+dh] sampling source UVs
 // (sU0..sU1, sV0..sV1) on TEXCOORD0 and a second set on TEXCOORD1.
 //
-// Written for the bloom chain and now shared with the debug visualizations, which is
-// why it is a member rather than a file static: two subsystems putting a rectangle on
-// screen should not each carry their own copy of the half-texel offset and the vertex
-// layout that goes with it.
+// The one screen-space quad in the game. Written for the bloom chain, then shared with the
+// debug visualizations, and now with every other subsystem that puts a rectangle over the
+// frame: the screen filters, the viewport tint, the smudge, the scene overlay. There were
+// twelve of these, built by hand out of four vertex structs, with nine copies of the
+// half-pixel offset in this file alone -- which is why nobody could say which of them had
+// been moved off D3DFVF_XYZRHW and which had not.
+//
+// What it owns, and what therefore has exactly one definition:
+//
+//   * the vertex layout, and the untransformed position that replaced D3DFVF_XYZRHW;
+//   * the half-pixel offset (see below -- it stays, and D3D11 is where it goes);
+//   * D3DRS_FILLMODE, which is sticky and which the wireframe debug view otherwise leaks
+//     into the whole post-process chain;
+//   * which shaders are bound.
 HRESULT W3DShaderManager::drawScreenQuad(
 	float dx, float dy, float dw, float dh,
 	float sU0, float sV0, float sU1, float sV1,
-	float bU0, float bV0, float bU1, float bV1)
+	float bU0, float bV0, float bU1, float bV1,
+	DWORD diffuse,
+	ScreenQuadPixel pixel,
+	const char * site)
 {
-	const float ox = dx - 0.5f, oy = dy - 0.5f;  // -0.5 texel: align pixels to texels
+	// The half-pixel offset, in the one place it now exists.
+	//
+	// Under D3D9 it is correct and removing it is a visible regression: D3D9 samples a
+	// texel at its top-left corner rather than its centre, so a screen-space quad drawn on
+	// exact pixel boundaries reads each texel half a texel off and the whole post-process
+	// chain blurs. D3D10 changed the rule, so a D3D11 backend wants this gone -- and
+	// because it is here rather than in twelve callers, removing it there is one line.
+	const float ox = dx - 0.5f, oy = dy - 0.5f;
 	BloomVtx v[4];
 	v[0].x = ox + dw; v[0].y = oy + dh; v[0].z = 0.0f; v[0].u0 = sU1; v[0].v0 = sV1; v[0].u1 = bU1; v[0].v1 = bV1;
 	v[1].x = ox + dw; v[1].y = oy;      v[1].z = 0.0f; v[1].u0 = sU1; v[1].v0 = sV0; v[1].u1 = bU1; v[1].v1 = bV0;
 	v[2].x = ox;      v[2].y = oy + dh; v[2].z = 0.0f; v[2].u0 = sU0; v[2].v0 = sV1; v[2].u1 = bU0; v[2].v1 = bV1;
 	v[3].x = ox;      v[3].y = oy;      v[3].z = 0.0f; v[3].u0 = sU0; v[3].v0 = sV0; v[3].u1 = bU0; v[3].v1 = bV0;
-	v[0].color = v[1].color = v[2].color = v[3].color = 0xffffffff;
+	v[0].color = v[1].color = v[2].color = v[3].color = diffuse;
 	// Solid, always. D3DRS_FILLMODE is sticky device state that nothing else here resets,
 	// so DEBUG_VIS_WIREFRAME -- which sets it per scene draw -- otherwise leaks into the
 	// whole post-process chain, and a wireframe composite quad draws two diagonal lines
@@ -366,9 +385,26 @@ HRESULT W3DShaderManager::drawScreenQuad(
 	// FVF first: handed one, Set_Vertex_Shader clears the bound shader, so the real one has
 	// to come after. The FVF stays on as the declaration the shader reads through.
 	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2);
-	if (!DX8Wrapper::Bind_Screen_Quad_Shader())
-		return E_FAIL;   // no vertex shader means no post-process; the caller skips the pass
-	DX8Wrapper::Prepare_Direct_Draw("screenQuad");
+	// Two ways to be programmable on both halves, and which one a caller wants is decided
+	// by whether it brought a pixel shader.
+	//
+	// SCREEN_QUAD_PIXEL_CALLER binds the vertex side only, leaving the caller's own pixel
+	// shader standing -- the bloom passes, the tone map, the black-and-white filter, the
+	// cross-fade. The others were asking the fixed-function texture stages for a stage-0
+	// combine of texture against vertex diffuse, which is exactly what ui_ps computes, so
+	// they get the interface pair instead. ui_vs declares a subset of this FVF -- position,
+	// diffuse, one coordinate set out of two -- which D3D9 allows and Render2DClass has
+	// always relied on.
+	if (pixel == SCREEN_QUAD_PIXEL_CALLER) {
+		if (!DX8Wrapper::Bind_Screen_Quad_Shader())
+			return E_FAIL;   // no vertex shader means no post-process; the caller skips the pass
+	} else {
+		if (!DX8Wrapper::Bind_Screen_Space_Shader(true,
+				pixel == SCREEN_QUAD_PIXEL_TEXTURE,
+				pixel == SCREEN_QUAD_PIXEL_GREY))
+			return E_FAIL;
+	}
+	DX8Wrapper::Prepare_Direct_Draw(site);
 	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BloomVtx));
 	return S_OK;
 }
@@ -674,13 +710,6 @@ Bool ScreenBWFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doE
 	if (!set(mode)) return false;
 
 
-	struct _TRANS_LIT_TEX_VERTEX {
-		D3DXVECTOR4 p;
-		DWORD color;   // diffuse color
-		float	u;
-		float	v;
-	} v[4];
-
 	Int xpos, ypos, width, height;
 
 	DX8Wrapper::Set_DX8_Texture(0,tex);	//previously rendered frame inside this texture
@@ -688,29 +717,12 @@ Bool ScreenBWFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bool &doE
 	width=TheTacticalView->getWidth();
 	height=TheTacticalView->getHeight();
 
-	//bottom right
-	v[0].p = D3DXVECTOR4( xpos+width-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[0].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[0].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top right
-	v[1].p = D3DXVECTOR4( xpos+width-0.5f, ypos-0.5f, 0.0f, 1.0f );
-	v[1].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[1].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	//bottom left
-	v[2].p = D3DXVECTOR4(  xpos-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[2].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[2].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top left
-	v[3].p = D3DXVECTOR4(  xpos-0.5f,  ypos-0.5f, 0.0f, 1.0f );
-	v[3].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[3].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	v[0].color = 0xffffffff;
-	v[1].color = 0xffffffff;
-	v[2].color = 0xffffffff;
-	v[3].color = 0xffffffff;
-
-	//draw polygons like this is very inefficient but for only 2 triangles, it's
-	//not worth bothering with index/vertex buffers.
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
-
-	DX8Wrapper::Prepare_Direct_Draw("filterBW");
-	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	// bwfilter_ps is already bound by set(), so only the vertex side moves here: this was
+	// a pixel shader paired with a D3DFVF_XYZRHW position, which D3D9 allows and which is
+	// why the old direct-draw census reported the filter as programmable while its vertex
+	// half was not merely fixed function but skipped altogether.
+	drawFilterQuad(xpos, ypos, width, height, 0.0f, 0.0f, 0.0f, 0.0f,
+		0xffffffff, W3DShaderManager::SCREEN_QUAD_PIXEL_CALLER, "filterBW");
 
 	reset();
 	return true;
@@ -865,67 +877,36 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 	if (!set(mode)) return false;
 
 
-	struct _TRANS_LIT_TEX_VERTEX {
-		D3DXVECTOR4 p;
-		DWORD color;   // diffuse color
-		float	u;
-		float	v;
-	} v[4];
-
 	Int xpos, ypos, width, height;
 
 	TheTacticalView->getOrigin(&xpos,&ypos);
 	width=TheTacticalView->getWidth();
 	height=TheTacticalView->getHeight();
 
-	//bottom right
-	v[0].p = D3DXVECTOR4( xpos+width-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[0].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[0].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top right
-	v[1].p = D3DXVECTOR4( xpos+width-0.5f, ypos-0.5f, 0.0f, 1.0f );
-	v[1].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[1].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	//bottom left
-	v[2].p = D3DXVECTOR4(  xpos-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[2].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[2].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top left
-	v[3].p = D3DXVECTOR4(  xpos-0.5f,  ypos-0.5f, 0.0f, 1.0f );
-	v[3].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[3].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-
 	DWORD currentFade=(((Int)((1.0f-m_curFadeValue) * 255.0f))<<24) | 0x00ffffff;	//store alpha value
-
-	v[0].color = currentFade;
-	v[1].color = currentFade;
-	v[2].color = currentFade;
-	v[3].color = currentFade;
-
-	//draw polygons like this is very inefficient but for only 2 triangles, it's
-	//not worth bothering with index/vertex buffers.
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
-
-	//Draw B&W version first
-	if (DX8Wrapper::Get_Current_Caps()->Support_Dot3())
-	{	//Override W3D states with customizations for grayscale
-		DX8Wrapper::Set_DX8_Render_State(D3DRS_TEXTUREFACTOR, 0x80A5CA8E);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG0, D3DTA_TFACTOR | D3DTA_ALPHAREPLICATE);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG2, D3DTA_TFACTOR | D3DTA_ALPHAREPLICATE);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLOROP, D3DTOP_MULTIPLYADD);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLORARG1, D3DTA_CURRENT);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLORARG2, D3DTA_TFACTOR);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLOROP, D3DTOP_DOTPRODUCT3);
-	}
-	else
-	{	//doesn't have DOT3 blend mode so fake it another way.
-		DX8Wrapper::Set_DX8_Render_State(D3DRS_TEXTUREFACTOR, 0x60606060);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLORARG2, D3DTA_TFACTOR);
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-	}
 
 	DX8Wrapper::Set_DX8_Texture(0,tex);	//previously rendered frame inside this texture
 
-	DX8Wrapper::Prepare_Direct_Draw("filterBWDot3Gray");
-	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	// Both passes moved onto ui_ps, and the grey one is where the two meet.
+	//
+	// This class is the pre-pixel-shader fallback: ScreenBWFilter installs itself over it
+	// whenever the device reports ps_1_1 or better, so on anything that can run this build
+	// -- which is every shader in the renderer, at Shader Model 3 -- it is unreachable. It
+	// is converted rather than left alone because leaving it would leave the last two
+	// D3DFVF_XYZRHW quads and the last two DrawPrimitiveUP calls in the game standing in
+	// code nothing can execute, which is the worst of both. Converting it does make the
+	// class self-contradictory -- it now needs the pixel shader whose absence is its whole
+	// reason for existing -- and deleting it is the change this obviously wants next.
+	//
+	// The grey pass wanted the luma of the frame, spelled as MULTIPLYADD into DOTPRODUCT3
+	// against TFACTOR 0x80A5CA8E. ui_ps's desaturate path is that combine read back: its
+	// LUMA_WEIGHTS were derived from that exact constant, for the disabled interface
+	// buttons, which asked two texture stages for the same thing. The non-DOT3 branch
+	// below it -- MODULATE against 0x60606060, a flat dim tint rather than a desaturate --
+	// goes with the stages; it was the fallback's fallback, for hardware two generations
+	// below anything that reaches this line.
+	drawFilterQuad(xpos, ypos, width, height, 0.0f, 0.0f, 0.0f, 0.0f,
+		currentFade, W3DShaderManager::SCREEN_QUAD_PIXEL_GREY, "filterBWDot3Gray");
 
 	//Draw normal view blended by current fade level
 	ShaderClass::Invalidate();	//reset DOT3 blend from above.
@@ -933,11 +914,12 @@ Bool ScreenBWFilterDOT3::postRender(FilterModes mode, Coord2D &scrollDelta,Bool 
 	shader.Set_Depth_Compare(ShaderClass::PASS_ALWAYS);
 	DX8Wrapper::Set_Shader(shader);
 	DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
-	//replace texture alpha with vertex alpha
-	DX8Wrapper::Set_DX8_Texture_Stage_State( 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2);
 
-	DX8Wrapper::Prepare_Direct_Draw("filterBWDot3Blend");
-	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	// The blend pass replaced the texture's alpha with the vertex alpha (D3DTSS_ALPHAOP
+	// SELECTARG2) over _PresetAlphaShader's texture-times-diffuse colour, which is the
+	// colour sample on and the alpha sample off.
+	drawFilterQuad(xpos, ypos, width, height, 0.0f, 0.0f, 0.0f, 0.0f,
+		currentFade, W3DShaderManager::SCREEN_QUAD_PIXEL_TEXTURE_RGB, "filterBWDot3Blend");
 
 	reset();
 	return true;
@@ -1131,15 +1113,6 @@ Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bo
 	if (!set(mode)) return false;
 
 
-	struct _TRANS_LIT_TEX_VERTEX {
-		D3DXVECTOR4 p;
-		DWORD color;   // diffuse color
-		float	u;
-		float	v;
-		float	u1;
-		float	v1;
-	} v[4];
-
 	Int xpos, ypos, width, height;
 	Real radius = 0.0f;
 
@@ -1163,39 +1136,14 @@ Bool ScreenCrossFadeFilter::postRender(FilterModes mode, Coord2D &scrollDelta,Bo
 		radius = 0.01f;
 	radius = 25.0f-radius*24.75f;
 */
-	//bottom right
-	v[0].p = D3DXVECTOR4( xpos+width-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[0].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[0].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	v[0].u1 = 0.5f+radius;	v[0].v1 = 0.5f+radius;
-	//top right
-	v[1].p = D3DXVECTOR4( xpos+width-0.5f, ypos-0.5f, 0.0f, 1.0f );
-	v[1].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[1].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	v[1].u1 = 0.5f+radius;	v[1].v1 = 0.5f-radius;
-	//bottom left
-	v[2].p = D3DXVECTOR4(  xpos-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[2].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[2].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	v[2].u1 = 0.5f-radius;	v[2].v1 = 0.5f+radius;
-	//top left
-	v[3].p = D3DXVECTOR4(  xpos-0.5f,  ypos-0.5f, 0.0f, 1.0f );
-	v[3].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[3].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	v[3].u1 = 0.5f-radius;	v[3].v1 = 0.5f-radius;
-
 	DWORD diffuse = 0xffffffff;//((Int)((m_curFadeValue) * 255.0f) << 24) | 0x00ffffff;	//store alpha value in vertex diffuse
 
-	v[0].color = diffuse;
-	v[1].color = diffuse;
-	v[2].color = diffuse;
-	v[3].color = diffuse;
-
-	//draw polygons like this is very inefficient but for only 2 triangles, it's
-	//not worth bothering with index/vertex buffers.
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX2);
-
-//		m_pDev->SetTextureStageState(0,D3DTSS_MAGFILTER,D3DTEXF_POINT);
-//		m_pDev->SetTextureStageState(0,D3DTSS_MINFILTER,D3DTEXF_POINT);
-
-	DX8Wrapper::Prepare_Direct_Draw("filterCrossFade");
-	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	// The one filter whose second coordinate set means something: the mask texture is
+	// sampled about the centre of the quad over 0.5 +/- radius, so the circle grows as
+	// radius does. The builder's second set carries it unchanged.
+	drawFilterQuad(xpos, ypos, width, height,
+		0.5f - radius, 0.5f - radius, 0.5f + radius, 0.5f + radius,
+		diffuse, W3DShaderManager::SCREEN_QUAD_PIXEL_CALLER, "filterCrossFade");
 
 	reset();
 	return true;
@@ -1307,12 +1255,6 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 
 
 	Bool continueEffect = true;
-	struct _TRANS_LIT_TEX_VERTEX {
-		D3DXVECTOR4 p;
-		DWORD color;   // diffuse color
-		float	u;
-		float	v;
-	} v[4];
 
 	Int xpos, ypos, width, height;
 
@@ -1321,22 +1263,17 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 	width=TheTacticalView->getWidth();
 	height=TheTacticalView->getHeight();
 
-	//bottom right
-	v[0].p = D3DXVECTOR4( xpos+width-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[0].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[0].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top right
-	v[1].p = D3DXVECTOR4( xpos+width-0.5f, ypos-0.5f, 0.0f, 1.0f );
-	v[1].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[1].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	//bottom left
-	v[2].p = D3DXVECTOR4(  xpos-0.5f, ypos+height-0.5f, 0.0f, 1.0f );
-	v[2].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[2].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top left
-	v[3].p = D3DXVECTOR4(  xpos-0.5f,  ypos-0.5f, 0.0f, 1.0f );
-	v[3].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[3].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	v[0].color = 0xffffffff;
-	v[1].color = 0xffffffff;
-	v[2].color = 0xffffffff;
-	v[3].color = 0xffffffff;
+	// The source rectangle, as a rectangle rather than as four vertices.
+	//
+	// This filter is the one that moves its UVs: every pass scales them about a centre to
+	// make the streak, and it used to do that by walking the four vertices. They are the
+	// corners of an axis-aligned rectangle and scaling each about the same centre keeps it
+	// one, so two pairs of scalars say the same thing and the quad itself belongs to the
+	// builder.
+	Real su0 = (Real)xpos / (Real)TheDisplay->getWidth();
+	Real sv0 = (Real)ypos / (Real)TheDisplay->getHeight();
+	Real su1 = (Real)(xpos+width) / (Real)TheDisplay->getWidth();
+	Real sv1 = (Real)(ypos+height) / (Real)TheDisplay->getHeight();
 
 
 	if (m_additive) {
@@ -1350,7 +1287,6 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 	//draw polygons like this is very inefficient but for only 2 triangles, it's
 	//not worth bothering with index/vertex buffers.
 	DX8Wrapper::Apply_Render_State_Changes();
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
 	Coord2D center;
 	center.x = 0.5f;
@@ -1405,24 +1341,23 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 			}
 		}
 	}
-	Int	 i, j;
+	Int	 j;
 	if (!pan) {
-		for (i=0; i<4; i++) {
-			Real factor = 1.0f - (m_maxCount/(Real)MAX_COUNT)*0.90f;
-			factor = sqrt(factor);
-			v[i].u = ((v[i].u-center.x)*factor) + center.x;
-			v[i].v = ((v[i].v-center.y)*factor) + center.y;
-		}
+		Real factor = 1.0f - (m_maxCount/(Real)MAX_COUNT)*0.90f;
+		factor = sqrt(factor);
+		su0 = ((su0-center.x)*factor) + center.x;  su1 = ((su1-center.x)*factor) + center.x;
+		sv0 = ((sv0-center.y)*factor) + center.y;  sv1 = ((sv1-center.y)*factor) + center.y;
 	}
-	// Through the wrapper, so the combine this draw wants is in the tracked state the
-	// routing block reads rather than only on the device. Deferred, and the
-	// Prepare_Direct_Draw below is what sends it: this draw binds an FVF rather than a
-	// vertex shader, so it is a fixed-function draw and the flush fires.
-	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAARG1, D3DTA_CURRENT);
-	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAARG2, D3DTA_TEXTURE);
-	DX8Wrapper::Set_DX8_Texture_Stage_State(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-	DX8Wrapper::Prepare_Direct_Draw("filterMotionBlurBase");
-	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+	// The combine this filter was asking the fixed-function stages for is
+	// D3DTOP_SELECTARG1 on D3DTA_CURRENT for alpha, over _PresetOpaqueShader's
+	// texture-times-diffuse for colour: the streak's fade is carried in the vertex alpha
+	// and the texture's own alpha is discarded. That is ui_ps with the colour sample on
+	// and the alpha sample off, which is what SCREEN_QUAD_PIXEL_TEXTURE_RGB asks for --
+	// so this pass loses its texture stage words as well as its D3DFVF_XYZRHW, and stops
+	// being fixed function on either half.
+	W3DShaderManager::drawScreenQuad((float)xpos, (float)ypos, (float)width, (float)height,
+		(float)su0, (float)sv0, (float)su1, (float)sv1, 0.0f, 0.0f, 0.0f, 0.0f,
+		0xffffffff, W3DShaderManager::SCREEN_QUAD_PIXEL_TEXTURE_RGB, "filterMotionBlurBase");
 	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE,true);
 
 	DX8Wrapper::Apply_Render_State_Changes();
@@ -1430,29 +1365,26 @@ Bool ScreenMotionBlurFilter::postRender(FilterModes mode, Coord2D &scrollDelta,B
 		Int limit = m_maxCount;
 		if (m_maxCount>30) limit = 30;
 		for (j=0; j<limit; j++) {
-			for (i=0; i<4; i++) {
-				Real factor = 0.99f;
-				if (m_additive) factor = 0.98f;
-				Int alpha = 0x15;
-				if (m_additive) {
-					alpha = 0x09;
-					if (m_maxCount>limit) {
-						alpha += (m_maxCount-limit)/5;
-					}
-					if (m_maxCount==MAX_COUNT) alpha += 60;
+			Real factor = 0.99f;
+			if (m_additive) factor = 0.98f;
+			Int alpha = 0x15;
+			if (m_additive) {
+				alpha = 0x09;
+				if (m_maxCount>limit) {
+					alpha += (m_maxCount-limit)/5;
 				}
-				v[i].color = (alpha<<24)|0x00ffffff; //
-				if (pan) {
-					v[i].u = ((v[i].u-center.x)*(factor+.006)) + center.x;
-					v[i].v = ((v[i].v-center.y)*factor) + center.y;
-				} else {
-					v[i].u = ((v[i].u-center.x)*factor) + center.x;
-					v[i].v = ((v[i].v-center.y)*factor) + center.y;
-				}
+				if (m_maxCount==MAX_COUNT) alpha += 60;
 			}
-			DX8Wrapper::Prepare_Direct_Draw("filterMotionBlurTrail");
-			DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_TRANS_LIT_TEX_VERTEX));
+			const DWORD diffuse = (alpha<<24)|0x00ffffff;
+			// The horizontal scale is a hair larger than the vertical one while panning,
+			// which is what smears the streak along the pan rather than about the centre.
+			const Real uFactor = pan ? (factor + 0.006f) : factor;
+			su0 = ((su0-center.x)*uFactor) + center.x;  su1 = ((su1-center.x)*uFactor) + center.x;
+			sv0 = ((sv0-center.y)*factor)  + center.y;  sv1 = ((sv1-center.y)*factor)  + center.y;
 
+			W3DShaderManager::drawScreenQuad((float)xpos, (float)ypos, (float)width, (float)height,
+				(float)su0, (float)sv0, (float)su1, (float)sv1, 0.0f, 0.0f, 0.0f, 0.0f,
+				diffuse, W3DShaderManager::SCREEN_QUAD_PIXEL_TEXTURE_RGB, "filterMotionBlurTrail");
 		}
 	}
 	m_lastFrame = TheGameLogic->getFrame();
@@ -4148,55 +4080,29 @@ Bool W3DShaderManager::filterSetup(FilterTypes filter, FilterModes mode)
 /*Draws 2 triangles covering the viewport given the current render states*/
 void W3DShaderManager::drawViewport(Int color)
 {
-
-	// Untransformed, and carrying the second coordinate set screenquad_vs declares. Both
-	// follow from replacing D3DFVF_XYZRHW: a transformed position is fixed-function only, and
-	// the shader's declaration is shared with the bloom chain, which needs two sets. This
-	// pass wants one, so the second is a copy -- eight bytes on four vertices, against
-	// keeping a second shader and a second FVF in step with this one.
-	struct _SCREEN_QUAD_VERTEX {
-		float x, y, z;
-		DWORD color;   // diffuse color
-		float	u;
-		float	v;
-		float	u1;
-		float	v1;
-	} v[4];
-
 	Int xpos, ypos, width, height;
-
 	TheTacticalView->getOrigin(&xpos,&ypos);
 	width=TheTacticalView->getWidth();
 	height=TheTacticalView->getHeight();
 
-	//bottom right
-	v[0].x = xpos+width-0.5f; v[0].y = ypos+height-0.5f; v[0].z = 0.0f;
-	v[0].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[0].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top right
-	v[1].x = xpos+width-0.5f; v[1].y = ypos-0.5f; v[1].z = 0.0f;
-	v[1].u = (Real)(xpos+width)/(Real)TheDisplay->getWidth();	v[1].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	//bottom left
-	v[2].x = xpos-0.5f; v[2].y = ypos+height-0.5f; v[2].z = 0.0f;
-	v[2].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[2].v = (Real)(ypos+height)/(Real)TheDisplay->getHeight();
-	//top left
-	v[3].x = xpos-0.5f; v[3].y = ypos-0.5f; v[3].z = 0.0f;
-	v[3].u = (Real)(xpos)/(Real)TheDisplay->getWidth();	v[3].v = (Real)(ypos)/(Real)TheDisplay->getHeight();
-	for (Int i = 0; i < 4; ++i) {
-		v[i].color = color;
-		v[i].u1 = v[i].u;
-		v[i].v1 = v[i].v;
-	}
+	// The whole of this used to be a hand-rolled copy of drawScreenQuad: the same four
+	// vertices in the same order, the same half-pixel offset, the same untransformed
+	// position and the same screenquad_vs. What it added was a diffuse colour, which the
+	// builder now takes, and a pixel side it never had -- the tint was left to the
+	// fixed-function texture stages, so this was a draw with a vertex shader and no pixel
+	// shader, which D3D11 cannot make either. ui_ps computes the same stage-0 combine.
+	//
+	// The source rectangle is the viewport expressed against the whole display, because
+	// that is the frame this samples out of the render-to-texture surface. One coordinate
+	// set is enough here, so the second is a copy.
+	const float du = 1.0f / (float)TheDisplay->getWidth();
+	const float dv = 1.0f / (float)TheDisplay->getHeight();
+	const float u0 = (float)xpos * du,            v0 = (float)ypos * dv;
+	const float u1 = (float)(xpos + width) * du,  v1 = (float)(ypos + height) * dv;
 
-	//draw polygons like this is very inefficient but for only 2 triangles, it's
-	//not worth bothering with index/vertex buffers.
-	// FVF first: handed one, Set_Vertex_Shader clears the bound shader, so the real one has
-	// to come after. The FVF stays on as the declaration the shader reads through.
-	DX8Wrapper::Set_Vertex_Shader(D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2);
-	if (!DX8Wrapper::Bind_Screen_Quad_Shader())
-		return;   // no vertex shader means this pass cannot be drawn at all
-
-	DX8Wrapper::Prepare_Direct_Draw("viewportQuad");
-	DX8Wrapper::Draw_DX8_Primitive_UP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(_SCREEN_QUAD_VERTEX));
+	drawScreenQuad((float)xpos, (float)ypos, (float)width, (float)height,
+		u0, v0, u1, v1, u0, v0, u1, v1,
+		(DWORD)color, SCREEN_QUAD_PIXEL_TEXTURE, "viewportQuad");
 }
 
 // W3DShaderManager::startRenderToTexture =======================================================
