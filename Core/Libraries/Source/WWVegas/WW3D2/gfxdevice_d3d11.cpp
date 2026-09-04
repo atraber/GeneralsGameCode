@@ -1936,10 +1936,16 @@ void GfxDeviceD3D11::Set_Texture_Stage_State(unsigned stage, unsigned state, uns
 void GfxDeviceD3D11::Set_Clip_Plane(unsigned, const float *)
 {
 	TRACE("Set_Clip_Plane");
-	// D3D11 has no fixed clip planes. The equivalent is SV_ClipDistance written by the
-	// vertex shader, which is a shader change and so is not this phase's to make. The one
-	// caller is the water reflection pass, and the visible consequence is that geometry
-	// behind the water plane is reflected rather than clipped away.
+	// D3D11 has no fixed clip planes; the equivalent is SV_ClipDistance written by the
+	// vertex shader. Nothing here needs one.
+	//
+	// The one caller anybody could name is the water reflection pass, and it does not call
+	// this: W3DWater.cpp's clip-plane lines are commented out inside a
+	// CLIP_GEOMETRY_TO_PLANE block whose #define is itself commented out, and what runs
+	// instead is the alpha-test hack written beside them. So D3D9 does not clip the
+	// reflection to the water plane either, and this backend loses nothing by absorbing a
+	// call that is never made. The counter below has read 0 in every census window of
+	// every run since the backend existed, which is the check that says so.
 	ABSORB(s_absorbed_clip_planes);
 }
 
@@ -4020,8 +4026,15 @@ namespace
 			const long dy = dy0 + y;
 			if (dy < 0 || dy >= (long)dst.height) continue;
 			// Nearest source row. A box filter would be the faithful answer to
-			// GFX_COPY_RESAMPLE and is not what this does yet; the difference shows on a
-			// downscale, and the only downscale in the engine is a font atlas.
+			// GFX_COPY_RESAMPLE, and nothing in this tree can tell the difference:
+			// GFX_COPY_RESAMPLE has exactly one producer, SurfaceClass::Stretch_Copy,
+			// and Stretch_Copy has no callers at all -- not in either game, not in the
+			// tools. GFX_COPY_HALVE has two, and neither scales anything that varies:
+			// _Create_DX8_Texture copies between two surfaces of the same size (its own
+			// comment says so), and MissingTexture::_Init halves a level every texel of
+			// which is the same constant 0x7FFF00FF. The claim this comment used to
+			// make -- that the difference shows on the font atlas -- was wrong; the font
+			// atlas is copied at 1:1 through Copy_Surface, which does not filter at all.
 			long sy = sy0 + (sh == dh ? y : (y * sh) / dh);
 			if (resample && sh != dh) sy = sy0 + (long)(((double)y + 0.5) * sh / dh);
 			if (sy < sy0) sy = sy0;
