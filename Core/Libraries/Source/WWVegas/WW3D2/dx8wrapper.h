@@ -1388,6 +1388,21 @@ public:
 	static void Debug_Register_Shader_Name(unsigned handle, const char* path);
 	static const char* Debug_Shader_Name(unsigned handle);
 	static void Debug_Report_Shader_Names();
+	// What a texture was asked for against what was actually made.
+	//
+	// D3DXCreateTexture ran D3DXCheckTextureRequirements before CreateTexture -- clamping
+	// the size to the device's limits, rounding to a power of two where the device needs
+	// one, and substituting a format it does not support -- and that adjustment is the
+	// one thing in the texture path that can change what the frame looks like. There is
+	// no D3DX11, so the check has to be written on this side of the seam; this census is
+	// what says whether the two agree, by measuring the same thing before and after.
+	//
+	// Cumulative, not windowed: textures are created at load and almost never after, so a
+	// 600-frame window would report an empty table.
+	static void Debug_Note_Texture_Made(unsigned req_w, unsigned req_h, WW3DFormat req_fmt,
+					unsigned req_levels, GfxTexture * made);
+	static void Debug_Note_Texture_Made_Other(const char * kind);
+	static void Debug_Report_Texture_Requirements();
 
 #endif
 	// Programmable road path. Roads are decals on the terrain and want the terrain's

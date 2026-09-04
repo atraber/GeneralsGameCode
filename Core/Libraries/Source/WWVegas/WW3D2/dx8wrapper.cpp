@@ -2032,6 +2032,112 @@ void DX8Wrapper::Debug_Report_Shader_Names()
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TEXTURE REQUIREMENTS census.
+//
+// Every 2-D texture creation is recorded as (asked for) -> (got), grouped, and the
+// groups where the two differ are called out. The point of it is a before-and-after:
+// the same instrument runs over D3DXCreateTexture's own requirements check and over the
+// one written above the seam to replace it, and the two tables have to be the same table.
+//
+// Cube and volume creations are counted but not described, because Describe_Texture_Level
+// takes a 2-D texture and asking it about a cube would report a number that is not the
+// cube's.
+// ---------------------------------------------------------------------------
+#define MAX_TEXREQ_GROUPS 64
+
+struct TexReqGroup {
+	unsigned	req_w, req_h, req_levels;
+	unsigned	got_w, got_h, got_levels;
+	WW3DFormat	req_fmt, got_fmt;
+	unsigned	count;
+};
+static TexReqGroup s_texReq[MAX_TEXREQ_GROUPS];
+static int s_texReqCount = 0;
+static unsigned s_texReqDropped = 0;
+static unsigned s_texReqTotal = 0;
+static unsigned s_texReqFailed = 0;
+static unsigned s_texReqCube = 0;
+static unsigned s_texReqVolume = 0;
+static unsigned s_texReqZ = 0;
+
+void DX8Wrapper::Debug_Note_Texture_Made_Other(const char * kind)
+{
+	if (kind == nullptr) return;
+	if (kind[0] == 'c') ++s_texReqCube;
+	else if (kind[0] == 'v') ++s_texReqVolume;
+	else ++s_texReqZ;
+}
+
+void DX8Wrapper::Debug_Note_Texture_Made(unsigned req_w, unsigned req_h, WW3DFormat req_fmt,
+	unsigned req_levels, GfxTexture * made)
+{
+	++s_texReqTotal;
+	if (made == nullptr) { ++s_texReqFailed; return; }
+
+	// Read the answer back through the seam rather than from the creation call's own
+	// arguments: what this wants to know is what the texture IS, and under D3DX that is
+	// not what it was asked for.
+	WW3DSurfaceDescription desc;
+	if (Gfx == nullptr || !Gfx->Describe_Texture_Level(made, 0, desc)) return;
+	const unsigned got_levels = Gfx->Get_Texture_Level_Count(made);
+
+	for (int i = 0; i < s_texReqCount; ++i) {
+		TexReqGroup& g = s_texReq[i];
+		if (g.req_w == req_w && g.req_h == req_h && g.req_fmt == req_fmt &&
+			g.req_levels == req_levels && g.got_w == desc.Width && g.got_h == desc.Height &&
+			g.got_fmt == desc.Format && g.got_levels == got_levels) {
+			++g.count;
+			return;
+		}
+	}
+	if (s_texReqCount >= MAX_TEXREQ_GROUPS) { ++s_texReqDropped; return; }
+	TexReqGroup& g = s_texReq[s_texReqCount++];
+	g.req_w = req_w; g.req_h = req_h; g.req_fmt = req_fmt; g.req_levels = req_levels;
+	g.got_w = desc.Width; g.got_h = desc.Height; g.got_fmt = desc.Format;
+	g.got_levels = got_levels;
+	g.count = 1;
+}
+
+void DX8Wrapper::Debug_Report_Texture_Requirements()
+{
+	// Reported on the same 600-frame beat as everything else so it lands beside them in
+	// the log, but the table itself is never cleared -- see the note in the header.
+	static unsigned frames = 0;
+	if (++frames < 600) return;
+	frames = 0;
+
+	unsigned changed = 0;
+	for (int i = 0; i < s_texReqCount; ++i) {
+		const TexReqGroup& g = s_texReq[i];
+		if (g.req_w != g.got_w || g.req_h != g.got_h || g.req_fmt != g.got_fmt ||
+			(g.req_levels != 0 && g.req_levels != g.got_levels)) changed += g.count;
+	}
+
+	WWDEBUG_SAY(("TEXTURE REQUIREMENTS: %u 2-D textures created (%u failed), %d distinct "
+		"(asked for -> got) groups%s; %u textures came back different from what was asked "
+		"for. Also %u cube, %u volume, %u depth textures, not described here.",
+		s_texReqTotal, s_texReqFailed, s_texReqCount,
+		s_texReqDropped ? "  -- TABLE FULL" : "", changed,
+		s_texReqCube, s_texReqVolume, s_texReqZ));
+	if (s_texReqTotal == 0) {
+		WWDEBUG_SAY(("  CONTROL FAILED: no texture reached this census at all, so the "
+					 "zero above is not a measurement of anything."));
+		return;
+	}
+	for (int i = 0; i < s_texReqCount; ++i) {
+		const TexReqGroup& g = s_texReq[i];
+		const bool diff = (g.req_w != g.got_w || g.req_h != g.got_h || g.req_fmt != g.got_fmt ||
+			(g.req_levels != 0 && g.req_levels != g.got_levels));
+		StringClass req_name(0,true), got_name(0,true);
+		Get_WW3D_Format_Name(g.req_fmt, req_name);
+		Get_WW3D_Format_Name(g.got_fmt, got_name);
+		WWDEBUG_SAY(("    %s %4ux%-4u %-14s mips %-2u  ->  %4ux%-4u %-14s mips %-2u   x%u",
+			diff ? "DIFF" : "same", g.req_w, g.req_h, req_name.str(), g.req_levels,
+			g.got_w, g.got_h, got_name.str(), g.got_levels, g.count));
+	}
+}
+
 #define MAX_ALPHA_GROUPS 96
 
 struct AlphaGroup { unsigned func; unsigned ref; unsigned ps; unsigned count; bool on; };
@@ -4624,6 +4730,7 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	SortingRendererClass::Debug_Report_Sorted_Lights();
 	GfxDeviceD3D9::Report_Nondynamic_Discards();
 	Debug_Report_Shader_Names();
+	Debug_Report_Texture_Requirements();
 	Mesh_Technique_Report_Registrations();
 #endif
 
@@ -7577,6 +7684,9 @@ GfxTexture * DX8Wrapper::_Create_DX8_Texture
 		}
 
 		DX8_ErrorCode(ret);
+#ifdef RTS_DEBUG
+		Debug_Note_Texture_Made(width, height, format, mip_level_count, (GfxTexture*)texture);
+#endif
 		// Just return the texture, no reduction
 		// allowed for render targets.
 		return (GfxTexture*)texture;
@@ -7625,6 +7735,9 @@ GfxTexture * DX8Wrapper::_Create_DX8_Texture
 	}
 	DX8_ErrorCode(ret);
 
+#ifdef RTS_DEBUG
+	Debug_Note_Texture_Made(width, height, format, mip_level_count, (GfxTexture*)texture);
+#endif
 	return (GfxTexture*)texture;
 }
 
@@ -7782,6 +7895,9 @@ GfxTexture * DX8Wrapper::_Create_DX8_ZTexture
 
 	DX8_ErrorCode(ret);
 
+#ifdef RTS_DEBUG
+	Debug_Note_Texture_Made_Other("z");
+#endif
 	texture->AddRef(); // don't release this texture
 
 	// Just return the texture, no reduction
@@ -7872,6 +7988,9 @@ GfxTexture* DX8Wrapper::_Create_DX8_Cube_Texture
 		}
 
 		DX8_ErrorCode(ret);
+#ifdef RTS_DEBUG
+		Debug_Note_Texture_Made_Other("c");
+#endif
 		// Just return the texture, no reduction
 		// allowed for render targets.
 		return (GfxTexture*)texture;
@@ -7924,6 +8043,9 @@ GfxTexture* DX8Wrapper::_Create_DX8_Cube_Texture
 
 	}
 	DX8_ErrorCode(ret);
+#ifdef RTS_DEBUG
+	Debug_Note_Texture_Made_Other("c");
+#endif
 
 	return (GfxTexture*)texture;
 }
@@ -8003,6 +8125,9 @@ GfxTexture* DX8Wrapper::_Create_DX8_Volume_Texture
 
 	}
 	DX8_ErrorCode(ret);
+#ifdef RTS_DEBUG
+	Debug_Note_Texture_Made_Other("v");
+#endif
 
 	return (GfxTexture*)texture;
 }
