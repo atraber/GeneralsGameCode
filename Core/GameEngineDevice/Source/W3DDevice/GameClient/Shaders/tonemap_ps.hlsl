@@ -23,7 +23,7 @@ DECLARE_SAMPLER_2D(SceneSampler, 0);
 // the curve off when the scene reaching it is already 8-bit).
 float4 ToneMapCtl : register(c0);
 
-float4 main(float2 uv : TEXCOORD0) : PS_TARGET
+float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET
 {
     float4 scene = SAMPLE_2D(SceneSampler, uv);
 

@@ -22,8 +22,17 @@ DECLARE_SAMPLER(BaseSampler, 0);   // the caster's own texture, for its alpha
 // Dithering is for casters that are genuinely translucent rather than cut out; see below.
 float4 ShadowCastParams : register(c0);
 
+// The position is declared first under model 4 and last under model 3, which is the same
+// set either way and a different register assignment -- see PS_INPUT_POSITION in
+// shadermodel.hlsli. This shader gets an #if of its own rather than that macro because it
+// already has a position input to move, and a second one would be a duplicate semantic.
+#if RTS_SHADER_MODEL >= 4
+struct PS_INPUT { PIXEL_POSITION_TYPE vpos : PS_PIXEL_POSITION;
+                  float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1; };
+#else
 struct PS_INPUT { float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1;
                   PIXEL_POSITION_TYPE vpos     : PS_PIXEL_POSITION; };
+#endif
 
 // Split the depth across three 8-bit channels, coarse to fine.
 //

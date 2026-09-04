@@ -140,8 +140,19 @@ struct PS_INPUT
     float2 texcoord  : TEXCOORD0;   // stage 0 coordinates
     float2 texcoord1 : TEXCOORD1;   // stage 1 coordinates (may be generated)
     float4 lightPos  : TEXCOORD2;   // position in the sun's clip space
+// The last two members are in the vertex shader's declaration order under model 4 and in
+// this shader's own under model 3, which is the same set either way and a different
+// register assignment. See PS_INPUT_POSITION in shadermodel.hlsli for why that matters:
+// model 4 links the two stages by register as well as by semantic, and unit_vs writes
+// TEXCOORD3 before TEXCOORD5. The model 3 branch is character for character what this
+// struct has always been, so the .pso does not move.
+#if RTS_SHADER_MODEL >= 4
+    float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
+    float4 screenPos : TEXCOORD5;
+#else
     float4 screenPos : TEXCOORD5;
     float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
+#endif
 };
 
 float3 PickRGB(float4 sel, float3 tex, float3 cur, float3 dif)

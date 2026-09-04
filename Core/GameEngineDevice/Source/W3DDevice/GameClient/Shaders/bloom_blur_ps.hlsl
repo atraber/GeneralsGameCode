@@ -19,7 +19,7 @@ static const float W2 = 0.1216216216;
 static const float W3 = 0.0540540541;
 static const float W4 = 0.0162162162;
 
-float4 main(float2 uv : TEXCOORD0) : PS_TARGET
+float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET
 {
     float2 d = BlurStep.xy;
 

@@ -30,7 +30,7 @@ float unpackDepth(float4 packed)
     return dot(packed.rgb, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
 }
 
-float4 main(float2 uv : TEXCOORD0) : PS_TARGET
+float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET
 {
     float4 packed = SAMPLE_2D(ShadowSampler, uv);
 

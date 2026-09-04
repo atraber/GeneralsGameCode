@@ -32,8 +32,16 @@ DECLARE_SAMPLER(BaseSampler, 0);   // the sprite's own texture, for its alpha
 // shader's only arbiter.
 float4 ShadowCastParams : register(c0);
 
+// The position first under model 4, last under model 3. See shadowdepth_ps, whose struct
+// this one matches member for member with the sprite's alpha added.
+#if RTS_SHADER_MODEL >= 4
+struct PS_INPUT { PIXEL_POSITION_TYPE vpos : PS_PIXEL_POSITION;
+                  float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1;
+                  float  alpha    : TEXCOORD2; };
+#else
 struct PS_INPUT { float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1;
                   float  alpha    : TEXCOORD2; PIXEL_POSITION_TYPE vpos     : PS_PIXEL_POSITION; };
+#endif
 
 // Split the depth across three 8-bit channels, coarse to fine. Identical to
 // shadowdepth_ps's -- the receivers unpack both with one function, so the two must agree

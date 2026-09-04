@@ -16,7 +16,7 @@
 
 DECLARE_SAMPLER_2D(SourceMap, 0);
 
-float4 main(float2 uv : TEXCOORD0) : PS_TARGET
+float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET
 {
     float4 source = SAMPLE_2D(SourceMap, uv);
     return float4(source.b, source.g, source.r, source.a);

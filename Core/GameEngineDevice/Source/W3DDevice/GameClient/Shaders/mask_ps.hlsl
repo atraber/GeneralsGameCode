@@ -12,6 +12,7 @@ DECLARE_SAMPLER(MaskSampler, 0);
 
 struct PS_INPUT
 {
+    PS_INPUT_POSITION
     float2 texcoord : TEXCOORD0;
 };
 

@@ -17,7 +17,7 @@
 
 DECLARE_SAMPLER_2D(BrightSampler, 0);
 
-float4 main(float2 uv : TEXCOORD0) : PS_TARGET
+float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET
 {
     float3 c    = SAMPLE_2D(BrightSampler, uv).rgb;
     float  luma = dot(c, LUMA);

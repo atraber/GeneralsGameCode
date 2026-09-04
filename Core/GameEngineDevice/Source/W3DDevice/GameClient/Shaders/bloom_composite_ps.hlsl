@@ -31,7 +31,7 @@ float4 ToneMapCtl : register(c0);
 // Bloom tuning -- edit and recompile the shader to tweak (no engine rebuild needed).
 static const float BLOOM_INTENSITY = 1.00;  // how strongly the glow is added on top
 
-float4 main(float2 uvScene : TEXCOORD0, float2 uvBloom : TEXCOORD1) : PS_TARGET
+float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uvScene : TEXCOORD0, float2 uvBloom : TEXCOORD1) : PS_TARGET
 {
     float3 scene = SAMPLE_2D(SceneSampler, uvScene).rgb;
     float3 bloom = SAMPLE_2D(BloomSampler, uvBloom).rgb * BLOOM_INTENSITY;

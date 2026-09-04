@@ -37,6 +37,7 @@ DECLARE_SAMPLER_2D(EdgeMap, 3);
 
 struct PS_INPUT
 {
+    PS_INPUT_POSITION
     float4 color : COLOR0;
     float2 uv0   : TEXCOORD0;
     float2 uv1   : TEXCOORD1;

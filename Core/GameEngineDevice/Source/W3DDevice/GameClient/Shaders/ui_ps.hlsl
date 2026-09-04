@@ -40,6 +40,7 @@ static const float3 LUMA_WEIGHTS = float3(0.294, 0.584, 0.114);
 
 struct PS_INPUT
 {
+    PS_INPUT_POSITION
     float4 color    : COLOR0;
     float2 texcoord : TEXCOORD0;
 };

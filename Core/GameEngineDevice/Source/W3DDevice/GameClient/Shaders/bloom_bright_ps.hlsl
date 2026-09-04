@@ -23,7 +23,7 @@ DECLARE_SAMPLER_2D(SceneSampler, 0);
 // x: luminance above which a pixel blooms. y: width of the soft ramp above it.
 float4 BloomThreshold : register(c0);
 
-float4 main(float2 uv : TEXCOORD0) : PS_TARGET
+float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET
 {
     float3 c    = SAMPLE_2D(SceneSampler, uv).rgb;
     float  luma = dot(c, LUMA);

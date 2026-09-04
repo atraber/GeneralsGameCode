@@ -22,7 +22,8 @@ DECLARE_SAMPLER_2D(ReflectionSampler, 1);   // the mirrored scene
 // The stage-1 bump environment matrix, flattened: xy = row 0 (00, 01), zw = row 1 (10, 11).
 float4 BumpEnvMat : register(c0);
 
-float4 main(float4 color     : COLOR0,
+float4 main(PS_INPUT_POSITION_PARAM
+            float4 color     : COLOR0,
             float2 bumpUV    : TEXCOORD0,
             float2 reflectUV : TEXCOORD1) : PS_TARGET
 {

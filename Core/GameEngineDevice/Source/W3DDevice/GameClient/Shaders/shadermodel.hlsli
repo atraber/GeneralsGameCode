@@ -113,6 +113,54 @@
 #define PS_TARGET0    COLOR0
 #endif
 
+// The pixel shader's clip position, and the register every other input sits after.
+//
+// This is the model 3 / model 4 difference that Phase 3.8's gate could not see, because
+// it is a property of a vertex shader and a pixel shader *together* and that gate compiles
+// one shader at a time.
+//
+// ps_3_0 matches a vertex shader's outputs to a pixel shader's inputs by semantic alone.
+// Model 4 matches by semantic *and by register*, and fxc numbers a stage's signature in
+// declaration order. Every vertex shader here declares its clip position first, so
+// SV_Position takes register 0 and everything else starts at r1 -- while a pixel shader
+// that does not declare a position input at all packs its own inputs from r0. Semantic for
+// semantic the two agree; register for register they are off by one, and D3D11 refuses the
+// pair and draws nothing. Measured: 703332 of 876705 draws in a 600-frame window.
+//
+// So a pixel shader has to declare the position it does not read. PS_INPUT_POSITION is
+// that declaration, first in the struct or first in the parameter list, and it expands to
+// *nothing* at model 3 -- which is what keeps every .pso in this directory byte for byte
+// what it was. PS_INPUT_POSITION_PARAM is the same thing with the trailing comma a
+// parameter list needs; it too is empty at model 3.
+//
+// Two shaders already declare a position input for the dither (PS_PIXEL_POSITION below)
+// and must not get a second one. They put the existing declaration first under an #if of
+// their own instead.
+#if RTS_SHADER_MODEL >= 4
+#define PS_INPUT_POSITION        float4 psInputPosition : SV_Position;
+#define PS_INPUT_POSITION_PARAM  float4 psInputPosition : SV_Position,
+#else
+#define PS_INPUT_POSITION
+#define PS_INPUT_POSITION_PARAM
+#endif
+
+// The vertex colour a full-screen filter is handed and does not read.
+//
+// The same register-numbering rule as PS_INPUT_POSITION, one step further on.
+// screenquad_vs writes a COLOR0 -- it is shared with the interface quads, which do read
+// one -- so a filter that declares only TEXCOORD0 puts it one register below where
+// screenquad_vs wrote it. Declaring the colour it ignores costs an interpolator that was
+// already being written and nothing else.
+//
+// Empty at model 3, like everything else here, so the .pso does not move.
+#if RTS_SHADER_MODEL >= 4
+#define PS_INPUT_UNUSED_COLOR        float4 psUnusedColor : COLOR0;
+#define PS_INPUT_UNUSED_COLOR_PARAM  float4 psUnusedColor : COLOR0,
+#else
+#define PS_INPUT_UNUSED_COLOR
+#define PS_INPUT_UNUSED_COLOR_PARAM
+#endif
+
 // The pixel's own coordinate, and half a pixel of difference.
 //
 // VPOS in ps_3_0 is the integer pixel coordinate: the top-left pixel is (0, 0). SV_Position

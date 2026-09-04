@@ -17,7 +17,7 @@
 
 DECLARE_SAMPLER_2D(ShroudSampler, 0);
 
-float4 main(float2 uv : TEXCOORD0) : PS_TARGET
+float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET
 {
     float3 shroud = SAMPLE_2D(ShroudSampler, uv).rgb;
     float  level  = dot(shroud, LUMA);

@@ -7,7 +7,7 @@
 
 #include "shadermodel.hlsli"
 
-struct PS_INPUT { float3 normal : TEXCOORD0; };
+struct PS_INPUT { PS_INPUT_POSITION float3 normal : TEXCOORD0; };
 
 float4 main(PS_INPUT input) : PS_TARGET
 {
