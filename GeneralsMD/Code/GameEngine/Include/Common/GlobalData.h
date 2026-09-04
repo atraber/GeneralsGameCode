@@ -147,7 +147,6 @@ public:
 	Int m_jpegQuality; // TheSuperHackers @feature Quality for JPEG screenshots.
 	Bool m_useWaterPlane;
 	Bool m_useCloudPlane;
-	Bool m_useShadowVolumes;
 	Bool m_useShadowDecals;
 	Bool m_useShadowMapping;					///< directional shadow map; when it runs it replaces the volume/decal shadows
 	Bool m_useParticleShadows;				///< let physical particle systems (smoke, dust) cast into that shadow map

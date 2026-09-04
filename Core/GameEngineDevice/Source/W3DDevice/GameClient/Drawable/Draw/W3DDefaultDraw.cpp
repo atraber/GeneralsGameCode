@@ -61,7 +61,7 @@ W3DDefaultDraw::W3DDefaultDraw(Thing *thing, const ModuleData* moduleData) : Dra
 		m_renderObject = W3DDisplay::m_assetManager->Create_Render_Obj(getDrawable()->getTemplate()->getLTAName().str(), getDrawable()->getScale(), 0);
 
 		Shadow::ShadowTypeInfo shadowInfo;
-		shadowInfo.m_type=(ShadowType)SHADOW_VOLUME;
+		shadowInfo.m_type=(ShadowType)SHADOW_NONE;	// was SHADOW_VOLUME, which no longer builds anything
   		m_shadow = TheW3DShadowManager->addShadow(m_renderObject, &shadowInfo);
 
 

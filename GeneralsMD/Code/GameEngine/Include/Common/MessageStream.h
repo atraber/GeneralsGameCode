@@ -320,7 +320,7 @@ public:
 		MSG_META_DEMO_SWITCH_TEAMS,									///< switch local control to another team
 		MSG_META_DEMO_SWITCH_TEAMS_BETWEEN_CHINA_USA, ///< switch the local player between china and usa
 		MSG_META_DEMO_TOGGLE_PARTICLEDEBUG,					///< show/hide the particle system debug info
-		MSG_META_DEMO_TOGGLE_SHADOW_VOLUMES,				///< show/hide shadow volumes
+		MSG_META_DEMO_TOGGLE_SHADOWS,				///< show/hide shadows (CommandMap.ini still names this DEMO_TOGGLE_SHADOW_VOLUMES)
 		MSG_META_DEMO_TOGGLE_FOGOFWAR,
 		MSG_META_DEMO_KILL_ALL_ENEMIES,							///< kill ALL ENEMIES! (yeah!)
 		MSG_META_DEMO_KILL_SELECTION,								///< kill the selected units (yeah!)

@@ -392,7 +392,7 @@ Int parseFullVersion(char *args[], int num)
 
 Int parseNoShadows(char *args[], int)
 {
-	TheWritableGlobalData->m_useShadowVolumes = false;
+	TheWritableGlobalData->m_useShadowMapping = false;
 	TheWritableGlobalData->m_useShadowDecals = false;
 
 	return 1;
@@ -1474,7 +1474,7 @@ static CommandLineParam paramsForEngineInit[] =
 #endif
 	{ "-forceBenchmark", parseForceBenchmark },
 	{ "-buildmapcache", parseBuildMapCache },
-	{ "-noshadowvolumes", parseNoShadows },
+	{ "-noshadows", parseNoShadows },
 	{ "-nofx", parseNoFX },
 	{ "-ignoresync", parseSync },
 	{ "-shellmap", parseShellMap },

@@ -2234,7 +2234,6 @@ void WbView3d::initWW3D()
 		m_overlayScene->Add_Render_Object(m_drawObject);
 
 #if 1
-		TheWritableGlobalData->m_useShadowVolumes = true;
 		TheWritableGlobalData->m_useShadowDecals = true;
 		TheWritableGlobalData->m_enableBehindBuildingMarkers = false;	//this is only for the game.
 		if (TheW3DShadowManager==nullptr)

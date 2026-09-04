@@ -1598,16 +1598,10 @@ void RTS3DScene::flushOccludedObjectsIntoStencil(RenderInfoClass & rinfo)
 			usedPlayerColorBits |= stencilRef;	//keep track of all bits used for occlusion/player colors.
 		}
 
+		//Nothing reserves stencil bits for shadows any more: the stencil shadow volumes were
+		//the only consumer, and they are gone. The mask now only records which bits hold
+		//occlusion/player-colour, which is what renderStenciledPlayerColor's clear path reads.
 		TheW3DShadowManager->setStencilShadowMask(usedPlayerColorBits);
-		if (numVisiblePlayerColors >= 8 && TheGlobalData->m_useShadowVolumes)
-		{
-			//for cases where we have 8 or more visible players, we're only left with 3 bits to store
-			//stencil shadows.  That's probably not enough since it will only allow 7 overlapping shadows.
-			//So we clear the stencil buffer, leaving only the MSB set on any occluded player pixels so that
-			//shadow code knows not to overwrite these pixels.
-			renderStenciledPlayerColor(0,0, TRUE);
-			TheW3DShadowManager->setStencilShadowMask(0x80808080);	//msb indicates occluded player pixels so ignore it when filling screen with shadow
-		}
 
 		DX8Wrapper::Set_DX8_Render_State(D3DRS_STENCILENABLE, FALSE );
 	}

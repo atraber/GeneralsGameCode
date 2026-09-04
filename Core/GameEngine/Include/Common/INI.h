@@ -292,6 +292,7 @@ public:
 	static void parseReal( INI *ini, void *instance, void *store, const void* userData );
 	static void parsePositiveNonZeroReal( INI *ini, void *instance, void *store, const void* userData );
 	static void parseBool( INI *ini, void *instance, void *store, const void* userData );
+	static void parseAndIgnoreToken( INI *ini, void *instance, void *store, const void* userData );	///< for a key that shipped data still carries but the engine no longer has a field for
 	static void parseBitInInt32( INI *ini, void *instance, void *store, const void* userData );
 	static void parseAsciiString( INI *ini, void *instance, void *store, const void* userData );
 	static void parseQuotedAsciiString( INI *ini, void *instance, void *store, const void* userData );

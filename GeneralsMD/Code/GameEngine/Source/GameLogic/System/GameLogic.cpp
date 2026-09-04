@@ -1839,8 +1839,9 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	// If static lod is HIGH, we don't do force fluff to client side only (create logic side props, more expensive. jba)
 	Bool forceFluffToProp = TheGameLODManager->getStaticLODLevel() < STATIC_GAME_LOD_HIGH;
 	if (TheGameLODManager->getStaticLODLevel() == STATIC_GAME_LOD_CUSTOM &&
-			TheGlobalData->m_useShadowVolumes) {
-		// Custom LOD, and volumetric shadows turned on - very high detail.  So use logic props too. jba. [7/14/2003]
+			TheGlobalData->m_useShadowMapping) {
+		// Custom LOD, and the expensive shadows turned on - very high detail.  So use logic props too. jba. [7/14/2003]
+		// (was m_useShadowVolumes, which drove the same checkbox before the shadow volumes were deleted)
 		forceFluffToProp = false;
 	}
 
@@ -2352,7 +2353,7 @@ void GameLogic::tryStartNewGame( Bool loadingSaveGame )
 	fputs("Full,100*ms,NoPart-NoSpawn,,No Spawn,100*ms,Logic,100*ms,Thing,Model,Kind,Side,DrawCalls All,DrawCalls NoPart-NoSpawn,DrawCalls NoSpawn\n", g_UT_commaLog);
 
 	// Turn off shadows
-	TheWritableGlobalData->m_useShadowVolumes = false;
+	TheWritableGlobalData->m_useShadowMapping = false;
 #ifdef DEBUG_CRASHING
 	TheWritableGlobalData->m_debugIgnoreAsserts = TRUE;
 #endif

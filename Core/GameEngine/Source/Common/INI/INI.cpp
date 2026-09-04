@@ -639,6 +639,16 @@ void INI::parseBool( INI* ini, void * /*instance*/, void *store, const void* /*u
 }
 
 //-------------------------------------------------------------------------------------------------
+/** Consume one token and throw it away. For a key that the shipped INI files still carry but
+	* that no longer has a field behind it -- the alternative is an "Unknown field" DEBUG_CRASH on
+	* data we cannot edit. */
+//-------------------------------------------------------------------------------------------------
+void INI::parseAndIgnoreToken( INI* ini, void * /*instance*/, void * /*store*/, const void* /*userData*/ )
+{
+	ini->getNextToken();
+}
+
+//-------------------------------------------------------------------------------------------------
 /** Parse Bool from buffer; if true, or in MASK, otherwise and out MASK. The buffer token must
 	* be in the form of a string "Yes" or "No" (case is ignored) */
 //-------------------------------------------------------------------------------------------------

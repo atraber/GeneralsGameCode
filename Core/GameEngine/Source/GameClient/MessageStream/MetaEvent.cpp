@@ -242,7 +242,8 @@ static const LookupListRec GameMessageMetaTypeNames[] =
 	{ "DEMO_TOGGLE_FRAME_TIMING",							GameMessage::MSG_META_DEMO_TOGGLE_FRAME_TIMING },
 	{ "DEMO_LOD_DECREASE",												GameMessage::MSG_META_DEMO_LOD_DECREASE },
 	{ "DEMO_LOD_INCREASE",												GameMessage::MSG_META_DEMO_LOD_INCREASE },
-	{ "DEMO_TOGGLE_SHADOW_VOLUMES",								GameMessage::MSG_META_DEMO_TOGGLE_SHADOW_VOLUMES },
+	// The shipped CommandMap.ini still binds this name (Shift+J), so it has to keep resolving.
+	{ "DEMO_TOGGLE_SHADOW_VOLUMES",								GameMessage::MSG_META_DEMO_TOGGLE_SHADOWS },
 	{ "DEMO_TOGGLE_FOGOFWAR",											GameMessage::MSG_META_DEMO_TOGGLE_FOGOFWAR },
 	{ "DEMO_KILL_ALL_ENEMIES",										GameMessage::MSG_META_DEMO_KILL_ALL_ENEMIES },
 	{ "DEMO_KILL_SELECTION",											GameMessage::MSG_META_DEMO_KILL_SELECTION },

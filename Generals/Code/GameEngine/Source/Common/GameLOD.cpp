@@ -57,7 +57,8 @@ static const FieldParse TheStaticGameLODFieldParseTable[] =
 	{ "SampleCount3D",					INI::parseInt,					nullptr,	offsetof( StaticGameLODInfo, m_sampleCount3D ) },
 	{ "StreamCount",					INI::parseInt,					nullptr,	offsetof( StaticGameLODInfo, m_streamCount ) },
 	{ "MaxParticleCount",				INI::parseInt,					nullptr,	offsetof( StaticGameLODInfo, m_maxParticleCount ) },
-	{ "UseShadowVolumes",				INI::parseBool,					nullptr,	offsetof( StaticGameLODInfo, m_useShadowVolumes ) },
+	// Retired with the stencil shadow volumes. GameLOD.ini still carries the key.
+	{ "UseShadowVolumes",				INI::parseAndIgnoreToken,		nullptr,	0 },
 	{ "UseShadowDecals",				INI::parseBool,					nullptr,	offsetof( StaticGameLODInfo, m_useShadowDecals ) },
 	{ "UseCloudMap",					INI::parseBool,					nullptr,	offsetof( StaticGameLODInfo, m_useCloudMap ) },
 	{ "UseLightMap",					INI::parseBool,					nullptr,	offsetof( StaticGameLODInfo, m_useLightMap ) },
@@ -90,7 +91,6 @@ StaticGameLODInfo::StaticGameLODInfo()
 	m_streamCount=2;
 	m_maxParticleCount=2500;
 
-	m_useShadowVolumes=TRUE;
 	m_useShadowDecals=TRUE;
 	m_useCloudMap=TRUE;
 	m_useLightMap=TRUE;
@@ -251,7 +251,6 @@ void GameLODManager::initStaticLODLevels()
 	veryhigh.m_sampleCount3D = 24;
 	veryhigh.m_streamCount = 2;
 	veryhigh.m_maxParticleCount = 5000;
-	veryhigh.m_useShadowVolumes = TRUE;
 	veryhigh.m_useShadowDecals = TRUE;
 	veryhigh.m_useCloudMap = TRUE;
 	veryhigh.m_useLightMap = TRUE;
@@ -375,7 +374,6 @@ void GameLODManager::init()
 	if (userSetDetail == STATIC_GAME_LOD_CUSTOM)
 	{
 		TheWritableGlobalData->m_textureReductionFactor = optionPref.getTextureReduction();
-		TheWritableGlobalData->m_useShadowVolumes = optionPref.get3DShadowsEnabled();
 		TheWritableGlobalData->m_useShadowDecals = optionPref.get2DShadowsEnabled();
 		TheWritableGlobalData->m_enableBehindBuildingMarkers = optionPref.getBuildingOcclusionEnabled();
 		TheWritableGlobalData->m_maxParticleCount = optionPref.getParticleCap();
@@ -397,7 +395,6 @@ void GameLODManager::refreshCustomStaticLODLevel()
 	StaticGameLODInfo *lodInfo=&m_staticGameLODInfo[STATIC_GAME_LOD_CUSTOM];
 
 	lodInfo->m_maxParticleCount=TheGlobalData->m_maxParticleCount;
-	lodInfo->m_useShadowVolumes=TheGlobalData->m_useShadowVolumes;
 	lodInfo->m_useShadowDecals=TheGlobalData->m_useShadowDecals;
 	lodInfo->m_useCloudMap=TheGlobalData->m_useCloudMap;
 	lodInfo->m_useLightMap=TheGlobalData->m_useLightMap;
@@ -576,14 +573,12 @@ void GameLODManager::applyStaticLODLevel(StaticGameLODLevel level)
 	if (TheGlobalData)
 	{
 		TheWritableGlobalData->m_maxParticleCount=lodInfo->m_maxParticleCount;
-		TheWritableGlobalData->m_useShadowVolumes=lodInfo->m_useShadowVolumes;
 		TheWritableGlobalData->m_useShadowDecals=lodInfo->m_useShadowDecals;
 
 		TheWritableGlobalData->m_textureReductionFactor = requestedTextureReduction;
 
 		//Check if shadow state changed
 		if (m_currentStaticLOD == STATIC_GAME_LOD_UNKNOWN	||
-			lodInfo->m_useShadowVolumes != prevLodInfo->m_useShadowVolumes ||
 			lodInfo->m_useShadowDecals != prevLodInfo->m_useShadowDecals)
 		{
 			if (TheGameClient)

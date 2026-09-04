@@ -314,7 +314,7 @@ static void setDefaults()
 		//-------------------------------------------------------------------------------------------------
  		// 3D Shadows checkbox
 		//
-		GadgetCheckBoxSetChecked( check3DShadows, TheGlobalData->m_useShadowVolumes);
+		GadgetCheckBoxSetChecked( check3DShadows, TheGlobalData->m_useShadowMapping);
 
 		//-------------------------------------------------------------------------------------------------
  		// 2D Shadows checkbox
@@ -435,8 +435,8 @@ static void saveOptions()
 				TheGameClient->setTextureLOD(val);
 		}
 
-		TheWritableGlobalData->m_useShadowVolumes = GadgetCheckBoxIsChecked( check3DShadows );
-		(*pref)["UseShadowVolumes"] = TheWritableGlobalData->m_useShadowVolumes ? "yes" : "no";
+		TheWritableGlobalData->m_useShadowMapping = GadgetCheckBoxIsChecked( check3DShadows );
+		(*pref)["UseShadowMapping"] = TheWritableGlobalData->m_useShadowMapping ? "yes" : "no";
 
 		TheWritableGlobalData->m_useShadowDecals = GadgetCheckBoxIsChecked( check2DShadows );
 		(*pref)["UseShadowDecals"] = TheWritableGlobalData->m_useShadowDecals ? "yes" : "no";
@@ -1283,7 +1283,7 @@ void OptionsMenuInit( WindowLayout *layout, void *userData )
 
 	GadgetSliderSetPosition( sliderTextureResolution, 2-WW3D::Get_Texture_Reduction());
 
-	GadgetCheckBoxSetChecked( check3DShadows, TheGlobalData->m_useShadowVolumes);
+	GadgetCheckBoxSetChecked( check3DShadows, TheGlobalData->m_useShadowMapping);
 
 	GadgetCheckBoxSetChecked( check2DShadows, TheGlobalData->m_useShadowDecals);
 

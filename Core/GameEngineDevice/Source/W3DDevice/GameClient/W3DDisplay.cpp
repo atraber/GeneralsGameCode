@@ -510,7 +510,7 @@ Int W3DDisplay::getDisplayModeCount()
 
 	//Walk through all resolutions and determine which ones are compatible with other settings
 	//chosen by user.  For example, 32-bit may be required for shadows, occlusion, soft water edge, etc.
-	if (TheGlobalData->m_useShadowVolumes || (TheGlobalData->m_enableBehindBuildingMarkers && TheGameLogic->getShowBehindBuildingMarkers()))
+	if (TheGlobalData->m_enableBehindBuildingMarkers && TheGameLogic->getShowBehindBuildingMarkers())
 		needStencil=true;
 
 	if (TheGlobalData->m_showSoftWaterEdge)

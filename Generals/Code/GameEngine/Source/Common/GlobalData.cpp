@@ -103,7 +103,8 @@ GlobalData* GlobalData::m_theOriginal = nullptr;
 	{ "UseWaterPlane",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_useWaterPlane ) },
 	{ "UseCloudPlane",							INI::parseBool,				nullptr,			offsetof( GlobalData, m_useCloudPlane ) },
 	{ "DownwindAngle",							INI::parseReal,				nullptr,			offsetof( GlobalData, m_downwindAngle ) },
-	{ "UseShadowVolumes",						INI::parseBool,				nullptr,			offsetof( GlobalData, m_useShadowVolumes ) },
+	// Retired with the stencil shadow volumes. GameData.ini still carries the key.
+	{ "UseShadowVolumes",						INI::parseAndIgnoreToken,	nullptr,			0 },
 	{ "UseShadowDecals",						INI::parseBool,				nullptr,			offsetof( GlobalData, m_useShadowDecals ) },
 	{ "UseShadowMapping",						INI::parseBool,				nullptr,			offsetof( GlobalData, m_useShadowMapping ) },
 	{ "UseParticleShadows",					INI::parseBool,				nullptr,			offsetof( GlobalData, m_useParticleShadows ) },
@@ -664,7 +665,6 @@ GlobalData::GlobalData()
 	m_useWaterPlane = FALSE;
 	m_useCloudPlane = FALSE;
 	m_downwindAngle = ( -0.785f );//Northeast!
-	m_useShadowVolumes = FALSE;
 	m_useShadowDecals = FALSE;
 	m_useShadowMapping = TRUE;
 	m_useParticleShadows = TRUE;

@@ -3298,14 +3298,14 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 			if (TheGlobalData)
 			{
 				static Bool isLowDetails = FALSE;
-				static Bool oldShadowVolumsValue = TRUE;
+				static Bool oldShadowMappingValue = TRUE;
 				static Bool oldLightMapValue = TRUE;
 				static Bool oldCloudMap = TRUE;
 				static Bool oldBehindBuildingMarkers = TRUE;
 				static Int oldMaxParticleCount = 0;
 				if(isLowDetails)
 				{
-					TheWritableGlobalData->m_useShadowVolumes = oldShadowVolumsValue;
+					TheWritableGlobalData->m_useShadowMapping = oldShadowMappingValue;
 					TheWritableGlobalData->m_useLightMap = oldLightMapValue;
 					TheWritableGlobalData->m_useCloudMap = oldCloudMap;
 					TheWritableGlobalData->m_maxParticleCount = oldMaxParticleCount;
@@ -3315,8 +3315,8 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 				}
 				else
 				{
-					oldShadowVolumsValue = TheGlobalData->m_useShadowVolumes;
-					TheWritableGlobalData->m_useShadowVolumes = FALSE;
+					oldShadowMappingValue = TheGlobalData->m_useShadowMapping;
+					TheWritableGlobalData->m_useShadowMapping = FALSE;
 
 					oldLightMapValue = TheGlobalData->m_useLightMap;
 					TheWritableGlobalData->m_useLightMap = FALSE;
@@ -4430,15 +4430,15 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 
 		//------------------------------------------------------------------------------- DEMO MESSAGES
 		//-----------------------------------------------------------------------------------------
-		case GameMessage::MSG_META_DEMO_TOGGLE_SHADOW_VOLUMES:
+		case GameMessage::MSG_META_DEMO_TOGGLE_SHADOWS:
 		{
-			TheWritableGlobalData->m_useShadowVolumes = !TheGlobalData->m_useShadowVolumes;
+			TheWritableGlobalData->m_useShadowMapping = !TheGlobalData->m_useShadowMapping;
 			TheWritableGlobalData->m_useShadowDecals = !TheGlobalData->m_useShadowDecals;
 
-			if (TheWritableGlobalData->m_useShadowVolumes)
-				TheInGameUI->messageNoFormat( TheGameText->FETCH_OR_SUBSTITUTE("GUI:DebugShadowVolumesOn", L"Shadow Volumes is ON") );
+			if (TheWritableGlobalData->m_useShadowMapping)
+				TheInGameUI->messageNoFormat( TheGameText->FETCH_OR_SUBSTITUTE("GUI:DebugShadowVolumesOn", L"Shadows are ON") );
 			else
-				TheInGameUI->messageNoFormat( TheGameText->FETCH_OR_SUBSTITUTE("GUI:DebugShadowVolumesOff", L"Shadow Volumes is OFF") );
+				TheInGameUI->messageNoFormat( TheGameText->FETCH_OR_SUBSTITUTE("GUI:DebugShadowVolumesOff", L"Shadows are OFF") );
 
 			disp = DESTROY_MESSAGE;
 			break;

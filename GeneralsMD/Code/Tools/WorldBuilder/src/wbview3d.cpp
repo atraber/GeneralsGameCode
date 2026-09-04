@@ -424,7 +424,6 @@ WbView3d::WbView3d() :
 	m_projection = (::AfxGetApp()->GetProfileInt(MAIN_FRAME_SECTION, "ShowTopDownView", 0) != 0);
 	m_showShadows = (::AfxGetApp()->GetProfileInt(MAIN_FRAME_SECTION, "ShowShadows", 1) != 0);
 	TheWritableGlobalData->m_useShadowDecals = m_showShadows;
-	TheWritableGlobalData->m_useShadowVolumes = m_showShadows;
 	TheWritableGlobalData->m_showSoftWaterEdge = (::AfxGetApp()->GetProfileInt(MAIN_FRAME_SECTION, "ShowSoftWater", 1) != 0);
 	TheWritableGlobalData->m_use3WayTerrainBlends = (::AfxGetApp()->GetProfileInt(MAIN_FRAME_SECTION, "ShowExtraBlends", 1) > 1 ? 2 : 1);
 	setShowModels(::AfxGetApp()->GetProfileInt(MAIN_FRAME_SECTION, "ShowModels", 1) != 0);
@@ -2326,7 +2325,6 @@ void WbView3d::initWW3D()
 		m_overlayScene->Add_Render_Object(m_drawObject);
 
 #if 1
-		TheWritableGlobalData->m_useShadowVolumes = true;
 		TheWritableGlobalData->m_useShadowDecals = true;
 		TheWritableGlobalData->m_enableBehindBuildingMarkers = false;	//this is only for the game.
 		if (TheW3DShadowManager==nullptr)
@@ -2960,7 +2958,6 @@ void WbView3d::OnViewShowshadows()
 		TheW3DShadowManager->removeAllShadows();
 	}
 	TheWritableGlobalData->m_useShadowDecals = m_showShadows;
-	TheWritableGlobalData->m_useShadowVolumes = m_showShadows;
 	::AfxGetApp()->WriteProfileInt(MAIN_FRAME_SECTION, "ShowShadows", m_showShadows?1:0);
 }
 

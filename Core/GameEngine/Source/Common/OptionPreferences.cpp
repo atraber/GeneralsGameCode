@@ -175,12 +175,21 @@ Bool OptionPreferences::getTerrainDetailEnabled() const
 
 Bool OptionPreferences::getShadowMappingEnabled() const
 {
-	// Directional shadow map. Defaults to on when the key is absent; when it runs it
-	// replaces the volume and decal shadows.
+	// Directional shadow map -- the "3D Shadows" checkbox. Defaults to on when the key is
+	// absent; when it runs it replaces the decal shadows.
 	OptionPreferences::const_iterator it = find("UseShadowMapping");
-	if (it == end())
-		return TRUE;
-	return parseIniBool(it->second.str(), TRUE);
+	if (it != end())
+		return parseIniBool(it->second.str(), TRUE);
+
+	// One-time carry-over: the checkbox used to drive UseShadowVolumes, so an Options.ini
+	// written before the shadow volumes were deleted says what the player wanted under the
+	// old key and nothing under the new one. Honour it rather than turning shadows back on
+	// for someone who had switched them off. The next save stamps UseShadowMapping.
+	it = find("UseShadowVolumes");
+	if (it != end())
+		return parseIniBool(it->second.str(), TRUE);
+
+	return TRUE;
 }
 
 Bool OptionPreferences::getParticleShadowsEnabled() const
@@ -771,18 +780,6 @@ Bool OptionPreferences::getFPSLimitEnabled()
 	OptionPreferences::const_iterator it = find("FPSLimit");
 	if (it == end())
 		return TheGlobalData->m_useFpsLimit;
-
-	if (stricmp(it->second.str(), "yes") == 0) {
-		return TRUE;
-	}
-	return FALSE;
-}
-
-Bool OptionPreferences::get3DShadowsEnabled()
-{
-	OptionPreferences::const_iterator it = find("UseShadowVolumes");
-	if (it == end())
-		return TheGlobalData->m_useShadowVolumes;
 
 	if (stricmp(it->second.str(), "yes") == 0) {
 		return TRUE;
