@@ -325,8 +325,7 @@ flush_particles:
 			// sprite path stop being offered where the fixed-function pipeline is not there.
 			//
 			// Measured rather than assumed, once a Data\INI\Patch override made either
-			// path reachable at all -- no map in the shipped corpus has snow enabled, so
-			// neither drawer had ever been run by the harness:
+			// path selectable on any map:
 			//
 			//   SnowPointSprites = Yes  13200 draws per 600 frames, 100% fixed function on
 			//                           the vertex side and on the pixel side too. That is
@@ -335,6 +334,12 @@ flush_particles:
 			//   SnowPointSprites = No   this drawer does not appear at all; the snow goes
 			//                           through unit_vs and unit_uv2_vs, and the census
 			//                           reports 0 draws reaching a device without a shader.
+			//
+			// And this is not a hypothetical path: usa_lightsout.rep is on a snowy map and
+			// runs this drawer with no override at all, 4800 point-sprite draws per window,
+			// every one of them fixed function. It is the largest live fixed-function draw
+			// family left in the game, and it stayed invisible for four phases because the
+			// replay every one of them verified against -- civ_buildings -- has no snow.
 			//
 			// So a backend with no point sprites needs no code: it reports PointSprites
 			// false in its caps and line 344 picks the quad path on its own. What it does
