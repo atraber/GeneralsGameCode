@@ -931,9 +931,19 @@ struct GfxAdapterD3D11::Impl
 	HMODULE					dxgi_library;
 	IDXGIFactory1 *			factory;
 	D3D11CreateDeviceType	create_device;
+	// A device kept only to answer capability questions.
+	//
+	// The engine asks what an adapter supports before it creates anything, which is the
+	// shape D3D9 had: IDirect3D9 answered CheckDeviceMultiSampleType with no device in
+	// existence. D3D11 has no adapter-level query at all -- multisampling is
+	// ID3D11Device::CheckMultisampleQualityLevels and nothing else -- so answering
+	// honestly means having a device. This one is created on the first question, cached,
+	// and released with the adapter; it draws nothing.
+	ID3D11Device *			caps_device;
+	unsigned				caps_adapter;
 
 	Impl() : d3d11_library(nullptr), dxgi_library(nullptr), factory(nullptr),
-		create_device(nullptr) { }
+		create_device(nullptr), caps_device(nullptr), caps_adapter(0) { }
 };
 
 GfxAdapterD3D11::GfxAdapterD3D11()
@@ -963,6 +973,7 @@ GfxAdapterD3D11::GfxAdapterD3D11()
 
 GfxAdapterD3D11::~GfxAdapterD3D11()
 {
+	if (m_impl->caps_device != nullptr) m_impl->caps_device->Release();
 	if (m_impl->factory != nullptr) m_impl->factory->Release();
 	if (m_impl->d3d11_library != nullptr) FreeLibrary(m_impl->d3d11_library);
 	if (m_impl->dxgi_library != nullptr) FreeLibrary(m_impl->dxgi_library);
@@ -1126,19 +1137,64 @@ bool GfxAdapterD3D11::Supports_Depth_Stencil_Format(unsigned, WW3DFormat,
 	return WW3DZ_To_DXGI(depth).depth != DXGI_FORMAT_UNKNOWN;
 }
 
-bool GfxAdapterD3D11::Supports_Multisample(unsigned, WW3DFormat, bool,
-	WW3DMultiSampleType samples)
+ID3D11Device * GfxAdapterD3D11::Caps_Device(unsigned adapter_index)
 {
-	// Answered without a device because there is none yet. One sample is always
-	// available; anything else is declined, which keeps this first backend on the one
-	// configuration every existing capture was taken in.
-	return samples == WW3D_MULTISAMPLE_NONE;
+	if (!Is_Valid()) return nullptr;
+	if (m_impl->caps_device != nullptr && m_impl->caps_adapter == adapter_index)
+		return m_impl->caps_device;
+	if (m_impl->caps_device != nullptr) {
+		m_impl->caps_device->Release();
+		m_impl->caps_device = nullptr;
+	}
+
+	IDXGIAdapter1 * adapter = Get_Adapter(m_impl->factory, adapter_index);
+	if (adapter == nullptr) return nullptr;
+
+	static const D3D_FEATURE_LEVEL levels[] = {
+		D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0
+	};
+	ID3D11Device * device = nullptr;
+	ID3D11DeviceContext * context = nullptr;
+	const HRESULT hr = m_impl->create_device(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0,
+		levels, (UINT)(sizeof(levels) / sizeof(levels[0])), D3D11_SDK_VERSION,
+		&device, nullptr, &context);
+	adapter->Release();
+	if (FAILED(hr)) return nullptr;
+	if (context != nullptr) context->Release();
+
+	m_impl->caps_device = device;
+	m_impl->caps_adapter = adapter_index;
+	return device;
 }
 
-bool GfxAdapterD3D11::Supports_Depth_Multisample(unsigned, WW3DZFormat, bool,
+bool GfxAdapterD3D11::Supports_Multisample(unsigned adapter_index, WW3DFormat format, bool,
 	WW3DMultiSampleType samples)
 {
-	return samples == WW3D_MULTISAMPLE_NONE;
+	if (samples == WW3D_MULTISAMPLE_NONE) return true;
+	const DXGI_FORMAT dxgi = WW3D_To_DXGI(format);
+	if (dxgi == DXGI_FORMAT_UNKNOWN) return false;
+	ID3D11Device * device = Caps_Device(adapter_index);
+	if (device == nullptr) return false;
+	// Quality levels, not a boolean: CheckMultisampleQualityLevels succeeds and returns
+	// zero for a count the device cannot do, so the count is the answer.
+	UINT quality = 0;
+	if (FAILED(device->CheckMultisampleQualityLevels(dxgi, (UINT)samples, &quality)))
+		return false;
+	return quality > 0;
+}
+
+bool GfxAdapterD3D11::Supports_Depth_Multisample(unsigned adapter_index, WW3DZFormat format,
+	bool, WW3DMultiSampleType samples)
+{
+	if (samples == WW3D_MULTISAMPLE_NONE) return true;
+	const DXGI_FORMAT dxgi = WW3DZ_To_DXGI(format).depth;
+	if (dxgi == DXGI_FORMAT_UNKNOWN) return false;
+	ID3D11Device * device = Caps_Device(adapter_index);
+	if (device == nullptr) return false;
+	UINT quality = 0;
+	if (FAILED(device->CheckMultisampleQualityLevels(dxgi, (UINT)samples, &quality)))
+		return false;
+	return quality > 0;
 }
 
 bool GfxAdapterD3D11::Supports_Hardware_Transform_And_Lighting(unsigned)
@@ -1328,7 +1384,16 @@ GfxDeviceClass * GfxAdapterD3D11::Create_Device(unsigned adapter_index, GfxSwapC
 	scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 	scd.BufferDesc.RefreshRate.Numerator = desc.RefreshRate;
 	scd.BufferDesc.RefreshRate.Denominator = desc.RefreshRate != 0 ? 1 : 0;
-	scd.SampleDesc.Count = 1;
+	// The back buffer carries the sample count, the way D3D9's did, because that is what
+	// the engine reads to decide the whole multisampled arrangement: W3DShaderManager
+	// describes the current render target -- the back buffer -- and builds its scene
+	// target to match, drawing into a multisampled colour surface and resolving into the
+	// texture the post-process chain samples.
+	//
+	// DXGI_SWAP_EFFECT_DISCARD is what makes this legal at all: the flip models refuse a
+	// multisampled back buffer outright, the BitBlt model does not.
+	scd.SampleDesc.Count = (desc.MultiSample != WW3D_MULTISAMPLE_NONE)
+		? (UINT)desc.MultiSample : 1;
 	scd.SampleDesc.Quality = 0;
 	scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 	scd.BufferCount = desc.BackBufferCount != 0 ? desc.BackBufferCount : 1;
@@ -1338,6 +1403,16 @@ GfxDeviceClass * GfxAdapterD3D11::Create_Device(unsigned adapter_index, GfxSwapC
 	scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
 	hr = m_impl->factory->CreateSwapChain(device, &scd, &impl->swap_chain);
+	if (FAILED(hr) && scd.SampleDesc.Count > 1) {
+		// Say so rather than falling back silently: a run that asked for 8x and measured
+		// 1x is the kind of thing this tree has mistaken for a rendering change before.
+		WWDEBUG_SAY(("D3D11: CreateSwapChain refused %u samples (0x%08x); falling back to "
+			"one. The frame will differ from D3D9 on every silhouette edge.",
+			scd.SampleDesc.Count, (unsigned)hr));
+		scd.SampleDesc.Count = 1;
+		impl->desc.MultiSample = WW3D_MULTISAMPLE_NONE;
+		hr = m_impl->factory->CreateSwapChain(device, &scd, &impl->swap_chain);
+	}
 	if (FAILED(hr)) {
 		WWDEBUG_SAY(("D3D11: CreateSwapChain failed (0x%08x).", (unsigned)hr));
 		delete impl;
@@ -1442,8 +1517,15 @@ namespace
 		D3D11_RENDER_TARGET_VIEW_DESC desc;
 		memset(&desc, 0, sizeof(desc));
 		desc.Format = s->view_format;
-		desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-		desc.Texture2D.MipSlice = s->subresource;
+		// A multisampled resource takes a TEXTURE2DMS view, which has no mip slice --
+		// a multisampled texture has one level by definition. Creating a plain TEXTURE2D
+		// view on one is refused, and a null render-target view draws nothing.
+		if (s->multisample != WW3D_MULTISAMPLE_NONE) {
+			desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+		} else {
+			desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+			desc.Texture2D.MipSlice = s->subresource;
+		}
 		if (FAILED(device->CreateRenderTargetView(s->texture, &desc, &s->rtv))) {
 			s->rtv = nullptr;
 		}
@@ -1457,8 +1539,12 @@ namespace
 		D3D11_DEPTH_STENCIL_VIEW_DESC desc;
 		memset(&desc, 0, sizeof(desc));
 		desc.Format = s->view_format;
-		desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
-		desc.Texture2D.MipSlice = s->subresource;
+		if (s->multisample != WW3D_MULTISAMPLE_NONE) {
+			desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMS;
+		} else {
+			desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+			desc.Texture2D.MipSlice = s->subresource;
+		}
 		if (FAILED(device->CreateDepthStencilView(s->texture, &desc, &s->dsv))) {
 			s->dsv = nullptr;
 		}
@@ -1519,7 +1605,13 @@ namespace
 		dd.MipLevels = 1;
 		dd.ArraySize = 1;
 		dd.Format = zf.typeless;
-		dd.SampleDesc.Count = 1;
+		// A depth buffer's sample count has to equal its colour target's, so this is the
+		// back buffer's and not a constant.
+		{
+			D3D11_TEXTURE2D_DESC bd;
+			impl->back_buffer->texture->GetDesc(&bd);
+			dd.SampleDesc = bd.SampleDesc;
+		}
 		dd.Usage = D3D11_USAGE_DEFAULT;
 		dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 
@@ -3647,6 +3739,11 @@ bool GfxDeviceD3D11::Map_Surface(GfxSurface * surface, const GfxRect * rect,
 		rd.Height = s->height;
 		rd.MipLevels = 1;
 		rd.ArraySize = 1;
+		// Single-sampled, because a staging resource cannot be anything else. The copy
+		// into it below resolves when the source is multisampled -- the frame dump maps
+		// the back buffer, and with multisampling on that is exactly this case.
+		rd.SampleDesc.Count = 1;
+		rd.SampleDesc.Quality = 0;
 		rd.Usage = D3D11_USAGE_STAGING;
 		rd.BindFlags = 0;
 		rd.MiscFlags = 0;
@@ -3670,8 +3767,34 @@ bool GfxDeviceD3D11::Map_Surface(GfxSurface * surface, const GfxRect * rect,
 	// every frame, so there is no earlier copy to carry forward and this cannot be
 	// skipped by remembering one.
 	if (mode != GFX_MAP_WRITE_DISCARD) {
-		m_impl->context->CopySubresourceRegion(s->readback, 0, 0, 0, 0,
-			s->texture, s->subresource, nullptr);
+		if (desc.SampleDesc.Count > 1) {
+			// CopySubresourceRegion refuses to cross a sample count, and refuses it
+			// quietly: the staging texture keeps its zeros and the caller reads a black
+			// image. That is what the frame dump produced the first time the back buffer
+			// was multisampled. Resolve into a plain intermediate and copy off that.
+			D3D11_TEXTURE2D_DESC id = desc;
+			id.Width = s->width;
+			id.Height = s->height;
+			id.MipLevels = 1;
+			id.ArraySize = 1;
+			id.SampleDesc.Count = 1;
+			id.SampleDesc.Quality = 0;
+			id.Usage = D3D11_USAGE_DEFAULT;
+			id.BindFlags = D3D11_BIND_RENDER_TARGET;
+			id.MiscFlags = 0;
+			id.CPUAccessFlags = 0;
+			ID3D11Texture2D * resolved = nullptr;
+			if (SUCCEEDED(m_impl->device->CreateTexture2D(&id, nullptr, &resolved))) {
+				m_impl->context->ResolveSubresource(resolved, 0, s->texture,
+					s->subresource, s->view_format);
+				m_impl->context->CopySubresourceRegion(s->readback, 0, 0, 0, 0,
+					resolved, 0, nullptr);
+				resolved->Release();
+			}
+		} else {
+			m_impl->context->CopySubresourceRegion(s->readback, 0, 0, 0, 0,
+				s->texture, s->subresource, nullptr);
+		}
 	}
 	D3D11_MAPPED_SUBRESOURCE m;
 	if (FAILED(m_impl->context->Map(s->readback, 0, D3D11_MAP_READ_WRITE, 0, &m)))
@@ -3804,14 +3927,39 @@ namespace
 			sd.Height = s->height;
 			sd.MipLevels = 1;
 			sd.ArraySize = 1;
+			// A staging resource is single-sampled by definition, so a multisampled
+			// source has to be resolved on the way down. Without this the create fails
+			// and every CPU read of the back buffer -- the screenshot, the frame dump --
+			// returns nothing the moment multisampling is on.
+			sd.SampleDesc.Count = 1;
+			sd.SampleDesc.Quality = 0;
 			sd.Usage = D3D11_USAGE_STAGING;
 			sd.BindFlags = 0;
 			sd.MiscFlags = 0;
 			sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
 			if (FAILED(impl->device->CreateTexture2D(&sd, nullptr, &view.temporary)))
 				return false;
-			impl->context->CopySubresourceRegion(view.temporary, 0, 0, 0, 0,
-				s->texture, s->subresource, nullptr);
+			if (desc.SampleDesc.Count > 1) {
+				// Resolve into a plain intermediate, then take the staging copy off that.
+				D3D11_TEXTURE2D_DESC rd = sd;
+				rd.Usage = D3D11_USAGE_DEFAULT;
+				rd.CPUAccessFlags = 0;
+				rd.BindFlags = D3D11_BIND_RENDER_TARGET;
+				ID3D11Texture2D * resolved = nullptr;
+				if (FAILED(impl->device->CreateTexture2D(&rd, nullptr, &resolved))) {
+					view.temporary->Release();
+					view.temporary = nullptr;
+					return false;
+				}
+				impl->context->ResolveSubresource(resolved, 0, s->texture, s->subresource,
+					s->view_format);
+				impl->context->CopySubresourceRegion(view.temporary, 0, 0, 0, 0,
+					resolved, 0, nullptr);
+				resolved->Release();
+			} else {
+				impl->context->CopySubresourceRegion(view.temporary, 0, 0, 0, 0,
+					s->texture, s->subresource, nullptr);
+			}
 			target = view.temporary;
 			subresource = 0;
 		}
@@ -3908,10 +4056,39 @@ bool GfxDeviceD3D11::Copy_Surface(GfxSurface * source, const GfxRect * source_re
 			(source_rect->right - source_rect->left) == (dest_rect->right - dest_rect->left) &&
 			(source_rect->bottom - source_rect->top) == (dest_rect->bottom - dest_rect->top));
 
+	// The multisample resolve. This is the call the whole multisampled arrangement turns
+	// on: the engine draws the scene into a multisampled colour surface and then copies it
+	// into a plain texture for the post-process chain to sample, and CopySubresourceRegion
+	// cannot cross a sample count -- D3D11 spells that ResolveSubresource and nothing else.
+	// Whole surfaces only, which is all a resolve can do and all any caller asks for.
+	const bool crosses_sample_count =
+		src->multisample != WW3D_MULTISAMPLE_NONE &&
+		dst->multisample == WW3D_MULTISAMPLE_NONE;
+
+	if (crosses_sample_count &&
+		source_rect == nullptr && dest_rect == nullptr &&
+		src->width == dst->width && src->height == dst->height) {
+		// The destination has to be a GPU-side resource: ResolveSubresource refuses a
+		// staging one, and the screenshot's destination is exactly that -- it copies the
+		// back buffer into an offscreen surface and locks it. Those go the long way, via
+		// Copy_Surface_Rect, which resolves on its way to system memory.
+		D3D11_TEXTURE2D_DESC dd;
+		dst->texture->GetDesc(&dd);
+		if (dd.Usage == D3D11_USAGE_DEFAULT) {
+			// A typeless resource has no resolve format of its own; the view's typed
+			// format is the one both sides agree on.
+			m_impl->context->ResolveSubresource(dst->texture, dst->subresource,
+				src->texture, src->subresource, dst->view_format);
+			return true;
+		}
+	}
+
 	// The fast route: same format, no scaling. CopySubresourceRegion takes any pair of
 	// usages, which is the one place D3D11 is simpler than the three-way ladder D3D9
-	// needed here.
-	if (src->dxgi == dst->dxgi && same_size) {
+	// needed here -- but it will not cross a sample count, and it says so only to the
+	// debug layer. Anything that has to resolve goes the long way instead, or the caller
+	// silently gets whatever the destination already held: a black screenshot.
+	if (src->dxgi == dst->dxgi && same_size && !crosses_sample_count) {
 		D3D11_BOX box;
 		const D3D11_BOX * box_ptr = nullptr;
 		if (source_rect != nullptr) {

@@ -84,6 +84,12 @@ public:
 	virtual GfxDeviceClass * Create_Device(unsigned adapter, GfxSwapChainDesc & desc);
 
 private:
+	// A device kept only to answer capability questions -- see the definition. Declared
+	// with a forward reference rather than by including d3d11.h, which this header must
+	// not do: d3d9_compat.h #defines CreateTexture and friends as fixed-arity macros and
+	// would rewrite the D3D11 calls of the same name in anything that included both.
+	struct ID3D11Device *	Caps_Device(unsigned adapter);
+
 	struct Impl;
 	Impl *	m_impl;
 };
