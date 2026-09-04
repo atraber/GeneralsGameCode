@@ -355,9 +355,18 @@ struct D3D11Texture
 	// answer is a property of this texture and not of its format.
 	bool					can_generate_mips;
 	// Map on a resource D3D11 will not map lands here: one scratch allocation per
-	// subresource, handed to the caller, copied in on Unmap. The engine writes whole mip
-	// levels through this path, so a write-only staging copy is the whole of what it needs.
-	struct Scratch { unsigned char * data; unsigned row_pitch, slice_pitch; };
+	// subresource, handed to the caller, copied back on Unmap. It is this resource's
+	// CPU-side copy -- zeroed when first allocated, holding every CPU write since -- which
+	// is what makes GFX_MAP_WRITE's "whatever is not written stays" true without a
+	// read-back per lock. box_* is the sub-rectangle the caller asked for, so Unmap sends
+	// up what was written rather than the whole level.
+	struct Scratch
+	{
+		unsigned char * data;
+		unsigned row_pitch, slice_pitch;
+		bool has_box;
+		unsigned box_left, box_top, box_right, box_bottom;
+	};
 	Scratch *				scratch;		// [levels * faces]
 };
 
@@ -3263,6 +3272,21 @@ GfxSurface * GfxDeviceD3D11::Create_Offscreen_Surface(unsigned width, unsigned h
 
 	ID3D11Texture2D * texture = nullptr;
 	if (FAILED(m_impl->device->CreateTexture2D(&desc, nullptr, &texture))) return nullptr;
+
+	// A new surface is blank, and the engine has always been written against that.
+	// D3D9's system-memory offscreen surface came back zeroed in practice; D3D11's
+	// staging texture comes back holding whatever the allocation held. It matters because
+	// the engine *reads* surfaces it has only partly written: FontCharsClass::Blit_Char
+	// ORs each glyph's first PixelOverlap columns with what is already in the font atlas,
+	// so under D3D11 the first glyph of every atlas row ORed itself with somebody else's
+	// freed pixels. That is the stray vertical stroke down the left of the digits in the
+	// top-left readout, and it is not the half-pixel rule.
+	D3D11_MAPPED_SUBRESOURCE m;
+	if (SUCCEEDED(m_impl->context->Map(texture, 0, D3D11_MAP_WRITE, 0, &m))) {
+		memset(m.pData, 0, (size_t)m.RowPitch * height);
+		m_impl->context->Unmap(texture, 0);
+	}
+
 	D3D11Surface * s = Wrap_Surface(texture, 0, dxgi, false);
 	texture->Release();
 	if (s != nullptr) s->ww = format;
@@ -3303,6 +3327,45 @@ namespace
 	unsigned Subresource_Of(const D3D11Texture * t, unsigned face, unsigned level)
 	{
 		return level + face * t->levels;
+	}
+
+	// Copy one subresource of a GPU-side texture into CPU memory, through a staging
+	// texture made and thrown away for the purpose. Only ever needed for a resource
+	// something other than the CPU can write -- see the comment at the read-back below.
+	bool Read_Back_Subresource(GfxD3D11Impl * impl, ID3D11Texture2D * tex2d,
+		unsigned subresource, unsigned char * dst, unsigned dst_pitch, unsigned rows)
+	{
+		if (tex2d == nullptr || dst == nullptr) return false;
+		D3D11_TEXTURE2D_DESC desc;
+		tex2d->GetDesc(&desc);
+		const unsigned levels = (desc.MipLevels != 0) ? desc.MipLevels : 1;
+		const unsigned level = subresource % levels;
+		D3D11_TEXTURE2D_DESC sd = desc;
+		sd.Width = desc.Width >> level; if (sd.Width == 0) sd.Width = 1;
+		sd.Height = desc.Height >> level; if (sd.Height == 0) sd.Height = 1;
+		sd.MipLevels = 1;
+		sd.ArraySize = 1;
+		sd.SampleDesc.Count = 1;
+		sd.SampleDesc.Quality = 0;
+		sd.Usage = D3D11_USAGE_STAGING;
+		sd.BindFlags = 0;
+		sd.MiscFlags = 0;
+		sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		ID3D11Texture2D * staging = nullptr;
+		if (FAILED(impl->device->CreateTexture2D(&sd, nullptr, &staging))) return false;
+		impl->context->CopySubresourceRegion(staging, 0, 0, 0, 0, tex2d, subresource, nullptr);
+		D3D11_MAPPED_SUBRESOURCE m;
+		bool ok = false;
+		if (SUCCEEDED(impl->context->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+			const unsigned copy = (dst_pitch < m.RowPitch) ? dst_pitch : m.RowPitch;
+			for (unsigned r = 0; r < rows; ++r) {
+				memcpy(dst + r * dst_pitch, (const unsigned char *)m.pData + r * m.RowPitch, copy);
+			}
+			impl->context->Unmap(staging, 0);
+			ok = true;
+		}
+		staging->Release();
+		return ok;
 	}
 
 	bool Map_Texture_Subresource(GfxD3D11Impl * impl, D3D11Texture * t, unsigned subresource,
@@ -3366,8 +3429,39 @@ namespace
 		}
 		scratch.row_pitch = pitch;
 		scratch.slice_pitch = bytes;
+
+		// GFX_MAP_WRITE means whatever the caller does not write stays. scratch is this
+		// subresource's CPU-side copy -- zeroed when first allocated and holding every CPU
+		// write since -- so for a texture only the CPU writes, it already *is* the current
+		// contents and preserving costs nothing. A read-back is needed exactly when
+		// something else can have written the resource, which here means a render target.
+		//
+		// That distinction is what keeps this off the mip-upload path: Lock_Surfaces maps
+		// every level of every one of the ~1900 textures the game loads, and a staging
+		// copy per level there would be paid on every load for nothing.
+		if (mode != GFX_MAP_WRITE_DISCARD && !t->volume) {
+			ID3D11Texture2D * tex2d = (ID3D11Texture2D *)t->resource;
+			D3D11_TEXTURE2D_DESC rd;
+			tex2d->GetDesc(&rd);
+			if ((rd.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) != 0) {
+				Read_Back_Subresource(impl, tex2d, subresource, scratch.data, pitch, rows);
+			}
+		}
+
+		// Honour the sub-rectangle. The mappable branch above does; this one used to hand
+		// back the base of the whole level whatever was asked for, so a caller that mapped
+		// a rectangle and wrote at the returned pointer wrote to the wrong place.
+		scratch.has_box = false;
 		mapped.Data = scratch.data;
 		mapped.Pitch = (int)pitch;
+		if (rect != nullptr && bpp != 0) {
+			mapped.Data = scratch.data + rect->top * pitch + rect->left * bpp;
+			scratch.has_box = true;
+			scratch.box_left = (unsigned)rect->left;
+			scratch.box_top = (unsigned)rect->top;
+			scratch.box_right = (unsigned)rect->right;
+			scratch.box_bottom = (unsigned)rect->bottom;
+		}
 		return true;
 	}
 
@@ -3381,6 +3475,23 @@ namespace
 		}
 		const D3D11Texture::Scratch & scratch = t->scratch[subresource];
 		if (scratch.data == nullptr) return;
+		if (scratch.has_box) {
+			// UpdateSubresource with a destination box wants the pointer to the box's own
+			// first pixel, not to the start of the level.
+			D3D11_BOX box;
+			box.left = scratch.box_left;
+			box.top = scratch.box_top;
+			box.front = 0;
+			box.right = scratch.box_right;
+			box.bottom = scratch.box_bottom;
+			box.back = 1;
+			const unsigned bpp = Bytes_Per_Pixel(t->dxgi);
+			const unsigned char * src = scratch.data
+				+ scratch.box_top * scratch.row_pitch + scratch.box_left * bpp;
+			impl->context->UpdateSubresource(t->resource, subresource, &box,
+				src, scratch.row_pitch, scratch.slice_pitch);
+			return;
+		}
 		impl->context->UpdateSubresource(t->resource, subresource, nullptr,
 			scratch.data, scratch.row_pitch, scratch.slice_pitch);
 	}
@@ -3521,7 +3632,20 @@ bool GfxDeviceD3D11::Map_Surface(GfxSurface * surface, const GfxRect * rect,
 			return false;
 		}
 	}
-	if (mode != GFX_MAP_WRITE && mode != GFX_MAP_WRITE_DISCARD) {
+	// Every mode but WRITE_DISCARD has to start from the surface's current pixels.
+	//
+	// GFX_MAP_WRITE says so -- "whatever is not written stays" (gfxdevice.h) -- and this
+	// is the engine's whole read-modify-write path: SurfaceClass::Lock passes
+	// GFX_MAP_WRITE, W3DRadar draws individual pixels through it into the minimap's
+	// terrain, overlay and shroud textures, and the shroud pass updates only the cells
+	// that changed. Skipping the copy did not merely fail to preserve: the staging
+	// texture is made fresh for each wrapper, so the caller was handed *uninitialised*
+	// memory and Unmap then copied all of it back over the surface.
+	//
+	// The wrapper is per Get_Texture_Surface_Level call and the radar takes a new one
+	// every frame, so there is no earlier copy to carry forward and this cannot be
+	// skipped by remembering one.
+	if (mode != GFX_MAP_WRITE_DISCARD) {
 		m_impl->context->CopySubresourceRegion(s->readback, 0, 0, 0, 0,
 			s->texture, s->subresource, nullptr);
 	}
