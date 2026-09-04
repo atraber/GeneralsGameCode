@@ -499,10 +499,18 @@ public:
 	// state of its own is entitled to say so.
 	virtual bool			Get_Render_State(unsigned state, unsigned & value) = 0;
 	virtual bool			Get_Texture_Stage_State(unsigned stage, unsigned state, unsigned & value) = 0;
-	// The render path no longer reads a transform back -- it reads the matrix the wrapper
-	// sent. This is the audit's read-back and only that, which is why it sits with the
-	// other three rather than with Set_Transform: it asks the backend what it is holding,
-	// and a backend holding no transform state of its own answers false.
+	// What the backend is holding for a transform slot.
+	//
+	// This was documented as the audit's read-back and only that, on the grounds that the
+	// render path reads the matrix the wrapper sent rather than asking the device. That is
+	// not true and the first backend to take it at its word found out: Bind_Ui_Shader_World
+	// reads D3DTS_VIEW and D3DTS_PROJECTION back through here to build a world-view-
+	// projection constant for the interface shader, on the render path, every shadow-decal
+	// batch. A backend answering false there does not degrade -- the caller falls back to a
+	// fixed-function pipeline, which is exactly what a second backend has not got.
+	//
+	// So a backend must keep what Set_Transform gives it, whether or not it has anything to
+	// drive with it. Answering false remains legal for a slot never written.
 	virtual bool			Get_Transform(unsigned which, float * matrix4x4) = 0;
 
 	// ---- fixed-function residue ------------------------------------------
@@ -547,6 +555,11 @@ public:
 	virtual void			Set_Pixel_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count) = 0;
 
 	virtual void			Set_Vertex_Stream(unsigned stream, GfxVertexBuffer * buffer, unsigned stride) = 0;
+	// Hands back a reference the caller must give to Release_Vertex_Buffer -- the same
+	// borrowing rule the three Get_ target calls below use, and stated here for the same
+	// reason: it is not a COM detail, it is what the one caller does. It went unwritten
+	// while D3D9 was the only backend because GetStreamSource does it as a matter of
+	// course, and the first backend that did not cost a crash on its first frame.
 	virtual bool			Get_Vertex_Stream(unsigned stream, GfxVertexBuffer ** buffer,
 								unsigned * offset, unsigned * stride) = 0;
 	virtual void			Set_Index_Buffer(GfxIndexBuffer * buffer, int base_vertex_index) = 0;
