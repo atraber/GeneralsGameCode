@@ -317,14 +317,32 @@ flush_particles:
 			// so the expansion cannot happen in it. (D3D11 has the same hole, and closes
 			// it with a geometry shader.)
 			//
-			// Nothing is lost by leaving it. renderAsQuads below is the same snowfall
-			// built out of real quads on the CPU, drawn through DX8Wrapper::Draw_Triangles
-			// like everything else, and it is already what runs whenever the hardware or
-			// TheWeatherSetting->m_usePointSprites says no. Converting this path would not
-			// add a capability, it would delete the cheaper of two ways to draw the same
-			// snow -- so the honest move is to keep both and say why, and let the point
-			// sprite path simply stop being offered if the fixed-function pipeline ever
-			// goes away entirely.
+			// renderAsQuads below is the same snowfall built out of real quads on the CPU,
+			// drawn through DX8Wrapper::Draw_Triangles like everything else, and it is
+			// already what runs whenever the hardware or TheWeatherSetting->m_usePointSprites
+			// says no. Converting this path would not add a capability, it would delete the
+			// cheaper of two ways to draw the same snow -- so keep both, and let the point
+			// sprite path stop being offered where the fixed-function pipeline is not there.
+			//
+			// Measured rather than assumed, once a Data\INI\Patch override made either
+			// path reachable at all -- no map in the shipped corpus has snow enabled, so
+			// neither drawer had ever been run by the harness:
+			//
+			//   SnowPointSprites = Yes  13200 draws per 600 frames, 100% fixed function on
+			//                           the vertex side and on the pixel side too. That is
+			//                           the largest fixed-function draw family left in the
+			//                           game by an order of magnitude, and it was invisible.
+			//   SnowPointSprites = No   this drawer does not appear at all; the snow goes
+			//                           through unit_vs and unit_uv2_vs, and the census
+			//                           reports 0 draws reaching a device without a shader.
+			//
+			// So a backend with no point sprites needs no code: it reports PointSprites
+			// false in its caps and line 344 picks the quad path on its own. What it does
+			// need is a retune. The two paths draw the same flakes in the same places at
+			// different sizes -- m_snowPointSize is a screen-space point scaled against
+			// m_snowMaxPointSize, m_snowQuadSize is half a world unit, and they are
+			// separate settings that nothing keeps in step. Same frame, same snowfall,
+			// 15% of pixels different.
 			DX8Wrapper::Force_Fixed_Function_Pipeline();
 			DX8Wrapper::Prepare_Direct_Draw("snow");
 			DX8Wrapper::Draw_DX8_Primitive( D3DPT_POINTLIST, m_dwBase, numberInBatch);

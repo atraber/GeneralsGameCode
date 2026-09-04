@@ -126,6 +126,17 @@ void INI::parseWeatherDefinition( INI *ini )
 {
 	if (TheWeatherSetting == nullptr) {
 		TheWeatherSetting = newInstance(WeatherSetting);
+	} else if (ini->isPatchLoad()) {
+		// A patch edits the settings that are already here, in place, and makes no new
+		// override -- which is the whole difference between the two modes, and is why the
+		// branch is separate rather than folded into the one below. Falling through leaves
+		// weatherSet pointing at the final override, so initFromINI writes the named fields
+		// over it and leaves everything else alone.
+		//
+		// Without this the block threw INI_INVALID_DATA for any patch that named it, which
+		// made the snowfall unreachable from a patch INI: SnowEnabled and SnowPointSprites
+		// are the only way to run either snow drawer without a map that has snow in it, and
+		// no map in the shipped corpus does.
 	} else if (ini->getLoadType() == INI_LOAD_CREATE_OVERRIDES) {
 		WeatherSetting* ws = (WeatherSetting*) (TheWeatherSetting.getNonOverloadedPointer());
 		WeatherSetting* wsOverride = newInstance(WeatherSetting);
