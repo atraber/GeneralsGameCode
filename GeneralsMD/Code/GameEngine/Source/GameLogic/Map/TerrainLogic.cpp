@@ -1134,6 +1134,24 @@ void TerrainLogic::newMap( Bool saveGame )
 	Bool enable = FALSE;
 	if( waypoint )
 		enable = TRUE;
+#if defined(RTS_DEBUG)
+	// ...and no map on this machine has that waypoint. All 116 shipped maps in MapsZH.big
+	// and all 66 in the user Maps folder were scanned for the string in Phase 9: zero hits,
+	// against a control of 182 of 182 containing "Waypoint". So renderWaterMesh -- the last
+	// unconverted fixed-function drawer, WATER_MESH_FVF with no vertex shader -- is dead on
+	// every piece of content that exists here, which is why no replay reaches it and why one
+	// cannot be recorded.
+	//
+	// W3D_FORCE_WATER_GRID=1 turns it on anyway, so that the path can be run once under each
+	// backend and the question settled while there is still a D3D9 to compare against. It is
+	// an env var and debug only, so a build left in the game directory cannot do it to
+	// somebody playing.
+	if( !enable && getenv( "W3D_FORCE_WATER_GRID" ) != nullptr )
+	{
+		enable = TRUE;
+		DEBUG_LOG(( "WATER GRID: forced on by W3D_FORCE_WATER_GRID -- this map has no WaveGuide1 waypoint." ));
+	}
+#endif
 	enableWaterGrid( enable );
 
 }

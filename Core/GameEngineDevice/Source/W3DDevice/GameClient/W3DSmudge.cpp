@@ -33,6 +33,7 @@
 #include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "Common/GameMemory.h"
 #include "GameClient/View.h"
+#include "Common/UnattendedRun.h"
 #include "GameClient/Display.h"
 #include "WW3D2/texture.h"
 #include "WW3D2/dx8indexbuffer.h"
@@ -619,6 +620,40 @@ void W3DSmudgeManager::render(RenderInfoClass &rinfo)
 	}
 
 	m_smudgeCountLastFrame = count;
+
+#if defined(RTS_DEBUG)
+	// Did a smudge actually draw?
+	//
+	// "SMUDGE: supported" only says the capability probe passed. It says nothing about
+	// whether any smudge was submitted, and three phases asked the user for a Microwave
+	// Tank mid-beam without ever being able to tell the difference between "the path is
+	// broken" and "nothing in this replay emits one". Only two particle systems in the game
+	// can produce a smudge at all, so the answer is usually the second.
+	//
+	// The first line names the run frame the first smudge appeared on, which is what turns
+	// a replay into a -dumpFrames argument. The window census is the control beside it.
+	{
+		static UnsignedInt firstFrame = 0;
+		static unsigned windowFrames = 0;
+		static unsigned windowSmudges = 0;
+		static unsigned windowFramesWithAny = 0;
+		static unsigned windowMax = 0;
+		if (count > 0 && firstFrame == 0) {
+			firstFrame = getUnattendedRunFrame();
+			DEBUG_LOG(("SMUDGE: first submitted smudge at run frame %u (%d this frame)",
+				firstFrame, count));
+		}
+		windowSmudges += (unsigned)count;
+		if (count > 0) { ++windowFramesWithAny; if ((unsigned)count > windowMax) windowMax = (unsigned)count; }
+		if (++windowFrames >= 600) {
+			DEBUG_LOG(("SMUDGE CENSUS over 600 frames: %u smudges submitted across %u frames "
+				"(most in one frame %u). A zero here with 'SMUDGE: supported' above means the "
+				"path works and this replay never asks it to draw.",
+				windowSmudges, windowFramesWithAny, windowMax));
+			windowFrames = 0; windowSmudges = 0; windowFramesWithAny = 0; windowMax = 0;
+		}
+	}
+#endif
 
 	if (!count)
 	{
