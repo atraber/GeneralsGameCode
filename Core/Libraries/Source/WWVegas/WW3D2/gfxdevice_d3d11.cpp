@@ -1439,7 +1439,11 @@ GfxDeviceClass * GfxAdapterD3D11::Create_Device(unsigned adapter_index, GfxSwapC
 		return nullptr;
 	}
 
-	WWDEBUG_SAY(("D3D11: device created at feature level %x_%x, %ux%u %s.",
+	// The nibbles are the version in *hexadecimal* -- D3D_FEATURE_LEVEL_11_0 is 0xb000, so
+	// the major nibble is 0xb and means eleven. Printed with %x this line has said
+	// "feature level b_0" in every run this tree has ever made, and Phase 5's write-up
+	// read it as 11_0 and quoted it as evidence. %u is the whole fix.
+	WWDEBUG_SAY(("D3D11: device created at feature level %u_%u, %ux%u %s.",
 		((unsigned)level >> 12) & 0xf, ((unsigned)level >> 8) & 0xf,
 		desc.Width, desc.Height, desc.Windowed ? "windowed" : "fullscreen"));
 
