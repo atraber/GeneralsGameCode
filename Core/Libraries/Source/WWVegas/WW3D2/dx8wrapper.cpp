@@ -2545,6 +2545,73 @@ void DX8Wrapper::Debug_Note_Alpha_Fog_Draw()
 	g.on = on;
 }
 
+// One line per draw, on one render frame, saying what the *device* holds in its vertex
+// shader constant registers.
+//
+// The reason this reads back rather than printing Vertex_Shader_Constants: that array is
+// what this file handed to the backend, and it hands the identical array to both
+// backends, so printing it would compare the wrapper with itself and always agree. Every
+// way the two could actually differ -- a constant buffer packed differently, uploaded
+// short, or not uploaded at all before the draw -- lives below this line and only a
+// readback can see it.
+//
+// Hex, not %f. The difference this was built to look for is in the low bits of a float,
+// and every decimal format that fits on a line rounds it away.
+//
+// Registers 0-7 in full because c0-c3 is the world-view-projection matrix every vertex
+// shader multiplies its position by -- if the geometry lands in different places, this
+// is the first place it could come from -- plus a hash over all 96, so that a difference
+// anywhere else is still reported rather than silently outside the window.
+void DX8Wrapper::Debug_Dump_Vertex_Constants()
+{
+	static int s_frame = -2;         // -2 = not looked yet, -1 = switched off
+	static unsigned s_maxDraws = 400;
+	static unsigned s_drawsThisFrame = 0;
+	static unsigned s_lastFrame = 0xffffffff;
+
+	if (s_frame == -2) {
+		s_frame = -1;
+		const char * spec = ::getenv("W3D_DUMP_VS_CONSTANTS");
+		if (spec != nullptr && *spec != '\0') {
+			s_frame = atoi(spec);
+			const char * colon = strchr(spec, ':');
+			if (colon != nullptr) s_maxDraws = (unsigned)atoi(colon + 1);
+			WWDEBUG_SAY(("VS CONSTANT DUMP: armed for render frame %d, first %u draws.",
+				s_frame, s_maxDraws));
+		}
+	}
+	if (s_frame < 0) return;
+
+	const unsigned frame = WW3D::Get_Frame_Count();
+	if (frame != s_lastFrame) { s_lastFrame = frame; s_drawsThisFrame = 0; }
+	if (frame != (unsigned)s_frame) return;
+	if (s_drawsThisFrame >= s_maxDraws) return;
+
+	float c[MAX_VERTEX_SHADER_CONSTANTS * 4];
+	if (!Gfx->Debug_Read_Vertex_Constants(0, MAX_VERTEX_SHADER_CONSTANTS, c)) {
+		// Said once and then disarmed. A backend that cannot answer must not leave a
+		// log that looks like a dump with no rows in it.
+		WWDEBUG_SAY(("VS CONSTANT DUMP: this backend cannot read its constants back."));
+		s_frame = -1;
+		return;
+	}
+
+	// FNV-1a over all 96 registers, on the raw bits.
+	unsigned hash = 2166136261u;
+	const unsigned char * bytes = (const unsigned char *)c;
+	for (unsigned i = 0; i < sizeof(c); ++i) { hash ^= bytes[i]; hash *= 16777619u; }
+
+	const unsigned * w = (const unsigned *)c;
+	WWDEBUG_SAY(("VSC %4u vs=%08x ps=%-20s all=%08x "
+		"c0=%08x,%08x,%08x,%08x c1=%08x,%08x,%08x,%08x "
+		"c2=%08x,%08x,%08x,%08x c3=%08x,%08x,%08x,%08x",
+		s_drawsThisFrame, (unsigned)Vertex_Shader,
+		Debug_Shader_Name((unsigned)Pixel_Shader), hash,
+		w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7],
+		w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15]));
+	++s_drawsThisFrame;
+}
+
 void DX8Wrapper::Debug_Report_Alpha_Fog()
 {
 	// Same 600-frame window as every other census here, so the numbers can be read
@@ -5687,6 +5754,13 @@ void DX8Wrapper::Draw(
 				// SetIndices when it does re-issue it.
 				DX8_RECORD_RENDER(polygon_count,vertex_count,render_state.shader);
 				DX8_RECORD_DRAW_CALLS();
+#ifdef RTS_DEBUG
+				// Here rather than at the top of Draw, because everything above can still
+				// return without submitting and a dump that counted those would not line up
+				// draw-for-draw with the other backend's. This is the last statement before
+				// the geometry goes.
+				Debug_Dump_Vertex_Constants();
+#endif
 				GFXCALL(Draw_Indexed(
 					primitive_type,
 					(int)(render_state.index_base_offset + render_state.vba_offset),

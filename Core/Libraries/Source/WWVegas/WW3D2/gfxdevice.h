@@ -857,6 +857,21 @@ public:
 	// no obligation to answer -- a backend that cannot returns false.
 	virtual bool			Validate_Draw_State(unsigned & passes) = 0;
 
+	// Debug only: the vertex shader constant registers *the device holds*, read back
+	// from it rather than from the copy the wrapper kept.
+	//
+	// The distinction is the whole point. Both backends are handed the same floats by
+	// the same wrapper code, so comparing the wrapper's own copies would prove nothing
+	// about what each device ended up with: a constant buffer that is packed, offset
+	// or uploaded short still reads back correct one level up. This asks the device.
+	//
+	// No obligation to answer, like Validate_Draw_State above: a backend with no way to
+	// read its constants back returns false, and the caller must report that rather
+	// than a number.
+	virtual bool			Debug_Read_Vertex_Constants(unsigned first_register,
+								unsigned count, float * out)
+							{ (void)first_register; (void)count; (void)out; return false; }
+
 	/*
 	** The device itself, for code outside this engine that renders into it.
 	**

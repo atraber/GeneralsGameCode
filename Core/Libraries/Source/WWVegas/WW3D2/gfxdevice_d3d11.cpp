@@ -651,6 +651,9 @@ struct GfxD3D11Impl
 	ID3D11Buffer *				vs_constant_buffer;
 	ID3D11Buffer *				ps_constant_buffer;
 	bool						vs_constants_dirty, ps_constants_dirty;
+	// Debug only: where Debug_Read_Vertex_Constants copies the constant buffer to so it
+	// can be mapped for reading. Made on first use, never in a release build.
+	ID3D11Buffer *				debug_constant_staging;
 
 	// The stream that supplies whatever a vertex shader declares and the vertex format
 	// does not carry. D3D9's FVF path defaulted those registers to (0,0,0,1) and never
@@ -1810,6 +1813,8 @@ GfxDeviceD3D11::~GfxDeviceD3D11()
 	m_impl->sampler_cache.Release_All();
 	m_impl->layout_cache.Release_All();
 
+	if (m_impl->debug_constant_staging != nullptr)
+		m_impl->debug_constant_staging->Release();
 	if (m_impl->vs_constant_buffer != nullptr) m_impl->vs_constant_buffer->Release();
 	if (m_impl->ps_constant_buffer != nullptr) m_impl->ps_constant_buffer->Release();
 	if (m_impl->zero_stream != nullptr) m_impl->zero_stream->Release();
@@ -4676,6 +4681,55 @@ bool GfxDeviceD3D11::Validate_Draw_State(unsigned & passes)
 	// state combination it refuses at creation, which is a different and earlier failure.
 	passes = 1;
 	return false;
+}
+
+// The constant buffer, off the device and back through a staging copy.
+//
+// Deliberately not impl->vs_constants: that array is this backend's copy of what the
+// wrapper handed it, and the wrapper handed the same floats to D3D9, so reading it
+// here would compare the wrapper with itself. What is worth measuring is the buffer
+// the vertex shader actually reads, after the map, the memcpy and whatever packing
+// register(cN) turned into -- so the copy comes out of the resource.
+//
+// Debug only, and it stalls: CopyResource then a blocking map is a full pipeline
+// flush. Nothing calls it per frame.
+bool GfxDeviceD3D11::Debug_Read_Vertex_Constants(unsigned first_register, unsigned count,
+	float * out)
+{
+	TRACE("Debug_Read_Vertex_Constants");
+	if (out == nullptr || count == 0) return false;
+	if (m_impl->vs_constant_buffer == nullptr) return false;
+	if (first_register + count > GFX_VS_CONSTANTS) return false;
+
+	// One staging buffer, made on first use and kept: this is asked for a few hundred
+	// times in the one frame a dump names, and creating a buffer per call would make
+	// the instrument's cost the thing being measured.
+	if (m_impl->debug_constant_staging == nullptr) {
+		D3D11_BUFFER_DESC desc;
+		memset(&desc, 0, sizeof(desc));
+		desc.Usage = D3D11_USAGE_STAGING;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		desc.ByteWidth = GFX_VS_CONSTANTS * 4 * sizeof(float);
+		if (FAILED(m_impl->device->CreateBuffer(&desc, nullptr,
+				&m_impl->debug_constant_staging)))
+			return false;
+	}
+
+	// Whatever is pending has to be in the buffer before it is copied out of, or the
+	// readback reports the previous draw's constants and every comparison made with it
+	// is off by one draw.
+	Upload_Constants(m_impl);
+
+	m_impl->context->CopyResource(m_impl->debug_constant_staging,
+		m_impl->vs_constant_buffer);
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	if (FAILED(m_impl->context->Map(m_impl->debug_constant_staging, 0, D3D11_MAP_READ,
+			0, &mapped)))
+		return false;
+	memcpy(out, (const float *)mapped.pData + first_register * 4,
+		count * 4 * sizeof(float));
+	m_impl->context->Unmap(m_impl->debug_constant_staging, 0);
+	return true;
 }
 
 bool GfxDeviceD3D11::Reset_Swap_Chain(GfxSwapChainDesc & desc)

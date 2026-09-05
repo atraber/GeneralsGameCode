@@ -1440,6 +1440,15 @@ public:
 	// zero reads as "nobody asked for it" rather than "the instrument was not reached".
 	static void Debug_Note_Alpha_Fog_Draw();
 	static void Debug_Report_Alpha_Fog();
+	// The vertex shader constant registers *the device holds*, one line per draw, on the
+	// render frame named by W3D_DUMP_VS_CONSTANTS=<frame>[:<max draws>].
+	//
+	// Written for one question: whether two backends handed the same floats by this same
+	// code end up with the same floats in the shader. So the values come back through
+	// GfxDeviceClass::Debug_Read_Vertex_Constants -- off the device -- and are printed in
+	// hex, because the difference being looked for is in the last bits and %f would hide
+	// it. Two runs' logs are compared line for line.
+	static void Debug_Dump_Vertex_Constants();
 	// Handle -> name for every shader loaded through W3DShaderManager, so the census
 	// above can say "tree_ps" instead of a device handle. Shaders created by a direct
 	// CreatePixelShader call are not in the table and report as unregistered.

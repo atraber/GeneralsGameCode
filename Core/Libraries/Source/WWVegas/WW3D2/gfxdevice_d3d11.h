@@ -255,6 +255,8 @@ public:
 	virtual bool			Query_Capabilities(GfxDeviceCaps & caps);
 	virtual bool			Reset_Swap_Chain(GfxSwapChainDesc & desc);
 	virtual bool			Validate_Draw_State(unsigned & passes);
+	virtual bool			Debug_Read_Vertex_Constants(unsigned first_register,
+								unsigned count, float * out);
 
 	/// Null, and deliberately. DX8WebBrowser hands the device to an ActiveX control that
 	/// wants a D3D9 device or nothing; the caller turns the in-game browser off.

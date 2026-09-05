@@ -1499,3 +1499,13 @@ bool GfxDeviceD3D9::Validate_Draw_State(unsigned & passes)
 	passes = (unsigned)n;
 	return SUCCEEDED(hr);
 }
+
+// Straight out of the device. D3D9 keeps the constant registers itself and hands them
+// back, so there is nothing to stage and nothing to guess at.
+bool GfxDeviceD3D9::Debug_Read_Vertex_Constants(unsigned first_register, unsigned count,
+	float * out)
+{
+	if (out == nullptr || count == 0) return false;
+	return SUCCEEDED(m_device->GetVertexShaderConstantF((UINT)first_register, out,
+		(UINT)count));
+}

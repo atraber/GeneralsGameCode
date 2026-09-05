@@ -245,6 +245,8 @@ public:
 	virtual void *			Peek_Native_Device() { return m_device; }
 	virtual bool			Reset_Swap_Chain(GfxSwapChainDesc & desc);
 	virtual bool			Validate_Draw_State(unsigned & passes);
+	virtual bool			Debug_Read_Vertex_Constants(unsigned first_register,
+								unsigned count, float * out);
 
 private:
 	IDirect3DDevice8 *		m_device;
