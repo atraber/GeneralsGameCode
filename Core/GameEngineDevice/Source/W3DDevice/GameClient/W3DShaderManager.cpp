@@ -2260,6 +2260,30 @@ void W3DShaderManager::shutdownUnitShaders()
 {
 	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwUnitVS);
 	DX8Wrapper::m_dwUnitVS = 0;
+	// The five vertex shaders and two pixel shaders below were loaded beside the ones
+	// this function already released and were never released with them.
+	//
+	// It has always leaked; only the second backend made it visible. Under D3D9 a shader
+	// handle is a COM object the engine's own allocator never sees, so a missing release
+	// leaks a D3D9 object and the leak report says nothing. The D3D11 backend wraps each
+	// one in an engine allocation -- the struct plus a copy of the bytecode, which
+	// CreateInputLayout needs for the life of the shader -- and the same omission then
+	// shows up as blocks. So this is not a D3D11 defect being fixed; it is a D3D9 one
+	// that D3D11 reported.
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwUnitPrelitVS);
+	DX8Wrapper::m_dwUnitPrelitVS = 0;
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwUnitUv2VS);
+	DX8Wrapper::m_dwUnitUv2VS = 0;
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwUiVS);
+	DX8Wrapper::m_dwUiVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwUiPS);
+	DX8Wrapper::m_dwUiPS = 0;
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwScreenQuadVS);
+	DX8Wrapper::m_dwScreenQuadVS = 0;
+	DX8Wrapper::Release_Vertex_Shader(DX8Wrapper::m_dwMaskVS);
+	DX8Wrapper::m_dwMaskVS = 0;
+	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwMaskPS);
+	DX8Wrapper::m_dwMaskPS = 0;
 	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwUnitPS);
 	DX8Wrapper::m_dwUnitPS = 0;
 	DX8Wrapper::Release_Pixel_Shader(DX8Wrapper::m_dwUnitDetailPS);
