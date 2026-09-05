@@ -176,6 +176,18 @@ static unsigned s_srv_rebound = 0;
 // the wrapper next writing that stage. Without the fix every one of those draws sampled
 // zero. It should be non-zero if the bug was ever real.
 static unsigned s_draws_target_conflict = 0;
+// ...and the subset of those where the bound pixel shader declares a texture in a
+// register that is one of the nulled slots. Only these can tell the two APIs apart.
+static unsigned s_draws_target_conflict_read = 0;
+// The control for the line above: draws reaching that test with no pixel shader whose
+// registers could be read at all. A zero narrowed figure means nothing without it.
+static unsigned s_draws_target_conflict_noshader = 0;
+// The control for the narrowing itself: how many pixel shaders the RDEF parse found any
+// texture register in at all. If that were zero the narrowed draw count would read zero
+// whatever the truth was, and the parser would be reporting its own failure as a result.
+static unsigned s_ps_created = 0;
+static unsigned s_ps_with_textures = 0;
+static unsigned s_ps_texture_union = 0;
 static unsigned s_draws_rescued = 0;
 // The sampler census. 87% of the D3D11/D3D9 difference is texture sampling, and the two
 // candidates are mip selection and the anisotropic implementation; these say which
@@ -484,6 +496,8 @@ struct D3D11PixelShader
 {
 	ID3D11PixelShader *		shader;
 	Signature				inputs;
+	// Which t registers it declares a texture in, for the render-target hazard census.
+	unsigned				texture_mask;
 };
 
 struct D3D11Query { int unused; };
@@ -859,6 +873,60 @@ static bool Parse_Signature(const unsigned char * bytecode, unsigned size,
 	// A shader with no such chunk reads or writes nothing through it, which is legal and
 	// means there is nothing to satisfy.
 	return true;
+}
+
+// Which t registers a shader actually declares a texture in, one bit each.
+//
+// The render-target hazard census counts *bindings*: a draw is flagged when a slot the
+// backend had to null still points at the current render target. That is the right
+// question for the binding, and the wrong one for the draw, because the two APIs only
+// diverge if the shader on that draw reads the slot. D3D9 hands back whatever is in the
+// surface; D3D11 hands back zero from a NULL slot -- but only to a shader that fetches.
+// A draw whose pixel shader declares no texture at that register cannot tell them apart
+// and is exposure, not a defect. This is what narrows one to the other.
+//
+// RDEF's resource-binding table, which is where a t register is written down: eight
+// words per entry, the second being the input type (2 is a texture) and the sixth the
+// bind point.
+static unsigned Parse_Texture_Mask(const unsigned char * bytecode, unsigned size)
+{
+	if (bytecode == nullptr || size < 32) return 0;
+	if (memcmp(bytecode, "DXBC", 4) != 0) return 0;
+
+	const unsigned chunk_count = *(const unsigned *)(bytecode + 28);
+	if (chunk_count == 0 || chunk_count > 32) return 0;
+	if (size < 32 + chunk_count * 4) return 0;
+	const unsigned * offsets = (const unsigned *)(bytecode + 32);
+
+	for (unsigned c = 0; c < chunk_count; ++c) {
+		const unsigned offset = offsets[c];
+		if (offset + 8 > size) continue;
+		const unsigned char * chunk = bytecode + offset;
+		if (memcmp(chunk, "RDEF", 4) != 0) continue;
+
+		const unsigned chunk_size = *(const unsigned *)(chunk + 4);
+		const unsigned char * data = chunk + 8;
+		if (offset + 8 + chunk_size > size || chunk_size < 28) return 0;
+
+		const unsigned bind_count = *(const unsigned *)(data + 8);
+		const unsigned bind_offset = *(const unsigned *)(data + 12);
+		if (bind_count > 64) return 0;
+
+		unsigned mask = 0;
+		for (unsigned e = 0; e < bind_count; ++e) {
+			const unsigned entry = bind_offset + e * 32;
+			if (entry + 32 > chunk_size) return mask;
+			const unsigned type = *(const unsigned *)(data + entry + 4);
+			const unsigned bind_point = *(const unsigned *)(data + entry + 20);
+			// 2 is D3D_SIT_TEXTURE. Samplers (3) are a separate table in D3D11 and are
+			// not what a NULL shader-resource slot returns zero through.
+			if (type == 2 && bind_point < 32) mask |= (1u << bind_point);
+		}
+		return mask;
+	}
+	// No RDEF is no declared texture, which is the honest answer for a shader that
+	// samples nothing.
+	return 0;
 }
 
 /// A system value -- SV_Position and the rest -- is placed in a slot of its own and takes
@@ -2227,6 +2295,12 @@ GfxShaderHandle GfxDeviceD3D11::Create_Pixel_Shader(const void * bytecode, unsig
 	// Its input signature, for the linkage check at the draw. Kept rather than the
 	// bytecode: a pixel shader's bytes are needed for nothing else once it is created.
 	Parse_Signature((const unsigned char *)bytecode, size, "ISGN", ps->inputs);
+	ps->texture_mask = Parse_Texture_Mask((const unsigned char *)bytecode, size);
+#ifdef RTS_DEBUG
+	++s_ps_created;
+	if (ps->texture_mask != 0) ++s_ps_with_textures;
+	s_ps_texture_union |= ps->texture_mask;
+#endif
 	return (GfxShaderHandle)ps;
 }
 
@@ -2813,7 +2887,16 @@ namespace
 		// What survives the restore is a texture that really is the current target, which
 		// no shader may read under either API -- exposure, not a defect. The rescued mask
 		// is the defect: without the fix those slots would still be NULL here.
-		if (impl->srv_unbound_mask != 0) ++s_draws_target_conflict;
+		if (impl->srv_unbound_mask != 0) {
+			++s_draws_target_conflict;
+			// Narrowed by what the shader on this draw can actually fetch. A conflicting
+			// slot the pixel shader declares no texture in is a binding the shader never
+			// looks at, and the two APIs' disagreement about what a NULL slot returns
+			// cannot reach a pixel.
+			if (impl->pixel_shader == nullptr) ++s_draws_target_conflict_noshader;
+			else if ((impl->srv_unbound_mask & impl->pixel_shader->texture_mask) != 0)
+				++s_draws_target_conflict_read;
+		}
 		if (impl->srv_rescued_mask != 0) ++s_draws_rescued;
 #endif
 
@@ -4641,6 +4724,21 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 		"read a NULL slot as zero. A zero beside a zero first figure is the instrument not "
 		"running.",
 		s_srv_forced_unbound, s_srv_rebound, s_draws_target_conflict, s_draws_rescued));
+	WWDEBUG_SAY(("D3D11 RENDER TARGET HAZARD, narrowed: of those %u conflicted draws, %u "
+		"had a pixel shader declaring a texture in one of the nulled registers and %u had "
+		"no pixel shader at all. The first figure is the only one that can differ between "
+		"the two APIs: D3D9 returns whatever is in the surface where D3D11 returns zero "
+		"from a NULL slot, and a shader that declares no texture at that register never "
+		"asks. A zero there retires the wide figure as exposure. The wide figure beside "
+		"it is the control.",
+		s_draws_target_conflict, s_draws_target_conflict_read,
+		s_draws_target_conflict_noshader));
+	WWDEBUG_SAY(("D3D11 RENDER TARGET HAZARD, the narrowing's own control: %u of %u pixel "
+		"shaders created declare at least one texture register, and the union of the "
+		"registers they declare is 0x%02x. A zero here would make the narrowed draw count "
+		"above read zero whatever the truth was -- it would be the RDEF parse failing, "
+		"reported as a result.",
+		s_ps_with_textures, s_ps_created, s_ps_texture_union));
 	WWDEBUG_SAY(("D3D11 SAMPLER CENSUS over 600 frames: %u textured stages were drawn -- "
 		"%u with a linear mip filter, %u point, %u with no mipmapping at all, %u "
 		"anisotropic, and %u through no sampler object of ours at all. That last figure is "
@@ -4681,6 +4779,8 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 	s_srv_forced_unbound = 0;
 	s_srv_rebound = 0;
 	s_draws_target_conflict = 0;
+	s_draws_target_conflict_read = 0;
+	s_draws_target_conflict_noshader = 0;
 	s_draws_rescued = 0;
 #endif
 }
