@@ -158,6 +158,44 @@ static unsigned s_dropped_trianglefan = 0;
 static unsigned s_dropped_no_input_layout = 0;
 static unsigned s_dropped_signature_mismatch = 0;
 static unsigned s_draws = 0;
+// The render-target hazard. s_srv_forced_unbound is how often a texture had to leave a
+// shader-resource slot because it became the render target; s_srv_rebound is how often it
+// went back; s_draws_with_null_slot is the one that matters -- a draw submitted while the
+// wrapper believed a texture was bound and the device had NULL there.
+static unsigned s_srv_forced_unbound = 0;
+static unsigned s_srv_rebound = 0;
+// Two different things, and the first draft of this instrument conflated them.
+//
+// s_draws_target_conflict is draws submitted while a slot really is the render target.
+// That is legal, unavoidable and true of D3D9 too -- the shadow depth pass binds the
+// shadow map and then draws several hundred times with last frame's copy of it still in a
+// stage -- so it is exposure, not a defect, and it does not go to zero.
+//
+// s_draws_rescued is the one that measures the bug: draws that sampled through a slot this
+// backend put back on its own initiative, between the resource ceasing to be a target and
+// the wrapper next writing that stage. Without the fix every one of those draws sampled
+// zero. It should be non-zero if the bug was ever real.
+static unsigned s_draws_target_conflict = 0;
+static unsigned s_draws_rescued = 0;
+// The sampler census. 87% of the D3D11/D3D9 difference is texture sampling, and the two
+// candidates are mip selection and the anisotropic implementation; these say which
+// samplers the frame is actually built out of rather than which ones it could be.
+// s_sampler_stage_no_sampler is the one with a hypothesis behind it: a stage that never
+// received a D3DSAMP write gets no sampler object at all here and falls back to D3D11's
+// own default, which mipmaps -- where D3D9's device default for MIPFILTER is NONE.
+static unsigned s_sampler_textured_stages = 0;
+static unsigned s_sampler_stage_mip_none = 0;
+static unsigned s_sampler_stage_mip_point = 0;
+static unsigned s_sampler_stage_mip_linear = 0;
+static unsigned s_sampler_stage_aniso = 0;
+static unsigned s_sampler_stage_no_sampler = 0;
+// Every distinct sampler description this backend has created, kept here rather than read
+// off the cache because the report is a static member and has no device to ask. Ten fields
+// in declaration order: address u/v/w, mag, min, mip, lod bias (as a float's bit pattern),
+// max lod, max anisotropy, border.
+static unsigned s_sampler_keys[64][10];
+static unsigned s_sampler_key_uses[64];
+static int s_sampler_key_count = 0;
 // The positive control. A zero above only reads as "nothing was absorbed" beside a
 // non-zero total; without it, an instrument that never ran prints the same line.
 static unsigned s_render_state_writes = 0;
@@ -554,6 +592,9 @@ struct GfxD3D11Impl
 	unsigned					tss[GFX_MAX_STAGES][32];
 	bool						blend_dirty, depth_dirty, raster_dirty;
 	bool						sampler_dirty[GFX_MAX_STAGES];
+	// Whether a sampler object was ever built and bound for this stage. False means the
+	// stage is sampling through D3D11's own default sampler, which is not D3D9's.
+	bool						sampler_applied[GFX_MAX_STAGES];
 
 	StateCache<BlendKey, ID3D11BlendState, 64>			blend_cache;
 	StateCache<DepthKey, ID3D11DepthStencilState, 64>	depth_cache;
@@ -570,6 +611,23 @@ struct GfxD3D11Impl
 	D3D11Buffer *				index_buffer;
 	int							base_vertex_index;
 	D3D11Texture *				textures[GFX_MAX_STAGES];
+	// The stages whose shader-resource slot this backend has nulled behind the wrapper's
+	// back, one bit each.
+	//
+	// D3D11 will not have one resource bound as a render target and as a shader resource
+	// at the same time: OMSetRenderTargets nulls the shader-resource slot and says so only
+	// to the debug layer. That alone would be harmless -- except that the redundancy check
+	// lives one level up, in DX8Wrapper::Set_Texture ("if (Textures[stage]==texture)
+	// return"), so the wrapper still believes the texture is bound and never sends it
+	// again. The slot stays NULL and the shader samples zero. The backend is the only
+	// place that knows, so it remembers here and re-binds at the next draw, once the
+	// resource has stopped being a target.
+	unsigned					srv_unbound_mask;
+	// The stages this backend has put back on its own initiative, cleared when the wrapper
+	// next writes that stage. Purely a measurement: it is the window in which, without the
+	// fix above, the slot would still have been NULL and the shader would have sampled
+	// zero. Nothing reads it but the census.
+	unsigned					srv_rescued_mask;
 
 	// Constants. One buffer per stage at the register offsets the shaders already declare;
 	// Phase 3.8 established that register(cN) survives to Shader Model 4 unchanged, so
@@ -2005,15 +2063,95 @@ bool GfxDeviceD3D11::Get_Transform(unsigned which, float * matrix4x4)
 
 // ---------------------------------------------------------------------------
 // Bindings
+//
+// The render-target hazard lives here, in both directions. See srv_unbound_mask on
+// GfxD3D11Impl for what it is and why the backend, rather than the wrapper, has to own it.
 // ---------------------------------------------------------------------------
+
+namespace
+{
+	/// The resource a surface lives in, or null. A GfxSurface is a view of one subresource
+	/// of a texture, and the hazard is about the resource.
+	ID3D11Resource * Surface_Resource(const D3D11Surface * s)
+	{
+		return (s != nullptr) ? (ID3D11Resource *)s->texture : nullptr;
+	}
+
+	/// Whether a resource is bound as the colour or the depth target right now.
+	bool Is_Bound_As_Target(const GfxD3D11Impl * impl, const ID3D11Resource * resource)
+	{
+		if (resource == nullptr) return false;
+		return resource == Surface_Resource(impl->current_rt)
+			|| resource == Surface_Resource(impl->current_ds);
+	}
+
+	/// Take one stage's texture out of both shader stages and record that it happened.
+	void Force_Unbind_Stage(GfxD3D11Impl * impl, unsigned stage)
+	{
+		ID3D11ShaderResourceView * none = nullptr;
+		impl->context->PSSetShaderResources(stage, 1, &none);
+		impl->context->VSSetShaderResources(stage, 1, &none);
+		impl->srv_unbound_mask |= (1u << stage);
+		ABSORB(s_srv_forced_unbound);
+	}
+
+	/// Everything the incoming target conflicts with, unbound before OMSetRenderTargets
+	/// gets to do it silently.
+	void Unbind_Conflicting_Textures(GfxD3D11Impl * impl, const D3D11Surface * rt,
+		const D3D11Surface * ds)
+	{
+		const ID3D11Resource * colour = Surface_Resource(rt);
+		const ID3D11Resource * depth = Surface_Resource(ds);
+		if (colour == nullptr && depth == nullptr) return;
+		for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
+			if ((impl->srv_unbound_mask & (1u << s)) != 0) continue;		// already out
+			const D3D11Texture * t = impl->textures[s];
+			if (t == nullptr || t->resource == nullptr) continue;
+			if (t->resource != colour && t->resource != depth) continue;
+			Force_Unbind_Stage(impl, s);
+		}
+	}
+
+	/// The other half: a slot nulled above goes back the moment its texture stops being a
+	/// target. Nothing above this can do it, because nothing above this knows the slot was
+	/// ever cleared.
+	void Restore_Unbound_Textures(GfxD3D11Impl * impl)
+	{
+		for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
+			if ((impl->srv_unbound_mask & (1u << s)) == 0) continue;
+			D3D11Texture * t = impl->textures[s];
+			ID3D11Resource * res = (t != nullptr) ? t->resource : nullptr;
+			if (Is_Bound_As_Target(impl, res)) continue;	// still a target; cannot go back
+			ID3D11ShaderResourceView * srv = (t != nullptr) ? t->srv : nullptr;
+			impl->context->PSSetShaderResources(s, 1, &srv);
+			impl->context->VSSetShaderResources(s, 1, &srv);
+			impl->srv_unbound_mask &= ~(1u << s);
+			if (srv != nullptr) impl->srv_rescued_mask |= (1u << s);
+			ABSORB(s_srv_rebound);
+		}
+	}
+}
 
 void GfxDeviceD3D11::Set_Texture(unsigned stage, GfxTexture * texture)
 {
 	TRACE("Set_Texture");
 	if (stage >= GFX_MAX_STAGES) return;
 	m_impl->textures[stage] = (D3D11Texture *)texture;
+	m_impl->srv_unbound_mask &= ~(1u << stage);
+	// The wrapper has spoken for this stage, so the rescue window closes: from here the
+	// slot would have been right with or without the fix.
+	m_impl->srv_rescued_mask &= ~(1u << stage);
 
 	D3D11Texture * t = (D3D11Texture *)texture;
+	// The same hazard from the other side. Binding a texture that is the current target
+	// would make D3D11 unbind the *target* instead, which is the worse half of the trade.
+	// Null the slot and remember, exactly as Set_Render_Target does; the next draw after
+	// the resource stops being a target puts it back.
+	if (t != nullptr && Is_Bound_As_Target(m_impl, t->resource)) {
+		Force_Unbind_Stage(m_impl, stage);
+		DX8Wrapper_Increment_Call_Count();
+		return;
+	}
 	ID3D11ShaderResourceView * srv = (t != nullptr) ? t->srv : nullptr;
 	// Bound to both stages. A pixel shader is the usual reader, but vs_3_0 could fetch a
 	// texture and the engine's slot numbering is shared between the two -- Phase 3.8's
@@ -2439,6 +2577,26 @@ namespace
 		key.max_aniso = impl->tss[stage][TSS_MAXANISOTROPY];
 		key.border = impl->tss[stage][TSS_BORDERCOLOR];
 
+#ifdef RTS_DEBUG
+		// Which sampler descriptions the frame is actually built out of, and how much of
+		// it each one draws. Ten fields, in SamplerKey's declaration order.
+		{
+			const unsigned fields[10] = { key.address_u, key.address_v, key.address_w,
+				key.mag, key.min, key.mip, key.lod_bias, key.max_lod, key.max_aniso,
+				key.border };
+			int slot = -1;
+			for (int i = 0; i < s_sampler_key_count; ++i) {
+				if (memcmp(s_sampler_keys[i], fields, sizeof(fields)) == 0) { slot = i; break; }
+			}
+			if (slot < 0 && s_sampler_key_count < 64) {
+				slot = s_sampler_key_count++;
+				memcpy(s_sampler_keys[slot], fields, sizeof(fields));
+				s_sampler_key_uses[slot] = 0;
+			}
+			if (slot >= 0) ++s_sampler_key_uses[slot];
+		}
+#endif
+
 		ID3D11SamplerState * state = impl->sampler_cache.Find(key);
 		if (state == nullptr) {
 			D3D11_SAMPLER_DESC desc;
@@ -2466,6 +2624,7 @@ namespace
 		}
 		impl->context->PSSetSamplers(stage, 1, &state);
 		impl->context->VSSetSamplers(stage, 1, &state);
+		impl->sampler_applied[stage] = true;
 		DX8Wrapper_Increment_Call_Count();
 	}
 
@@ -2646,6 +2805,36 @@ namespace
 			}
 		}
 
+		// Anything the render-target hazard took out of a slot goes back here, now that
+		// the resource may have stopped being a target. The common case is a mask of zero
+		// and one branch.
+		if (impl->srv_unbound_mask != 0) Restore_Unbound_Textures(impl);
+#ifdef RTS_DEBUG
+		// What survives the restore is a texture that really is the current target, which
+		// no shader may read under either API -- exposure, not a defect. The rescued mask
+		// is the defect: without the fix those slots would still be NULL here.
+		if (impl->srv_unbound_mask != 0) ++s_draws_target_conflict;
+		if (impl->srv_rescued_mask != 0) ++s_draws_rescued;
+#endif
+
+#ifdef RTS_DEBUG
+		// The sampler census, taken per *stage that has a texture on it* rather than per
+		// draw, because a draw sampling four textures is four sampling decisions.
+		for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
+			if (impl->textures[s] == nullptr) continue;
+			++s_sampler_textured_stages;
+			if (!impl->sampler_applied[s]) { ++s_sampler_stage_no_sampler; continue; }
+			const unsigned mag = impl->tss[s][TSS_MAGFILTER];
+			const unsigned min = impl->tss[s][TSS_MINFILTER];
+			if (mag == 3 || min == 3) { ++s_sampler_stage_aniso; continue; }
+			switch (impl->tss[s][TSS_MIPFILTER]) {
+			case 2:  ++s_sampler_stage_mip_linear; break;
+			case 1:  ++s_sampler_stage_mip_point;  break;
+			default: ++s_sampler_stage_mip_none;   break;
+			}
+		}
+#endif
+
 		Upload_Constants(impl);
 		DX8Wrapper_Increment_Call_Count();
 		return true;
@@ -2767,6 +2956,11 @@ bool GfxDeviceD3D11::Set_Render_Target(GfxSurface * color, GfxSurface * depth)
 	D3D11Surface * rt = (D3D11Surface *)color;
 	D3D11Surface * ds = (D3D11Surface *)depth;
 	if (rt == nullptr) rt = m_impl->back_buffer;
+
+	// Before OMSetRenderTargets, not after: left to itself D3D11 nulls the conflicting
+	// shader-resource slots and tells only the debug layer, and the wrapper's redundancy
+	// check then never sends the texture again.
+	Unbind_Conflicting_Textures(m_impl, rt, ds);
 
 	m_impl->current_rt = rt;
 	m_impl->current_ds = ds;
@@ -4437,6 +4631,42 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 		"compile Phase 3.8 added cannot see it: it compiles one shader at a time. "
 		"shader_signature_check.py lists the pairs.",
 		s_dropped_signature_mismatch, s_draws));
+	WWDEBUG_SAY(("D3D11 RENDER TARGET HAZARD over 600 frames: %u shader-resource slots were "
+		"force-unbound because the texture in them became the render target and %u were put "
+		"back once it stopped being one. %u draws were submitted while a slot's texture "
+		"really was the target -- legal, unavoidable and true of D3D9 too, so that figure "
+		"does not go to zero. %u draws sampled through a slot this backend put back on its "
+		"own initiative, and that is the bug: the wrapper's redundancy check never re-sends "
+		"a texture it believes is still bound, so without the fix every one of those draws "
+		"read a NULL slot as zero. A zero beside a zero first figure is the instrument not "
+		"running.",
+		s_srv_forced_unbound, s_srv_rebound, s_draws_target_conflict, s_draws_rescued));
+	WWDEBUG_SAY(("D3D11 SAMPLER CENSUS over 600 frames: %u textured stages were drawn -- "
+		"%u with a linear mip filter, %u point, %u with no mipmapping at all, %u "
+		"anisotropic, and %u through no sampler object of ours at all. That last figure is "
+		"the one with a hypothesis behind it: a stage that never received a D3DSAMP write "
+		"gets D3D11's default sampler, which mipmaps, where D3D9's device default for "
+		"MIPFILTER is NONE. %d distinct sampler descriptions have been asked for since the "
+		"device was made.",
+		s_sampler_textured_stages, s_sampler_stage_mip_linear, s_sampler_stage_mip_point,
+		s_sampler_stage_mip_none, s_sampler_stage_aniso, s_sampler_stage_no_sampler,
+		s_sampler_key_count));
+	for (int i = 0; i < s_sampler_key_count; ++i) {
+		float bias = 0.0f;
+		memcpy(&bias, &s_sampler_keys[i][6], sizeof(bias));
+		WWDEBUG_SAY(("D3D11 SAMPLER [%d]: mag %u min %u mip %u aniso %u bias %.3f "
+			"maxmiplevel %u address %u/%u/%u   bound x%u",
+			i, s_sampler_keys[i][3], s_sampler_keys[i][4], s_sampler_keys[i][5],
+			s_sampler_keys[i][8], bias, s_sampler_keys[i][7],
+			s_sampler_keys[i][0], s_sampler_keys[i][1], s_sampler_keys[i][2],
+			s_sampler_key_uses[i]));
+	}
+	s_sampler_textured_stages = 0;
+	s_sampler_stage_mip_none = 0;
+	s_sampler_stage_mip_point = 0;
+	s_sampler_stage_mip_linear = 0;
+	s_sampler_stage_aniso = 0;
+	s_sampler_stage_no_sampler = 0;
 	s_absorbed_render_states = 0;
 	s_absorbed_stage_words = 0;
 	s_absorbed_transforms = 0;
@@ -4448,5 +4678,9 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 	s_draws = 0;
 	s_render_state_writes = 0;
 	s_stage_word_writes = 0;
+	s_srv_forced_unbound = 0;
+	s_srv_rebound = 0;
+	s_draws_target_conflict = 0;
+	s_draws_rescued = 0;
 #endif
 }
