@@ -2459,6 +2459,13 @@ namespace
 		impl->rs[RS_STENCILZFAIL] = 1;
 		impl->rs[RS_STENCILMASK] = 0xffffffff;
 		impl->rs[RS_STENCILWRITEMASK] = 0xffffffff;
+		// D3D9's device default for D3DRS_MULTISAMPLEANTIALIAS is TRUE, and nothing in
+		// this engine ever writes it -- the one line that would is commented out in
+		// Set_Default_Global_Render_States. So a zero here is not "the engine asked for
+		// no multisampling", it is this table never having been told what D3D9 starts
+		// with, and D3D11_RASTERIZER_DESC::MultisampleEnable is the one field in that
+		// description with no D3D9 render state behind it to correct it later.
+		impl->rs[RS_MULTISAMPLEANTIALIAS] = 1;
 		for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
 			impl->tss[s][TSS_ADDRESSU] = 1;		// D3DTADDRESS_WRAP
 			impl->tss[s][TSS_ADDRESSV] = 1;
@@ -2630,6 +2637,20 @@ namespace
 			desc.AntialiasedLineEnable = FALSE;
 
 			if (FAILED(impl->device->CreateRasterizerState(&desc, &state))) return;
+#ifdef RTS_DEBUG
+			// Every distinct rasterizer description this backend ever builds, once each.
+			// Five of these fields have no D3D9 render state behind them, so nothing
+			// downstream can correct a wrong default and no census counts them: the only
+			// way to know what they hold is to print them. There are a handful of
+			// descriptions in a whole run, so this is a handful of lines.
+			WWDEBUG_SAY(("D3D11 RASTERIZER: fill %u cull %u ccw %d depthBias %d slope %g "
+				"clamp %g depthClip %d scissor %d multisample %d aaLine %d",
+				(unsigned)desc.FillMode, (unsigned)desc.CullMode,
+				(int)desc.FrontCounterClockwise, (int)desc.DepthBias,
+				(double)desc.SlopeScaledDepthBias, (double)desc.DepthBiasClamp,
+				(int)desc.DepthClipEnable, (int)desc.ScissorEnable,
+				(int)desc.MultisampleEnable, (int)desc.AntialiasedLineEnable));
+#endif
 			impl->raster_cache.Add(key, state);
 		}
 		impl->context->RSSetState(state);
@@ -3108,6 +3129,21 @@ void GfxDeviceD3D11::Set_Viewport(const GfxViewport & viewport)
 	vp.Height = (float)viewport.Height;
 	vp.MinDepth = viewport.MinZ;
 	vp.MaxDepth = viewport.MaxZ;
+#ifdef RTS_DEBUG
+	// Each distinct viewport once. D3D11's fields are floats where D3D9's were integers,
+	// which is the shape of seam a half unit goes missing at, and the viewport transform
+	// is upstream of every pixel: if the two backends disagree here they disagree about
+	// where all the geometry lands and no later measurement means anything.
+	{
+		static D3D11_VIEWPORT s_last = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
+		if (memcmp(&s_last, &vp, sizeof(vp)) != 0) {
+			s_last = vp;
+			WWDEBUG_SAY(("D3D11 VIEWPORT: x %g y %g w %g h %g minZ %g maxZ %g",
+				(double)vp.TopLeftX, (double)vp.TopLeftY, (double)vp.Width,
+				(double)vp.Height, (double)vp.MinDepth, (double)vp.MaxDepth));
+		}
+	}
+#endif
 	m_impl->context->RSSetViewports(1, &vp);
 	DX8Wrapper_Increment_Call_Count();
 }

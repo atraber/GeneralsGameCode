@@ -362,6 +362,19 @@ void GfxDeviceD3D9::Set_Viewport(const GfxViewport & viewport)
 	vp.Height = viewport.Height;
 	vp.MinZ = viewport.MinZ;
 	vp.MaxZ = viewport.MaxZ;
+#ifdef RTS_DEBUG
+	// The same line the D3D11 backend prints, in the same words, so the two runs' logs
+	// can be compared without translating either. Said once per distinct viewport.
+	{
+		static D3DVIEWPORT9 s_last = { 0xffffffff, 0xffffffff, 0, 0, -1.0f, -1.0f };
+		if (memcmp(&s_last, &vp, sizeof(vp)) != 0) {
+			s_last = vp;
+			WWDEBUG_SAY(("D3D9 VIEWPORT: x %g y %g w %g h %g minZ %g maxZ %g",
+				(double)vp.X, (double)vp.Y, (double)vp.Width, (double)vp.Height,
+				(double)vp.MinZ, (double)vp.MaxZ));
+		}
+	}
+#endif
 	D3DCALL(SetViewport(&vp));
 }
 
