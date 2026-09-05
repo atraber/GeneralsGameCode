@@ -852,7 +852,14 @@ namespace {
 		unsigned draws;
 		unsigned submitted;
 	};
-	ShaderlessDepthRow s_shaderlessDepth[24];
+	// The cap, named rather than repeated: it was written as a literal 24 in the array
+	// and again in the insert, and one usa_lightsout window reached it and printed
+	// "TABLE FULL". Nothing live was hidden -- every row read submitted 0 -- which is
+	// exactly why it is worth raising now rather than after a row that matters is the
+	// one dropped. The rows are keyed by mesh name as well as by state, so the count is
+	// bounded by the scene rather than by the number of interesting states.
+	enum { MAX_SHADERLESS_DEPTH_ROWS = 96 };
+	ShaderlessDepthRow s_shaderlessDepth[MAX_SHADERLESS_DEPTH_ROWS];
 	int      s_shaderlessDepthCount = 0;
 	unsigned s_shaderlessDepthDropped = 0;
 
@@ -911,7 +918,10 @@ void DX8Wrapper::Debug_Note_Shaderless_Depth_Draw(bool submitted)
 			return;
 		}
 	}
-	if (s_shaderlessDepthCount >= 24) { ++s_shaderlessDepthDropped; return; }
+	if (s_shaderlessDepthCount >= MAX_SHADERLESS_DEPTH_ROWS) {
+		++s_shaderlessDepthDropped;
+		return;
+	}
 	ShaderlessDepthRow & r = s_shaderlessDepth[s_shaderlessDepthCount++];
 	strncpy(r.mesh, mesh, sizeof(r.mesh) - 1);
 	r.mesh[sizeof(r.mesh) - 1] = '\0';
@@ -1034,6 +1044,14 @@ void DX8Wrapper::Debug_Report_Vertex_Layouts()
 		s_vertexLayouts[best].draws = 0;
 	}
 	if (s_shaderlessDepthCount > 0) {
+		// How many, not merely that there were some: "TABLE FULL" says a row is missing
+		// and leaves the reader with no way to tell one from a thousand.
+		char fullNote[64];
+		fullNote[0] = '\0';
+		if (s_shaderlessDepthDropped != 0) {
+			sprintf(fullNote, "  -- TABLE FULL, %u draws unreported",
+				s_shaderlessDepthDropped);
+		}
 		WWDEBUG_SAY(("  SHADERLESS DEPTH-PASS DRAWS, by mesh and by the state that decides "
 					 "whether they are inert%s. D3D11 cannot make any of these -- there is "
 					 "no vertex shader and no fixed-function pipeline to stand in for one "
@@ -1041,15 +1059,27 @@ void DX8Wrapper::Debug_Report_Vertex_Layouts()
 					 "D3D9 would draw. It must be 0. The stencil operations are printed "
 					 "because enabled is not the same as written: KEEP/KEEP/KEEP cannot "
 					 "change a bit of any target, whatever D3DRS_STENCILENABLE says.",
-			s_shaderlessDepthDropped ? "  -- TABLE FULL" : ""));
+			fullNote));
 		for (int i = 0; i < s_shaderlessDepthCount; ++i) {
 			const ShaderlessDepthRow & r = s_shaderlessDepth[i];
 			char desc[128];
 			Describe_FVF(r.fvf, desc, sizeof(desc));
+			// 0x12345678 is Invalidate_Cached_Render_States' "the wrapper claims nothing
+			// about this word" sentinel, and printing it in decimal put 305419896 in a
+			// column of stencil operations, where it reads as a value rather than as the
+			// absence of one. A table whose whole purpose is to show state has to be able
+			// to say "never written".
+			char ops[64];
+			if (r.stencilPass == 0x12345678u || r.stencilFail == 0x12345678u ||
+				r.stencilZFail == 0x12345678u) {
+				strcpy(ops, "never written");
+			} else {
+				sprintf(ops, "%u/%u/%u", r.stencilPass, r.stencilFail, r.stencilZFail);
+			}
 			WWDEBUG_SAY(("    %-28s fvf 0x%-6x %-26s colourMask 0x%-2x zWrite %u "
-						 "stencil %u ops %u/%u/%u   x%-6u submitted %u",
+						 "stencil %u ops %-13s x%-6u submitted %u",
 				r.mesh, r.fvf, desc, r.colourMask, r.zWrite, r.stencil,
-				r.stencilPass, r.stencilFail, r.stencilZFail, r.draws, r.submitted));
+				ops, r.draws, r.submitted));
 		}
 	}
 	s_shaderlessDepthCount = 0;
