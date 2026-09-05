@@ -1348,6 +1348,10 @@ public:
 	// for a draw Draw() drops before it reaches a device -- those need no layout, and
 	// counting them in would put the depth pass at the top of a table meant to size work.
 	static void Debug_Note_Vertex_Layout(const char * site, bool direct, bool submitted);
+	// One shaderless draw inside the shadow depth pass that really reaches a device:
+	// which mesh, and which of the three state words kept Is_Inert_Depth_Pass_Draw from
+	// dropping it. Reported with the vertex layout census.
+	static void Debug_Note_Shaderless_Depth_Draw(bool submitted);
 	static void Debug_Report_Vertex_Layouts();
 	// The first wrapper draw after a direct-device drawer, measured at the moment Draw()
 	// takes the device's bindings back -- before the repair, because after it there is

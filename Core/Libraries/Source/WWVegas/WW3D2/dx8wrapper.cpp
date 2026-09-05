@@ -822,6 +822,40 @@ namespace {
 	unsigned s_vertexLayoutFrames = 0;
 	unsigned s_vertexLayoutDropped = 0;
 
+	// The shaderless depth-pass draws, named.
+	//
+	// usa_lightsout submits 914 draws in one census window, and 1547 in another, that
+	// reach a device inside the shadow depth pass with no vertex shader; the other eight
+	// windows submit none. Under D3D9 the fixed-function vertex pipeline drew them; a
+	// D3D11 backend cannot make them at all and drops them, which is the only place in the
+	// corpus where it provably draws less.
+	//
+	// The vertex layout census calls them "(shadow depth pass)" because that is
+	// Debug_Current_Pass_Name and no DeclaredTechniqueClass scope covers them -- a pass,
+	// not a drawer, and this tree has twice been wrong about a census for exactly that
+	// reason. This table answers both open questions at once: the mesh name says who, and
+	// the three state words say why Is_Inert_Depth_Pass_Draw did not drop them (it needs a
+	// zero colour mask, depth writes off and stencil off, and these have at least one on).
+	struct ShaderlessDepthRow
+	{
+		// Copied, not pointed at. s_debugMeshName borrows the mesh's own storage and the
+		// mesh outlives neither the window nor this table, so keeping the pointer and
+		// strcmp'ing it on a later draw reads freed memory -- which crashed two runs
+		// before it was noticed. The rows above this one get away with a pointer because
+		// they hold declaration-site and pass-name literals; a mesh name is not one.
+		char mesh[64];
+		unsigned fvf;
+		unsigned colourMask;
+		unsigned zWrite;
+		unsigned stencil;
+		unsigned stencilPass, stencilFail, stencilZFail;
+		unsigned draws;
+		unsigned submitted;
+	};
+	ShaderlessDepthRow s_shaderlessDepth[24];
+	int      s_shaderlessDepthCount = 0;
+	unsigned s_shaderlessDepthDropped = 0;
+
 	// FVF codes are a bitfield plus a two-bit-per-set texture coordinate size, and reading
 	// one off a hex number by eye is how the wrong layout gets written. Spell it out.
 	void Describe_FVF(unsigned fvf, char * out, unsigned outSize)
@@ -848,6 +882,48 @@ namespace {
 		strncpy(out, s.Peek_Buffer(), outSize - 1);
 		out[outSize - 1] = 0;
 	}
+}
+
+void DX8Wrapper::Debug_Note_Shaderless_Depth_Draw(bool submitted)
+{
+	// The same printability check FFSafeName makes further down this file, which cannot be
+	// called from here: a mesh name that is not plain ASCII is a pointer that no longer
+	// names a mesh, and the row is more useful saying so than repeating whatever it found.
+	const char * live = s_debugMeshName;
+	if (live != nullptr) {
+		if (*live == '\0') live = nullptr;
+		for (const char * p = live; live != nullptr && *p != '\0'; ++p) {
+			if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7e) live = nullptr;
+		}
+	}
+	const char * mesh = (live != nullptr) ? live : "(non-mesh)";
+	const unsigned fvf = Debug_Vertex_FVF;
+	const unsigned colourMask = RenderStates[D3DRS_COLORWRITEENABLE];
+	const unsigned zWrite = RenderStates[D3DRS_ZWRITEENABLE];
+	const unsigned stencil = RenderStates[D3DRS_STENCILENABLE];
+
+	for (int i = 0; i < s_shaderlessDepthCount; ++i) {
+		ShaderlessDepthRow & r = s_shaderlessDepth[i];
+		if (r.fvf == fvf && r.colourMask == colourMask && r.zWrite == zWrite &&
+			r.stencil == stencil && strcmp(r.mesh, mesh) == 0) {
+			++r.draws;
+			if (submitted) ++r.submitted;
+			return;
+		}
+	}
+	if (s_shaderlessDepthCount >= 24) { ++s_shaderlessDepthDropped; return; }
+	ShaderlessDepthRow & r = s_shaderlessDepth[s_shaderlessDepthCount++];
+	strncpy(r.mesh, mesh, sizeof(r.mesh) - 1);
+	r.mesh[sizeof(r.mesh) - 1] = '\0';
+	r.fvf = fvf;
+	r.colourMask = colourMask;
+	r.zWrite = zWrite;
+	r.stencil = stencil;
+	r.stencilPass = RenderStates[D3DRS_STENCILPASS];
+	r.stencilFail = RenderStates[D3DRS_STENCILFAIL];
+	r.stencilZFail = RenderStates[D3DRS_STENCILZFAIL];
+	r.draws = 1;
+	r.submitted = submitted ? 1 : 0;
 }
 
 void DX8Wrapper::Debug_Note_Vertex_Layout(const char * site, bool direct, bool submitted)
@@ -957,6 +1033,27 @@ void DX8Wrapper::Debug_Report_Vertex_Layouts()
 			r.noPixel ? "  *** and no pixel shader either" : ""));
 		s_vertexLayouts[best].draws = 0;
 	}
+	if (s_shaderlessDepthCount > 0) {
+		WWDEBUG_SAY(("  SHADERLESS DEPTH-PASS DRAWS, by mesh and by the state that decides "
+					 "whether they are inert%s. D3D11 cannot make any of these -- there is "
+					 "no vertex shader and no fixed-function pipeline to stand in for one "
+					 "-- so `submitted` is the count that a second backend would drop and "
+					 "D3D9 would draw. It must be 0. The stencil operations are printed "
+					 "because enabled is not the same as written: KEEP/KEEP/KEEP cannot "
+					 "change a bit of any target, whatever D3DRS_STENCILENABLE says.",
+			s_shaderlessDepthDropped ? "  -- TABLE FULL" : ""));
+		for (int i = 0; i < s_shaderlessDepthCount; ++i) {
+			const ShaderlessDepthRow & r = s_shaderlessDepth[i];
+			char desc[128];
+			Describe_FVF(r.fvf, desc, sizeof(desc));
+			WWDEBUG_SAY(("    %-28s fvf 0x%-6x %-26s colourMask 0x%-2x zWrite %u "
+						 "stencil %u ops %u/%u/%u   x%-6u submitted %u",
+				r.mesh, r.fvf, desc, r.colourMask, r.zWrite, r.stencil,
+				r.stencilPass, r.stencilFail, r.stencilZFail, r.draws, r.submitted));
+		}
+	}
+	s_shaderlessDepthCount = 0;
+	s_shaderlessDepthDropped = 0;
 	s_vertexLayoutCount = 0;
 	s_vertexLayoutDropped = 0;
 }
@@ -1982,15 +2079,29 @@ void DX8Wrapper::Debug_Report_Depth_Pass_Stencil()
 bool DX8Wrapper::Is_Inert_Depth_Pass_Draw()
 {
 	// Only the depth pass, because only there is the answer this cheap. That render
-	// target is packed depth written as colour, with a depth buffer behind it and
-	// stencil unused, so these three words are the complete list of ways a draw could
-	// leave a mark on it. Elsewhere a draw with both write masks off can still be doing
-	// something -- filling stencil for the player-colour pass or the shadow volumes --
-	// and the same three reads would not settle it.
+	// target is packed depth written as colour, with a depth buffer behind it, so colour
+	// and depth are the complete list of ways a draw could leave a mark on it. Elsewhere
+	// a draw with both write masks off can still be doing something -- filling stencil for
+	// the player-colour pass -- and the same reads would not settle it.
+	//
+	// Stencil used to be read here as a third condition, and that was the belt-and-braces
+	// version of a claim this now makes directly: **neither depth-pass target has a
+	// stencil plane**. W3DShaderManager creates both at WW3D_ZFORMAT_D16 -- the shadow map
+	// depth surface and the SSR prepass's -- so no stencil state reachable inside this
+	// pass can write a bit of anything, whatever D3DRS_STENCILENABLE says. Reading the
+	// enable instead left 914 draws a window on usa_lightsout submitted for nothing:
+	// vehicle headlight meshes with no technique, masked out of colour and depth like
+	// every other unroutable draw, kept alive by BuildingOcclusion's STENCILENABLE with
+	// STENCILPASS at REPLACE. They were the only draws in the corpus a D3D11 backend
+	// provably could not make and D3D9 could -- and what D3D9 made of them was nothing.
+	//
+	// Switching the enable off at the top of the pass does *not* work and was tried: the
+	// occlusion pass runs inside the shadow render and sets it TRUE again itself. The
+	// format is the durable fact, so it is the one the predicate rests on. If either
+	// surface ever gains a stencil plane, this has to come back.
 	if (!m_bShadowDepthPass) return false;
 	return RenderStates[D3DRS_COLORWRITEENABLE] == 0 &&
-		   RenderStates[D3DRS_ZWRITEENABLE] == FALSE &&
-		   RenderStates[D3DRS_STENCILENABLE] == FALSE;
+		   RenderStates[D3DRS_ZWRITEENABLE] == FALSE;
 }
 
 const char* DX8Wrapper::Debug_Current_Pass_Name()
@@ -5437,7 +5548,14 @@ void DX8Wrapper::Draw(
 		// draws would otherwise sit at the top of a table meant to size a backend's work.
 		const char* who = s_declarationSite;
 		if (who == nullptr) who = Debug_Current_Pass_Name();
-		Debug_Note_Vertex_Layout(who, false, !Is_Inert_Depth_Pass_Draw());
+		const bool submitted = !Is_Inert_Depth_Pass_Draw();
+		Debug_Note_Vertex_Layout(who, false, submitted);
+		// The 914-a-window on usa_lightsout, named -- and recorded whether it is dropped
+		// or not, because the interesting column once Is_Inert_Depth_Pass_Draw was widened
+		// to cover them is that it now reads 0 submitted against the same draw count.
+		if (m_bShadowDepthPass && Is_Fixed_Function_Vertex_Draw()) {
+			Debug_Note_Shaderless_Depth_Draw(submitted);
+		}
 	}
 #endif
 
