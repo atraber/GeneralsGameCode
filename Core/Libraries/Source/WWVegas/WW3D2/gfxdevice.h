@@ -298,6 +298,66 @@ struct GfxDisplayMode
 };
 
 /*
+** Which state words a D3D11 backend has nothing to do with.
+**
+** The D3D11 backend absorbs these, silently, and counts them; per 600-frame window on
+** civ_buildings that is 5 render-state writes, 4502 texture-stage writes and every one of
+** 1582 transforms. Whether any of it matters was assumed, never tested -- and the only
+** possible test is to make the *D3D9* backend drop exactly the same writes and diff
+** D3D9-with against D3D9-without, which stops being possible the moment the D3D9 backend
+** is gone.
+**
+** The predicate therefore lives here, once, rather than being written out twice. The D3D11
+** backend's switch and the D3D9 backend's W3D_D3D9_DROP_ABSORBED filter are the same
+** question asked of the same function, so an experiment that says "these writes are dead"
+** cannot turn out to have been an experiment about two predicates that drifted apart. The
+** D3D11 backend counts any disagreement between this function and what its own switch does,
+** and prints the count in the same census -- see s_absorb_predicate_disagreements.
+**
+** The numbers are D3D9's own render-state and texture-stage-state values, which is what
+** the seam passes; spelled out rather than included, for the reason gfxdevice_d3d11.cpp
+** spells them out.
+*/
+namespace GfxAbsorb
+{
+	// A render state D3D11 has no use for: everything outside blend, depth/stencil and
+	// rasterizer. Alpha test is absorbed too, because Phase 2 moved it into clip() at c28
+	// and turned the hardware stage off, so those three words arrive only as bookkeeping.
+	inline bool Render_State_Is_Absorbed(unsigned state)
+	{
+		switch (state) {
+		// blend
+		case 27: case 19: case 20: case 171: case 168:
+		case 206: case 207: case 208: case 209:
+		// depth and stencil
+		case 7: case 14: case 23:
+		case 52: case 56: case 57: case 58: case 59: case 55: case 53: case 54:
+		// rasterizer
+		case 22: case 8: case 195: case 175: case 174: case 161:
+		// the D3D8 integer ZBIAS, which d3d9_compat.h keeps at 224
+		case 224:
+			return false;
+		default:
+			return true;
+		}
+	}
+
+	// A texture-stage word D3D11 has no use for: everything that is not one of the ten
+	// D3D8 stage states that became D3D9 sampler states. The rest are fixed-function
+	// combiner words, and there is no combiner.
+	inline bool Stage_State_Is_Absorbed(unsigned state)
+	{
+		switch (state) {
+		case 13: case 14: case 15: case 16: case 17: case 18:
+		case 19: case 20: case 21: case 25:
+			return false;
+		default:
+			return true;
+		}
+	}
+}
+
+/*
 ** What the engine wants of a swap chain.
 **
 ** This is the neutral replacement for the file-static D3DPRESENT_PARAMETERS the wrapper

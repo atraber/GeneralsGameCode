@@ -310,6 +310,11 @@ private:
 	// Every one of these was handed the same member the caller already had.
 	void Compute_Caps(WW3DFormat display_format);
 	void Init_Caps();
+	// Print the neutral GfxDeviceCaps struct, field by field, in words that do not depend
+	// on which backend filled it -- so two logs diff without translation. Every field where
+	// the backends disagree is a fork in the engine, and after the D3D9 backend goes there
+	// is nothing left to compare against.
+	void Log_Caps_Table(const char* source);
 	void Check_Texture_Format_Support(WW3DFormat display_format);
 	void Check_Render_To_Texture_Support(WW3DFormat display_format);
 	void Check_Depth_Stencil_Support(WW3DFormat display_format);

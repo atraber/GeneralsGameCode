@@ -30,6 +30,73 @@ extern void Non_Fatal_Log_DX8_ErrorCode(unsigned res, const char * file, int lin
 // -- binding a vertex format is two in D3D9 and would be one anywhere else.
 #define D3DCALL(x) DX8_ErrorCode(m_device->x); DX8Wrapper::Increment_DX8_CallCount()
 
+// ---------------------------------------------------------------------------
+// The absorbed-write experiment. Debug only, off unless asked for.
+//
+// The D3D11 backend silently drops every state write that has no D3D11 meaning and counts
+// them: per 600-frame window on civ_buildings, 5 render-state writes, 4502 texture-stage
+// writes and every one of 1582 transforms. Those are assumed harmless and had never been
+// tested, and the only test possible is to make *this* backend drop exactly the same
+// writes and diff D3D9-with against D3D9-without. Nothing else can answer it, and once the
+// D3D9 backend is removed nothing ever will.
+//
+//   W3D_D3D9_DROP_ABSORBED=rs,tss,xf     (any subset, or "all")
+//
+// The predicate is GfxAbsorb's, shared with the D3D11 backend, so this cannot quietly
+// become an experiment about two different sets -- and the D3D11 backend counts and prints
+// any disagreement between that predicate and what its own switch does.
+//
+// The transform case mirrors D3D11 exactly: the write to the fixed-function pipeline is
+// dropped and the value is *kept*, because D3D11 keeps it too and Bind_Ui_Shader_World
+// reads VIEW and PROJECTION back off the device.
+//
+// Default off. The phase's control was run with it off.
+// ---------------------------------------------------------------------------
+
+#ifdef RTS_DEBUG
+namespace
+{
+	enum { DROP_RS = 1, DROP_TSS = 2, DROP_XF = 4 };
+
+	unsigned Absorb_Drop_Mask()
+	{
+		static int cached = -1;
+		if (cached >= 0) return (unsigned)cached;
+		cached = 0;
+		const char * env = getenv("W3D_D3D9_DROP_ABSORBED");
+		if (env != nullptr && *env != 0) {
+			if (strstr(env, "all") != nullptr) cached = DROP_RS | DROP_TSS | DROP_XF;
+			if (strstr(env, "rs") != nullptr) cached |= DROP_RS;
+			if (strstr(env, "tss") != nullptr) cached |= DROP_TSS;
+			if (strstr(env, "xf") != nullptr) cached |= DROP_XF;
+			WWDEBUG_SAY(("D3D9 DROP ABSORBED: '%s' -> mask 0x%x. This backend is deliberately "
+				"dropping the writes D3D11 has no meaning for. It is an experiment, not a "
+				"configuration, and any pixel difference it produces is the result.",
+				env, (unsigned)cached));
+		}
+		return (unsigned)cached;
+	}
+
+	// What D3D11 keeps so that a caller can read it back. Only touched when xf is being
+	// dropped, so the ordinary path is exactly what it was.
+	float s_dropped_transforms[512][16];
+	bool  s_dropped_transform_valid[512];
+
+	// What the drop switch actually dropped, per group.
+	//
+	// The whole point of the experiment is that D3D9 draws an identical frame with these
+	// writes gone, and a zero pixel difference means nothing unless something says the
+	// writes really were gone. The device-state audit is that control for two of the three
+	// groups -- with rs dropped it reads 122 wrong words instead of its usual 2, with tss
+	// 1122 -- but it is blind to the transform group by construction, because that group
+	// keeps a shadow copy and Get_Transform answers out of it exactly as D3D11 does. So the
+	// transforms need a counter of their own, and the other two get one for symmetry.
+	unsigned s_dropped_rs = 0;
+	unsigned s_dropped_tss = 0;
+	unsigned s_dropped_xf = 0;
+}
+#endif
+
 namespace
 {
 	// Ten of the D3D8 texture stage states became sampler states in D3D9 and are
@@ -122,6 +189,10 @@ bool GfxDeviceD3D9::Has_Stencil_Target()
 
 void GfxDeviceD3D9::Set_Render_State(unsigned state, unsigned value)
 {
+#ifdef RTS_DEBUG
+	if ((Absorb_Drop_Mask() & DROP_RS) != 0 && GfxAbsorb::Render_State_Is_Absorbed(state))
+		{ ++s_dropped_rs; return; }
+#endif
 	if (state == D3DRS_SOFTWAREVERTEXPROCESSING) {
 		// Not a render state in D3D9 at all; d3d9_compat.h keeps the number alive as a
 		// dummy slot so the engine's tracked array still has somewhere to put it.
@@ -149,6 +220,10 @@ void GfxDeviceD3D9::Set_Render_State(unsigned state, unsigned value)
 
 void GfxDeviceD3D9::Set_Texture_Stage_State(unsigned stage, unsigned state, unsigned value)
 {
+#ifdef RTS_DEBUG
+	if ((Absorb_Drop_Mask() & DROP_TSS) != 0 && GfxAbsorb::Stage_State_Is_Absorbed(state))
+		{ ++s_dropped_tss; return; }
+#endif
 	D3DSAMPLERSTATETYPE sampler_state;
 	if (Sampler_Remap(state, sampler_state)) {
 		D3DCALL(SetSamplerState(stage, sampler_state, value));
@@ -193,11 +268,30 @@ bool GfxDeviceD3D9::Get_Texture_Stage_State(unsigned stage, unsigned state, unsi
 
 void GfxDeviceD3D9::Set_Transform(unsigned which, const float * matrix4x4)
 {
+#ifdef RTS_DEBUG
+	if ((Absorb_Drop_Mask() & DROP_XF) != 0) {
+		// Exactly what D3D11 does: the fixed-function pipeline never sees it, and the
+		// value is kept so that a reader still gets an answer.
+		if (which < 512 && matrix4x4 != nullptr) {
+			memcpy(s_dropped_transforms[which], matrix4x4, 16 * sizeof(float));
+			s_dropped_transform_valid[which] = true;
+		}
+		++s_dropped_xf;
+		return;
+	}
+#endif
 	D3DCALL(SetTransform((D3DTRANSFORMSTATETYPE)which, (const D3DMATRIX*)matrix4x4));
 }
 
 bool GfxDeviceD3D9::Get_Transform(unsigned which, float * matrix4x4)
 {
+#ifdef RTS_DEBUG
+	if ((Absorb_Drop_Mask() & DROP_XF) != 0) {
+		if (which >= 512 || !s_dropped_transform_valid[which]) return false;
+		memcpy(matrix4x4, s_dropped_transforms[which], 16 * sizeof(float));
+		return true;
+	}
+#endif
 	return SUCCEEDED(m_device->GetTransform((D3DTRANSFORMSTATETYPE)which, (D3DMATRIX*)matrix4x4));
 }
 
@@ -541,6 +635,16 @@ void GfxDeviceD3D9::Report_Nondynamic_Discards()
 		"call. The totals are the control: a zero beside a zero total is the audit not "
 		"running, not the engine being right.",
 		s_nondynamic_vb_discards, s_vb_discards, s_nondynamic_ib_discards, s_ib_discards));
+	if (Absorb_Drop_Mask() != 0) {
+		WWDEBUG_SAY(("D3D9 DROP ABSORBED over 600 frames: %u render-state, %u texture-stage "
+			"and %u transform writes were dropped before they reached the device. This is "
+			"the control on the experiment: a frame that is unchanged with these numbers at "
+			"zero says nothing at all.",
+			s_dropped_rs, s_dropped_tss, s_dropped_xf));
+		s_dropped_rs = 0;
+		s_dropped_tss = 0;
+		s_dropped_xf = 0;
+	}
 	s_nondynamic_vb_discards = 0;
 	s_nondynamic_ib_discards = 0;
 	s_vb_discards = 0;

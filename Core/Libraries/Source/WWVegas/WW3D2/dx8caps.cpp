@@ -488,6 +488,7 @@ DX8Caps::DX8Caps(WW3DFormat display_format)
 	Private->AdapterIndex = DX8Wrapper::Get_Adapter_Index();
 	Init_Caps();
 	Compute_Caps(display_format);
+	Log_Caps_Table("device");
 }
 
 // Device enumeration: each adapter is asked about in turn, before one of them has been
@@ -509,6 +510,52 @@ DX8Caps::DX8Caps(WW3DFormat display_format, unsigned adapter_index)
 	}
 	SupportTnL = Private->Caps.HardwareTransformAndLighting;
 	Compute_Caps(display_format);
+	Log_Caps_Table("adapter");
+}
+
+// ----------------------------------------------------------------------------
+//
+// The capability table, printed identically by whichever backend filled it.
+//
+// Neither backend logged its caps until Phase 9, so nobody had ever seen the two answers
+// side by side -- and every field where they differ is a branch the engine takes one way
+// under D3D9 and the other under D3D11, silently, with nothing failing to compile. This
+// prints the whole neutral struct in one block, one field per line, in a fixed order and
+// fixed words, so that a diff of two logs is the whole measurement.
+//
+// ----------------------------------------------------------------------------
+void DX8Caps::Log_Caps_Table(const char* source)
+{
+	const GfxDeviceCaps& c = Private->Caps;
+	WWDEBUG_SAY(("GFX CAPS (%s, adapter %u):", source, c.AdapterOrdinal));
+#define CAPBOOL(field) WWDEBUG_SAY(("  %-26s %s", #field, c.field ? "yes" : "no"))
+#define CAPUINT(field) WWDEBUG_SAY(("  %-26s %u", #field, c.field))
+	CAPBOOL(HardwareTransformAndLighting);
+	CAPBOOL(NPatches);
+	CAPBOOL(FullScreenGamma);
+	CAPBOOL(CubeMaps);
+	CAPBOOL(ColorWriteEnable);
+	CAPBOOL(BumpEnvmap);
+	CAPBOOL(BumpEnvmapLuminance);
+	CAPBOOL(ModulateAlphaAddColor);
+	CAPBOOL(DotProduct3);
+	CAPBOOL(PointSprites);
+	CAPBOOL(LinearFilter);
+	CAPBOOL(MipLinearFilter);
+	CAPBOOL(AnisotropicFilter);
+	CAPUINT(MaxTextureWidth);
+	CAPUINT(MaxTextureHeight);
+	CAPUINT(MaxVolumeExtent);
+	CAPUINT(MaxTextureAspectRatio);
+	CAPUINT(MaxSimultaneousTextures);
+	// Packed major<<8 | minor, as the API packs them.
+	WWDEBUG_SAY(("  %-26s %u.%u", "VertexShaderVersion",
+		c.VertexShaderVersion >> 8, c.VertexShaderVersion & 0xff));
+	WWDEBUG_SAY(("  %-26s %u.%u", "PixelShaderVersion",
+		c.PixelShaderVersion >> 8, c.PixelShaderVersion & 0xff));
+	WWDEBUG_SAY(("  %-26s 0x%08x", "FixedFunctionCombineOps", c.FixedFunctionCombineOps));
+#undef CAPBOOL
+#undef CAPUINT
 }
 
 DX8Caps::~DX8Caps()
