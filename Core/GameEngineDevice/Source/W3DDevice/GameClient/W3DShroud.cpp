@@ -266,7 +266,15 @@ W3DShroudLevel W3DShroud::getShroudLevel(Int x, Int y)
 {
 	DEBUG_ASSERTCRASH( m_pSrcTexture != nullptr, ("Reading empty shroud"));
 
-	if (x < m_numCellsX && y < m_numCellsY)
+	// The lower bound is not decoration. getRiverVertexDiffuse divides a *world* position by
+	// the cell size, and a river polygon whose control points reach past the map border
+	// produces a negative cell -- civ_buildings has one at world y = -66, which is cell
+	// y = -1. That read is `base + y*pitch` = 256 bytes in front of the shroud buffer, and
+	// whether it faults is pure allocator luck: it survives when the mapped pointer happens
+	// to sit inside a larger committed region and takes the process down when the pointer is
+	// page-aligned at the start of one. Returning 0 for a cell below the map is the same
+	// contract this function already has for a cell past it.
+	if (x >= 0 && x < m_numCellsX && y >= 0 && y < m_numCellsY)
 	{
 		UnsignedShort pixel=*(UnsignedShort *)((Byte *)m_srcTextureData + x*2 + y*m_srcTexturePitch);
 
