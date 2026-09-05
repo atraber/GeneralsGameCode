@@ -515,10 +515,56 @@ void W3DSnowManager::renderAsQuads(RenderInfoClass &rinfo, Int cubeOriginX, Int 
 	};
 
 
+	// The size, derived from the point-sprite path rather than set beside it.
+	//
+	// These two drawers are meant to be the same snowfall and they were sized by two
+	// unrelated settings that nothing kept in step: m_snowPointSize is a screen-space
+	// point scaled by the device, m_snowQuadSize is half a world unit, and the same frame
+	// came out 15% of pixels different between them. A backend without point sprites now
+	// takes this path always, so "close enough" is no longer close enough.
+	//
+	// D3D9 scales a point sprite by Ss = Vh * Si / De with POINTSCALE_A and _B zero and
+	// _C one, which is what this drawer sets. A world-space quad of side S facing the
+	// camera at eye depth De covers (Vh/2) * S * P11 / De pixels, where P11 is the
+	// projection's y scale. Equate the two and De cancels:
+	//
+	//     S = 2 * Si / P11
+	//
+	// so one world size reproduces the point sprite at every depth, and m_snowQuadSize
+	// stays only as the fallback for a projection that cannot be read.
+	Real quadSize = m_quadSize;
+	const Real projY = proj[1][1];
+	if (projY > 0.0f) quadSize = 2.0f * m_pointSize / projY;
+
+	// D3DRS_POINTSIZE_MAX caps the sprite in *pixels*, so past a certain nearness the
+	// point stops growing and the quad would not. Below this eye depth the equivalent
+	// world size is the one that covers exactly m_maxPointSize pixels.
+	Real clampDepth = 0.0f;
+	if (projY > 0.0f && m_maxPointSize > 0.0f) {
+		int rtWidth = 0, rtHeight = 0, rtBits = 0;
+		bool rtWindowed = false;
+		WW3D::Get_Render_Target_Resolution(rtWidth, rtHeight, rtBits, rtWindowed);
+		if (rtHeight > 0) clampDepth = (Real)rtHeight * m_pointSize / m_maxPointSize;
+	}
+
+#ifdef RTS_DEBUG
+	// Once, so a run says what it derived rather than leaving it to be re-derived. The
+	// point-sprite path is not available on every backend, so this is often the only
+	// number of the two that a given run has.
+	static Bool reportedQuadSize = FALSE;
+	if (!reportedQuadSize) {
+		reportedQuadSize = TRUE;
+		WWDEBUG_SAY(("SNOW: quad path, point size %.3f and projection y scale %.3f give a "
+					 "world quad of %.3f (the INI's SnowQuadSize is %.3f and is now only a "
+					 "fallback); the %.0f pixel point size cap bites closer than %.2f units.",
+			m_pointSize, projY, quadSize, m_quadSize, m_maxPointSize, clampDepth));
+	}
+#endif
+
 	//pre-multiple the offsets by particle size
 	for (Int i=0; i<4; i++)
 	{
-		vertex_offsets[i] *= m_quadSize;
+		vertex_offsets[i] *= quadSize;
 	}
 
 	Matrix4x4 identity(true);
@@ -569,16 +615,30 @@ void W3DSnowManager::renderAsQuads(RenderInfoClass &rinfo, Int cubeOriginX, Int 
 					//find world-space position of snow flake
 					snowCenter.Set(x*m_emitterSpacing,y*m_emitterSpacing,h0);
 
+					// Adjust position so snow flakes don't fall straight down -- in world
+					// space, before the view transform, which is where the point-sprite
+					// path does it. Applied to the view-space position instead, as this
+					// did, the same sway ran along screen right and screen up rather than
+					// along the ground plane: a five world unit offset in the wrong two
+					// axes, which moves every flake rather than resizing it, and is the
+					// larger half of the difference between the two drawers.
+					snowCenter.X += m_amplitude * WWMath::Fast_Sin( h0 * m_frequencyScaleX + (Real)x);
+					snowCenter.Y += m_amplitude * WWMath::Fast_Sin( h0 * m_frequencyScaleY + (Real)y);
+
 					//Get view-space position
 					Matrix3D::Transform_Vector(view,snowCenter,&snowCenterVS);
 
-					//Adjust position so snow flakes don't fall straight down.
-					snowCenterVS.X += m_amplitude * WWMath::Fast_Sin( h0 * m_frequencyScaleX + (Real)x);
-					snowCenterVS.Y += m_amplitude * WWMath::Fast_Sin( h0 * m_frequencyScaleY + (Real)y);
+					// Near the camera the point sprite has stopped growing, so the quad
+					// must too. Everywhere else this scale is 1 and costs a compare.
+					Real flakeScale = 1.0f;
+					const Real eyeDepth = -snowCenterVS.Z;
+					if (clampDepth > 0.0f && eyeDepth > 0.0f && eyeDepth < clampDepth) {
+						flakeScale = eyeDepth / clampDepth;
+					}
 
 					for (Int i=0; i<4; i++)
 					{
-						*(Vector3 *)verts=snowCenterVS + vertex_offsets[i];
+						*(Vector3 *)verts=snowCenterVS + vertex_offsets[i] * flakeScale;
 						verts->nx=0;	//keep AGP write-combining active
 						verts->ny=0;
 						verts->nz=0;
