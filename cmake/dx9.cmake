@@ -20,11 +20,4 @@ target_include_directories(d3d9lib INTERFACE ${dx9_SOURCE_DIR}/Include ${CMAKE_C
 target_link_libraries(d3d9lib INTERFACE
     ${dx9_SOURCE_DIR}/Lib/x86/d3d9.lib
     ${dx9_SOURCE_DIR}/Lib/x86/d3dx9.lib
-    ${dx9_SOURCE_DIR}/Lib/x86/DxErr.lib
 )
-
-# The legacy DX SDK DxErr.lib references _vsnprintf, which the modern UCRT only
-# provides through the legacy stdio compatibility lib.
-if(MSVC)
-    target_link_libraries(d3d9lib INTERFACE legacy_stdio_definitions.lib)
-endif()

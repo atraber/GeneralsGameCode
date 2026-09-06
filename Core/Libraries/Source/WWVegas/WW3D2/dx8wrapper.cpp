@@ -77,7 +77,6 @@
 #include "textureloader.h"
 #include "missingtexture.h"
 #include "WWLib/thread.h"
-#include <DxErr.h>
 #include "WWMath/gfxmatrix4.h"
 #include "WWMath/pot.h"
 
@@ -3416,14 +3415,14 @@ DX8_CleanupHook	 *DX8Wrapper::m_pCleanupHook=nullptr;
 
 void Log_DX8_ErrorCode(unsigned res)
 {
-	WWDEBUG_SAY(("DX8 Error: %s: %s", DXGetErrorStringA(res), DXGetErrorDescriptionA(res)));
+	WWDEBUG_SAY(("DX8 Error: 0x%08x", res));
 
 	WWASSERT(0);
 }
 
 void Non_Fatal_Log_DX8_ErrorCode(unsigned res,const char * file,int line)
 {
-	WWDEBUG_SAY(("DX8 Error: %s: %s, File: %s, Line: %d", DXGetErrorStringA(res), DXGetErrorDescriptionA(res), file, line));
+	WWDEBUG_SAY(("DX8 Error: 0x%08x, File: %s, Line: %d", res, file, line));
 }
 
 // TheSuperHackers @info helmutbuhler 14/04/2025
