@@ -114,20 +114,20 @@ set(_rts_shader_outputs "")
 # less than the mistake.
 file(GLOB _rts_shader_headers "${RTS_SHADER_SRC_DIR}/*.hlsli")
 foreach(_name ${_rts_shaders})
-    # The pipeline stage decides the profile; RTS_SHADER_MODEL=4 is what the .hlsl files
-    # branch on for VPOS/SV_Position, tex2Dlod/SampleLevel and row-major matrices.
-    set(_profile "ps_4_0")
+    # The pipeline stage decides the profile; RTS_SHADER_MODEL=5 is what the .hlsl files
+    # compile with for SV_Position, SampleLevel and row-major matrices.
+    set(_profile "ps_5_0")
     if(_name MATCHES "_vs$")
-        set(_profile "vs_4_0")
+        set(_profile "vs_5_0")
     endif()
     set(_src "${RTS_SHADER_SRC_DIR}/${_name}.hlsl")
-    set(_out "${RTS_SHADER_OUT_DIR}/${_name}.sm4")
+    set(_out "${RTS_SHADER_OUT_DIR}/${_name}.sm5")
     # One invocation per shader, so that editing one shader recompiles one shader.
     add_custom_command(
         OUTPUT "${_out}"
-        COMMAND ${_rts_shader_launcher} $<TARGET_FILE:compile_shaders> "${RTS_D3DCOMPILER_DLL}" "${_src}" "${_out}" ${_profile} RTS_SHADER_MODEL=4
+        COMMAND ${_rts_shader_launcher} $<TARGET_FILE:compile_shaders> "${RTS_D3DCOMPILER_DLL}" "${_src}" "${_out}" ${_profile} RTS_SHADER_MODEL=5
         DEPENDS "${_src}" ${_rts_shader_headers} compile_shaders
-        COMMENT "hlsl ${_name}.hlsl -> ${_name}.sm4 (${_profile})"
+        COMMENT "hlsl ${_name}.hlsl -> ${_name}.sm5 (${_profile})"
         VERBATIM
     )
     list(APPEND _rts_shader_outputs "${_out}")

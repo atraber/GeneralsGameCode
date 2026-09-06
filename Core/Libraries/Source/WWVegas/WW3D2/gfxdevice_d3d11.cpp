@@ -1100,10 +1100,18 @@ static bool Parse_Signature(const unsigned char * bytecode, unsigned size,
 		const unsigned offset = offsets[c];
 		if (offset + 8 > size) continue;
 		const unsigned char * chunk = bytecode + offset;
-		// ISGN is the input signature and OSGN the output one. The ...1 variants are the
-		// same thing with a wider element in later compilers, and are not produced for the
-		// profiles this tree compiles.
-		if (memcmp(chunk, fourcc, 4) != 0) continue;
+		// ISGN is the input signature and OSGN the output one. The ...1 variants (ISG1/OSG1)
+		// are the same thing with a 28-byte element (adding min_precision in SM5/D3D11.1).
+		bool match = (memcmp(chunk, fourcc, 4) == 0);
+		bool is_variant1 = false;
+		if (!match && fourcc[0] == 'I' && memcmp(chunk, "ISG1", 4) == 0) {
+			match = true;
+			is_variant1 = true;
+		} else if (!match && fourcc[0] == 'O' && memcmp(chunk, "OSG1", 4) == 0) {
+			match = true;
+			is_variant1 = true;
+		}
+		if (!match) continue;
 
 		const unsigned chunk_size = *(const unsigned *)(chunk + 4);
 		const unsigned char * data = chunk + 8;
@@ -1111,9 +1119,10 @@ static bool Parse_Signature(const unsigned char * bytecode, unsigned size,
 
 		const unsigned element_count = *(const unsigned *)(data + 0);
 		if (element_count > 32) return false;
+		const unsigned elem_stride = is_variant1 ? 28 : 24;
 		for (unsigned e = 0; e < element_count; ++e) {
-			const unsigned char * element = data + 8 + e * 24;
-			if ((unsigned)(element + 24 - data) > chunk_size) return false;
+			const unsigned char * element = data + 8 + e * elem_stride;
+			if ((unsigned)(element + elem_stride - data) > chunk_size) return false;
 			// Six words per element: the name's offset from the start of the chunk's data,
 			// the semantic index, the system-value kind, the component type, the register,
 			// and the two masks.
@@ -1539,7 +1548,7 @@ ID3D11Device * GfxAdapterD3D11::Caps_Device(unsigned adapter_index)
 	if (adapter == nullptr) return nullptr;
 
 	static const D3D_FEATURE_LEVEL levels[] = {
-		D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0
+		D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0
 	};
 	ID3D11Device * device = nullptr;
 	ID3D11DeviceContext * context = nullptr;
@@ -1709,21 +1718,19 @@ GfxDeviceClass * GfxAdapterD3D11::Create_Device(unsigned adapter_index, GfxSwapC
 	if (getenv("W3D_D3D11_NODEBUG") == nullptr) flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-	// Feature level 10.0 is the floor. Every shader here compiles at model 4, which is
-	// what 10.0 runs, and asking for less would silently take away the constant-buffer
-	// and resource limits the shaders are written against.
+	// Feature level 11.0 is the floor. Every shader here compiles at model 5, which
+	// requires 11.0, and D3D11 refuses to create SM 5.0 shaders on lower levels.
 	static const D3D_FEATURE_LEVEL levels[] = {
-		D3D_FEATURE_LEVEL_11_0,
-		D3D_FEATURE_LEVEL_10_1,
-		D3D_FEATURE_LEVEL_10_0
+		D3D_FEATURE_LEVEL_11_1,
+		D3D_FEATURE_LEVEL_11_0
 	};
 
 	ID3D11Device * device = nullptr;
 	ID3D11DeviceContext * context = nullptr;
-	D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_10_0;
+	D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
 
 	HRESULT hr = m_impl->create_device(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags,
-		levels, 3, D3D11_SDK_VERSION, &device, &level, &context);
+		levels, (UINT)(sizeof(levels) / sizeof(levels[0])), D3D11_SDK_VERSION, &device, &level, &context);
 	if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_DEBUG) != 0) {
 		WWDEBUG_SAY(("D3D11: no debug layer on this machine (0x%08x); retrying without it.",
 			(unsigned)hr));

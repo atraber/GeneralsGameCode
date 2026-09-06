@@ -4567,12 +4567,9 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 
 	// Which bytecode this backend can actually load.
 	//
-	// The 42 call sites all name "shaders\<name>.pso" or ".vso", which is the Shader Model
-	// 3 build and the only one that existed until there was a second backend. D3D11 cannot
-	// load a byte of it -- model 3 bytecode is a bare token stream and model 4 is a DXBC
-	// container, and CreateVertexShader rejects the one it was not given. This used to be
-	// a branch on the active backend; with one backend it is unconditional, and Phase 10
-	// stopped compiling the model 3 half at all. No call site changes, and no .hlsl does.
+	// The 42 call sites all name "shaders\<name>.pso" or ".vso", which is the legacy Shader
+	// Model 3 path name. D3D11 loads DXBC containers; with Shader Model 5 they are compiled
+	// as .sm5 blobs under shaders\.
 	AsciiString resolvedPath(strFilePath);
 	{
 		const char *leaf = strrchr(strFilePath, '\\');
@@ -4581,7 +4578,7 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 		const char *dot = strrchr(name.str(), '.');
 		if (dot != nullptr)
 			name.truncateBy((Int)strlen(dot));
-		resolvedPath.format("shaders\\%s.sm4", name.str());
+		resolvedPath.format("shaders\\%s.sm5", name.str());
 	}
 	const char *loadPath = resolvedPath.str();
 

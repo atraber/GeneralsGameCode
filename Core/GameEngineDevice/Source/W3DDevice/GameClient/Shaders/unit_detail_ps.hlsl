@@ -146,13 +146,8 @@ struct PS_INPUT
 // model 4 links the two stages by register as well as by semantic, and unit_vs writes
 // TEXCOORD3 before TEXCOORD5. The model 3 branch is character for character what this
 // struct has always been, so the .pso does not move.
-#if RTS_SHADER_MODEL >= 4
     float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
     float4 screenPos : TEXCOORD5;
-#else
-    float4 screenPos : TEXCOORD5;
-    float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
-#endif
 };
 
 float3 PickRGB(float4 sel, float3 tex, float3 cur, float3 dif)

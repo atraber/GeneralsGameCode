@@ -1961,6 +1961,7 @@ void W3DView::draw()
 		// cos(elevation), and onto the depth axis at -sin(elevation).
 		const float sinSun = frustumSunElev;
 		const float cosSun = sqrtf(max(1.0f - sinSun * sinSun, 0.0f));
+		(void)cosSun;
 
 		// Tight bounding of the visible receiver volume in light space.
 		//

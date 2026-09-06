@@ -117,13 +117,8 @@ struct PS_INPUT
 // model 4 links the two stages by register as well as by semantic, and unit_vs writes
 // TEXCOORD3 before TEXCOORD5. The model 3 branch is character for character what this
 // struct has always been, so the .pso does not move.
-#if RTS_SHADER_MODEL >= 4
     float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
     float4 screenPos : TEXCOORD5;
-#else
-    float4 screenPos : TEXCOORD5;
-    float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
-#endif
 };
 
 // Cast-shadow term. The filter is the shared one in shadow.hlsli, so a unit and the ground
