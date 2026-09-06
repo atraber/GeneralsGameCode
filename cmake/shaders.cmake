@@ -63,6 +63,9 @@ set(_rts_shaders
     ui_ps
     # Screen-space quads for the post-process chain, replacing D3DFVF_XYZRHW
     screenquad_vs
+    # GPU blit for surface format conversion and resolve
+    gpu_blit_vs
+    gpu_blit_ps
     # Projected alpha mask (screen cross-fade wipe, wireframe preview)
     mask_vs
     mask_ps
