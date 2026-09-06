@@ -191,6 +191,47 @@ public:
 	}
 };
 
+/**
+** HLodLightRecordClass
+** Holds light definition data for a bone-parented light.
+*/
+class HLodLightRecordClass
+{
+public:
+	HLodLightRecordClass()
+	{
+		memset(&Definition, 0, sizeof(Definition));
+	}
+
+	bool operator == (const HLodLightRecordClass & that) { return false; }
+	bool operator != (const HLodLightRecordClass & that) { return !(*this == that); }
+
+	void Init(const W3dHLodLightStruct & w3d_data)
+	{
+		Definition = w3d_data;
+	}
+
+	const W3dHLodLightStruct & Get_Definition() const { return Definition; }
+	int Get_Bone_Index() const { return Definition.BoneIndex; }
+	const char * Get_Name() const { return Definition.Name; }
+
+protected:
+	W3dHLodLightStruct Definition;
+};
+
+/**
+** HLodLightArrayClass
+** Ref-counted list of dynamic lights in an HLOD definition.
+*/
+class HLodLightArrayClass : public VectorClass<HLodLightRecordClass>, public RefCountClass
+{
+	W3DMPO_CODE(HLodLightArrayClass)
+public:
+	HLodLightArrayClass(int size) : VectorClass<HLodLightRecordClass>(size)
+	{
+	}
+};
+
 
 
 /*
@@ -274,7 +315,8 @@ HLodDefClass::HLodDefClass() :
 	HierarchyTreeName(nullptr),
 	LodCount(0),
 	Lod(nullptr),
-	ProxyArray(nullptr)
+	ProxyArray(nullptr),
+	LightArray(nullptr)
 {
 }
 
@@ -296,7 +338,8 @@ HLodDefClass::HLodDefClass(HLodClass &src_lod) :
 	HierarchyTreeName(nullptr),
 	LodCount(0),
 	Lod(nullptr),
-	ProxyArray(nullptr)
+	ProxyArray(nullptr),
+	LightArray(nullptr)
 {
 	Initialize (src_lod);
 }
@@ -345,6 +388,7 @@ void HLodDefClass::Free()
 	LodCount = 0;
 
 	REF_PTR_RELEASE(ProxyArray);
+	REF_PTR_RELEASE(LightArray);
 }
 
 
@@ -606,8 +650,69 @@ WW3DErrorType HLodDefClass::Load_W3D(ChunkLoadClass & cload)
 			case W3D_CHUNK_HLOD_PROXY_ARRAY:
 				read_proxy_array(cload);
 				break;
+			case W3D_CHUNK_HLOD_LIGHT_ARRAY:
+				read_light_array(cload);
+				break;
 		}
 		cload.Close_Chunk();
+	}
+
+	/*
+	** Proposal B: If no native 0x707 chunk was found, check if ProxyArray contains PL_ helper bones
+	*/
+	if (!LightArray && ProxyArray) {
+		int pl_count = 0;
+		for (int i = 0; i < ProxyArray->Length(); ++i) {
+			const char * name = (*ProxyArray)[i].Get_Name();
+			if (name && (strncmp(name, "PL_", 3) == 0 || strncmp(name, "PROXY_LIGHT_", 12) == 0)) {
+				pl_count++;
+			}
+		}
+		if (pl_count > 0) {
+			LightArray = NEW_REF(HLodLightArrayClass, (pl_count));
+			int lidx = 0;
+			for (int i = 0; i < ProxyArray->Length(); ++i) {
+				const char * name = (*ProxyArray)[i].Get_Name();
+				if (name && (strncmp(name, "PL_", 3) == 0 || strncmp(name, "PROXY_LIGHT_", 12) == 0)) {
+					W3dHLodLightStruct plDef;
+					memset(&plDef, 0, sizeof(plDef));
+					strncpy(plDef.Name, name, W3D_NAME_LEN - 1);
+					plDef.BoneIndex = (*ProxyArray)[i].Get_Bone_Index();
+					plDef.LightType = W3D_HLOD_LIGHT_TYPE_POINT;
+					plDef.Color.Set(0.99f, 0.95f, 0.85f);
+					plDef.Intensity = 1.0f;
+					plDef.AttenStart = 5.0f;
+					plDef.AttenEnd = 25.0f;
+					plDef.SpotDirection.X = 1.0f; plDef.SpotDirection.Y = 0.0f; plDef.SpotDirection.Z = -0.05f;
+					plDef.SpotAngle = DEG_TO_RADF(35.0f);
+					plDef.SpotExponent = 1.0f;
+					plDef.Flags = W3D_HLOD_LIGHT_FLAG_CAST_SHADOWS;
+
+					// Check for spot: PL_S_...
+					if (name[3] == 'S' || name[3] == 's') {
+						plDef.LightType = W3D_HLOD_LIGHT_TYPE_SPOT;
+					}
+					// Parse RGB if present: _R<rr>G<gg>B<bb>
+					const char * rPos = strstr(name, "_R");
+					if (rPos) {
+						int r = 99, g = 95, b = 85;
+						if (sscanf(rPos, "_R%2dG%2dB%2d", &r, &g, &b) == 3) {
+							plDef.Color.Set(r / 100.0f, g / 100.0f, b / 100.0f);
+						}
+					}
+					// Parse Angle and Distance: _A<aa>D<dd>
+					const char * aPos = strstr(name, "_A");
+					if (aPos) {
+						int ang = 35, dist = 25;
+						if (sscanf(aPos, "_A%2dD%2d", &ang, &dist) >= 1) {
+							plDef.SpotAngle = DEG_TO_RADF((float)ang);
+							plDef.AttenEnd = (float)dist;
+						}
+					}
+					(*LightArray)[lidx++].Init(plDef);
+				}
+			}
+		}
 	}
 
 	return WW3D_ERROR_OK;
@@ -698,6 +803,52 @@ bool HLodDefClass::read_proxy_array(ChunkLoadClass & cload)
 		if (!cload.Close_Chunk()) return false;
 
 		(*ProxyArray)[imodel].Init(subobjdef);
+	}
+	return true;
+}
+
+
+/***********************************************************************************************
+ * HLodDefClass::read_light_array -- load bone-parented dynamic lights                         *
+ *                                                                                             *
+ * INPUT:                                                                                      *
+ *                                                                                             *
+ * OUTPUT:                                                                                     *
+ *                                                                                             *
+ * WARNINGS:                                                                                   *
+ *                                                                                             *
+ * HISTORY:                                                                                    *
+ *   2026       Antigravity : Created.                                                         *
+ *=============================================================================================*/
+bool HLodDefClass::read_light_array(ChunkLoadClass & cload)
+{
+	REF_PTR_RELEASE(LightArray);
+
+	/*
+	** Open the first chunk, it should be a Light Array Header
+	*/
+	if (!cload.Open_Chunk()) return false;
+	if (cload.Cur_Chunk_ID() != W3D_CHUNK_HLOD_LIGHT_ARRAY_HEADER) return false;
+
+	W3dHLodLightArrayHeaderStruct header;
+	if (cload.Read(&header,sizeof(header)) != sizeof(header)) return false;
+
+	if (!cload.Close_Chunk()) return false;
+
+	LightArray = NEW_REF(HLodLightArrayClass,(header.LightCount));
+
+	/*
+	** Read each dynamic light definition
+	*/
+	for (int ilight=0; ilight<LightArray->Length(); ++ilight) {
+		if (!cload.Open_Chunk()) return false;
+		if (cload.Cur_Chunk_ID() != W3D_CHUNK_HLOD_LIGHT) return false;
+
+		W3dHLodLightStruct lightdef;
+		if (cload.Read(&lightdef,sizeof(lightdef)) != sizeof(lightdef)) return false;
+		if (!cload.Close_Chunk()) return false;
+
+		(*LightArray)[ilight].Init(lightdef);
 	}
 	return true;
 }
@@ -917,6 +1068,7 @@ HLodClass::HLodClass() :
 	AdditionalModels(),
 	SnapPoints(nullptr),
 	ProxyArray(nullptr),
+	LightArray(nullptr),
 	LODBias(1.0f)
 {
 }
@@ -945,6 +1097,7 @@ HLodClass::HLodClass(const HLodClass & src) :
 	AdditionalModels(),
 	SnapPoints(nullptr),
 	ProxyArray(nullptr),
+	LightArray(nullptr),
 	LODBias(1.0f)
 {
 	*this = src;
@@ -977,6 +1130,7 @@ HLodClass::HLodClass(const char * name,RenderObjClass ** lods,int count) :
 	AdditionalModels(),
 	SnapPoints(nullptr),
 	ProxyArray(nullptr),
+	LightArray(nullptr),
 	LODBias(1.0f)
 {
 	// enforce parameters
@@ -1079,6 +1233,7 @@ HLodClass::HLodClass(const HLodDefClass & def) :
 	AdditionalModels(),
 	SnapPoints(nullptr),
 	ProxyArray(nullptr),
+	LightArray(nullptr),
 	LODBias(1.0f)
 {
 	// Set the name
@@ -1127,6 +1282,7 @@ HLodClass::HLodClass(const HLodDefClass & def) :
 
 	// Add a reference to the proxy array
 	REF_PTR_SET(ProxyArray,def.ProxyArray);
+	REF_PTR_SET(LightArray,def.LightArray);
 
 	// So that the object is ready for use after construction, we will
 	// complete its initialization by initializing its cost and value arrays
@@ -1167,6 +1323,7 @@ HLodClass::HLodClass(const HModelDefClass & def) :
 	AdditionalModels(),
 	SnapPoints(nullptr),
 	ProxyArray(nullptr),
+	LightArray(nullptr),
 	LODBias(1.0f)
 {
 	// Set the name
@@ -1280,6 +1437,8 @@ HLodClass & HLodClass::operator = (const HLodClass & that)
 			AdditionalModels.Add(newnode);
 		}
 
+		REF_PTR_SET(ProxyArray, that.ProxyArray);
+		REF_PTR_SET(LightArray, that.LightArray);
 		LODBias = that.LODBias;
 	}
 
@@ -1374,6 +1533,7 @@ void HLodClass::Free()
 
 	REF_PTR_RELEASE(SnapPoints);
 	REF_PTR_RELEASE(ProxyArray);
+	REF_PTR_RELEASE(LightArray);
 }
 
 
@@ -2073,6 +2233,39 @@ bool HLodClass::Get_Proxy (int index, ProxyClass &proxy) const
 	}
 
 	return retval;
+}
+
+
+/***********************************************************************************************
+ * HLodClass::Get_Light_Count -- Returns the number of dynamic lights                         *
+ *=============================================================================================*/
+int HLodClass::Get_Light_Count() const
+{
+	if (LightArray != nullptr) {
+		return LightArray->Length();
+	} else {
+		return 0;
+	}
+}
+
+
+/***********************************************************************************************
+ * HLodClass::Get_Light -- returns definition and bone transform for the i'th light           *
+ *=============================================================================================*/
+bool HLodClass::Get_Light(int index, W3dHLodLightStruct &light_def, Matrix3D &out_transform) const
+{
+	if (LightArray != nullptr && index >= 0 && index < LightArray->Length()) {
+		light_def = (*LightArray)[index].Get_Definition();
+		if (HTree != nullptr) {
+			HTree->Base_Update(Get_Transform());
+			out_transform = HTree->Get_Transform(light_def.BoneIndex);
+			Set_Hierarchy_Valid(false);
+		} else {
+			out_transform = Get_Transform();
+		}
+		return true;
+	}
+	return false;
 }
 
 

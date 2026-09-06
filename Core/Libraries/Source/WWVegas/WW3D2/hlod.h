@@ -49,6 +49,8 @@ class HModelClass;
 class HLodDefClass;
 class HModelDefClass;
 class ProxyArrayClass;
+class HLodLightArrayClass;
+struct W3dHLodLightStruct;
 
 
 
@@ -104,6 +106,12 @@ public:
 	/////////////////////////////////////////////////////////////////////////////
 	virtual int						Get_Proxy_Count () const;
 	virtual bool					Get_Proxy (int index, ProxyClass &proxy) const;
+
+	/////////////////////////////////////////////////////////////////////////////
+	// Dynamic Light interface
+	/////////////////////////////////////////////////////////////////////////////
+	virtual int						Get_Light_Count () const;
+	virtual bool					Get_Light (int index, W3dHLodLightStruct &light_def, Matrix3D &out_transform) const;
 
 	/////////////////////////////////////////////////////////////////////////////
 	// Render Object Interface - Rendering
@@ -256,6 +264,9 @@ protected:
 	// possible array of proxy objects (names and bone indexes for application defined usage)
 	ProxyArrayClass *				ProxyArray;
 
+	// possible array of bone-parented dynamic lights
+	HLodLightArrayClass *		LightArray;
+
 	// Current LOD Bias (affects recalculation of the Value array)
 	float								LODBias;
 };
@@ -331,10 +342,12 @@ private:
 	SubObjectArrayClass *	Lod;
 	SubObjectArrayClass		Aggregates;
 	ProxyArrayClass *			ProxyArray;
+	HLodLightArrayClass *		LightArray;
 
 	void							Free();
 	bool							read_header(ChunkLoadClass & cload);
 	bool							read_proxy_array(ChunkLoadClass & cload);
+	bool							read_light_array(ChunkLoadClass & cload);
 
 	friend class HLodClass;
 };

@@ -97,6 +97,7 @@ public:
 	// LightClass Interface
 	/////////////////////////////////////////////////////////////////////////////
 	LightType				Get_Type() {return (Type);}
+	void						Set_Type(LightType type) { Type = type; }
 
 	void						Set_Intensity(float inten) { Intensity = inten; }
 	float						Get_Intensity() const { return Intensity; }

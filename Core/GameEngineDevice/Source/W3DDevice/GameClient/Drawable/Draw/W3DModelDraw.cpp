@@ -57,7 +57,9 @@
 #include "W3DDevice/GameClient/Module/W3DModelDraw.h"
 #include "W3DDevice/GameClient/W3DAssetManager.h"
 #include "W3DDevice/GameClient/W3DDisplay.h"
+#include "W3DDevice/GameClient/W3DDynamicLight.h"
 #include "W3DDevice/GameClient/W3DScene.h"
+#include "Common/FramePacer.h"
 #include "W3DDevice/GameClient/W3DShadow.h"
 #include "W3DDevice/GameClient/W3DTerrainTracks.h"
 #include "W3DDevice/GameClient/WorldHeightMap.h"
@@ -1738,6 +1740,8 @@ W3DModelDraw::W3DModelDraw(Thing *thing, const ModuleData* moduleData) : DrawMod
 	}
 	m_needRecalcBoneParticleSystems = false;
 	m_fullyObscuredByShroud = false;
+	m_dynamicLightsInitialized = false;
+	m_modelDynamicLights.clear();
 
 	// only validate the current time-of-day and weather conditions by default.
 	getW3DModelDrawModuleData()->validateStuffForTimeAndWeather(getDrawable(),
@@ -1835,6 +1839,15 @@ void W3DModelDraw::setHidden(Bool hidden)
 	if (m_trackRenderObject && hidden)
 	{	const Coord3D* pos = getDrawable()->getPosition();
 		m_trackRenderObject->addCapEdgeToTrack(pos->x,pos->y);
+	}
+
+	if (hidden)
+	{
+		for (size_t i = 0; i < m_modelDynamicLights.size(); ++i)
+		{
+			if (m_modelDynamicLights[i].light)
+				m_modelDynamicLights[i].light->setEnabled(false);
+		}
 	}
 
 	doStartOrStopParticleSys();
@@ -1945,6 +1958,15 @@ void W3DModelDraw::setFullyObscuredByShroud(Bool fullyObscured)
 			m_shadow->enableShadowInvisible(m_fullyObscuredByShroud);
 		if (m_terrainDecal)
 			m_terrainDecal->enableShadowInvisible(m_fullyObscuredByShroud);
+
+		if (m_fullyObscuredByShroud)
+		{
+			for (size_t i = 0; i < m_modelDynamicLights.size(); ++i)
+			{
+				if (m_modelDynamicLights[i].light)
+					m_modelDynamicLights[i].light->setEnabled(false);
+			}
+		}
 
 		doStartOrStopParticleSys();
 	}
@@ -2107,7 +2129,7 @@ void W3DModelDraw::doDrawModule(const Matrix3D* transformMtx)
                                           // IT REPOSITIONS PARTICLESYSTEMS TO TSTAY IN SYNC WITH ANIMATED BONES
 
   handleClientRecoil();
-
+  updateModelDynamicLights();
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -2796,6 +2818,8 @@ void W3DModelDraw::nukeCurrentRender(Matrix3D* xform)
 		m_terrainDecal->release();
 	m_terrainDecal = nullptr;
 
+	releaseModelDynamicLights();
+
 	// remove existing render object from the scene
 	if (m_renderObject)
 	{
@@ -2858,6 +2882,184 @@ void W3DModelDraw::hideAllHeadlights(Bool hide)
 				test->Set_Hidden(hide);
 			}
 			test->Release_Ref();
+		}
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Initialize dynamic lights defined in the model's HLOD (via chunk 0x707 or proxy bones). */
+void W3DModelDraw::initModelDynamicLights()
+{
+	releaseModelDynamicLights();
+
+	if (!m_renderObject || m_renderObject->Class_ID() != RenderObjClass::CLASSID_HLOD)
+		return;
+
+	HLodClass* hlod = (HLodClass*)m_renderObject;
+	int lightCount = hlod->Get_Light_Count();
+	if (lightCount <= 0)
+		return;
+
+	m_modelDynamicLights.reserve(lightCount);
+	for (int i = 0; i < lightCount; ++i)
+	{
+		W3dHLodLightStruct lightDef;
+		Matrix3D boneTransform;
+		if (hlod->Get_Light(i, lightDef, boneTransform))
+		{
+			ModelDynamicLightInfo info;
+			info.light = nullptr;
+			info.boneIndex = lightDef.BoneIndex;
+			info.lightType = lightDef.LightType;
+			info.localDirection = Vector3(lightDef.SpotDirection.X, lightDef.SpotDirection.Y, lightDef.SpotDirection.Z);
+			info.localOffset = Vector3(lightDef.Offset.X, lightDef.Offset.Y, lightDef.Offset.Z);
+			info.baseColor = Vector3(lightDef.Color.R / 255.0f, lightDef.Color.G / 255.0f, lightDef.Color.B / 255.0f);
+			info.intensity = lightDef.Intensity > 0.0f ? lightDef.Intensity : 1.0f;
+			info.innerAngle = lightDef.SpotAngle * 0.7f;
+			info.outerAngle = lightDef.SpotAngle;
+			info.nearAtten = lightDef.AttenStart;
+			info.farAtten = lightDef.AttenEnd;
+			info.flags = lightDef.Flags;
+			info.pulseRate = lightDef.PulseRate > 0.0f ? lightDef.PulseRate : 2.0f;
+			info.strobeTimer = GameClientRandomValueReal(0.0f, 1.0f);
+			info.strobeState = true;
+			m_modelDynamicLights.push_back(info);
+		}
+	}
+	m_dynamicLightsInitialized = true;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Releases all dynamic lights allocated by this model draw module. */
+void W3DModelDraw::releaseModelDynamicLights()
+{
+	for (size_t i = 0; i < m_modelDynamicLights.size(); ++i)
+	{
+		if (m_modelDynamicLights[i].light)
+		{
+			m_modelDynamicLights[i].light->setEnabled(false);
+			m_modelDynamicLights[i].light = nullptr;
+		}
+	}
+	m_modelDynamicLights.clear();
+	m_dynamicLightsInitialized = false;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Updates position, direction, and intensity of all dynamic lights for the current frame. */
+void W3DModelDraw::updateModelDynamicLights()
+{
+	if (!m_renderObject || m_renderObject->Class_ID() != RenderObjClass::CLASSID_HLOD)
+		return;
+
+	if (!m_dynamicLightsInitialized)
+	{
+		initModelDynamicLights();
+	}
+
+	if (m_modelDynamicLights.empty())
+		return;
+
+	if (!W3DDisplay::m_3DScene)
+		return;
+
+	Bool effectivelyHidden = getDrawable()->isDrawableEffectivelyHidden() || m_fullyObscuredByShroud;
+
+	HLodClass* hlod = (HLodClass*)m_renderObject;
+	const Real dt = TheFramePacer ? (0.033f * TheFramePacer->getActualLogicTimeScaleOverFpsRatio()) : 0.033f;
+
+	for (size_t i = 0; i < m_modelDynamicLights.size(); ++i)
+	{
+		ModelDynamicLightInfo& li = m_modelDynamicLights[i];
+
+		Bool shouldBeOn = !effectivelyHidden;
+
+		// Check day/night flags
+		if (shouldBeOn)
+		{
+			if (li.flags & W3D_HLOD_LIGHT_FLAG_ALWAYS_ON)
+			{
+				shouldBeOn = true;
+			}
+			else if (li.flags & W3D_HLOD_LIGHT_FLAG_NIGHT_ONLY)
+			{
+				shouldBeOn = !m_hideHeadlights;
+			}
+			else
+			{
+				// Default lights follow headlight day/night setting
+				shouldBeOn = !m_hideHeadlights;
+			}
+		}
+
+		// Handle strobe / pulsing if active
+		Real currentIntensity = li.intensity;
+		if (shouldBeOn && (li.flags & (W3D_HLOD_LIGHT_FLAG_STROBE | W3D_HLOD_LIGHT_FLAG_PULSING)))
+		{
+			li.strobeTimer += dt * li.pulseRate;
+			if (li.flags & W3D_HLOD_LIGHT_FLAG_STROBE)
+			{
+				// Square wave strobe (on first half of cycle, off second half)
+				float cycle = li.strobeTimer - floorf(li.strobeTimer);
+				if (cycle > 0.5f)
+				{
+					shouldBeOn = false;
+				}
+			}
+			else if (li.flags & W3D_HLOD_LIGHT_FLAG_PULSING)
+			{
+				// Sine wave pulsing
+				float wave = 0.5f + 0.5f * sinf(li.strobeTimer * 6.2831853f);
+				currentIntensity *= (0.3f + 0.7f * wave);
+			}
+		}
+
+		if (!shouldBeOn)
+		{
+			if (li.light)
+			{
+				li.light->setEnabled(false);
+			}
+			continue;
+		}
+
+		// Obtain pooled dynamic light if needed
+		if (!li.light || !li.light->isEnabled())
+		{
+			li.light = W3DDisplay::m_3DScene->getADynamicLight();
+			if (!li.light)
+				continue;
+		}
+
+		li.light->setEnabled(true);
+
+		// Get bone world transform
+		Matrix3D boneXform = hlod->Get_Bone_Transform(li.boneIndex);
+		Vector3 worldPos;
+		Matrix3D::Transform_Vector(boneXform, li.localOffset, &worldPos);
+
+		li.light->Set_Position(worldPos);
+		li.light->Set_Transform(boneXform);
+		li.light->Set_Intensity(currentIntensity);
+
+		Vector3 diffuse = li.baseColor * currentIntensity;
+		Vector3 ambient = diffuse * 0.2f;
+		li.light->Set_Diffuse(diffuse);
+		li.light->Set_Ambient(ambient);
+		li.light->Set_Far_Attenuation_Range(li.nearAtten, li.farAtten);
+
+		if (li.lightType == W3D_HLOD_LIGHT_TYPE_SPOT)
+		{
+			li.light->Set_Type(LightClass::SPOT);
+			Vector3 worldDir;
+			Matrix3D::Rotate_Vector(boneXform, li.localDirection, &worldDir);
+			li.light->Set_Spot_Direction(worldDir);
+			li.light->Set_Spot_Angle(li.outerAngle);
+			li.light->Set_Spot_Exponent(2.0f);
+		}
+		else
+		{
+			li.light->Set_Type(LightClass::POINT);
 		}
 	}
 }

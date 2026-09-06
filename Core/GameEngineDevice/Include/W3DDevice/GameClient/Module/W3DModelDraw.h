@@ -61,6 +61,7 @@ class RenderObjClass;
 class Shadow;
 class TerrainTracksRenderObjClass;
 class HAnimClass;
+class W3DDynamicLight;
 enum GameLODLevel CPP_11(: Int);
 //-------------------------------------------------------------------------------------------------
 /** The default client update module */
@@ -507,6 +508,32 @@ private:
 	Bool													m_hideHeadlights;
 	Bool													m_pauseAnimation;
 	Int														m_animationMode;
+
+	struct ModelDynamicLightInfo
+	{
+		W3DDynamicLight*	light;
+		Int					boneIndex;
+		UnsignedInt			lightType;
+		Vector3				localDirection;
+		Vector3				localOffset;
+		Vector3				baseColor;
+		Real				intensity;
+		Real				innerAngle;
+		Real				outerAngle;
+		Real				nearAtten;
+		Real				farAtten;
+		UnsignedInt			flags;
+		Real				pulseRate;
+		Real				strobeTimer;
+		Bool				strobeState;
+	};
+	typedef std::vector<ModelDynamicLightInfo> ModelDynamicLightVec;
+	ModelDynamicLightVec	m_modelDynamicLights;
+	Bool					m_dynamicLightsInitialized;
+
+	void initModelDynamicLights();
+	void updateModelDynamicLights();
+	void releaseModelDynamicLights();
 
 	void adjustAnimation(const ModelConditionInfo* prevState, Real prevAnimFraction);
 	Real getCurrentAnimFraction() const;

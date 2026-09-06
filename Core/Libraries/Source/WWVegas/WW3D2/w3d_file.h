@@ -482,6 +482,9 @@ enum {
 			W3D_CHUNK_HLOD_SUB_OBJECT,										// an object in this level of detail array
 		W3D_CHUNK_HLOD_AGGREGATE_ARRAY,									// array of aggregates, contains W3D_CHUNK_SUB_OBJECT_ARRAY_HEADER and W3D_CHUNK_SUB_OBJECT_ARRAY
 		W3D_CHUNK_HLOD_PROXY_ARRAY,										// array of proxies, used for application-defined purposes, provides a name and a bone.
+		W3D_CHUNK_HLOD_LIGHT_ARRAY						=0x00000707,		// array of bone-parented dynamic lights
+			W3D_CHUNK_HLOD_LIGHT_ARRAY_HEADER,							// header containing light count and version
+			W3D_CHUNK_HLOD_LIGHT,										// definition of a single bone-parented light (W3dHLodLightStruct)
 
 	W3D_CHUNK_BOX										=0x00000740,		// defines an collision box render object (W3dBoxStruct)
 	W3D_CHUNK_SPHERE,
@@ -2093,6 +2096,42 @@ struct W3dHLodSubObjectStruct
 {
 	uint32					BoneIndex;
 	char						Name[W3D_NAME_LEN*2];
+};
+
+#define W3D_HLOD_LIGHT_CURRENT_VERSION				0x00010000
+
+#define W3D_HLOD_LIGHT_TYPE_POINT					1
+#define W3D_HLOD_LIGHT_TYPE_SPOT					3
+
+#define W3D_HLOD_LIGHT_FLAG_CAST_SHADOWS			0x00000001
+#define W3D_HLOD_LIGHT_FLAG_VOLUMETRIC				0x00000002
+#define W3D_HLOD_LIGHT_FLAG_PULSING					0x00000004
+#define W3D_HLOD_LIGHT_FLAG_STROBE					0x00000008
+#define W3D_HLOD_LIGHT_FLAG_NIGHT_ONLY				0x00000010
+#define W3D_HLOD_LIGHT_FLAG_ALWAYS_ON				0x00000020
+
+struct W3dHLodLightArrayHeaderStruct
+{
+	uint32					Version;				// W3D_HLOD_LIGHT_CURRENT_VERSION
+	uint32					LightCount;				// Number of bone-parented lights
+};
+typedef W3dHLodLightArrayHeaderStruct W3dHLodLightHeaderStruct;
+
+struct W3dHLodLightStruct
+{
+	char						Name[W3D_NAME_LEN];		// e.g. "HEADLIGHT_L", "ROOF_STROBE"
+	sint32						BoneIndex;				// Parent bone index in HTree hierarchy
+	uint32					LightType;				// POINT (1) or SPOT (3)
+	uint32					Flags;					// Bitmask of W3D_HLOD_LIGHT_FLAG_*
+	W3dVectorStruct		Offset;					// Translation relative to parent bone
+	W3dRGBStruct			Color;					// Linear RGB color
+	float32					Intensity;				// Brightness multiplier
+	float32					AttenStart;				// Near falloff distance
+	float32					AttenEnd;				// Far range cutoff distance
+	W3dVectorStruct		SpotDirection;			// Direction relative to bone (+X forward default)
+	float32					SpotAngle;				// Cone half-angle in radians
+	float32					SpotExponent;			// Falloff focus exponent
+	float32					PulseRate;				// Frequency in Hz for pulsing/strobe
 };
 
 
