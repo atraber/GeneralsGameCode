@@ -47,6 +47,10 @@ class WeatherSetting : public Overridable
 		Real	m_snowBoxDimensions;	///<used to set dimensions of box surrounding camera. (world units)
 		Real	m_snowBoxDensity;		///<used to control how many emitters are present per world unit
 		Real	m_snowVelocity;			///<used to set speed at which snow falls (world units/sec).
+		// Inert since Phase 10. It selected the point-sprite snow drawer, which was the
+		// last fixed-function draw family in the game and which no backend after D3D9 can
+		// run -- there is no programmable point-sprite expansion. Still parsed, and still
+		// written by shipped Weather blocks, so it has to keep having a home.
 		Bool    m_usePointSprites;		///<used to disable hardware point-sprite support.
 		Bool	m_snowEnabled;			///<enable/disable snow on the map.
 

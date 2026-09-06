@@ -28,20 +28,12 @@
 
 
 
-#define D3DFVF_POINTVERTEX (D3DFVF_XYZ)
-#define SNOW_BUFFER_SIZE 4096	//size of vertex buffer holding particles.
 #define SNOW_BATCH_SIZE	2048	//we render at most this many particles per drawprimitive call.  This number * 6 must be less than 65536 to fit into index buffer.
-
-struct POINTVERTEX
-{
-    Vector3 v;	//center of particle.
-};
 
 W3DSnowManager::W3DSnowManager()
 {
 	m_indexBuffer=nullptr;
 	m_snowTexture=nullptr;
-	m_VertexBufferD3D=nullptr;
 }
 
 W3DSnowManager::~W3DSnowManager()
@@ -60,10 +52,6 @@ void W3DSnowManager::ReleaseResources()
 {
 	REF_PTR_RELEASE(m_snowTexture);
 
-	DX8Wrapper::Release_DX8_Vertex_Buffer(m_VertexBufferD3D);
-
-	m_VertexBufferD3D=nullptr;
-
 	REF_PTR_RELEASE(m_indexBuffer);
 }
 
@@ -75,21 +63,6 @@ Bool W3DSnowManager::ReAcquireResources()
 	if (!TheWeatherSetting->m_snowEnabled)
 		return TRUE;	//no need for resources if snow is disabled.
 
-	if (TheWeatherSetting->m_usePointSprites && DX8Wrapper::Get_Current_Caps()->Support_PointSprites())
-	{
-		DEBUG_ASSERTCRASH(DX8Wrapper::Has_Device(), ("Trying to ReAcquireResources on W3DSnowManager without device"));
-
-		if (m_VertexBufferD3D == nullptr)
-		{	// Create vertex buffer
-
-			m_VertexBufferD3D=DX8Wrapper::Create_DX8_Vertex_Buffer(
-				SNOW_BUFFER_SIZE*sizeof(POINTVERTEX), D3DFVF_POINTVERTEX,
-				GFX_USAGE_DYNAMIC|GFX_USAGE_POINT_SPRITES);
-			if (m_VertexBufferD3D == nullptr)
-				return FALSE;
-		}
-	}
-	else
 	{
 		m_indexBuffer=NEW_REF(DX8IndexBufferClass,(SNOW_BATCH_SIZE *6));	//allocate 2 triangles per flake, each with 3 indices.
 
@@ -122,10 +95,6 @@ Bool W3DSnowManager::ReAcquireResources()
 	}
 
 	m_snowTexture = WW3DAssetManager::Get_Instance()->Get_Texture(TheWeatherSetting->m_snowTexture.str());
-
-	m_dwBase = SNOW_BUFFER_SIZE;
-	m_dwDiscard = SNOW_BUFFER_SIZE;
-	m_dwFlush = SNOW_BATCH_SIZE;
 
 	return TRUE;
 }
@@ -163,199 +132,29 @@ void W3DSnowManager::update()
 // Helper function to stuff a FLOAT into a DWORD argument
 inline DWORD FtoDW( FLOAT f ) { return *((DWORD*)&f); }
 
-/*Recursively subdivide the large snow box enclosing the camera until we reach some predefined leaf size.  This
-method is used so that very few off-screen particles end up getting rendered.  Culling them individually would
-be too expensive since we're dealing with 1000's for this effect.*/
-void W3DSnowManager::renderSubBox(RenderInfoClass &rinfo, Int originX, Int originY, Int cubeDimX, Int cubeDimY )
-{
-	//check if this box is too large and needs subdivision
-	Int boxDimX=cubeDimX - originX;
-	Int boxDimY=cubeDimY - originY;
-	Int halfX=REAL_TO_INT_CEIL(boxDimX*0.5f);
-	Int halfY=REAL_TO_INT_CEIL(boxDimY*0.5f);
-
-	CameraClass &camera=rinfo.Camera;
-	MinMaxAABoxClass mmbox;
-
-	if (boxDimX > m_leafDim)
-	{	//subdivide the box
-		if (boxDimY > m_leafDim)
-		{	//subdivide in both directions
-			//Upper left
-			mmbox.MinCorner.Set(originX*m_emitterSpacing-m_cullOverscan, (originY + halfY)*m_emitterSpacing-m_cullOverscan, m_snowCeiling-m_boxDimensions);
-			mmbox.MaxCorner.Set((originX + halfX)*m_emitterSpacing+m_cullOverscan, cubeDimY*m_emitterSpacing+m_cullOverscan, m_snowCeiling);
-			if (CollisionMath::Overlap_Test(camera.Get_Frustum(),mmbox) != CollisionMath::OUTSIDE)
-				renderSubBox(rinfo, originX, originY + halfY, originX + halfX, cubeDimY);
-			//Upper right
-			mmbox.MinCorner.Set((originX + halfX)*m_emitterSpacing-m_cullOverscan, (originY + halfY)*m_emitterSpacing-m_cullOverscan, m_snowCeiling-m_boxDimensions);
-			mmbox.MaxCorner.Set(cubeDimX*m_emitterSpacing+m_cullOverscan, cubeDimY*m_emitterSpacing+m_cullOverscan, m_snowCeiling);
-			if (CollisionMath::Overlap_Test(camera.Get_Frustum(),mmbox) != CollisionMath::OUTSIDE)
-				renderSubBox(rinfo, originX + halfX, originY + halfY,cubeDimX, cubeDimY);
-			//Lower left
-			mmbox.MinCorner.Set(originX*m_emitterSpacing-m_cullOverscan, originY*m_emitterSpacing-m_cullOverscan, m_snowCeiling-m_boxDimensions);
-			mmbox.MaxCorner.Set((originX + halfX)*m_emitterSpacing+m_cullOverscan, (originY + halfY)*m_emitterSpacing+m_cullOverscan, m_snowCeiling);
-			if (CollisionMath::Overlap_Test(camera.Get_Frustum(),mmbox) != CollisionMath::OUTSIDE)
-				renderSubBox(rinfo, originX,originY,originX + halfX, originY + halfY);
-			//Lower right
-			mmbox.MinCorner.Set((originX + halfX)*m_emitterSpacing-m_cullOverscan, originY*m_emitterSpacing-m_cullOverscan, m_snowCeiling-m_boxDimensions);
-			mmbox.MaxCorner.Set(cubeDimX*m_emitterSpacing+m_cullOverscan, (originY + halfY)*m_emitterSpacing+m_cullOverscan, m_snowCeiling);
-			if (CollisionMath::Overlap_Test(camera.Get_Frustum(),mmbox) != CollisionMath::OUTSIDE)
-				renderSubBox(rinfo, originX + halfX, originY, cubeDimX, originY + halfY);
-			return;
-		}
-		else
-		{	//only subdivide in x direction.
-			//Left
-			mmbox.MinCorner.Set(originX*m_emitterSpacing-m_cullOverscan, originY*m_emitterSpacing-m_cullOverscan, m_snowCeiling-m_boxDimensions);
-			mmbox.MaxCorner.Set((originX + halfX)*m_emitterSpacing+m_cullOverscan, cubeDimY*m_emitterSpacing+m_cullOverscan, m_snowCeiling);
-			if (CollisionMath::Overlap_Test(camera.Get_Frustum(),mmbox) != CollisionMath::OUTSIDE)
-				renderSubBox(rinfo, originX, originY, originX + halfX, cubeDimY);
-			//Right
-			mmbox.MinCorner.Set((originX + halfX)*m_emitterSpacing-m_cullOverscan, originY*m_emitterSpacing-m_cullOverscan, m_snowCeiling-m_boxDimensions);
-			mmbox.MaxCorner.Set(cubeDimX*m_emitterSpacing+m_cullOverscan, cubeDimY*m_emitterSpacing+m_cullOverscan, m_snowCeiling);
-			if (CollisionMath::Overlap_Test(camera.Get_Frustum(),mmbox) != CollisionMath::OUTSIDE)
-				renderSubBox(rinfo, originX + halfX, originY, cubeDimX, cubeDimY);
-			return;
-		}
-	}
-	else
-	if (boxDimY > m_leafDim)
-	{	//only subdivide in y direction
-		//Top
-		mmbox.MinCorner.Set(originX*m_emitterSpacing-m_cullOverscan, (originY+halfY)*m_emitterSpacing-m_cullOverscan, m_snowCeiling-m_boxDimensions);
-		mmbox.MaxCorner.Set(cubeDimX*m_emitterSpacing+m_cullOverscan, cubeDimY*m_emitterSpacing+m_cullOverscan, m_snowCeiling);
-		if (CollisionMath::Overlap_Test(camera.Get_Frustum(),mmbox) != CollisionMath::OUTSIDE)
-			renderSubBox(rinfo, originX, originY+halfY,cubeDimX, cubeDimY);
-		//Bottom
-		mmbox.MinCorner.Set(originX*m_emitterSpacing-m_cullOverscan, originY*m_emitterSpacing-m_cullOverscan, m_snowCeiling-m_boxDimensions);
-		mmbox.MaxCorner.Set(cubeDimX*m_emitterSpacing+m_cullOverscan, (originY + halfY)*m_emitterSpacing+m_cullOverscan, m_snowCeiling);
-		if (CollisionMath::Overlap_Test(camera.Get_Frustum(),mmbox) != CollisionMath::OUTSIDE)
-			renderSubBox(rinfo, originX, originY, cubeDimX, originY + halfY);
-		return;
-	}
-
-	//Box too small to subdivide so render it.
-
-	//Find total number of particles that need rendering.
-	Int totalPart=(cubeDimY-originY)*(cubeDimX-originX);
-
-	if (!totalPart)
-		return;	//nothing to render.
-
-	Int y=originY;	//loop counter.
-	Int cubeOriginXRemainder = originX;	//loop counter - adjusted when not all particles fit into render buffer.
-	Vector3 snowCenter;
-
-	m_totalRendered += totalPart;
-
-	while (totalPart)
-	{
-		Int batchSize=totalPart;
-
-		if (batchSize > m_dwFlush)
-			batchSize = m_dwFlush;
-
-		if((m_dwBase + batchSize) > m_dwDiscard)
-			m_dwBase = 0;
-
-		POINTVERTEX* verts;
-
-		if(!DX8Wrapper::Map_DX8_Vertex_Buffer(m_VertexBufferD3D,
-			m_dwBase * sizeof(POINTVERTEX), batchSize * sizeof(POINTVERTEX),
-			m_dwBase ? GFX_MAP_WRITE_NO_OVERWRITE : GFX_MAP_WRITE_DISCARD, (void**)&verts))
-			return;	//couldn't lock buffer.
-
-		Int numberInBatch=0;
-
-		for (;y<cubeDimY; y++)
-		{
-			for (Int x=cubeOriginXRemainder; x<cubeDimX; x++)
-			{
-				if (numberInBatch >= batchSize)
-				{	cubeOriginXRemainder = x;
-					goto flush_particles;
-				}
-
-				//Get initial height from noise table.  We add a large value to make sure it's positive.  Then
-				//modulate by table dimensions to find a value.
-				Int noiseOffset=MODPOW2(x+MAXIMUM_CAMERA_DISTANCE,SNOW_NOISE_X)+MODPOW2(y+MAXIMUM_CAMERA_DISTANCE,SNOW_NOISE_Y)*SNOW_NOISE_X;
-				if (noiseOffset > (SNOW_NOISE_X * SNOW_NOISE_Y))
-					noiseOffset = 0;	//this should never happen but check to prevent buffer over/under flow.
-
-				//find current height
-				Real h0=m_snowCeiling-fmod(m_heightTraveled+m_startingHeights[noiseOffset],m_boxDimensions);
-
-				//find world-space position of snow flake
-				snowCenter.Set(x*m_emitterSpacing,y*m_emitterSpacing,h0);
-
-				//Adjust position so snow flakes don't fall straight down.
-				snowCenter.X += m_amplitude * WWMath::Fast_Sin( h0 * m_frequencyScaleX + (Real)x);
-				snowCenter.Y += m_amplitude * WWMath::Fast_Sin( h0 * m_frequencyScaleY + (Real)y);
-
-				*(Vector3 *)verts=snowCenter;
-				verts++;
-
-				numberInBatch++;
-			}
-			//getting here means we did not overflow the render buffer, so reset x origin to normal.
-			cubeOriginXRemainder = originX;	//reset to normal amount
-		}
-
-flush_particles:
-		DX8Wrapper::Unmap_DX8_Vertex_Buffer(m_VertexBufferD3D);
-		//Render any particles that may be queued up.
-		if (numberInBatch)
-		{
-			Debug_Statistics::Record_DX8_Polys_And_Vertices(numberInBatch*2,numberInBatch*4,ShaderClass::_PresetOpaqueShader);
-			// Drawn on the device, so it inherits whatever the wrapper last bound. See
-			// Force_Fixed_Function_Pipeline.
-			//
-			// This one stays on fixed function, deliberately, and is the only draw in the
-			// engine of which that is still true. A point sprite is expanded to a quad by
-			// the rasteriser under D3DRS_POINTSPRITEENABLE, and there is no programmable
-			// equivalent: a vertex shader is handed one vertex and must emit one vertex,
-			// so the expansion cannot happen in it. (D3D11 has the same hole, and closes
-			// it with a geometry shader.)
-			//
-			// renderAsQuads below is the same snowfall built out of real quads on the CPU,
-			// drawn through DX8Wrapper::Draw_Triangles like everything else, and it is
-			// already what runs whenever the hardware or TheWeatherSetting->m_usePointSprites
-			// says no. Converting this path would not add a capability, it would delete the
-			// cheaper of two ways to draw the same snow -- so keep both, and let the point
-			// sprite path stop being offered where the fixed-function pipeline is not there.
-			//
-			// Measured rather than assumed, once a Data\INI\Patch override made either
-			// path selectable on any map:
-			//
-			//   SnowPointSprites = Yes  13200 draws per 600 frames, 100% fixed function on
-			//                           the vertex side and on the pixel side too. That is
-			//                           the largest fixed-function draw family left in the
-			//                           game by an order of magnitude, and it was invisible.
-			//   SnowPointSprites = No   this drawer does not appear at all; the snow goes
-			//                           through unit_vs and unit_uv2_vs, and the census
-			//                           reports 0 draws reaching a device without a shader.
-			//
-			// And this is not a hypothetical path: usa_lightsout.rep is on a snowy map and
-			// runs this drawer with no override at all, 4800 point-sprite draws per window,
-			// every one of them fixed function. It is the largest live fixed-function draw
-			// family left in the game, and it stayed invisible for four phases because the
-			// replay every one of them verified against -- civ_buildings -- has no snow.
-			//
-			// So a backend with no point sprites needs no code: it reports PointSprites
-			// false in its caps and line 344 picks the quad path on its own. What it does
-			// need is a retune. The two paths draw the same flakes in the same places at
-			// different sizes -- m_snowPointSize is a screen-space point scaled against
-			// m_snowMaxPointSize, m_snowQuadSize is half a world unit, and they are
-			// separate settings that nothing keeps in step. Same frame, same snowfall,
-			// 15% of pixels different.
-			DX8Wrapper::Force_Fixed_Function_Pipeline();
-			DX8Wrapper::Prepare_Direct_Draw("snow");
-			DX8Wrapper::Draw_DX8_Primitive( D3DPT_POINTLIST, m_dwBase, numberInBatch);
-			totalPart -= numberInBatch;
-			m_dwBase += numberInBatch;
-		}
-	}
-}
+// renderSubBox was here, and with it the point-sprite snow drawer.
+//
+// It built one vertex per flake and let D3DRS_POINTSPRITEENABLE expand each one to a quad
+// in the rasteriser, subdividing the visible cube against the frustum so that each batch
+// was a DrawPrimitive of a few hundred points. It was the largest fixed-function draw
+// family left in the game -- 4800 draws per 600-frame window on usa_lightsout with no
+// override at all, 12320 with snow forced on, 100% fixed function on both the vertex and
+// the pixel side -- and it stayed invisible for four phases because civ_buildings, the
+// replay everything was verified against, has no snow.
+//
+// There is no programmable equivalent: a vertex shader is handed one vertex and must emit
+// one, so the expansion cannot happen in it, and D3D11 closes that hole with a geometry
+// shader rather than with a render state. Every backend after D3D9 therefore reported
+// PointSprites false and took renderAsQuads, which is the same snowfall built out of real
+// quads on the CPU and drawn through DX8Wrapper::Draw_Triangles like everything else.
+//
+// Deleting the drawer rather than the capability check, because Phase 9 looked at it and
+// found a bug: under D3D9 the point-sprite path painted the flakes **black**, and the quad
+// path painted them white and correct on both backends. Nobody saw it because the only
+// shipped map with snow is a night map. The quad path is measured backend-consistent --
+// 145262 pixels of snow footprint, and quads-against-quads across the two backends added
+// about 23k to a 718k baseline -- and renderAsQuads derives its world size from the point
+// size and the projection, so the retune the two drawers needed is already in it.
 
 void W3DSnowManager::render(RenderInfoClass &rinfo)
 {
@@ -363,8 +162,6 @@ void W3DSnowManager::render(RenderInfoClass &rinfo)
 	DeclaredTechniqueClass declareEffect(MESH_TECHNIQUE_EFFECT, "snow");
 	if (!TheWeatherSetting->m_snowEnabled || !m_isVisible)
 		return;
-
-	Int usePointSprites = DX8Wrapper::Get_Current_Caps()->Support_PointSprites() && TheWeatherSetting->m_usePointSprites;
 
 	//make sure the noise table is powers of 2 in dimensions.
 	WWASSERT(ISPOW2(SNOW_NOISE_X) && ISPOW2(SNOW_NOISE_Y));
@@ -440,53 +237,16 @@ void W3DSnowManager::render(RenderInfoClass &rinfo)
 	REF_PTR_RELEASE(vmat);
 
 	//make sure we have all the resources we need
-	if (usePointSprites && !m_VertexBufferD3D)
-		ReAcquireResources();
-
-	if (!usePointSprites && !m_indexBuffer)
+	if (!m_indexBuffer)
 		ReAcquireResources();
 
 	DX8Wrapper::Set_Texture(0,m_snowTexture);
 
-	if (!usePointSprites)
-	{
-		renderAsQuads(rinfo,cubeOriginX,cubeOriginY,cubeDimX,cubeDimY);
-		return;
-	}
-
-	Vector3 snowCenter;
-
-	DX8Wrapper::Apply_Render_State_Changes();
-
-    // Set the render states for using point sprites
-	DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSPRITEENABLE, TRUE );
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSCALEENABLE,  TRUE );
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSIZE,     FtoDW(m_pointSize) );
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSIZE_MIN, FtoDW(m_minPointSize) );
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSIZE_MAX, FtoDW(m_maxPointSize) );
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSCALE_A,  FtoDW(0.00f) );
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSCALE_B,  FtoDW(0.00f) );
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSCALE_C,  FtoDW(1.00f) );
-
-	DX8Wrapper::Set_DX8_Stream_Source( 0, m_VertexBufferD3D, sizeof(POINTVERTEX) );
-    DX8Wrapper::Set_Vertex_Shader( D3DFVF_POINTVERTEX );
-	m_dwBase = SNOW_BUFFER_SIZE;	//start with a new vertex buffer each frame.
-
-	m_leafDim = 45;	//cull boxes that are 20x20 emitters in size. Making them much smaller will result in too many draw calls.
-	m_totalRendered = 0;	//keep track of how many particles were rendered.
-
-	//Particle centers can deviate from center by by amplitude of sine offset.  They also have radius m_quadSize.
-	//Enlarge culling bounds to compensate.
-	m_cullOverscan = m_amplitude+m_quadSize;
-	renderSubBox(rinfo,cubeOriginX,cubeOriginY,cubeDimX,cubeDimY);
-
-	// Reset render states
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSPRITEENABLE, FALSE );
-    DX8Wrapper::Set_DX8_Render_State( D3DRS_POINTSCALEENABLE,  FALSE );
-
+	renderAsQuads(rinfo,cubeOriginX,cubeOriginY,cubeDimX,cubeDimY);
 }
 
-/**For hardware that doesn't support point sprites*/
+/** The snow drawer. Was the fallback for hardware without point sprites; since
+ * Phase 10 deleted the point-sprite drawer it is the only one. */
 void W3DSnowManager::renderAsQuads(RenderInfoClass &rinfo, Int cubeOriginX, Int cubeOriginY, Int cubeDimX, Int cubeDimY)
 {
 
