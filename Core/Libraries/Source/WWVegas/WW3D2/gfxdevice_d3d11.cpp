@@ -4726,6 +4726,299 @@ bool GfxDeviceD3D11::Debug_Read_Vertex_Constants(unsigned first_register, unsign
 	return true;
 }
 
+#ifdef RTS_DEBUG
+namespace
+{
+	const char * Blend_Name(D3D11_BLEND b)
+	{
+		switch (b) {
+		case D3D11_BLEND_ZERO:				return "ZERO";
+		case D3D11_BLEND_ONE:				return "ONE";
+		case D3D11_BLEND_SRC_COLOR:			return "SRC_COLOR";
+		case D3D11_BLEND_INV_SRC_COLOR:		return "INV_SRC_COLOR";
+		case D3D11_BLEND_SRC_ALPHA:			return "SRC_ALPHA";
+		case D3D11_BLEND_INV_SRC_ALPHA:		return "INV_SRC_ALPHA";
+		case D3D11_BLEND_DEST_ALPHA:		return "DEST_ALPHA";
+		case D3D11_BLEND_INV_DEST_ALPHA:	return "INV_DEST_ALPHA";
+		case D3D11_BLEND_DEST_COLOR:		return "DEST_COLOR";
+		case D3D11_BLEND_INV_DEST_COLOR:	return "INV_DEST_COLOR";
+		case D3D11_BLEND_SRC_ALPHA_SAT:		return "SRC_ALPHA_SAT";
+		case D3D11_BLEND_BLEND_FACTOR:		return "BLEND_FACTOR";
+		case D3D11_BLEND_INV_BLEND_FACTOR:	return "INV_BLEND_FACTOR";
+		default:							return "?";
+		}
+	}
+}
+#endif
+
+// What the next draw would be rasterised with, as this backend has it. See the note on
+// the declaration in gfxdevice.h.
+//
+// The blend object is *re-created* here rather than read back off the context, and that is
+// the point of the instrument rather than a shortcut: the state is materialised at the
+// draw, so at the moment a caller wants to look nothing has been sent yet, and the failure
+// this was written to catch is Apply_Blend_State returning silently when CreateBlendState
+// refuses the description. Asking the device to make the same description again reports
+// the HRESULT that the draw path throws away.
+bool GfxDeviceD3D11::Debug_Describe_Draw_State(char * out, unsigned cap)
+{
+#ifdef RTS_DEBUG
+	TRACE("Debug_Describe_Draw_State");
+	if (out == nullptr || cap == 0) return false;
+	GfxD3D11Impl * const impl = m_impl;
+	if (impl == nullptr || impl->device == nullptr) return false;
+
+	D3D11_BLEND_DESC desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.AlphaToCoverageEnable = FALSE;
+	desc.IndependentBlendEnable = FALSE;
+	D3D11_RENDER_TARGET_BLEND_DESC & rt = desc.RenderTarget[0];
+	rt.BlendEnable = impl->rs[RS_ALPHABLENDENABLE] ? TRUE : FALSE;
+	rt.SrcBlend = To_Blend(impl->rs[RS_SRCBLEND]);
+	rt.DestBlend = To_Blend(impl->rs[RS_DESTBLEND]);
+	rt.BlendOp = To_Blend_Op(impl->rs[RS_BLENDOP]);
+	if (impl->rs[RS_SEPARATEALPHABLENDENABLE]) {
+		rt.SrcBlendAlpha = To_Alpha_Blend(impl->rs[RS_SRCBLENDALPHA]);
+		rt.DestBlendAlpha = To_Alpha_Blend(impl->rs[RS_DESTBLENDALPHA]);
+		rt.BlendOpAlpha = To_Blend_Op(impl->rs[RS_BLENDOPALPHA]);
+	} else {
+		rt.SrcBlendAlpha = To_Alpha_Blend(impl->rs[RS_SRCBLEND]);
+		rt.DestBlendAlpha = To_Alpha_Blend(impl->rs[RS_DESTBLEND]);
+		rt.BlendOpAlpha = To_Blend_Op(impl->rs[RS_BLENDOP]);
+	}
+	rt.RenderTargetWriteMask = (UINT8)(impl->rs[RS_COLORWRITEENABLE] & 0xf);
+
+	ID3D11BlendState * probe = nullptr;
+	const HRESULT hr = impl->device->CreateBlendState(&desc, &probe);
+	if (probe != nullptr) probe->Release();
+
+	// And what is actually standing on the context right now, which is a different
+	// question from what the words above would build: the state objects are materialised
+	// at the draw, so before one this reports the *previous* draw's and after one it
+	// reports this draw's. Asked of the context rather than of the tracked words because
+	// the failure being hunted is precisely a description that never reached the device.
+	char livebuf[128];
+	{
+		ID3D11BlendState * live = nullptr;
+		float lf[4] = { 0, 0, 0, 0 };
+		UINT lm = 0;
+		impl->context->OMGetBlendState(&live, lf, &lm);
+		if (live == nullptr) {
+			strcpy(livebuf, "context blend = DEFAULT (no object bound)");
+		} else {
+			D3D11_BLEND_DESC ld;
+			live->GetDesc(&ld);
+			sprintf(livebuf, "context blend en=%u rgb %s/%s alpha %s/%s mask=0x%x",
+				(unsigned)ld.RenderTarget[0].BlendEnable,
+				Blend_Name(ld.RenderTarget[0].SrcBlend),
+				Blend_Name(ld.RenderTarget[0].DestBlend),
+				Blend_Name(ld.RenderTarget[0].SrcBlendAlpha),
+				Blend_Name(ld.RenderTarget[0].DestBlendAlpha),
+				(unsigned)ld.RenderTarget[0].RenderTargetWriteMask);
+			live->Release();
+		}
+	}
+
+	// And what the pixel shader stage is actually holding in slot 0, which is a different
+	// question again from impl->textures[0]: that array is what the wrapper asked for, and
+	// the whole family of bugs this instrument exists for is a binding that was asked for
+	// and did not arrive.
+	char slotbuf[320];
+	{
+		ID3D11ShaderResourceView * srv[GFX_MAX_STAGES] = { nullptr };
+		ID3D11SamplerState * samp[GFX_MAX_STAGES] = { nullptr };
+		impl->context->PSGetShaderResources(0, GFX_MAX_STAGES, srv);
+		impl->context->PSGetSamplers(0, GFX_MAX_STAGES, samp);
+		unsigned srvMask = 0, sampMask = 0;
+		char dims[GFX_MAX_STAGES][32];
+		for (unsigned st = 0; st < GFX_MAX_STAGES; ++st) {
+			strcpy(dims[st], "-");
+			if (samp[st] != nullptr) { sampMask |= (1u << st); samp[st]->Release(); }
+			if (srv[st] == nullptr) continue;
+			srvMask |= (1u << st);
+			ID3D11Resource * res = nullptr;
+			srv[st]->GetResource(&res);
+			if (res != nullptr) {
+				ID3D11Texture2D * t2 = nullptr;
+				if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&t2))
+						&& t2 != nullptr) {
+					D3D11_TEXTURE2D_DESC td;
+					t2->GetDesc(&td);
+					sprintf(dims[st], "%ux%u/%u", td.Width, td.Height, (unsigned)td.Format);
+					t2->Release();
+				}
+				res->Release();
+			}
+			srv[st]->Release();
+		}
+		sprintf(slotbuf, "PS slots srv=0x%02x samp=0x%02x t0=%s t1=%s t2=%s",
+			srvMask, sampMask, dims[0], dims[1], dims[2]);
+	}
+
+	const D3D11Texture * const t0 = impl->textures[0];
+	char texbuf[160];
+	if (t0 == nullptr) {
+		strcpy(texbuf, "tex0 = NONE");
+	} else {
+		sprintf(texbuf, "tex0 = %ux%u ww=%d dxgi=%d levels=%u srv=%s lod=%u",
+			t0->width, t0->height, (int)t0->ww, (int)t0->dxgi, t0->levels,
+			t0->srv != nullptr ? "yes" : "NULL", t0->lod);
+	}
+
+	_snprintf(out, cap,
+		"blend en=%u src=%u dst=%u op=%u sepa=%u -> rgb %s/%s alpha %s/%s mask=0x%x "
+		"CreateBlendState=0x%08x | vs=%s ps=%s psTexMask=0x%02x | %s | "
+		"srvUnbound=0x%x sampler0 applied=%u addrUV=%u/%u filt %u/%u/%u | "
+		"ps c0 = (%.3f, %.3f, %.3f, %.3f) | ztest=%u zwrite=%u zfunc=%u alphatest=%u | %s | %s",
+		impl->rs[RS_ALPHABLENDENABLE], impl->rs[RS_SRCBLEND], impl->rs[RS_DESTBLEND],
+		impl->rs[RS_BLENDOP], impl->rs[RS_SEPARATEALPHABLENDENABLE],
+		Blend_Name(rt.SrcBlend), Blend_Name(rt.DestBlend),
+		Blend_Name(rt.SrcBlendAlpha), Blend_Name(rt.DestBlendAlpha),
+		(unsigned)rt.RenderTargetWriteMask, (unsigned)hr,
+		impl->vertex_shader != nullptr ? "yes" : "NULL",
+		impl->pixel_shader != nullptr ? "yes" : "NULL",
+		impl->pixel_shader != nullptr ? impl->pixel_shader->texture_mask : 0u,
+		texbuf,
+		impl->srv_unbound_mask, (unsigned)impl->sampler_applied[0],
+		impl->tss[0][TSS_ADDRESSU], impl->tss[0][TSS_ADDRESSV],
+		impl->tss[0][TSS_MAGFILTER], impl->tss[0][TSS_MINFILTER], impl->tss[0][TSS_MIPFILTER],
+		impl->ps_constants[0], impl->ps_constants[1], impl->ps_constants[2],
+		impl->ps_constants[3],
+		impl->rs[RS_ZENABLE], impl->rs[RS_ZWRITEENABLE], impl->rs[RS_ZFUNC],
+		impl->rs[RS_ALPHATESTENABLE], livebuf, slotbuf);
+	out[cap - 1] = '\0';
+	return true;
+#else
+	(void)out; (void)cap;
+	return false;
+#endif
+}
+
+// The texels themselves, off the resource through a staging copy. Debug only and it
+// stalls; nothing calls it per frame.
+bool GfxDeviceD3D11::Debug_Read_Texture_Texels(unsigned stage, unsigned level,
+	unsigned * out, unsigned count)
+{
+#ifdef RTS_DEBUG
+	TRACE("Debug_Read_Texture_Texels");
+	if (out == nullptr || count == 0) return false;
+	if (stage >= GFX_MAX_STAGES) return false;
+	D3D11Texture * const t = m_impl->textures[stage];
+	if (t == nullptr || t->resource == nullptr) return false;
+	if (level >= t->levels) return false;
+	// The two straight 32-bit orders, plus the three block-compressed ones decoded below.
+	// Everything else is refused: a plausible-looking wrong number is worse than nothing.
+	const bool bc1 = (t->dxgi == DXGI_FORMAT_BC1_UNORM || t->dxgi == DXGI_FORMAT_BC1_UNORM_SRGB);
+	const bool bc2 = (t->dxgi == DXGI_FORMAT_BC2_UNORM || t->dxgi == DXGI_FORMAT_BC2_UNORM_SRGB);
+	const bool bc3 = (t->dxgi == DXGI_FORMAT_BC3_UNORM || t->dxgi == DXGI_FORMAT_BC3_UNORM_SRGB);
+	const bool block = bc1 || bc2 || bc3;
+	if (!block && t->dxgi != DXGI_FORMAT_B8G8R8A8_UNORM && t->dxgi != DXGI_FORMAT_R8G8B8A8_UNORM)
+		return false;
+
+	const unsigned w = t->width >> level ? t->width >> level : 1;
+	const unsigned h = t->height >> level ? t->height >> level : 1;
+
+	D3D11_TEXTURE2D_DESC sd;
+	memset(&sd, 0, sizeof(sd));
+	sd.Width = w;
+	sd.Height = h;
+	sd.MipLevels = 1;
+	sd.ArraySize = 1;
+	sd.Format = t->dxgi;
+	sd.SampleDesc.Count = 1;
+	sd.Usage = D3D11_USAGE_STAGING;
+	sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	ID3D11Texture2D * staging = nullptr;
+	if (FAILED(m_impl->device->CreateTexture2D(&sd, nullptr, &staging))) return false;
+
+	m_impl->context->CopySubresourceRegion(staging, 0, 0, 0, 0, t->resource, level, nullptr);
+	D3D11_MAPPED_SUBRESOURCE mapped;
+	bool ok = false;
+	if (SUCCEEDED(m_impl->context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+		for (unsigned i = 0; i < count; ++i) {
+			// Along the diagonal, so a few samples cross the whole image rather than
+			// sitting in one corner of it.
+			const unsigned x = (count > 1) ? (i * (w - 1)) / (count - 1) : w / 2;
+			const unsigned y = (count > 1) ? (i * (h - 1)) / (count - 1) : h / 2;
+			if (!block) {
+				const unsigned char * row = (const unsigned char *)mapped.pData + y * mapped.RowPitch;
+				const unsigned char b0 = row[x * 4 + 0], b1 = row[x * 4 + 1];
+				const unsigned char b2 = row[x * 4 + 2], b3 = row[x * 4 + 3];
+				// Reported as 0xAARRGGBB whichever way round the resource stores it.
+				out[i] = (t->dxgi == DXGI_FORMAT_B8G8R8A8_UNORM)
+					? ((unsigned)b3 << 24) | ((unsigned)b2 << 16) | ((unsigned)b1 << 8) | b0
+					: ((unsigned)b3 << 24) | ((unsigned)b0 << 16) | ((unsigned)b1 << 8) | b2;
+				continue;
+			}
+			// Block compressed. One 4x4 block per 8 (BC1) or 16 (BC2/BC3) bytes, and the
+			// decode is written out rather than approximated -- the whole question this
+			// instrument exists to answer is what value the sampler returns, and an
+			// endpoint average would not answer it.
+			const unsigned bw = (w + 3) / 4;
+			(void)bw;
+			const unsigned bx = x / 4, by = y / 4;
+			const unsigned bytesPerBlock = bc1 ? 8u : 16u;
+			const unsigned char * blk = (const unsigned char *)mapped.pData
+				+ by * mapped.RowPitch + bx * bytesPerBlock;
+			const unsigned char * colour = bc1 ? blk : blk + 8;
+			const unsigned c0 = colour[0] | ((unsigned)colour[1] << 8);
+			const unsigned c1 = colour[2] | ((unsigned)colour[3] << 8);
+			const unsigned lx = x & 3, ly = y & 3;
+			const unsigned idx = (colour[4 + ly] >> (2 * lx)) & 3;
+			unsigned r[2], g[2], b[2];
+			const unsigned cs[2] = { c0, c1 };
+			for (int k = 0; k < 2; ++k) {
+				r[k] = ((cs[k] >> 11) & 0x1f) * 255 / 31;
+				g[k] = ((cs[k] >> 5)  & 0x3f) * 255 / 63;
+				b[k] = ( cs[k]        & 0x1f) * 255 / 31;
+			}
+			unsigned rr, gg, bb;
+			if (!bc1 || c0 > c1) {
+				switch (idx) {
+				case 0: rr = r[0]; gg = g[0]; bb = b[0]; break;
+				case 1: rr = r[1]; gg = g[1]; bb = b[1]; break;
+				case 2: rr = (2*r[0]+r[1])/3; gg = (2*g[0]+g[1])/3; bb = (2*b[0]+b[1])/3; break;
+				default: rr = (r[0]+2*r[1])/3; gg = (g[0]+2*g[1])/3; bb = (b[0]+2*b[1])/3; break;
+				}
+			} else {
+				switch (idx) {
+				case 0: rr = r[0]; gg = g[0]; bb = b[0]; break;
+				case 1: rr = r[1]; gg = g[1]; bb = b[1]; break;
+				case 2: rr = (r[0]+r[1])/2; gg = (g[0]+g[1])/2; bb = (b[0]+b[1])/2; break;
+				default: rr = 0; gg = 0; bb = 0; break;
+				}
+			}
+			unsigned aa = 255;
+			if (bc2) {
+				const unsigned nib = (blk[ly * 2 + (lx >> 1)] >> ((lx & 1) * 4)) & 0xf;
+				aa = nib * 255 / 15;
+			} else if (bc3) {
+				const unsigned a0 = blk[0], a1 = blk[1];
+				// Six bytes of 3-bit indices, little-endian across the whole 48 bits.
+				unsigned __int64 bits = 0;
+				for (int k = 0; k < 6; ++k) bits |= (unsigned __int64)blk[2 + k] << (8 * k);
+				const unsigned ai = (unsigned)((bits >> (3 * (ly * 4 + lx))) & 7);
+				if (a0 > a1) {
+					aa = (ai == 0) ? a0 : (ai == 1) ? a1
+					   : (((8 - ai) * a0 + (ai - 1) * a1) / 7);
+				} else {
+					aa = (ai == 0) ? a0 : (ai == 1) ? a1 : (ai == 6) ? 0 : (ai == 7) ? 255
+					   : (((6 - ai) * a0 + (ai - 1) * a1) / 5);
+				}
+			}
+			out[i] = (aa << 24) | (rr << 16) | (gg << 8) | bb;
+		}
+		m_impl->context->Unmap(staging, 0);
+		ok = true;
+	}
+	staging->Release();
+	return ok;
+#else
+	(void)stage; (void)level; (void)out; (void)count;
+	return false;
+#endif
+}
+
 bool GfxDeviceD3D11::Reset_Swap_Chain(GfxSwapChainDesc & desc)
 {
 	TRACE("Reset_Swap_Chain");

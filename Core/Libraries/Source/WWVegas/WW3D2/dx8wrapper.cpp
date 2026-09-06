@@ -3313,6 +3313,21 @@ bool DX8Wrapper::Bind_Ui_Shader_World(const float * world, bool sampleColour, bo
 	return Bind_Ui_Shader_Direct(&wvp._11, sampleColour, sampleAlpha);
 }
 
+#ifdef RTS_DEBUG
+bool DX8Wrapper::Debug_Describe_Draw_State(char * out, unsigned cap)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Debug_Describe_Draw_State(out, cap);
+}
+
+bool DX8Wrapper::Debug_Read_Texture_Texels(unsigned stage, unsigned level, unsigned * out,
+										   unsigned count)
+{
+	if (Gfx == nullptr) return false;
+	return Gfx->Debug_Read_Texture_Texels(stage, level, out, count);
+}
+#endif
+
 /*
 ** The pixels-to-clip mapping D3DFVF_XYZRHW used to imply, built from the viewport.
 **
@@ -5650,6 +5665,111 @@ void DX8Wrapper::Draw(
 		// to cover them is that it now reads 0 submitted against the same draw count.
 		if (m_bShadowDepthPass && Is_Fixed_Function_Vertex_Draw()) {
 			Debug_Note_Shaderless_Depth_Draw(submitted);
+		}
+		// Attribution by removal: W3D_SKIP_DRAW_SITE=<declaration site> makes every draw
+		// made under that site submit nothing.
+		//
+		// This exists because Phase 9 named a visible defect after a drawer by looking at
+		// a screenshot, and it was the wrong drawer -- skipping the named drawer changed
+		// 161 pixels of HUD clock and left the defect exactly where it was. "Which draw
+		// puts this on the screen" is a question a frame can answer directly, and one run
+		// per candidate beats any amount of reading.
+		{
+			static const char * s_skipSite = nullptr;
+			static bool s_skipRead = false;
+			if (!s_skipRead) { s_skipRead = true; s_skipSite = getenv("W3D_SKIP_DRAW_SITE"); }
+			if (s_skipSite != nullptr && who != nullptr && strcmp(who, s_skipSite) == 0)
+				return;
+			// The same by texture, which is the finer instrument: a site can submit
+			// thousands of draws and only one of them be the thing on screen.
+			static const char * s_skipTex = nullptr;
+			static bool s_skipTexRead = false;
+			if (!s_skipTexRead) { s_skipTexRead = true; s_skipTex = getenv("W3D_SKIP_DRAW_TEXTURE"); }
+			if (s_skipTex != nullptr && render_state.Textures[0] != nullptr &&
+				strstr((const char *)render_state.Textures[0]->Get_Full_Path(), s_skipTex) != nullptr)
+				return;
+		}
+
+		// Small effect quads, named once each.
+		//
+		// Phase 11 needed to find what drew one particular two-triangle quad, and the
+		// only thing the frame said about it was its technique. A census keyed on the
+		// declaration site answers that in one run where a bisect over the drawers would
+		// have taken ten -- and the site is already being carried for the tables above,
+		// so this costs a comparison on draws that are already rare.
+		if (submitted && m_meshTechnique == MESH_TECHNIQUE_EFFECT && polygon_count <= 4) {
+			static const char * seenSite[24];
+			static const void * seenTex[24];
+			static int seenCount = 0;
+			const char * mesh = FFSafeName(s_debugMeshName);
+			if (mesh == nullptr) mesh = "(non-mesh)";
+			// Keyed on the texture, not on the mesh name. The sorted path does not carry a
+			// mesh name -- every row reads "(non-mesh)" -- so keying on it reports exactly
+			// one draw and calls it the drawer, which is how the wrong quad got named the
+			// first time.
+			const void * texKey = (const void *)render_state.Textures[0];
+			bool known = false;
+			for (int i = 0; i < seenCount; ++i) {
+				if (seenSite[i] == who && seenTex[i] == texKey) { known = true; break; }
+			}
+			if (!known && seenCount < 24) {
+				seenSite[seenCount] = who;
+				seenTex[seenCount] = texKey;
+				++seenCount;
+				{
+					char st[512];
+					if (Debug_Describe_Draw_State(st, sizeof(st)))
+						WWDEBUG_SAY(("SMALL EFFECT QUAD state [%s]: %s", who, st));
+					{
+						unsigned tx[7];
+						for (int k = 0; k < 7; ++k) tx[k] = 0;
+						if (Debug_Read_Texture_Texels(0, 0, tx, 7))
+							WWDEBUG_SAY(("SMALL EFFECT QUAD tex0 texels [%s] (0xAARRGGBB): "
+								"%08x %08x %08x %08x %08x %08x %08x", who,
+								tx[0], tx[1], tx[2], tx[3], tx[4], tx[5], tx[6]));
+						for (int k = 0; k < 7; ++k) tx[k] = 0;
+						if (Debug_Read_Texture_Texels(1, 0, tx, 7))
+							WWDEBUG_SAY(("SMALL EFFECT QUAD tex1 texels [%s] (0xAARRGGBB): "
+								"%08x %08x %08x %08x %08x %08x %08x", who,
+								tx[0], tx[1], tx[2], tx[3], tx[4], tx[5], tx[6]));
+					}
+					WWDEBUG_SAY(("SMALL EFFECT QUAD stage words [%s]: "
+						"s0 COLOROP=%u ARG1=%u ARG2=%u ALPHAOP=%u AARG1=%u AARG2=%u | "
+						"s1 COLOROP=%u ARG1=%u ARG2=%u ALPHAOP=%u AARG1=%u AARG2=%u "
+						"TEXCOORDINDEX=0x%x XFORM=%u", who,
+						TextureStageStates[0][D3DTSS_COLOROP], TextureStageStates[0][D3DTSS_COLORARG1],
+						TextureStageStates[0][D3DTSS_COLORARG2], TextureStageStates[0][D3DTSS_ALPHAOP],
+						TextureStageStates[0][D3DTSS_ALPHAARG1], TextureStageStates[0][D3DTSS_ALPHAARG2],
+						TextureStageStates[1][D3DTSS_COLOROP], TextureStageStates[1][D3DTSS_COLORARG1],
+						TextureStageStates[1][D3DTSS_COLORARG2], TextureStageStates[1][D3DTSS_ALPHAOP],
+						TextureStageStates[1][D3DTSS_ALPHAARG1], TextureStageStates[1][D3DTSS_ALPHAARG2],
+						TextureStageStates[1][D3DTSS_TEXCOORDINDEX],
+						TextureStageStates[1][D3DTSS_TEXTURETRANSFORMFLAGS]));
+					for (int c = 0; c < 8; ++c) {
+						WWDEBUG_SAY(("SMALL EFFECT QUAD ps c%d [%s] = (%.4f, %.4f, %.4f, %.4f)",
+							c, who, Pixel_Shader_Constants[c].X, Pixel_Shader_Constants[c].Y,
+							Pixel_Shader_Constants[c].Z, Pixel_Shader_Constants[c].W));
+					}
+					WWDEBUG_SAY(("SMALL EFFECT QUAD textures [%s]: 0='%s' 1='%s' 2='%s'", who,
+						render_state.Textures[0] != nullptr
+							? (const char *)render_state.Textures[0]->Get_Full_Path() : "(none)",
+						render_state.Textures[1] != nullptr
+							? (const char *)render_state.Textures[1]->Get_Full_Path() : "(none)",
+						render_state.Textures[2] != nullptr
+							? (const char *)render_state.Textures[2]->Get_Full_Path() : "(none)"));
+				}
+				WWDEBUG_SAY(("SMALL EFFECT QUAD: site='%s' mesh='%s' polys=%u verts=%u "
+					"fvf=0x%x vs=%s ps=%s tex0='%s' srcblend=%u dstblend=%u "
+					"blendenable=%u colourmask=0x%x",
+					who, mesh, (unsigned)polygon_count, (unsigned)vertex_count,
+					Debug_Vertex_FVF, Debug_Shader_Name((unsigned)Vertex_Shader),
+					Debug_Shader_Name((unsigned)Pixel_Shader),
+					render_state.Textures[0] != nullptr
+						? (const char *)render_state.Textures[0]->Get_Full_Path() : "(none)",
+					RenderStates[D3DRS_SRCBLEND], RenderStates[D3DRS_DESTBLEND],
+					RenderStates[D3DRS_ALPHABLENDENABLE],
+					RenderStates[D3DRS_COLORWRITEENABLE]));
+			}
 		}
 	}
 #endif

@@ -258,6 +258,9 @@ public:
 	virtual bool			Debug_Peek_Base_Vertex_Index(int & out);
 	virtual bool			Debug_Read_Vertex_Constants(unsigned first_register,
 								unsigned count, float * out);
+	virtual bool			Debug_Describe_Draw_State(char * out, unsigned cap);
+	virtual bool			Debug_Read_Texture_Texels(unsigned stage, unsigned level,
+								unsigned * out, unsigned count);
 
 	/// Null, and deliberately. DX8WebBrowser hands the device to an ActiveX control that
 	/// wants a D3D9 device or nothing; the caller turns the in-game browser off.

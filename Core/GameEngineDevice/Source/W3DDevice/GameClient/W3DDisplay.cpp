@@ -1704,6 +1704,33 @@ void W3DDisplay::draw()
 	}
 #endif
 
+#if defined(RTS_DEBUG)
+	// The debug visualizations have only ever been reachable from F11, which means they
+	// have never been reachable from the replay harness -- the one place in this project
+	// where a frame is captured and compared. W3D_DEBUG_VIS=<n> selects a mode at startup
+	// so an unattended run can produce one. Environment variable rather than a command
+	// line switch, for the same reason as W3D_FORCE_RESET_FRAME: a build left in the game
+	// directory cannot do it to somebody who is playing.
+	{
+		static Bool s_visRead = FALSE;
+		if (!s_visRead)
+		{
+			s_visRead = TRUE;
+			const char *v = getenv("W3D_DEBUG_VIS");
+			if (v != NULL && *v != '\0')
+			{
+				const Int mode = atoi(v);
+				if (mode > 0 && mode < (Int)DEBUG_VIS_COUNT)
+				{
+					DX8Wrapper::Set_Debug_Vis_Mode((DebugVisMode)mode);
+					DEBUG_LOG(("DEBUG VIS: mode %d (%s) selected by W3D_DEBUG_VIS\n",
+						mode, Debug_Vis_Mode_Name((DebugVisMode)mode)));
+				}
+			}
+		}
+	}
+#endif
+
 	extern HWND ApplicationHWnd;
 	if (ApplicationHWnd && ::IsIconic(ApplicationHWnd)) {
 		return;

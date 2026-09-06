@@ -884,6 +884,31 @@ public:
 	virtual bool			Debug_Peek_Base_Vertex_Index(int & out)
 							{ (void)out; return false; }
 
+	// Debug only: what this device would rasterise the *next* draw with, written out in
+	// words, into the caller's buffer.
+	//
+	// It exists because a draw that goes straight at the device inherits state from
+	// everything before it, and reading that state back out of the wrapper proves nothing
+	// -- the wrapper is what handed it over. What is worth knowing at a suspect draw is
+	// what the backend made of those words: which blend object it materialised, whether
+	// the object could be made at all, what is in the shader-resource slot the pixel
+	// shader will sample, and which shaders are bound. A screenshot cannot answer any of
+	// those and reasoning about them has been wrong twice.
+	//
+	// No obligation to answer, like the two above.
+	virtual bool			Debug_Describe_Draw_State(char * out, unsigned cap)
+							{ (void)out; (void)cap; return false; }
+
+	// Debug only: a few texels of whatever is in a shader-resource slot, so that "the
+	// sampled colour is zero" can be a reading rather than a deduction. Fills `out` with
+	// up to `count` texels as 0xAARRGGBB, taken along the diagonal of the named mip.
+	//
+	// Answers false for a format it cannot read on the CPU without decoding -- a
+	// block-compressed one -- rather than reporting something plausible.
+	virtual bool			Debug_Read_Texture_Texels(unsigned stage, unsigned level,
+								unsigned * out, unsigned count)
+							{ (void)stage; (void)level; (void)out; (void)count; return false; }
+
 	// Peek_Native_Device was here: the seam's one declared exception, a void* handed to
 	// two pieces of code outside this engine that draw into the device themselves -- the
 	// FEBrowserEngine2 ActiveX control and WorldBuilder's D3DXFont overlay. Both wanted a

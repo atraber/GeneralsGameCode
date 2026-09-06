@@ -95,6 +95,14 @@ int nShadowDecalIndicesInBuf=0;	//model vetices in vertex buffer
 int nShadowDecalStartBatchIndex=0;
 int	nShadowDecalPolysInBatch=0;
 int	nShadowDecalVertsInBatch=0;
+#ifdef RTS_DEBUG
+// The vertex diffuse the last queued decal asked for. ui_ps modulates the texture by it in
+// both colour and alpha, so it is one of exactly two things that can take a multiplicative
+// decal to black -- and unlike the texel it cannot be read back off the device, because the
+// buffer is mapped write-only with DISCARD. Recorded on the way in instead.
+static unsigned s_lastDecalDiffuse = 0;
+#endif
+
 int SHADOW_DECAL_VERTEX_SIZE=32768;
 int SHADOW_DECAL_INDEX_SIZE=65536;
 
@@ -631,6 +639,77 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 				(unsigned)(SHADOW_DECAL_FVF)));
 		}
 	}
+
+	// The three decal styles differ in one thing only -- the preset shader's two blend
+	// factors -- and one of them draws an opaque black quad where D3D9 drew a shadow. So
+	// the report is taken once per style, which puts the broken case beside a working one
+	// that took the same code path with the same texture format and the same shader pair.
+	// Without that control a "the sampled colour is zero" reading cannot be told from an
+	// instrument that reads zero for everything.
+	static int s_decalStateReports = 0;
+	const bool reportThisFlush = (s_decalStateReports < 40);
+	// ShadowType is a bit field, not an ordinal: 0x01, 0x20, 0x40.
+	static const char * const styleName[4] =
+		{ "SHADOW_DECAL(multiplicative)", "SHADOW_ALPHA_DECAL(alpha)",
+		  "SHADOW_ADDITIVE_DECAL(additive)", "other" };
+	const int styleSlot = (type == SHADOW_DECAL) ? 0
+						: (type == SHADOW_ALPHA_DECAL) ? 1
+						: (type == SHADOW_ADDITIVE_DECAL) ? 2 : 3;
+	if (reportThisFlush) {
+		++s_decalStateReports;
+		char buf[900];
+		if (DX8Wrapper::Debug_Describe_Draw_State(buf, sizeof(buf))) {
+			WWDEBUG_SAY(("DECAL STATE [%s] tex='%s' verts=%d polys=%d lastDiffuse=0x%08x "
+				":: %s", styleName[styleSlot], texture->Get_Name(),
+				nShadowDecalVertsInBatch, nShadowDecalPolysInBatch, s_lastDecalDiffuse, buf));
+		} else {
+			WWDEBUG_SAY(("DECAL STATE [%s]: the backend declined to describe its state",
+				styleName[styleSlot]));
+		}
+		// The texels themselves. A multiplicative decal goes black exactly when the colour
+		// it multiplies in goes to zero, and there are only two candidates for that -- the
+		// vertex diffuse above, and this. One of them has to be read rather than reasoned
+		// about.
+		static bool reportedTexels[4] = { false, false, false, false };
+		if (!reportedTexels[styleSlot]) {
+			reportedTexels[styleSlot] = true;
+			unsigned texel[9];
+			for (int k = 0; k < 9; ++k) texel[k] = 0;
+			if (DX8Wrapper::Debug_Read_Texture_Texels(0, 0, texel, 9)) {
+				WWDEBUG_SAY(("DECAL TEXELS [%s] tex='%s' mip 0 diagonal (0xAARRGGBB): "
+					"%08x %08x %08x %08x %08x %08x %08x %08x %08x",
+					styleName[styleSlot], texture->Get_Name(),
+					texel[0], texel[1], texel[2], texel[3], texel[4],
+					texel[5], texel[6], texel[7], texel[8]));
+			} else {
+				WWDEBUG_SAY(("DECAL TEXELS [%s] tex='%s': the backend cannot read this "
+					"format on the CPU", styleName[styleSlot], texture->Get_Name()));
+			}
+		}
+	}
+#endif
+
+#ifdef RTS_DEBUG
+	// Attribution, debug only. Phase 9 named the black quad "the shadow decal" from a
+	// screenshot; nothing had ever made the draw stop and looked at what went away. With
+	// W3D_SKIP_DECAL_STYLE=multiplicative|alpha|additive the named style submits nothing,
+	// and the frame says whether that was the quad or not.
+	{
+		static const char * s_skip = nullptr;
+		static bool s_skipRead = false;
+		if (!s_skipRead) { s_skipRead = true; s_skip = getenv("W3D_SKIP_DECAL_STYLE"); }
+		if (s_skip != nullptr) {
+			if ((type == SHADOW_DECAL && strcmp(s_skip, "multiplicative") == 0) ||
+				(type == SHADOW_ALPHA_DECAL && strcmp(s_skip, "alpha") == 0) ||
+				(type == SHADOW_ADDITIVE_DECAL && strcmp(s_skip, "additive") == 0)) {
+				nShadowDecalStartBatchVertex = nShadowDecalVertsInBuf;
+				nShadowDecalStartBatchIndex = nShadowDecalIndicesInBuf;
+				nShadowDecalPolysInBatch = 0;
+				nShadowDecalVertsInBatch = 0;
+				return;
+			}
+		}
+	}
 #endif
 
 	if (DX8Wrapper::_Is_Triangle_Draw_Enabled())
@@ -638,6 +717,16 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(nShadowDecalPolysInBatch,nShadowDecalVertsInBatch,ShaderClass::_PresetOpaqueShader);
 		DX8Wrapper::Prepare_Direct_Draw("shadowDecalFlush");
 		DX8Wrapper::Draw_DX8_Indexed_Primitive(D3DPT_TRIANGLELIST,nShadowDecalStartBatchVertex,0,nShadowDecalVertsInBatch,nShadowDecalStartBatchIndex,nShadowDecalPolysInBatch);
+#ifdef RTS_DEBUG
+		// Again, after the draw. The state objects are materialised at the draw, so the
+		// report above is what the words say and this one is what the device was handed --
+		// and a disagreement between the two is the whole failure mode being hunted.
+		if (reportThisFlush) {
+			char after[900];
+			if (DX8Wrapper::Debug_Describe_Draw_State(after, sizeof(after)))
+				WWDEBUG_SAY(("DECAL AFTER [%s] :: %s", styleName[styleSlot], after));
+		}
+#endif
 	}
 
 //	m_pDev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);	//should reject background pixels
@@ -688,6 +777,9 @@ is an optimized system that only uses the render objects bounding box to determi
 */
 void W3DProjectedShadowManager::queueDecal(W3DProjectedShadow *shadow)
 {
+#ifdef RTS_DEBUG
+	s_lastDecalDiffuse = shadow->m_diffuse;
+#endif
 	int i,j,k;
 	Vector3 hmapVertex,objPos;
 	AABoxClass box;
@@ -1026,6 +1118,9 @@ TODO: Too much clipping.  Need to check terrain heights at all 4 corners and adj
 ///@todo: We should have a pre-made static filled index buffer since we always send down 2 triangles.
 void W3DProjectedShadowManager::queueSimpleDecal(W3DProjectedShadow *shadow)
 {
+#ifdef RTS_DEBUG
+	s_lastDecalDiffuse = shadow->m_diffuse;
+#endif
 	Vector3 objPos;
 	Matrix3D   objXform;
 	Vector3 uVector,vVector;

@@ -947,6 +947,16 @@ public:
 	// just put there.
 	static bool Bind_Ui_Shader_World(const float * world, bool sampleColour, bool sampleAlpha);
 
+#ifdef RTS_DEBUG
+	// Debug only: ask the backend what it would rasterise the next draw with, and what
+	// texels are in the slot the pixel shader samples. Both are pass-throughs to the seam
+	// (gfxdevice.h) so that a drawer outside this library can instrument its own draw
+	// without reaching for the device; both answer false if the backend declines.
+	static bool Debug_Describe_Draw_State(char * out, unsigned cap);
+	static bool Debug_Read_Texture_Texels(unsigned stage, unsigned level, unsigned * out,
+										  unsigned count);
+#endif
+
 	// Bind the screen-space quad *vertex* shader and give it the pixels-to-clip matrix,
 	// leaving the pixel shader alone for the caller to set. The FVF must already be set --
 	// Set_Vertex_Shader clears the bound shader when handed one, so the declaration has to
