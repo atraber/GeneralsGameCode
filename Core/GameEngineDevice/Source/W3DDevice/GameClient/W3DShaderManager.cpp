@@ -374,14 +374,13 @@ HRESULT W3DShaderManager::drawScreenQuad(
 	// civ_buildings, dropping it under D3D11 moved 216141 pixels of the post-process chain
 	// towards the D3D9 frame rather than away from it.
 	//
-	// It is a *sampling* alignment, which is why alignToTexels exists rather than the
-	// offset being unconditional. A quad that samples nothing has no sampling grid to line
-	// up with, and shifting it half a pixel only moves which pixel centres its edges fall
-	// on -- for a full-screen overlay that is a column of coverage, not a sharper image.
-	// Measured on the player-colour overlay, which never had the offset: applying it moved
-	// two pixels at (1102,82), reproducibly, against a same-binary control of nothing.
-	const float half = (alignToTexels && Gfx_Samples_At_Texel_Corner()) ? 0.5f : 0.0f;
-	const float ox = dx - half, oy = dy - half;
+	// Phase 10 deleted the compensation rather than the rule. Every API this engine can be
+	// built against now samples at the texel centre, so the offset is 0 and alignToTexels
+	// has nothing left to decide -- it is kept in the signature because it says what the
+	// caller is drawing, and a backend that ever needs the half-pixel back needs to be
+	// told which quads want it.
+	(void)alignToTexels;
+	const float ox = dx, oy = dy;
 	BloomVtx v[4];
 	v[0].x = ox + dw; v[0].y = oy + dh; v[0].z = 0.0f; v[0].u0 = sU1; v[0].v0 = sV1; v[0].u1 = bU1; v[0].v1 = bV1;
 	v[1].x = ox + dw; v[1].y = oy;      v[1].z = 0.0f; v[1].u0 = sU1; v[1].v0 = sV0; v[1].u1 = bU1; v[1].v1 = bV0;
@@ -4384,17 +4383,15 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 	if (getChipset() < DC_GENERIC_PIXEL_SHADER_1_1)
 		return E_FAIL;	//don't allow loading any shaders if hardware can't handle it.
 
-	// Which bytecode the active backend can actually load.
+	// Which bytecode this backend can actually load.
 	//
 	// The 42 call sites all name "shaders\<name>.pso" or ".vso", which is the Shader Model
 	// 3 build and the only one that existed until there was a second backend. D3D11 cannot
 	// load a byte of it -- model 3 bytecode is a bare token stream and model 4 is a DXBC
-	// container, and CreateVertexShader rejects the one it was not given. The same source
-	// is already compiled both ways on every build (cmake/shaders.cmake) and both
-	// directories are installed now, so the whole of the choice is a directory and an
-	// extension. No call site changes, and no .hlsl does.
+	// container, and CreateVertexShader rejects the one it was not given. This used to be
+	// a branch on the active backend; with one backend it is unconditional, and Phase 10
+	// stopped compiling the model 3 half at all. No call site changes, and no .hlsl does.
 	AsciiString resolvedPath(strFilePath);
-	if (Gfx_Active_Backend() == GFX_BACKEND_D3D11)
 	{
 		const char *leaf = strrchr(strFilePath, '\\');
 		leaf = (leaf != nullptr) ? leaf + 1 : strFilePath;

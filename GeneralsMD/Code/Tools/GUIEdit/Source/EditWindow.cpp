@@ -460,7 +460,6 @@ void EditWindow::init( UnsignedInt clientWidth, UnsignedInt clientHeight )
 	// initialize W3D
 	WWMath::Init();
 	WW3D::Init( m_editWindowHWnd );
-	WW3D::Set_Screen_UV_Bias( TRUE );  ///< this makes text look good :)
 	if( WW3D::Set_Render_Device( 0,
 															 m_size.x,
 															 m_size.y,

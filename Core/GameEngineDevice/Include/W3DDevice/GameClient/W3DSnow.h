@@ -26,7 +26,6 @@
 class DX8IndexBufferClass;
 class RenderInfoClass;
 class TextureClass;
-#include "WW3D2/d3d9_compat.h"
 
 class W3DSnowManager : public SnowManager
 {

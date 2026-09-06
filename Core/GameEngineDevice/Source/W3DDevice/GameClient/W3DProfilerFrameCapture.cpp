@@ -150,13 +150,13 @@ void W3DProfilerFrameCapture::Capture(UnsignedInt displayWidth, UnsignedInt disp
 	DX8Wrapper::Set_Render_Target(smallRenderTargetSurface, false);
 
 	// set viewport
-	D3DVIEWPORT8 restoreViewport;
+	D3DVIEWPORT9 restoreViewport;
 	DX8Wrapper::Get_DX8_Viewport(restoreViewport);
 
 	SurfaceClass::SurfaceDescription smallRenderDesc;
 	surfaceClass->Get_Description(smallRenderDesc);
 
-	D3DVIEWPORT8 viewport;
+	D3DVIEWPORT9 viewport;
 	viewport.X = 0;
 	viewport.Y = 0;
 	viewport.Width = PROFILER_FRAME_IMAGE_SIZE;

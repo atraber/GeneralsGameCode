@@ -44,7 +44,7 @@
 #include "dx8wrapper.h"
 #include "WW3D2/vertmaterial.h"
 #include "texture.h"
-#include "d3d9_compat.h"
+#include "gfxstatewords.h"
 #include <d3dx9math.h>
 #include "statistics.h"
 #include <WWDebug/wwprofile.h>
@@ -434,7 +434,7 @@ static void Census_Sorted_Lights(const RenderStateStruct& queued)
 	++s_sortedDraws;
 	bool differ = false;
 	for (unsigned i=0;i<4;++i) {
-		D3DLIGHT8 have;
+		D3DLIGHT9 have;
 		const bool had = DX8Wrapper::Peek_Light(i,have);
 		if (had != queued.LightEnable[i]) { ++s_sortedLightsEnableDiffer; differ = true; continue; }
 		if (!had) continue;

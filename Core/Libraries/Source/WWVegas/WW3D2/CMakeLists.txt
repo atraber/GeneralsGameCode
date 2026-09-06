@@ -74,11 +74,10 @@ set(WW3D2_SRC
     formconv.h
     gfxdevice.h
     gfxdevice_create.cpp
-    gfxdevice_d3d9.cpp
-    gfxdevice_d3d9.h
     gfxdevice_d3d11.cpp
     gfxdevice_d3d11.h
     gfxdevice_png.cpp
+    gfxstatewords.h
     FramGrab.cpp
     framgrab.h
     hanim.cpp

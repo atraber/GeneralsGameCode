@@ -49,7 +49,7 @@
 #include "WWMath/vector3.h"
 #include "texturefilter.h"
 
-#include "d3d9_compat.h"
+#include "gfxstatewords.h"
 
 class DX8Wrapper;
 class TextureLoader;

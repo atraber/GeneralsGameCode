@@ -51,7 +51,6 @@
 #endif
 
 #include "dx8wrapper.h"
-#include "gfxdevice_d3d9.h"
 #include "gfxdevice_d3d11.h"
 #include "gputimer.h"
 #include "dx8webbrowser.h"
@@ -150,7 +149,7 @@ unsigned							DX8Wrapper::FFDeviceRender[256];
 D3DMATRIX						DX8Wrapper::FFDeviceTransform[DX8Wrapper::FF_TRANSFORM_SLOTS];
 unsigned							DX8Wrapper::FFTransformPending = 0;
 unsigned							DX8Wrapper::FFDeviceTransformValid = 0;
-D3DMATERIAL8						DX8Wrapper::CurrentMaterial = { { 1.0f, 1.0f, 1.0f, 1.0f },
+D3DMATERIAL9						DX8Wrapper::CurrentMaterial = { { 1.0f, 1.0f, 1.0f, 1.0f },
 																	{ 1.0f, 1.0f, 1.0f, 1.0f },
 																	{ 0.0f, 0.0f, 0.0f, 0.0f },
 																	{ 0.0f, 0.0f, 0.0f, 0.0f },
@@ -3410,8 +3409,6 @@ bool DX8Wrapper::Bind_Screen_Space_Shader(bool sampleColour, bool sampleAlpha, b
 
 bool								_DX8SingleThreaded										= false;
 
-INT g_D3D9_BaseVertexIndex = 0;
-
 static DynamicVectorClass<StringClass>					_RenderDeviceNameTable;
 static DynamicVectorClass<StringClass>					_RenderDeviceShortNameTable;
 static DynamicVectorClass<RenderDeviceDescClass>	_RenderDeviceDescriptionTable;
@@ -4045,10 +4042,12 @@ void DX8Wrapper::Enumerate_Devices()
 					default: break;
 				}
 
-				// Some cards fail in certain modes, DX8Caps keeps list of those.
-				if (!dx8caps.Is_Valid_Display_Format(mode.Width,mode.Height,mode.Format)) {
-					bits=0;
-				}
+				// DX8Caps::Is_Valid_Display_Format was asked here. It capped the mode list
+				// for six named parts -- a GeForce2 MX at 1024x768, ATI Rage 128 and
+				// Voodoo3 and Kyro at 1280x1024, a Savage 4 at 800x600 -- out of the
+				// device tables Phase 10 deleted, and answered "any resolution" for
+				// everything else. There is no part it applies to that can create a
+				// Direct3D 11 device.
 
 				if (bits != 0) {
 					desc.add_resolution(mode.Width,mode.Height,bits);
@@ -5154,11 +5153,8 @@ void DX8Wrapper::End_Scene(bool flip_frames)
 	Debug_Report_Alpha_Fog();
 	Debug_Report_Lighting();
 	SortingRendererClass::Debug_Report_Sorted_Lights();
-	GfxDeviceD3D9::Report_Nondynamic_Discards();
-	// Both backends report on the same 600-frame window, and each one's report is
-	// silent under the other -- the D3D9 counters do not move under D3D11 and the
-	// D3D11 ones do not move under D3D9. Calling both unconditionally is what makes
-	// the two logs line up beside each other.
+	// The D3D9 backend's DISCARD AUDIT was called here beside this one. It went with
+	// the backend.
 	GfxDeviceD3D11::Report_Absorbed_State();
 	Debug_Report_Shader_Names();
 	Debug_Report_Texture_Requirements();
@@ -5271,7 +5267,7 @@ void DX8Wrapper::Clear(bool clear_color, bool clear_z_stencil, const Vector3 &co
 		Convert_Color(color,dest_alpha), z, stencil));
 }
 
-void DX8Wrapper::Set_Viewport(CONST D3DVIEWPORT8* pViewport)
+void DX8Wrapper::Set_Viewport(CONST D3DVIEWPORT9* pViewport)
 {
 	DX8_THREAD_ASSERT();
 	GfxViewport vp;
@@ -5533,7 +5529,9 @@ void DX8Wrapper::Draw(
 					if (bound) Gfx->Release_Vertex_Buffer(bound);
 				}
 			}
-			Debug_Note_Foreign_Bindings(expectedBase, (int)g_D3D9_BaseVertexIndex, streamWrong);
+			int inheritedBase = expectedBase;
+			if (!Gfx->Debug_Peek_Base_Vertex_Index(inheritedBase)) inheritedBase = expectedBase;
+			Debug_Note_Foreign_Bindings(expectedBase, inheritedBase, streamWrong);
 		}
 #endif
 		render_state_changed |= (unsigned)VERTEX_BUFFER_CHANGED | (unsigned)INDEX_BUFFER_CHANGED;
@@ -5970,7 +5968,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 	}
 
 	// The LIGHTS_CHANGED flag is still raised and still read, but nothing is sent: what
-	// used to be here pushed a D3DLIGHT8 at the device's transform-and-lighting stage, and
+	// used to be here pushed a D3DLIGHT9 at the device's transform-and-lighting stage, and
 	// that stage draws nothing. Over civ_buildings in both shadow configurations, no draw
 	// -- of 914163 on the shadow map, 493228 on the volumes -- reaches the device with
 	// D3DRS_LIGHTING enabled, and the word reads FALSE off D3D at the end of every window.
@@ -7346,7 +7344,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// longer has it -- a material is fixed-function vertex lighting and is not sent
 			// unless a draw actually needs it -- and asking for it back was a round trip per
 			// draw for a value we set ourselves.
-			const D3DMATERIAL8 & mtl = CurrentMaterial;
+			const D3DMATERIAL9 & mtl = CurrentMaterial;
 			matAmbient  = D3DXVECTOR4(mtl.Ambient.r,  mtl.Ambient.g,  mtl.Ambient.b,  1.0f);
 			matDiffuse  = D3DXVECTOR4(mtl.Diffuse.r,  mtl.Diffuse.g,  mtl.Diffuse.b,  1.0f);
 			matEmissive = D3DXVECTOR4(mtl.Emissive.r, mtl.Emissive.g, mtl.Emissive.b, 0.0f);
@@ -7627,7 +7625,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// LightEnvironmentClass::Get_Light_Direction, which returns InputLights[i] --
 			// the untransformed input. The camera-space copies Pre_Render_Update makes live
 			// in OutputLights[i] and are read by nothing outside that class. The fixed
-			// function path is the confirmation: D3DLIGHT8 directionals are specified in
+			// function path is the confirmation: D3DLIGHT9 directionals are specified in
 			// world space, and that is the same array. Rotate per consumer, below.
 			DWORD ambientPacked = RenderStates[D3DRS_AMBIENT];
 			D3DXVECTOR4 sceneAmbient(
@@ -8478,7 +8476,7 @@ void DX8Wrapper::Compute_Caps(WW3DFormat display_format)
 }
 
 
-void DX8Wrapper::Set_Light(unsigned index, const D3DLIGHT8* light)
+void DX8Wrapper::Set_Light(unsigned index, const D3DLIGHT9* light)
 {
 	if (light) {
 		render_state.Lights[index]=*light;
@@ -8492,9 +8490,9 @@ void DX8Wrapper::Set_Light(unsigned index, const D3DLIGHT8* light)
 
 void DX8Wrapper::Set_Light(unsigned index,const LightClass &light)
 {
-	D3DLIGHT8 dlight;
+	D3DLIGHT9 dlight;
 	Vector3 temp;
-	memset(&dlight,0,sizeof(D3DLIGHT8));
+	memset(&dlight,0,sizeof(D3DLIGHT9));
 
 	switch (light.Get_Type())
 	{
@@ -8591,11 +8589,11 @@ void DX8Wrapper::Set_Light_Environment(LightEnvironmentClass* light_env)
 #endif
 		}
 
-		D3DLIGHT8 light;
+		D3DLIGHT9 light;
 		int l=0;
 		for (;l<light_count;++l) {
 
-			::ZeroMemory(&light, sizeof(D3DLIGHT8));
+			::ZeroMemory(&light, sizeof(D3DLIGHT9));
 
 			light.Type=D3DLIGHT_DIRECTIONAL;
 			(Vector3&)light.Diffuse=light_env->Get_Light_Diffuse(l);
@@ -9149,17 +9147,31 @@ void DX8Wrapper::Set_Gamma(float gamma,float bright,float contrast,bool calibrat
 		ramp.blue[i]=(WORD) (out*65535);
 	}
 
-	if (Get_Current_Caps()->Support_Gamma())	{
-		Gfx->Set_Gamma_Ramp(&ramp,calibrate);
-	} else {
-		HWND hwnd = GetDesktopWindow();
-		HDC hdc = GetDC(hwnd);
-		if (hdc)
-		{
-			SetDeviceGammaRamp (hdc, &ramp);
-			ReleaseDC (hwnd, hdc);
-		}
-	}
+	// One call, and it is the seam's. There used to be an else branch here for an adapter
+	// that reported no full-screen gamma control: it took a DC on the DESKTOP WINDOW and
+	// called SetDeviceGammaRamp on it, which is a process reaching outside its own window
+	// to change the gamma of everything on the display -- and nothing put it back on exit.
+	//
+	// GfxDeviceCaps::FullScreenGamma is false under D3D11, so that branch was the one being
+	// taken, and it had never been exercised because the replay harness never moves the
+	// gamma slider. Measured before deleting, by making the same two GDI calls this machine
+	// would have made:
+	//
+	//   GetDC(GetDesktopWindow()) then SetDeviceGammaRamp  -> returns FALSE
+	//   the desktop ramp afterwards                        -> 0 of 768 entries changed
+	//   control: the display's COLORMGMTCAPS reports CM_GAMMA_RAMP, so the refusal is the
+	//            display driver's and not "this device has no gamma ramp"
+	//
+	// So on this machine it was a silent no-op rather than a desktop-wide gamma change. On
+	// a machine where the call succeeds it would be the second thing, which is why it is
+	// gone rather than left alone.
+	//
+	// What that leaves: the in-game gamma, brightness and contrast sliders do nothing under
+	// D3D11. D3D11 has no equivalent of SetGammaRamp outside exclusive full-screen
+	// (IDXGIOutput::SetGammaControl), so the fix is to fold the curve into the tonemap pass
+	// that already runs at the end of every frame -- which changes the picture, and this
+	// phase's whole invariant is that nothing does. Phase 11's.
+	Gfx->Set_Gamma_Ramp(&ramp,calibrate);
 }
 
 namespace wrapper

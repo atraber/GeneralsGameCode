@@ -53,7 +53,7 @@ class Vector4;
 class StringClass;
 class DX8VertexBufferClass;
 class FVFInfoClass;
-#include "d3d9_compat.h"
+#include "gfxstatewords.h"
 #include "gfxdevice.h"
 class VertexBufferClass;
 struct VertexFormatXYZNDUV2;

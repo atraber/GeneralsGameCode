@@ -1047,7 +1047,7 @@ void RTS3DScene::Render(RenderInfoClass & rinfo)
 			// the whole square shadow map, otherwise geometry only fills the top
 			// ~1080 rows and the rest stays cleared (which mis-aligns the sampling).
 			{
-				D3DVIEWPORT8 smVp = { 0, 0, DX8Wrapper::SHADOW_MAP_SIZE,
+				D3DVIEWPORT9 smVp = { 0, 0, DX8Wrapper::SHADOW_MAP_SIZE,
 									  DX8Wrapper::SHADOW_MAP_SIZE, 0.0f, 1.0f };
 				DX8Wrapper::Set_Viewport(&smVp);
 			}

@@ -517,46 +517,13 @@ void WbView3d::ReAcquireResources()
 		TheTerrainRenderObject->loadRoadsAndBridges(nullptr,FALSE);
 		TheTerrainRenderObject->worldBuilderUpdateBridgeTowers( m_assetManager, m_scene );
 	}
-	// See the note at the other D3DXCreateFontIndirect below: this is D3D9-only tool
-	// chrome, asked for through the seam rather than by holding a device.
-	IDirect3DDevice8* pDev = (DX8Wrapper::Gfx != nullptr)
-		? (IDirect3DDevice8*)DX8Wrapper::Gfx->Peek_Native_Device() : nullptr;
-	if (pDev) {
-
-//		CDC* pDC = GetDC();
-		LOGFONT logFont;
-		logFont.lfHeight = 20;
-		logFont.lfWidth = 0;
-		logFont.lfEscapement = 0;
-		logFont.lfOrientation = 0;
-		logFont.lfWeight = FW_REGULAR;
-		logFont.lfItalic = FALSE;
-		logFont.lfUnderline = FALSE;
-		logFont.lfStrikeOut = FALSE;
-		logFont.lfCharSet = ANSI_CHARSET;
-		logFont.lfOutPrecision = OUT_DEFAULT_PRECIS;
-		logFont.lfClipPrecision = CLIP_DEFAULT_PRECIS;
-		logFont.lfQuality = DEFAULT_QUALITY;
-		logFont.lfPitchAndFamily = DEFAULT_PITCH;
-		strcpy(logFont.lfFaceName, "Arial");
-
-		D3DXFONT_DESC d3dxFontDesc;
-		memset(&d3dxFontDesc, 0, sizeof(D3DXFONT_DESC));
-		d3dxFontDesc.Height = logFont.lfHeight;
-		d3dxFontDesc.Width = logFont.lfWidth;
-		d3dxFontDesc.Weight = logFont.lfWeight;
-		d3dxFontDesc.Italic = logFont.lfItalic;
-		d3dxFontDesc.CharSet = logFont.lfCharSet;
-		d3dxFontDesc.OutputPrecision = logFont.lfOutPrecision;
-		d3dxFontDesc.Quality = logFont.lfQuality;
-		d3dxFontDesc.PitchAndFamily = logFont.lfPitchAndFamily;
-		strcpy(d3dxFontDesc.FaceName, logFont.lfFaceName);
-
-		D3DXCreateFontIndirect(pDev, &d3dxFontDesc, &m3DFont);
-
-	} else {
-		m3DFont = nullptr;
-	}
+	// WorldBuilder's overlay text was drawn with D3DXFont, which needs a D3D9 device and
+	// has no successor. It was asked for through Peek_Native_Device, the graphics seam's
+	// one declared exception, and the D3D11 backend already answered null -- so the
+	// overlay font has been absent since D3D11 became the default. Phase 10 removed the
+	// D3D9 backend, and with it the exception; every caller of the name-drawing code
+	// below already handles a null font by falling back to GDI text.
+	m3DFont = nullptr;
 
 }
 
@@ -2186,51 +2153,16 @@ void WbView3d::initWW3D()
 			}
 		}
 
-		// WorldBuilder draws its overlay text with D3DXFont, which is D3D9-only and has no
-		// successor; Peek_Native_Device is the seam saying whether the running backend is
-		// one that can be handed to it. Null means no overlay font, not a broken tool.
-		IDirect3DDevice8* pDev = (DX8Wrapper::Gfx != nullptr)
-			? (IDirect3DDevice8*)DX8Wrapper::Gfx->Peek_Native_Device() : nullptr;
-		if (pDev) {
-
-//			CDC* pDC = GetDC();
-			LOGFONT logFont;
-			logFont.lfHeight = 20;
-			logFont.lfWidth = 0;
-			logFont.lfEscapement = 0;
-			logFont.lfOrientation = 0;
-			logFont.lfWeight = FW_REGULAR;
-			logFont.lfItalic = FALSE;
-			logFont.lfUnderline = FALSE;
-			logFont.lfStrikeOut = FALSE;
-			logFont.lfCharSet = ANSI_CHARSET;
-			logFont.lfOutPrecision = OUT_DEFAULT_PRECIS;
-			logFont.lfClipPrecision = CLIP_DEFAULT_PRECIS;
-			logFont.lfQuality = DEFAULT_QUALITY;
-			logFont.lfPitchAndFamily = DEFAULT_PITCH;
-			strcpy(logFont.lfFaceName, "Arial");
-
-			D3DXFONT_DESC d3dxFontDesc;
-			memset(&d3dxFontDesc, 0, sizeof(D3DXFONT_DESC));
-			d3dxFontDesc.Height = logFont.lfHeight;
-			d3dxFontDesc.Width = logFont.lfWidth;
-			d3dxFontDesc.Weight = logFont.lfWeight;
-			d3dxFontDesc.Italic = logFont.lfItalic;
-			d3dxFontDesc.CharSet = logFont.lfCharSet;
-			d3dxFontDesc.OutputPrecision = logFont.lfOutPrecision;
-			d3dxFontDesc.Quality = logFont.lfQuality;
-			d3dxFontDesc.PitchAndFamily = logFont.lfPitchAndFamily;
-			strcpy(d3dxFontDesc.FaceName, logFont.lfFaceName);
-
-			D3DXCreateFontIndirect(pDev, &d3dxFontDesc, &m3DFont);
-
-		} else {
-			m3DFont = nullptr;
-		}
+		// WorldBuilder's overlay text was drawn with D3DXFont, which needs a D3D9 device and
+		// has no successor. It was asked for through Peek_Native_Device, the graphics seam's
+		// one declared exception, and the D3D11 backend already answered null -- so the
+		// overlay font has been absent since D3D11 became the default. Phase 10 removed the
+		// D3D9 backend, and with it the exception; every caller of the name-drawing code
+		// below already handles a null font by falling back to GDI text.
+		m3DFont = nullptr;
 
 		WW3D::Enable_Static_Sort_Lists(true);
 		WW3D::Set_Thumbnail_Enabled(false);
-		WW3D::Set_Screen_UV_Bias( TRUE );  ///< this makes text look good :)
 
 		W3DShaderManager::init();
 		init3dScene();

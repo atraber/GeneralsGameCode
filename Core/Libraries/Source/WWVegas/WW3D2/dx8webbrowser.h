@@ -33,6 +33,10 @@
 #pragma once
 
 #include <windows.h>
+// LPDISPATCH, in CreateBrowser's signature. It used to arrive with the OLE headers that
+// d3d9.h dragged in behind the D3D9 compat shim; the shim is gone, so this header names
+// what it needs.
+#include <oaidl.h>
 
 // ***********************************
 // Set this to 0 to remove all embedded browser code.

@@ -42,7 +42,7 @@
 #pragma once
 
 #include "WWLib/always.h"
-#include "d3d9_compat.h"
+#include "gfxstatewords.h"
 #ifdef WWDEBUG
 #include "WWDebug/wwdebug.h"
 #endif

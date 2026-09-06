@@ -18,77 +18,36 @@
 
 // Which backend the game draws through.
 //
-// This file is the whole of the choice, and it is deliberately the smallest file in the
-// renderer: one environment variable, one switch, two factory calls. Gfx_Create_Adapter
-// used to live at the bottom of gfxdevice_d3d9.cpp, which was fine while naming the only
-// backend there was; with two of them, a file that includes both API headers is exactly
-// the file that must not exist -- d3d9_compat.h #defines CreateTexture, CreateVertexBuffer
-// and CreateIndexBuffer as fixed-arity macros, and they would rewrite the D3D11 calls of
-// the same name. So each backend keeps its own translation unit and this one includes
-// neither API.
+// There is one. Phase 10 removed the Direct3D 9 backend, and with it the environment
+// variable, the switch and the enum that used to choose between two. What is left is the
+// one place a concrete backend is named on the way in -- which is worth keeping as a file
+// of its own rather than dissolving into ww3d.cpp, because "which backend, and how it is
+// created" is a question a third backend will ask again, and this is where its answer goes.
 //
-// Why an environment variable and not an Options.ini key: the replay harness already sets
-// environment variables, so a measured run needs nothing new to select a backend -- and a
-// setting the player can reach from a menu is a promise this phase is not ready to make.
+// Deliberately no fall back and no default. If the adapter cannot be created the game must
+// fail loudly: a run that silently drew through something other than what it asked for
+// would produce a census that looks like a working backend, and every claim this port has
+// made is a census.
 //
-// D3D11 is the default as of Phase 6. Only the exact string "d3d9" selects the old
-// backend, which is now what a verification run has to ask for by name: every recipe in
-// the notes written before this says "with no W3D_BACKEND set" and means the opposite of
-// what it meant when it was written. D3D9 remains the reference the frame is measured
-// against and is still verified at zero differing pixels.
+// This translation unit still includes no graphics API header, and that is now free rather
+// than carefully arranged. Until this phase it was arranged: d3d9_compat.h #defined
+// CreateTexture, CreateVertexBuffer, CreateIndexBuffer, SetStreamSource, SetIndices and
+// DrawIndexedPrimitive as fixed-arity macros, so any translation unit that saw both headers
+// would have had its D3D11 calls of those names silently rewritten. Those macros went with
+// the backend.
 
 #include "gfxdevice.h"
-#include "gfxdevice_d3d9.h"
 #include "gfxdevice_d3d11.h"
 #include "WWDebug/wwdebug.h"
 
-#include <stdlib.h>
-#include <string.h>
-
-namespace
-{
-	// Read once. Which backend is running cannot change inside a run -- the shader loader
-	// asks after startup, and an answer that could change between two calls would be a
-	// different kind of bug entirely.
-	GfxBackendKind Read_Requested_Backend()
-	{
-		const char * requested = getenv("W3D_BACKEND");
-		if (requested != nullptr && _stricmp(requested, "d3d9") == 0)
-			return GFX_BACKEND_D3D9;
-		return GFX_BACKEND_D3D11;
-	}
-}
-
-GfxBackendKind Gfx_Active_Backend()
-{
-	static const GfxBackendKind kind = Read_Requested_Backend();
-	return kind;
-}
-
-bool Gfx_Samples_At_Texel_Corner()
-{
-	// D3D9 samples at the texel corner; every API after it samples at the centre. See the
-	// comment on the declaration in gfxdevice.h, which is where the half-pixel rule and
-	// its two readers are written down.
-	return Gfx_Active_Backend() == GFX_BACKEND_D3D9;
-}
-
 GfxAdapterClass * Gfx_Create_Adapter()
 {
-	if (Gfx_Active_Backend() == GFX_BACKEND_D3D11) {
-		WWDEBUG_SAY(("BACKEND: W3D_BACKEND=d3d11 -- creating the Direct3D 11 adapter"));
-		GfxAdapterClass * adapter = Gfx_Create_Adapter_D3D11();
-		if (adapter != nullptr)
-			return adapter;
-		// Deliberately not a silent fall back to D3D9. A run that asked for D3D11 and
-		// quietly got D3D9 would produce a census that looks like a working backend, and
-		// this whole phase is measured by censuses.
-		WWDEBUG_SAY(("BACKEND: the Direct3D 11 adapter could not be created. Not falling "
-			"back to D3D9 -- a run that asked for d3d11 and measured d3d9 is worse than a "
-			"run that does not start."));
-		return nullptr;
+	WWDEBUG_SAY(("BACKEND: Direct3D 11"));
+	GfxAdapterClass * adapter = Gfx_Create_Adapter_D3D11();
+	if (adapter == nullptr) {
+		WWDEBUG_SAY(("BACKEND: the Direct3D 11 adapter could not be created. There is no "
+			"second backend to fall back to, and there deliberately is no software path -- "
+			"a run that does not start is better than a run that measures something else."));
 	}
-
-	WWDEBUG_SAY(("BACKEND: Direct3D 9"));
-	return Gfx_Create_Adapter_D3D9();
+	return adapter;
 }

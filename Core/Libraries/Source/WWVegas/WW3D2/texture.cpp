@@ -41,7 +41,7 @@
 
 #include "texture.h"
 
-#include "d3d9_compat.h"
+#include "gfxstatewords.h"
 #include <d3dx9.h>
 #include "dx8wrapper.h"
 #include "WWLib/TARGA.h"
@@ -1090,18 +1090,14 @@ TextureClass* Load_Texture(ChunkLoadClass & cload)
 					break;
 
 				case W3DTEXTURE_TYPE_BUMPMAP:
-				{
-					if (DX8Wrapper::Is_Initted() && DX8Wrapper::Get_Current_Caps()->Support_Bump_Envmap())
-					{
-						// No mipmaps to bumpmap for now
-						mipcount=MIP_LEVELS_1;
-
-						if (DX8Wrapper::Get_Current_Caps()->Support_Texture_Format(WW3D_FORMAT_U8V8)) format=WW3D_FORMAT_U8V8;
-						else if (DX8Wrapper::Get_Current_Caps()->Support_Texture_Format(WW3D_FORMAT_X8L8V8U8)) format=WW3D_FORMAT_X8L8V8U8;
-						else if (DX8Wrapper::Get_Current_Caps()->Support_Texture_Format(WW3D_FORMAT_L6V5U5)) format=WW3D_FORMAT_L6V5U5;
-					}
+					// A bump map used to be loaded into one of the three D3D9 bump formats
+					// when the adapter reported D3DTEXOPCAPS_BUMPENVMAP. There is no bump
+					// environment map operation outside the fixed-function combiner, so no
+					// backend after D3D9 reports it and no shader in this tree asks for
+					// one; the asset is loaded as an ordinary colour map, which is what it
+					// already was under the D3D11 backend. The W3D attribute keeps parsing
+					// because it is in shipped mesh data.
 					break;
-				}
 
 				default:
 					WWASSERT (false);

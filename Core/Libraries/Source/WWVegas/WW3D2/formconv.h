@@ -40,7 +40,7 @@
 #pragma once
 
 #include "ww3dformat.h"
-#include "d3d9_compat.h"
+#include "gfxstatewords.h"
 
 /*
 ** This file is used for conversions between D3DFORMAT and WW3DFormat.

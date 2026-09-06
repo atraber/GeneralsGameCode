@@ -43,7 +43,7 @@
 
 #include "WWLib/always.h"
 #include "dllist.h"
-#include "d3d9_compat.h"
+#include "gfxstatewords.h"
 #include "gfxdevice.h"
 #include "WWMath/matrix4.h"
 #include "statistics.h"
@@ -159,7 +159,10 @@ void Log_DX8_ErrorCode(unsigned res);
 
 WWINLINE void DX8_ErrorCode(unsigned res)
 {
-	if (res==D3D_OK) return;
+	// S_OK rather than D3D_OK: they are the same zero, and D3D_OK is spelled in d3d9.h,
+	// which this header no longer reaches. What arrives here is a status word from the
+	// backend, not a D3D HRESULT in particular.
+	if (res==(unsigned)S_OK) return;
 	Log_DX8_ErrorCode(res);
 }
 
@@ -204,7 +207,7 @@ struct RenderStateStruct
 	ShaderClass shader;
 	VertexMaterialClass* material;
 	TextureBaseClass * Textures[MAX_TEXTURE_STAGES];
-	D3DLIGHT8 Lights[4];
+	D3DLIGHT9 Lights[4];
 	bool LightEnable[4];
 	D3DMATRIX world;
 	D3DMATRIX view;
@@ -380,7 +383,7 @@ public:
 
 	static void Clear(bool clear_color, bool clear_z_stencil, const Vector3 &color, float dest_alpha=0.0f, float z=1.0f, unsigned int stencil=0);
 
-	static void	Set_Viewport(CONST D3DVIEWPORT8* pViewport);
+	static void	Set_Viewport(CONST D3DVIEWPORT9* pViewport);
 
 	static void Set_Vertex_Buffer(const VertexBufferClass* vb, unsigned stream=0);
 	static void Set_Vertex_Buffer(const DynamicVBAccessClass& vba);
@@ -391,11 +394,11 @@ public:
 	static void Get_Render_State(RenderStateStruct& state);
 	// One tracked light, without copying the whole render state and its texture
 	// references. Used by the sorted-draw lighting census.
-	static bool Peek_Light(unsigned index, D3DLIGHT8& light);
+	static bool Peek_Light(unsigned index, D3DLIGHT9& light);
 	static void Set_Render_State(const RenderStateStruct& state);
 	static void Release_Render_State();
 
-	static void Set_DX8_Material(const D3DMATERIAL8* mat);
+	static void Set_DX8_Material(const D3DMATERIAL9* mat);
 
 	static void Set_Gamma(float gamma,float bright,float contrast,bool calibrate=true,bool uselimit=true);
 
@@ -510,7 +513,7 @@ public:
 	static bool Get_DX8_Render_State(unsigned state, unsigned& value);
 	static GfxSurface* Get_DX8_Render_Target_Surface(unsigned index);
 	static GfxSurface* Get_DX8_Depth_Target_Surface();
-	static bool Get_DX8_Viewport(D3DVIEWPORT8& viewport);
+	static bool Get_DX8_Viewport(D3DVIEWPORT9& viewport);
 	static bool Copy_DX8_Surface(GfxSurface* source, GfxSurface* dest);
 	// Rectangle to rectangle, taking whatever route the backend has for it.
 	static bool Copy_DX8_Surface(GfxSurface* source, const GfxRect* source_rect,
@@ -621,7 +624,7 @@ public:
 	static void Get_Shader(ShaderClass& shader);
 	static void Set_Texture(unsigned stage,TextureBaseClass* texture);
 	static void Set_Material(const VertexMaterialClass* material);
-	static void Set_Light(unsigned index,const D3DLIGHT8* light);
+	static void Set_Light(unsigned index,const D3DLIGHT9* light);
 	static void Set_Light(unsigned index,const LightClass &light);
 
 	static void Apply_Render_State_Changes();	// Apply deferred render state changes (will be called automatically by Draw...)
@@ -1165,7 +1168,7 @@ protected:
 	// to defer into -- this copy *is* the tracked state. The routing block reads it to
 	// recover the house-colour tint and the stealth opacity, which it used to fetch back
 	// out of the device with GetMaterial once per draw.
-	static D3DMATERIAL8					CurrentMaterial;
+	static D3DMATERIAL9					CurrentMaterial;
 
 	// These fog settings are constant for all objects in a given scene,
 	// unlike the matching renderstates which vary based on shader settings.
@@ -2199,7 +2202,7 @@ WWINLINE void DX8Wrapper::Set_Ambient(const Vector3& color)
 //
 // ----------------------------------------------------------------------------
 
-WWINLINE void DX8Wrapper::Set_DX8_Material(const D3DMATERIAL8* mat)
+WWINLINE void DX8Wrapper::Set_DX8_Material(const D3DMATERIAL9* mat)
 {
 	WWASSERT(mat);
 	// Tracked, and no longer sent at all. A material is fixed-function vertex lighting and
@@ -2216,7 +2219,7 @@ WWINLINE void DX8Wrapper::Set_DX8_Material(const D3DMATERIAL8* mat)
 	// CurrentMaterial is what the routing block reads, so equality here means nothing
 	// observable changed. There is no longer a second, device-side copy to conflate it
 	// with.
-	if (memcmp(&CurrentMaterial, mat, sizeof(D3DMATERIAL8)) == 0) return;
+	if (memcmp(&CurrentMaterial, mat, sizeof(D3DMATERIAL9)) == 0) return;
 	DX8_RECORD_MATERIAL_CHANGE();
 	SNAPSHOT_SAY(("DX8 - SetMaterial"));
 	CurrentMaterial = *mat;
@@ -2597,7 +2600,7 @@ WWINLINE bool DX8Wrapper::Describe_DX8_Volume_Level(GfxTexture* texture, unsigne
 	return Gfx->Describe_Volume_Level(texture, level, desc, depth);
 }
 
-WWINLINE bool DX8Wrapper::Get_DX8_Viewport(D3DVIEWPORT8& viewport)
+WWINLINE bool DX8Wrapper::Get_DX8_Viewport(D3DVIEWPORT9& viewport)
 {
 	if (Gfx == nullptr) return false;
 	GfxViewport vp;
@@ -2962,7 +2965,7 @@ WWINLINE void DX8Wrapper::Get_Render_State(RenderStateStruct& state)
 	state=render_state;
 }
 
-WWINLINE bool DX8Wrapper::Peek_Light(unsigned index, D3DLIGHT8& light)
+WWINLINE bool DX8Wrapper::Peek_Light(unsigned index, D3DLIGHT9& light)
 {
 	if (index>=4 || !render_state.LightEnable[index]) return false;
 	light=render_state.Lights[index];

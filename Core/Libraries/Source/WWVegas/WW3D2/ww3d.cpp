@@ -177,7 +177,6 @@ float														WW3D::PixelCenterY = 0.0f;
 bool														WW3D::IsInitted = false;
 bool														WW3D::IsRendering = false;
 bool														WW3D::IsCapturing = false;
-bool														WW3D::IsScreenUVBiased = false;
 
 bool														WW3D::AreDecalsEnabled = true;
 float														WW3D::DecalRejectionDistance = 1000000.0f;
@@ -897,7 +896,7 @@ WW3DErrorType WW3D::Begin_Render(bool clear,bool clearz,const Vector3 & color, f
 
 	// If we want to clear the screen, we need to set the viewport to include the entire screen:
 	if (clear || clearz) {
-		D3DVIEWPORT8 vp;
+		D3DVIEWPORT9 vp;
 		int width, height, bits;
 		bool windowed;
 		WW3D::Get_Render_Target_Resolution(width, height, bits, windowed);
@@ -2152,16 +2151,6 @@ void WW3D::Enable_Sorting(bool onoff)
 	// Have to invalidate mesh rendering system because
 	// meshes are put into different fvfs depending on their sort state
 	TheDX8MeshRenderer.Invalidate();
-}
-
-bool WW3D::Is_Screen_UV_Biased()
-{
-	// The flag is the caller's request -- "I am drawing 2D pixel work and I want it to
-	// line up with the texel grid" -- and it is still true under every backend. Whether
-	// lining up means moving the geometry half a pixel is the API's answer, not the
-	// caller's: D3D9 samples a texel at its corner and needs the shift, D3D10 and later
-	// sample at the centre and are made wrong by it. See Gfx_Samples_At_Texel_Corner.
-	return IsScreenUVBiased && Gfx_Samples_At_Texel_Corner();
 }
 
 void WW3D::Override_Current_Static_Sort_Lists(StaticSortListClass * sort_list)

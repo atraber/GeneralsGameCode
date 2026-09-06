@@ -244,12 +244,12 @@ public:
 	static void					Enable_Sorting(bool onoff);
 	static bool					Is_Sorting_Enabled()					{ return IsSortingEnabled; }
 
-	static void					Set_Screen_UV_Bias( bool onoff )			{ IsScreenUVBiased = onoff; }
-	// Whether 2D screen geometry should be shifted half a pixel. The caller's request is
-	// only half the answer -- the shift compensates for D3D9's texel-corner sampling and
-	// is an error under an API that samples at the texel centre -- so this is out of line
-	// and asks Gfx_Samples_At_Texel_Corner for the other half. See gfxdevice.h.
-	static bool					Is_Screen_UV_Biased();
+	// Set_Screen_UV_Bias / Is_Screen_UV_Biased were here. They shifted 2D screen geometry
+	// half a pixel to compensate for D3D9 sampling a texel at its top-left corner; every
+	// API after D3D9 samples at the centre, where that shift is itself the error -- a
+	// point-sampled font atlas turns half a pixel into a whole texel and every glyph picks
+	// up a column of its neighbour. Deleted with the D3D9 backend, compensation and all.
+	// See gfxdevice.h for the rule itself, which outlives the code that compensated for it.
 
 	static void					Set_Collision_Box_Display_Mask(int mask);
 	static int					Get_Collision_Box_Display_Mask();
@@ -378,7 +378,6 @@ private:
 	static bool							IsRendering;
 	static bool							IsCapturing;
 	static bool							IsSortingEnabled;
-	static bool							IsScreenUVBiased;
 	static bool							IsBackfaceDebugEnabled;
 
 	static bool							AreDecalsEnabled;

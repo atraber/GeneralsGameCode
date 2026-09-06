@@ -19,10 +19,15 @@
 // The graphics backend interface.
 //
 // Everything DX8Wrapper does to a graphics device on the render path is declared
-// here and nowhere else. There is exactly one implementation -- GfxDeviceD3D9 --
-// and this header is deliberately written so that it could have a second: it
+// here and nowhere else. There is exactly one implementation -- GfxDeviceD3D11 --
+// and this header is deliberately written so that it could have another: it
 // includes no graphics API header, names no API type, and hands back no API
 // pointer the caller can call a method on.
+//
+// It had two, and the second one is what proved the first sentence. Keeping the seam with
+// one implementation behind it is a decision, not an oversight: it is what makes a third
+// backend a new file rather than a new port, and the "device escapes = 0" census that
+// guards this work is only sayable because there is a seam to escape from.
 //
 // It follows the shape ww3dformat.h / formconv.h already established in this tree:
 // a neutral vocabulary in the header, conversion at the boundary, and the API's own
@@ -297,65 +302,16 @@ struct GfxDisplayMode
 	WW3DFormat	Format;
 };
 
-/*
-** Which state words a D3D11 backend has nothing to do with.
-**
-** The D3D11 backend absorbs these, silently, and counts them; per 600-frame window on
-** civ_buildings that is 5 render-state writes, 4502 texture-stage writes and every one of
-** 1582 transforms. Whether any of it matters was assumed, never tested -- and the only
-** possible test is to make the *D3D9* backend drop exactly the same writes and diff
-** D3D9-with against D3D9-without, which stops being possible the moment the D3D9 backend
-** is gone.
-**
-** The predicate therefore lives here, once, rather than being written out twice. The D3D11
-** backend's switch and the D3D9 backend's W3D_D3D9_DROP_ABSORBED filter are the same
-** question asked of the same function, so an experiment that says "these writes are dead"
-** cannot turn out to have been an experiment about two predicates that drifted apart. The
-** D3D11 backend counts any disagreement between this function and what its own switch does,
-** and prints the count in the same census -- see s_absorb_predicate_disagreements.
-**
-** The numbers are D3D9's own render-state and texture-stage-state values, which is what
-** the seam passes; spelled out rather than included, for the reason gfxdevice_d3d11.cpp
-** spells them out.
-*/
-namespace GfxAbsorb
-{
-	// A render state D3D11 has no use for: everything outside blend, depth/stencil and
-	// rasterizer. Alpha test is absorbed too, because Phase 2 moved it into clip() at c28
-	// and turned the hardware stage off, so those three words arrive only as bookkeeping.
-	inline bool Render_State_Is_Absorbed(unsigned state)
-	{
-		switch (state) {
-		// blend
-		case 27: case 19: case 20: case 171: case 168:
-		case 206: case 207: case 208: case 209:
-		// depth and stencil
-		case 7: case 14: case 23:
-		case 52: case 56: case 57: case 58: case 59: case 55: case 53: case 54:
-		// rasterizer
-		case 22: case 8: case 195: case 175: case 174: case 161:
-		// the D3D8 integer ZBIAS, which d3d9_compat.h keeps at 224
-		case 224:
-			return false;
-		default:
-			return true;
-		}
-	}
-
-	// A texture-stage word D3D11 has no use for: everything that is not one of the ten
-	// D3D8 stage states that became D3D9 sampler states. The rest are fixed-function
-	// combiner words, and there is no combiner.
-	inline bool Stage_State_Is_Absorbed(unsigned state)
-	{
-		switch (state) {
-		case 13: case 14: case 15: case 16: case 17: case 18:
-		case 19: case 20: case 21: case 25:
-			return false;
-		default:
-			return true;
-		}
-	}
-}
+// GfxAbsorb was here: the shared predicate naming the state words a D3D11 backend has
+// nothing to do with. It existed so that "the D3D11 backend swallows these writes" and
+// "make the D3D9 backend drop exactly the same writes" could not turn out to be two
+// predicates that had drifted apart. Phase 9 ran that experiment -- W3D_D3D9_DROP_ABSORBED
+// against D3D9 with nothing dropped, same binary, same session -- and got **0 differing
+// pixels on four scenes**, with a positive control per group (the device-state audit went
+// from 2 wrong words to 122 with the render states dropped and 1122 with the texture-stage
+// words, and a drop counter read 1582 transforms, which is D3D11's own figure to the
+// write). The answer is written down in the Phase 9 investigation; the predicate
+// had one other reader and it went with the backend.
 
 /*
 ** What the engine wants of a swap chain.
@@ -466,52 +422,35 @@ public:
 };
 
 /*
-** Which backend is running.
-**
-** There are two now. The choice is made once, before the adapter exists, and everything
-** downstream reads it rather than re-deciding it: the shader loader has to know which
-** directory the bytecode for this API lives in, and nothing else above the seam does.
-** It is deliberately not a device method -- it is asked before a device exists.
-*/
-enum GfxBackendKind
-{
-	GFX_BACKEND_D3D9 = 0,
-	GFX_BACKEND_D3D11
-};
-
-/*
 ** The one place a concrete backend is named on the way in, as Create_Device is on the way
-** out. A second backend is chosen here and nowhere else -- see gfxdevice_create.cpp, which
-** is the whole of the choice.
+** out. See gfxdevice_create.cpp, which is the whole of the choice.
+**
+** There was a Gfx_Active_Backend() and a GfxBackendKind here while there were two of them.
+** Both are gone: with one backend the question has one answer, and a switch on it is a
+** branch nothing can ever take.
 */
 GfxAdapterClass * Gfx_Create_Adapter();
 
 /*
-** What Gfx_Create_Adapter picked, or would pick. Answering before the adapter exists is
-** deliberate: the answer comes from what the run asked for, not from whether a device
-** happened to be created successfully.
+** WHERE A TEXEL IS SAMPLED, and why nothing here asks any more.
+**
+** Kept as a note rather than a function because the next person to touch 2D geometry needs
+** it, and because it is the rule that used to have a compensation in front of it.
+**
+** D3D9 sampled a texel at its top-left CORNER, so screen-space geometry drawn on exact
+** pixel boundaries read every texel half a texel off, and 2D work compensated by moving the
+** geometry half a pixel back -- Render2DClass::Update_Bias, textdraw.cpp, and the `half` in
+** W3DShaderManager::drawScreenQuad. Direct3D 10 moved the sample point to the texel CENTRE,
+** and there that compensation is itself the error: the font atlas is point sampled
+** (FILTER_TYPE_NONE on min, mag and mip -- render2dsentence.cpp), so half a pixel rounds to
+** a whole texel and every glyph picks up a column of its neighbour. That is what the
+** top-left clock reading "22[30] |20:36:2|6" was, and it was not texture corruption.
+**
+** Every API this engine can now be built against samples at the centre, so Phase 10 deleted
+** the compensation rather than the rule: the half-pixel is 0, WW3D::Is_Screen_UV_Biased is
+** gone rather than returning false, and a backend that wanted the shift back would have to
+** put it back at those three sites deliberately.
 */
-GfxBackendKind Gfx_Active_Backend();
-
-/*
-** Where the API puts a texel's sample point.
-**
-** D3D9 samples a texel at its top-left CORNER, so screen-space geometry drawn on exact
-** pixel boundaries reads every texel half a texel off, and 2D work compensates by moving
-** the geometry half a pixel back. Direct3D 10 moved the sample point to the texel CENTRE,
-** and there the compensation is itself the error: the font atlas is point sampled
-** (FILTER_TYPE_NONE on min, mag and mip -- render2dsentence.cpp), so half a pixel rounds
-** to a whole texel and every glyph picks up a column of its neighbour. That is what the
-** top-left clock reading "22[30] |20:36:2|6" was, and it is not texture corruption.
-**
-** Two readers, and they are the whole family: WW3D::Is_Screen_UV_Biased, which the 2D
-** vertex path asks per quad and per glyph, and W3DShaderManager::drawScreenQuad, whose
-** half-pixel Phase 4.0 collapsed out of twelve callers into one line for exactly this.
-**
-** A property of the API and not of a device, which is why it is answerable here, before
-** a device exists, and why a third backend answers it in one place.
-*/
-bool Gfx_Samples_At_Texel_Corner();
 
 /*
 ** What a query asks the GPU.
@@ -932,19 +871,24 @@ public:
 								unsigned count, float * out)
 							{ (void)first_register; (void)count; (void)out; return false; }
 
-	/*
-	** The device itself, for code outside this engine that renders into it.
-	**
-	** The one exception to the rule at the top of this header, and it is an exception
-	** rather than a hole because of who asks: DX8WebBrowser hands the raw device to an
-	** ActiveX control (EA's FEBrowserEngine2) which draws the in-game browser into it
-	** from outside this codebase entirely. There is nothing to translate -- the control
-	** wants a D3D9 device or it wants nothing.
-	**
-	** So this is not "get the device"; it is "is there a device this out-of-engine thing
-	** can be handed". It is void*, nothing above the seam may dereference it, and the
-	** default is null: a backend that cannot be interoperated with this way answers null
-	** and the caller turns the feature off, which is exactly what a D3D11 backend does.
-	*/
-	virtual void *			Peek_Native_Device() { return nullptr; }
+	// The base vertex index the backend is currently holding.
+	//
+	// The foreign-bindings check needs it: a direct DrawPrimitiveUP leaves the backend's
+	// idea of the base index pointing at somebody else's buffer, and the whole point of
+	// that instrument is to say what the *next* draw would have used before it is
+	// repaired. It used to read g_D3D9_BaseVertexIndex, the sticky global d3d9_compat.h
+	// kept because D3D8 passed the base to SetIndices and D3D9 passes it to the draw.
+	// That global went with the D3D9 backend, so the question is asked of the seam now.
+	//
+	// No obligation to answer, like the two above.
+	virtual bool			Debug_Peek_Base_Vertex_Index(int & out)
+							{ (void)out; return false; }
+
+	// Peek_Native_Device was here: the seam's one declared exception, a void* handed to
+	// two pieces of code outside this engine that draw into the device themselves -- the
+	// FEBrowserEngine2 ActiveX control and WorldBuilder's D3DXFont overlay. Both wanted a
+	// D3D9 device or nothing, and the D3D11 backend already answered null, so both
+	// features were already off. With the D3D9 backend gone the answer is null for every
+	// backend there is, which makes the exception a hole with nothing on the other side of
+	// it. Deleted, and the two callers say plainly that the feature is D3D9-only and gone.
 };

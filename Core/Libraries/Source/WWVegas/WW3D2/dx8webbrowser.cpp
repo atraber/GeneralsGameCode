@@ -94,36 +94,19 @@ bool DX8WebBrowser::Initialize(	const char* badpageurl,
 		// Initialize the browser.
 		if(hr == S_OK)
 		{
-			// Needs the device itself: the control renders into it from outside this
-			// engine entirely, so there is nothing here to translate -- it wants a D3D9
-			// device or it wants nothing. Peek_Native_Device is the seam saying whether
-			// the running backend is one that can be handed to it; a backend that is not
-			// answers null and this feature is simply off.
-			void * const native = (DX8Wrapper::Gfx != nullptr)
-				? DX8Wrapper::Gfx->Peek_Native_Device() : nullptr;
-			if (native == nullptr) {
-				WWDEBUG_SAY(("Embedded browser: the graphics backend does not hand out a "
-					"native device, so the browser control cannot render. Disabled."));
-				pBrowser->Shutdown();
-				pBrowser = 0;
-				CoUninitialize();
-				return false;
-			}
-
-			hWnd = (HWND)WW3D::Get_Window();
-			pBrowser->Initialize(reinterpret_cast<long*>(native));
-
-			if(badpageurl)
-				pBrowser->put_BadPageURL(_bstr_t(badpageurl));
-
-			if(loadingpageurl)
-				pBrowser->put_LoadingPageURL(_bstr_t(loadingpageurl));
-
-			if(mousefilename)
-				pBrowser->put_MouseFileName(_bstr_t(mousefilename));
-
-			if(mousebusyfilename)
-				pBrowser->put_MouseBusyFileName(_bstr_t(mousebusyfilename));
+			// The control renders into the device itself, from outside this engine
+			// entirely, so there was never anything here to translate: it wants a D3D9
+			// device or it wants nothing. It asked the seam for one through
+			// Peek_Native_Device, the D3D11 backend answered null, and this feature has
+			// been off since D3D11 became the default. Phase 10 removed the D3D9 backend
+			// and Peek_Native_Device with it, so the answer is now no by construction --
+			// stated here rather than discovered at runtime.
+			WWDEBUG_SAY(("Embedded browser: the control needs a Direct3D 9 device to render "
+				"into, and there is no backend that can hand it one. Disabled."));
+			pBrowser->Shutdown();
+			pBrowser = 0;
+			CoUninitialize();
+			return false;
 		}
 		else
 		{

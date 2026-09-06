@@ -149,21 +149,13 @@ enum {
 // ---------------------------------------------------------------------------
 
 #ifdef RTS_DEBUG
-static unsigned s_absorbed_render_states = 0;
-static unsigned s_absorbed_stage_words = 0;
-static unsigned s_absorbed_transforms = 0;
-static unsigned s_absorbed_clip_planes = 0;
-// ...and *which* words they were. A total says how much was swallowed; only the histogram
-// says what, and the useful output of the absorbed-write question is a named list rather
-// than a count. Indexed by the D3D9 state number, which is what the seam passes.
-static unsigned s_absorbed_rs_hist[RS_COUNT];
-static unsigned s_absorbed_tss_hist[32];
-static unsigned s_absorbed_xf_hist[GFX_TRANSFORM_SLOTS];
-// The cross-check on the shared predicate. GfxAbsorb::Render_State_Is_Absorbed is what the
-// D3D9 drop switch filters on, and it is the same experiment only if it agrees with what
-// this switch actually does. A disagreement is counted rather than asserted, so a run still
-// finishes and the number lands in the census beside the figures it would invalidate.
-static unsigned s_absorb_predicate_disagreements = 0;
+// The absorbed counters, the per-word histograms and the shared-predicate cross-check were
+// here. They asked one question -- does swallowing these writes change the picture -- and
+// Phase 9 answered it with the only instrument that could: it made the D3D9 backend drop
+// exactly the same set and diffed D3D9 against itself. 0 differing pixels on four scenes,
+// with a positive control on every group. Retired with the comparator, because a count of
+// swallowed writes that nothing can be compared against is a line printing into a log
+// nobody can interpret. The named list is in the Phase 9 investigation.
 static unsigned s_dropped_no_vertex_shader = 0;
 static unsigned s_dropped_trianglefan = 0;
 static unsigned s_dropped_no_input_layout = 0;
@@ -219,19 +211,9 @@ static unsigned s_sampler_stage_no_sampler = 0;
 static unsigned s_sampler_keys[64][10];
 static unsigned s_sampler_key_uses[64];
 static int s_sampler_key_count = 0;
-// The positive control. A zero above only reads as "nothing was absorbed" beside a
-// non-zero total; without it, an instrument that never ran prints the same line.
-static unsigned s_render_state_writes = 0;
-static unsigned s_stage_word_writes = 0;
 #define ABSORB(counter) do { ++(counter); } while (0)
-#define ABSORB_RS(state) do { ++s_absorbed_rs_hist[(state)]; if (!GfxAbsorb::Render_State_Is_Absorbed(state)) ++s_absorb_predicate_disagreements; } while (0)
-#define ABSORB_TSS(state) do { ++s_absorbed_tss_hist[(state)]; if (!GfxAbsorb::Stage_State_Is_Absorbed(state)) ++s_absorb_predicate_disagreements; } while (0)
-#define ABSORB_XF(slot) do { if ((slot) >= 0) ++s_absorbed_xf_hist[(slot)]; } while (0)
 #else
 #define ABSORB(counter) do { } while (0)
-#define ABSORB_RS(state) do { } while (0)
-#define ABSORB_TSS(state) do { } while (0)
-#define ABSORB_XF(slot) do { } while (0)
 #endif
 
 
@@ -2002,10 +1984,6 @@ void GfxDeviceD3D11::Set_Render_State(unsigned state, unsigned value)
 {
 	TRACE("Set_Render_State");
 	if (state >= RS_COUNT) return;
-#ifdef RTS_DEBUG
-	++s_render_state_writes;
-#endif
-
 	if (m_impl->rs[state] == value) {
 		// The wrapper already skips redundant writes; this catches the ones that reach
 		// here anyway and keeps a dirty flag from being raised for nothing.
@@ -2045,8 +2023,6 @@ void GfxDeviceD3D11::Set_Render_State(unsigned state, unsigned value)
 	// and turned the hardware stage off -- so these three arrive only as the engine
 	// keeping its own tracked array in step, and there is nothing to do with them.
 	case RS_ALPHATESTENABLE: case RS_ALPHAREF: case RS_ALPHAFUNC:
-		ABSORB(s_absorbed_render_states);
-		ABSORB_RS(state);
 		return;
 
 	default:
@@ -2055,8 +2031,6 @@ void GfxDeviceD3D11::Set_Render_State(unsigned state, unsigned value)
 		// blending, and every fixed-function lighting and material word: none of them has
 		// a D3D11 meaning, and gfxdevice.h makes absorbing them this backend's job rather
 		// than making the caller know which they are.
-		ABSORB(s_absorbed_render_states);
-		ABSORB_RS(state);
 		return;
 	}
 }
@@ -2065,9 +2039,6 @@ void GfxDeviceD3D11::Set_Texture_Stage_State(unsigned stage, unsigned state, uns
 {
 	TRACE("Set_Texture_Stage_State");
 	if (stage >= GFX_MAX_STAGES || state >= 32) return;
-#ifdef RTS_DEBUG
-	++s_stage_word_writes;
-#endif
 	if (m_impl->tss[stage][state] == value) return;
 	m_impl->tss[stage][state] = value;
 
@@ -2082,8 +2053,6 @@ void GfxDeviceD3D11::Set_Texture_Stage_State(unsigned stage, unsigned state, uns
 		// says this is safe was taken before the backend was written: dropping every one
 		// of these at the call -- keeping the deferral bookkeeping, which is the part
 		// that was load-bearing -- moved zero pixels on civ_buildings.
-		ABSORB(s_absorbed_stage_words);
-		ABSORB_TSS(state);
 		return;
 	}
 }
@@ -2099,9 +2068,9 @@ void GfxDeviceD3D11::Set_Clip_Plane(unsigned, const float *)
 	// CLIP_GEOMETRY_TO_PLANE block whose #define is itself commented out, and what runs
 	// instead is the alpha-test hack written beside them. So D3D9 does not clip the
 	// reflection to the water plane either, and this backend loses nothing by absorbing a
-	// call that is never made. The counter below has read 0 in every census window of
-	// every run since the backend existed, which is the check that says so.
-	ABSORB(s_absorbed_clip_planes);
+	// call that is never made. The counter that said so read 0 in every census window of
+	// every run since the backend existed, and it was retired with the rest of the
+	// absorbed-write instrument in Phase 10.
 }
 
 bool GfxDeviceD3D11::Get_Render_State(unsigned state, unsigned & value)
@@ -2132,15 +2101,13 @@ void GfxDeviceD3D11::Set_Transform(unsigned which, const float * matrix4x4)
 	TRACE("Set_Transform");
 	// Nothing is *driven* by this: there is no fixed-function transform to feed, and every
 	// draw that positioned itself with D3DTS_WORLD went with the shadow volumes in Phase
-	// 4.1. So the fixed-function half is absorbed, and counted as absorbed.
-	ABSORB(s_absorbed_transforms);
+	// 4.1. So the fixed-function half is absorbed.
 
 	// The value is kept anyway, because a caller reads it back. See the note on
 	// GfxD3D11Impl::transforms: this is what the shadow decals' vertex shader is built
 	// from, and a backend that forgets sends them to a fixed-function pipeline it has not
 	// got.
 	const int slot = Transform_Slot(which);
-	ABSORB_XF(slot);
 	if (slot < 0 || matrix4x4 == nullptr) return;
 	memcpy(m_impl->transforms[slot], matrix4x4, 16 * sizeof(float));
 	m_impl->transform_set[slot] = true;
@@ -2399,6 +2366,12 @@ bool GfxDeviceD3D11::Get_Vertex_Stream(unsigned stream, GfxVertexBuffer ** buffe
 	}
 	if (offset != nullptr) *offset = 0;
 	if (stride != nullptr) *stride = m_impl->stream0_stride;
+	return true;
+}
+
+bool GfxDeviceD3D11::Debug_Peek_Base_Vertex_Index(int & out)
+{
+	out = m_impl->base_vertex_index;
 	return true;
 }
 
@@ -4798,165 +4771,17 @@ bool GfxDeviceD3D11::Reset_Swap_Chain(GfxSwapChainDesc & desc)
 	return true;
 }
 
-#ifdef RTS_DEBUG
-// The names for the histogram. Only words that have actually been absorbed need one --
-// anything else prints as its number, which is enough to look up and honest about not
-// having been anticipated.
-static const char * Absorbed_RS_Name(unsigned state)
-{
-	switch (state) {
-	case 9: return "SHADEMODE";
-	case 15: return "ALPHATESTENABLE";
-	case 16: return "LASTPIXEL";
-	case 24: return "ALPHAREF";
-	case 25: return "ALPHAFUNC";
-	case 26: return "DITHERENABLE";
-	case 28: return "FOGENABLE";
-	case 29: return "SPECULARENABLE";
-	case 34: return "FOGCOLOR";
-	case 35: return "FOGTABLEMODE";
-	case 36: return "FOGSTART";
-	case 37: return "FOGEND";
-	case 38: return "FOGDENSITY";
-	case 48: return "RANGEFOGENABLE";
-	case 60: return "TEXTUREFACTOR";
-	case 136: return "CLIPPING";
-	case 137: return "LIGHTING";
-	case 139: return "AMBIENT";
-	case 140: return "FOGVERTEXMODE";
-	case 141: return "COLORVERTEX";
-	case 142: return "LOCALVIEWER";
-	case 143: return "NORMALIZENORMALS";
-	case 145: return "DIFFUSEMATERIALSOURCE";
-	case 146: return "SPECULARMATERIALSOURCE";
-	case 147: return "AMBIENTMATERIALSOURCE";
-	case 148: return "EMISSIVEMATERIALSOURCE";
-	case 151: return "VERTEXBLEND";
-	case 152: return "CLIPPLANEENABLE";
-	case 154: return "POINTSIZE";
-	case 155: return "POINTSIZE_MIN";
-	case 156: return "POINTSPRITEENABLE";
-	case 157: return "POINTSCALEENABLE";
-	case 158: return "POINTSCALE_A";
-	case 159: return "POINTSCALE_B";
-	case 160: return "POINTSCALE_C";
-	case 162: return "MULTISAMPLEMASK";
-	case 166: return "POINTSIZE_MAX";
-	case 167: return "INDEXEDVERTEXBLENDENABLE";
-	case 170: return "TWEENFACTOR";
-	case 176: return "ANTIALIASEDLINEENABLE";
-	case 193: return "BLENDFACTOR";
-	case 194: return "SRGBWRITEENABLE";
-	case 220: return "COMPAT_LINEPATTERN";
-	case 221: return "COMPAT_SOFTWAREVERTEXPROCESSING";
-	case 222: return "COMPAT_ZVISIBLE";
-	case 223: return "COMPAT_PATCHSEGMENTS";
-	case 225: return "COMPAT_EDGEANTIALIAS";
-	case 226: return "COMPAT_PATCHEDGESTYLE";
-	default: return nullptr;
-	}
-}
-
-static const char * Absorbed_TSS_Name(unsigned state)
-{
-	// D3DTEXTURESTAGESTATETYPE, which starts at 1 -- there is no state 0.
-	switch (state) {
-	case 1: return "COLOROP";
-	case 2: return "COLORARG1";
-	case 3: return "COLORARG2";
-	case 4: return "ALPHAOP";
-	case 5: return "ALPHAARG1";
-	case 6: return "ALPHAARG2";
-	case 7: return "BUMPENVMAT00";
-	case 8: return "BUMPENVMAT01";
-	case 9: return "BUMPENVMAT10";
-	case 10: return "BUMPENVMAT11";
-	case 11: return "TEXCOORDINDEX";
-	case 22: return "BUMPENVLSCALE";
-	case 23: return "BUMPENVLOFFSET";
-	case 24: return "TEXTURETRANSFORMFLAGS";
-	case 26: return "COLORARG0";
-	case 27: return "ALPHAARG0";
-	case 28: return "RESULTARG";
-	default: return nullptr;
-	}
-}
-
-// D3D9's transform slots as Transform_Slot compacts them: 0..31 are the numbered slots
-// (2 = VIEW, 3 = PROJECTION, 16.. = TEXTURE0..7), 32..35 the four world matrices.
-static const char * Absorbed_XF_Name(int slot)
-{
-	switch (slot) {
-	case 2: return "VIEW";
-	case 3: return "PROJECTION";
-	case 16: return "TEXTURE0";
-	case 17: return "TEXTURE1";
-	case 18: return "TEXTURE2";
-	case 19: return "TEXTURE3";
-	case 20: return "TEXTURE4";
-	case 21: return "TEXTURE5";
-	case 22: return "TEXTURE6";
-	case 23: return "TEXTURE7";
-	case 32: return "WORLD";
-	case 33: return "WORLD1";
-	case 34: return "WORLD2";
-	case 35: return "WORLD3";
-	default: return nullptr;
-	}
-}
-#endif
-
 void GfxDeviceD3D11::Report_Absorbed_State()
 {
 #ifdef RTS_DEBUG
-	// Silent under D3D9, so that the two backends' reports can be driven from the same
-	// place in the frame loop without either one adding a line of zeros to the other's log.
-	if (Gfx_Active_Backend() != GFX_BACKEND_D3D11) return;
+	// The guard that made this silent under D3D9 went with the second backend, and so did
+	// the ABSORBED half of the report: Phase 9 measured those writes dead at 0 differing
+	// pixels on four scenes, and after that a count of them is a number with nothing to
+	// compare it to. What is left is about this backend alone and every figure in it reads
+	// its own control -- DROPPED, SIGNATURE MISMATCH, RENDER TARGET HAZARD, SAMPLER CENSUS.
 	static unsigned frames = 0;
 	if (++frames < 600) return;
 	frames = 0;
-	WWDEBUG_SAY(("D3D11 ABSORBED over 600 frames: %u of %u render-state writes and %u of "
-		"%u texture-stage writes had no D3D11 meaning; %u transforms and %u clip planes "
-		"were swallowed. DROPPED: %u of %u draws had no vertex shader, %u were a triangle "
-		"fan, %u had no input layout. The totals are the control -- a zero beside a zero "
-		"total is the instrument not running, not the backend having nothing to absorb.",
-		s_absorbed_render_states, s_render_state_writes,
-		s_absorbed_stage_words, s_stage_word_writes,
-		s_absorbed_transforms, s_absorbed_clip_planes,
-		s_dropped_no_vertex_shader, s_draws, s_dropped_trianglefan,
-		s_dropped_no_input_layout));
-	// The named list. A count says how much; only this says what, and "what" is the whole
-	// question -- a word nothing writes is a word the engine can stop writing, and a word
-	// something writes thousands of times is one worth being sure about.
-	{
-		unsigned distinct_rs = 0, distinct_tss = 0, distinct_xf = 0;
-		for (unsigned i = 0; i < RS_COUNT; ++i) {
-			if (s_absorbed_rs_hist[i] == 0) continue;
-			++distinct_rs;
-			const char * name = Absorbed_RS_Name(i);
-			WWDEBUG_SAY(("  ABSORBED RS   %-32s (%3u) x%u",
-				name != nullptr ? name : "?", i, s_absorbed_rs_hist[i]));
-		}
-		for (unsigned i = 0; i < 32; ++i) {
-			if (s_absorbed_tss_hist[i] == 0) continue;
-			++distinct_tss;
-			const char * name = Absorbed_TSS_Name(i);
-			WWDEBUG_SAY(("  ABSORBED TSS  %-32s (%3u) x%u",
-				name != nullptr ? name : "?", i, s_absorbed_tss_hist[i]));
-		}
-		for (unsigned i = 0; i < GFX_TRANSFORM_SLOTS; ++i) {
-			if (s_absorbed_xf_hist[i] == 0) continue;
-			++distinct_xf;
-			const char * name = Absorbed_XF_Name((int)i);
-			WWDEBUG_SAY(("  ABSORBED XF   %-32s (%3u) x%u",
-				name != nullptr ? name : "?", i, s_absorbed_xf_hist[i]));
-		}
-		WWDEBUG_SAY(("D3D11 ABSORBED, distinct words: %u render states, %u texture-stage "
-			"states, %u transform slots. Shared-predicate disagreements: %u -- that must be "
-			"0, or the D3D9 drop switch is not dropping the same set and its result says "
-			"nothing about this backend.",
-			distinct_rs, distinct_tss, distinct_xf, s_absorb_predicate_disagreements));
-	}
 	WWDEBUG_SAY(("D3D11 SIGNATURE MISMATCH: %u of %u draws were submitted with a vertex "
 		"shader and a pixel shader D3D11 cannot link, and drew nothing. The pixel shader "
 		"declares an interpolator in a register the vertex shader wrote a different one "
@@ -5016,21 +4841,11 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 	s_sampler_stage_mip_linear = 0;
 	s_sampler_stage_aniso = 0;
 	s_sampler_stage_no_sampler = 0;
-	s_absorbed_render_states = 0;
-	s_absorbed_stage_words = 0;
-	s_absorbed_transforms = 0;
-	s_absorbed_clip_planes = 0;
-	s_absorb_predicate_disagreements = 0;
-	memset(s_absorbed_rs_hist, 0, sizeof(s_absorbed_rs_hist));
-	memset(s_absorbed_tss_hist, 0, sizeof(s_absorbed_tss_hist));
-	memset(s_absorbed_xf_hist, 0, sizeof(s_absorbed_xf_hist));
 	s_dropped_no_vertex_shader = 0;
 	s_dropped_trianglefan = 0;
 	s_dropped_no_input_layout = 0;
 	s_dropped_signature_mismatch = 0;
 	s_draws = 0;
-	s_render_state_writes = 0;
-	s_stage_word_writes = 0;
 	s_srv_forced_unbound = 0;
 	s_srv_rebound = 0;
 	s_draws_target_conflict = 0;
