@@ -40,21 +40,6 @@ endif()
 set(RTS_SHADER_SRC_DIR "${CMAKE_SOURCE_DIR}/Core/GameEngineDevice/Source/W3DDevice/GameClient/Shaders")
 set(RTS_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders" CACHE INTERNAL "Compiled shader output directory")
 
-# The same sources compiled again at Shader Model 4. This was "checked, not shipped" for
-# one phase: it existed so that "these shaders still compile as model 4" was a fact the
-# build checked on every edit rather than a claim someone re-verified by hand when a
-# second backend eventually arrived. The second backend has arrived, so the directory is
-# installed alongside the model 3 one now, and W3DShaderManager::LoadAndCreateD3DShader
-# picks between the two from the active backend. D3D9 still cannot use model 4 bytecode
-# and still never loads a byte of it.
-#
-# A shader model is not a formatting difference. VPOS is the integer pixel coordinate in
-# ps_3_0 and the pixel *centre* in SV_Position, tex2Dlod hides its level in a fourth
-# component that SampleLevel takes as an argument, and SM4 defaults to column-major where
-# these matrices are explicitly row-major. Each of those compiles clean and draws the wrong
-# thing. Compiling both ways every build is what turns them from things to remember into
-# things that fail loudly.
-set(RTS_SHADER_SM4_OUT_DIR "${CMAKE_BINARY_DIR}/shaders-sm4" CACHE INTERNAL "Compiled Shader Model 4 output directory")
 
 # Shaders to compile. The pipeline stage (and therefore the target profile and the
 # output extension) is derived from the "_vs"/"_ps" suffix of each name.
@@ -117,7 +102,6 @@ set(_rts_shaders
 )
 
 file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")
-file(MAKE_DIRECTORY "${RTS_SHADER_SM4_OUT_DIR}")
 set(_rts_shader_outputs "")
 # Shared headers (tonemap.hlsli and friends). The compiler resolves #include relative to
 # the including file, so nothing has to be passed on the command line -- but the build has
@@ -127,48 +111,22 @@ set(_rts_shader_outputs "")
 # less than the mistake.
 file(GLOB _rts_shader_headers "${RTS_SHADER_SRC_DIR}/*.hlsli")
 foreach(_name ${_rts_shaders})
-    # Everything targets Shader Model 3. The PBR path always needed it (instruction
-    # count, registers, ddx/ddy), and holding the rest at 2_0 bought nothing but
-    # limits: the terrain shadow filter had to be cut to a 2x2 box to fit the ps_2_0
-    # arithmetic slots, which is precisely what made cast shadows stair-step on the
-    # ground. D3D9 also forbids mixing model 3 and model 2 across a vs/ps pair, so
-    # moving any pixel shader up drags its vertex shader with it regardless.
-    set(_model "3_0")
+    # The pipeline stage decides the profile; RTS_SHADER_MODEL=4 is what the .hlsl files
+    # branch on for VPOS/SV_Position, tex2Dlod/SampleLevel and row-major matrices.
+    set(_profile "ps_4_0")
     if(_name MATCHES "_vs$")
-        set(_profile "vs_${_model}")
-        set(_ext "vso")
-    else()
-        set(_profile "ps_${_model}")
-        set(_ext "pso")
+        set(_profile "vs_4_0")
     endif()
     set(_src "${RTS_SHADER_SRC_DIR}/${_name}.hlsl")
-    set(_out "${RTS_SHADER_OUT_DIR}/${_name}.${_ext}")
+    set(_out "${RTS_SHADER_OUT_DIR}/${_name}.sm4")
     # One invocation per shader, so that editing one shader recompiles one shader.
     add_custom_command(
         OUTPUT "${_out}"
-        COMMAND ${_rts_shader_launcher} $<TARGET_FILE:compile_shaders> "${RTS_D3DCOMPILER_DLL}" "${_src}" "${_out}" ${_profile}
+        COMMAND ${_rts_shader_launcher} $<TARGET_FILE:compile_shaders> "${RTS_D3DCOMPILER_DLL}" "${_src}" "${_out}" ${_profile} RTS_SHADER_MODEL=4
         DEPENDS "${_src}" ${_rts_shader_headers} compile_shaders
-        COMMENT "hlsl ${_name}.hlsl -> ${_name}.${_ext} (${_profile})"
+        COMMENT "hlsl ${_name}.hlsl -> ${_name}.sm4 (${_profile})"
         VERBATIM
     )
     list(APPEND _rts_shader_outputs "${_out}")
-
-    # ...and the same source at model 4. RTS_SHADER_MODEL is passed only here: the shaders
-    # default to model 3 when it is undefined, so the invocation above keeps the argument
-    # list it has always had and its bytecode stays comparable byte for byte with the build
-    # before any of this. A define that is only ever absent from a compile cannot change it.
-    set(_sm4_profile "ps_4_0")
-    if(_name MATCHES "_vs$")
-        set(_sm4_profile "vs_4_0")
-    endif()
-    set(_sm4_out "${RTS_SHADER_SM4_OUT_DIR}/${_name}.sm4")
-    add_custom_command(
-        OUTPUT "${_sm4_out}"
-        COMMAND ${_rts_shader_launcher} $<TARGET_FILE:compile_shaders> "${RTS_D3DCOMPILER_DLL}" "${_src}" "${_sm4_out}" ${_sm4_profile} RTS_SHADER_MODEL=4
-        DEPENDS "${_src}" ${_rts_shader_headers} compile_shaders
-        COMMENT "hlsl ${_name}.hlsl -> ${_sm4_profile} (checked, not shipped)"
-        VERBATIM
-    )
-    list(APPEND _rts_shader_outputs "${_sm4_out}")
 endforeach()
 add_custom_target(rts_shaders ALL DEPENDS ${_rts_shader_outputs})

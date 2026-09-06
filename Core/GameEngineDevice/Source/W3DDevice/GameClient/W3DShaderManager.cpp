@@ -4399,7 +4399,7 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 		const char *dot = strrchr(name.str(), '.');
 		if (dot != nullptr)
 			name.truncateBy((Int)strlen(dot));
-		resolvedPath.format("shaders-sm4\\%s.sm4", name.str());
+		resolvedPath.format("shaders\\%s.sm4", name.str());
 	}
 	const char *loadPath = resolvedPath.str();
 
