@@ -600,7 +600,7 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 		// ...and with no vertex shader bound, D3DTS_WORLD is consulted again. This draw never
 		// reaches an Apply, so the identity Set_World_Identity recorded has to be put on the
 		// device here, or the decal is transformed by whatever mesh drew last.
-		DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD, *reinterpret_cast<const D3DMATRIX*>(decalWorld));
+		DX8Wrapper::_Set_DX8_Transform(D3DTS_WORLD, *reinterpret_cast<const GfxMatrix4*>(decalWorld));
 	}
 
 //Hard Shadows using stencil

@@ -29,13 +29,17 @@
 //
 // WHAT THIS HEADER DOES NOT DO, and it is worth being blunt about it. It does not make the
 // vocabulary neutral. The numbers still come from <d3d9types.h> and are still spelled
-// D3DRS_ZFUNC. Transcribing them into a header of literal values was considered and is not
-// possible today: <d3dx9.h> is still included directly by fourteen files for the D3DX
-// matrix maths that Phase 4.2 deliberately deferred (Matrix4x4 is column-major and the move
-// is a numerical change, not a mechanical one), <d3dx9.h> includes <d3d9.h>, and a
-// transcribed header would then collide with d3d9types.h on every enum -- redeclaring
-// D3DRENDERSTATETYPE is a hard error, not a redefinition warning. The D3DX maths move has
-// to happen first. Until then, this is what is honestly available:
+// D3DRS_ZFUNC. Transcribing them into a header of literal values is 402 distinct
+// identifiers named outside a backend, which is a large job and not a hard one.
+//
+// It used to be an IMPOSSIBLE one, and that is no longer true. The blocker was <d3dx9.h>,
+// included by fourteen files for the D3DX matrix maths Phase 4.2 deferred: it drags in
+// <d3d9.h>, so a transcribed header would have sat in the same translation unit as
+// d3d9types.h and collided on every enum -- redeclaring D3DRENDERSTATETYPE is a hard error,
+// not a redefinition warning. Phase 12 did that move (WWMath/gfxmatrix4.h), and no file in
+// this tree includes a D3DX header any more. What stands between here and a neutral
+// vocabulary is now only the transcription itself. Until it happens, this is what is
+// honestly available:
 //
 //   * <d3d9types.h> and NOT <d3d9.h>. This header brings in the numbers, the small
 //     by-value structs and the format enums, and brings in no COM interface at all. So no

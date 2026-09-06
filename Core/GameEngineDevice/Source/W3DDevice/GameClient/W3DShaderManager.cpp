@@ -76,7 +76,7 @@
 #include "Common/GlobalData.h"
 #include "Common/OptionPreferences.h"
 #include "Common/GameLOD.h"
-#include "d3dx8tex.h"
+#include "WWMath/gfxmatrix4.h"
 #include "WW3D2/dx8caps.h"
 
 
@@ -573,15 +573,15 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	// above 1.0 has become 1.0. The threshold moves with the source for the same reason:
 	// there is no point asking an 8-bit image for pixels above 1.0.
 	GfxTexture *brightSrc = sceneTex;
-	D3DXVECTOR4 threshold(0.65f, 0.30f, 0.0f, 0.0f);   // 8-bit scene: light rather than bright
+	Vector4 threshold(0.65f, 0.30f, 0.0f, 0.0f);   // 8-bit scene: light rather than bright
 	if (W3DShaderManager::isHdrActive() && W3DShaderManager::getHdrTexture() != nullptr)
 	{
 		brightSrc = W3DShaderManager::getHdrTexture();
-		threshold = D3DXVECTOR4(1.0f, 0.5f, 0.0f, 0.0f);   // above what the display can show
+		threshold = Vector4(1.0f, 0.5f, 0.0f, 0.0f);   // above what the display can show
 	}
 	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
 	DX8Wrapper::Set_Pixel_Shader(m_brightPS);
-	DX8Wrapper::Set_Pixel_Shader_Constant(0, threshold, 1);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, &threshold, 1);
 	DX8Wrapper::Set_DX8_Texture(0, brightSrc);
 	W3DShaderManager::setLinearClampSampler(0);
 	W3DShaderManager::drawScreenQuad(0.0f, 0.0f, (float)m_w, (float)m_h, su0, sv0, su1, sv1, 0, 0, 1, 1);
@@ -593,14 +593,16 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	// Pass 2: horizontal blur. texA -> texB.
 	DX8Wrapper::Set_DX8_Render_Target(m_surfB, nullptr);
 	DX8Wrapper::Set_Pixel_Shader(m_blurPS);
-	DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(1.0f / (float)m_w, 0.0f, 0.0f, 0.0f), 1);
+	const Vector4 blurStepX(1.0f / (float)m_w, 0.0f, 0.0f, 0.0f);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, &blurStepX, 1);
 	DX8Wrapper::Set_DX8_Texture(0, m_texA);
 	W3DShaderManager::setLinearClampSampler(0);
 	W3DShaderManager::drawScreenQuad(0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
 
 	// Pass 3: vertical blur. texB -> texA.
 	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
-	DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(0.0f, 1.0f / (float)m_h, 0.0f, 0.0f), 1);
+	const Vector4 blurStepY(0.0f, 1.0f / (float)m_h, 0.0f, 0.0f);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, &blurStepY, 1);
 	DX8Wrapper::Set_DX8_Texture(0, m_texB);
 	W3DShaderManager::setLinearClampSampler(0);
 	W3DShaderManager::drawScreenQuad(0.0f, 0.0f, (float)m_w, (float)m_h, 0, 0, 1, 1, 0, 0, 1, 1);
@@ -619,15 +621,15 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	// texture and all want a displayable image. They get the scene without the glow, which
 	// is the right answer for a reflection and an acceptable one for the rest.
 	GfxTexture *compositeSrc = sceneTex;
-	D3DXVECTOR4 toneMapCtl(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f);
+	Vector4 toneMapCtl(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f);
 	if (W3DShaderManager::isHdrActive() && W3DShaderManager::getHdrTexture() != nullptr)
 	{
 		compositeSrc = W3DShaderManager::getHdrTexture();
-		toneMapCtl.y = 1.0f;   // this pass owns the curve
+		toneMapCtl.Y = 1.0f;   // this pass owns the curve
 	}
 	DX8Wrapper::Set_DX8_Render_Target(backBuf, backDepth);
 	DX8Wrapper::Set_Pixel_Shader(m_compositePS);
-	DX8Wrapper::Set_Pixel_Shader_Constant(0, toneMapCtl, 1);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, &toneMapCtl, 1);
 	DX8Wrapper::Set_DX8_Texture(0, compositeSrc);
 	DX8Wrapper::Set_DX8_Texture(1, m_texA);
 	W3DShaderManager::setLinearClampSampler(0);
@@ -791,42 +793,44 @@ Int ScreenBWFilter::set(FilterModes mode)
 		DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
 
 		DX8Wrapper::Set_Pixel_Shader(m_dwBWPixelShader);
-		DX8Wrapper::Set_Pixel_Shader_Constant(0,   D3DXVECTOR4(0.3f, 0.59f, 0.11f, 1.0f), 1);
+		const Vector4 lumaWeights(0.3f, 0.59f, 0.11f, 1.0f);
+		DX8Wrapper::Set_Pixel_Shader_Constant(0,   &lumaWeights, 1);
 
-		D3DXVECTOR4	color(1.0f,1.0f,1.0f,1.0f);	//multiply color
+		Vector4	color(1.0f,1.0f,1.0f,1.0f);	//multiply color
 
 		if (mode == FM_VIEW_BW_BLACK_AND_WHITE)
 		{	//back & white mode
-			color.x=1.0f;
-			color.y=1.0f;
-			color.z=1.0f;
+			color.X=1.0f;
+			color.Y=1.0f;
+			color.Z=1.0f;
 		}
 		if (mode == FM_VIEW_BW_RED_AND_WHITE)
 		{	//red is on
-			color.x = 1.0f;
-			color.y = 0.0f;
-			color.z = 0.0f;
+			color.X = 1.0f;
+			color.Y = 0.0f;
+			color.Z = 0.0f;
 			//inverse red is on
 			//red is on
-//			color.x = 0.0f;
-//			color.y = 1.0f;
-//			color.z = 1.0f;
+//			color.X = 0.0f;
+//			color.Y = 1.0f;
+//			color.Z = 1.0f;
 		}
 		if (mode == FM_VIEW_BW_GREEN_AND_WHITE)
 		{
-			color.x = 0.0f;
-			color.y = 1.0f;
-			color.z = 0.0f;
+			color.X = 0.0f;
+			color.Y = 1.0f;
+			color.Z = 0.0f;
 		}
 
-		DX8Wrapper::Set_Pixel_Shader_Constant(1,   color, 1);
-		DX8Wrapper::Set_Pixel_Shader_Constant(2,	D3DXVECTOR4(m_curFadeValue, m_curFadeValue, m_curFadeValue, 1.0f), 1);
-/*		DX8Wrapper::Set_Pixel_Shader_Constant(2,   D3DXVECTOR4(150.0f/255.0f, 150.0f/255.0f, 150.0f/255.0f, 0.0f), 1);
-		DX8Wrapper::Set_Pixel_Shader_Constant(3,   D3DXVECTOR4((765.0f/450.0f)/3, (765.0f/450.0f)/3, (765.0f/450.0f)/3, 1.0f), 1);
-		DX8Wrapper::Set_Pixel_Shader_Constant(4,   D3DXVECTOR4(0.5f, 0.5f, 0.5f, 0), 1);
-		DX8Wrapper::Set_Pixel_Shader_Constant(5,   D3DXVECTOR4((60.0f)/255.0f, (60.0f)/255.0f, (60.0f)/255.0f, 0), 1);
-		DX8Wrapper::Set_Pixel_Shader_Constant(6,   D3DXVECTOR4((157.0f)/255.0f, (157.0f)/255.0f, (157.0f)/255.0f, 0), 1);
-		DX8Wrapper::Set_Pixel_Shader_Constant(7,   D3DXVECTOR4((30.0f)/255.0f, (30.0f)/255.0f, (30.0f)/255.0f, 0), 1);
+		DX8Wrapper::Set_Pixel_Shader_Constant(1,   &color, 1);
+		const Vector4 fade(m_curFadeValue, m_curFadeValue, m_curFadeValue, 1.0f);
+		DX8Wrapper::Set_Pixel_Shader_Constant(2,	&fade, 1);
+/*		DX8Wrapper::Set_Pixel_Shader_Constant(2,   Vector4(150.0f/255.0f, 150.0f/255.0f, 150.0f/255.0f, 0.0f), 1);
+		DX8Wrapper::Set_Pixel_Shader_Constant(3,   Vector4((765.0f/450.0f)/3, (765.0f/450.0f)/3, (765.0f/450.0f)/3, 1.0f), 1);
+		DX8Wrapper::Set_Pixel_Shader_Constant(4,   Vector4(0.5f, 0.5f, 0.5f, 0), 1);
+		DX8Wrapper::Set_Pixel_Shader_Constant(5,   Vector4((60.0f)/255.0f, (60.0f)/255.0f, (60.0f)/255.0f, 0), 1);
+		DX8Wrapper::Set_Pixel_Shader_Constant(6,   Vector4((157.0f)/255.0f, (157.0f)/255.0f, (157.0f)/255.0f, 0), 1);
+		DX8Wrapper::Set_Pixel_Shader_Constant(7,   Vector4((30.0f)/255.0f, (30.0f)/255.0f, (30.0f)/255.0f, 0), 1);
 */
 		return true;
 	}
@@ -1607,14 +1611,14 @@ Int ShroudTextureShader::set(Int stage)
 	W3DShroud *shroud;
 	if ((shroud=TheTerrainRenderObject->getShroud()) != nullptr)
 	{	///@todo: All this code really only need to be done once per camera/view.  Find a way to optimize it out.
-		D3DXMATRIX curView;
+		GfxMatrix4 curView;
 		DX8Wrapper::_Get_DX8_Transform(D3DTS_VIEW, curView);
 
-		D3DXMATRIX inv;
+		GfxMatrix4 inv;
 		float det;
-		D3DXMatrixInverse(&inv, &det, &curView);
+		Gfx_Matrix_Inverse(&inv, &det, &curView);
 
-		D3DXMATRIX scale,offset;
+		GfxMatrix4 scale,offset;
 
 		//We need to make all world coordinates be relative to the heightmap data origin since that
 		//is where the shroud begins.
@@ -1630,11 +1634,11 @@ Int ShroudTextureShader::set(Int stage)
 			yoffset = -(float)shroud->getDrawOriginY() + height;
 		}
 
-		D3DXMatrixTranslation(&offset, xoffset, yoffset,0);
+		Gfx_Matrix_Translation(&offset, xoffset, yoffset,0);
 
 		width = 1.0f/(width*shroud->getTextureWidth());
 		height = 1.0f/(height*shroud->getTextureHeight());
-		D3DXMatrixScaling(&scale, width, height, 1);
+		Gfx_Matrix_Scaling(&scale, width, height, 1);
 		curView = (inv * offset) * scale;
 		DX8Wrapper::_Set_DX8_Transform((D3DTRANSFORMSTATETYPE )(D3DTS_TEXTURE0+stage), curView);
 	}
@@ -1697,8 +1701,8 @@ public:
 	virtual void reset() override;		///<do any custom resetting necessary to bring W3D in sync.
 
 	void updateCloud();
-	void updateNoise1 (D3DXMATRIX *destMatrix,D3DXMATRIX *curViewInverse, Bool doUpdate=true);	///<generate the uv coordinates for Noise1 (i.e clouds)
-	void updateNoise2 (D3DXMATRIX *destMatrix,D3DXMATRIX *curViewInverse, Bool doUpdate=true);	///<generate the uv coordinates for Noise2 (i.e lightmap)
+	void updateNoise1 (GfxMatrix4 *destMatrix,GfxMatrix4 *curViewInverse, Bool doUpdate=true);	///<generate the uv coordinates for Noise1 (i.e clouds)
+	void updateNoise2 (GfxMatrix4 *destMatrix,GfxMatrix4 *curViewInverse, Bool doUpdate=true);	///<generate the uv coordinates for Noise2 (i.e lightmap)
 } terrainShader2Stage;
 
 
@@ -1776,26 +1780,26 @@ void TerrainShader2Stage::updateCloud()
 	m_cloudWorldBY -= CLOUD_PERIOD_B * (Int)(m_cloudWorldBY / CLOUD_PERIOD_B);
 }
 
-void TerrainShader2Stage::updateNoise1(D3DXMATRIX *destMatrix,D3DXMATRIX *curViewInverse, Bool doUpdate)
+void TerrainShader2Stage::updateNoise1(GfxMatrix4 *destMatrix,GfxMatrix4 *curViewInverse, Bool doUpdate)
 {
 	#define STRETCH_FACTOR ((float)(1/(63.0*MAP_XY_FACTOR/2))) /* covers 63/2 tiles */
 
-	D3DXMATRIX scale;
+	GfxMatrix4 scale;
 
-	D3DXMatrixScaling(&scale, STRETCH_FACTOR, STRETCH_FACTOR,1);
+	Gfx_Matrix_Scaling(&scale, STRETCH_FACTOR, STRETCH_FACTOR,1);
 	*destMatrix = *curViewInverse * scale;
 
-	D3DXMATRIX offset;
-	D3DXMatrixTranslation(&offset, m_xOffset, m_yOffset,0);
+	GfxMatrix4 offset;
+	Gfx_Matrix_Translation(&offset, m_xOffset, m_yOffset,0);
 	*destMatrix *= offset;
 }
 
-void TerrainShader2Stage::updateNoise2(D3DXMATRIX *destMatrix,D3DXMATRIX *curViewInverse, Bool doUpdate)
+void TerrainShader2Stage::updateNoise2(GfxMatrix4 *destMatrix,GfxMatrix4 *curViewInverse, Bool doUpdate)
 {
 
-	D3DXMATRIX scale;
+	GfxMatrix4 scale;
 
-	D3DXMatrixScaling(&scale, STRETCH_FACTOR, STRETCH_FACTOR,1);
+	Gfx_Matrix_Scaling(&scale, STRETCH_FACTOR, STRETCH_FACTOR,1);
 	*destMatrix = *curViewInverse * scale;
 }
 
@@ -1866,7 +1870,7 @@ Int TerrainShader2Stage::set(Int pass)
 			break;
 		case 2:
 			// Noise/cloud pass
-			D3DXMATRIX curView;
+			GfxMatrix4 curView;
 			DX8Wrapper::_Get_DX8_Transform(D3DTS_VIEW, curView);
 
 			//these states apply to all noise/cloud combination passes
@@ -1886,9 +1890,9 @@ Int TerrainShader2Stage::set(Int pass)
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_SRCBLEND,D3DBLEND_DESTCOLOR);
 			DX8Wrapper::Set_DX8_Render_State(D3DRS_DESTBLEND,D3DBLEND_ZERO);
 
-			D3DXMATRIX inv;
+			GfxMatrix4 inv;
 			float det;
-			D3DXMatrixInverse(&inv, &det, &curView);
+			Gfx_Matrix_Inverse(&inv, &det, &curView);
 
 			if (W3DShaderManager::getCurrentShader() == W3DShaderManager::ST_TERRAIN_BASE_NOISE12)
 			{
@@ -2480,8 +2484,8 @@ static HRESULT drawShadowMapTile(GfxTexture *shadowTex,
 							  DWORD ps, float x, float y, float side, Bool showAlpha)
 {
 	DX8Wrapper::Set_Pixel_Shader(ps);
-	const D3DXVECTOR4 ctl(0.0f, 1.0f, showAlpha ? 1.0f : 0.0f, 0.0f);
-	DX8Wrapper::Set_Pixel_Shader_Constant(0, ctl, 1);
+	const Vector4 ctl(0.0f, 1.0f, showAlpha ? 1.0f : 0.0f, 0.0f);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, &ctl, 1);
 	DX8Wrapper::Set_DX8_Texture(0, shadowTex);
 	// Linear, so a 4096-wide map shrunk into a small tile shows the average of what is
 	// there rather than one texel in twelve. Point sampling here reads as a map full of
@@ -2637,8 +2641,8 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 			// projection here is right-handed and the left-handed form comes out negative.
 			const float denom = ssr[2] + 1.0f;
 			const float farZ = (fabsf(denom) > 1.0e-6f) ? fabsf(ssr[3] / denom) : 1000.0f;
-			const D3DXVECTOR4 ctl(ssr[2], ssr[3], (farZ > 1.0f) ? farZ : 1000.0f, 0.0f);
-			DX8Wrapper::Set_Pixel_Shader_Constant(0, ctl, 1);
+			const Vector4 ctl(ssr[2], ssr[3], (farZ > 1.0f) ? farZ : 1000.0f, 0.0f);
+			DX8Wrapper::Set_Pixel_Shader_Constant(0, &ctl, 1);
 			DX8Wrapper::Set_DX8_Texture(0, m_ssrDepthTexture);
 			DX8Wrapper::Set_Sampler(0, DX8Wrapper::Get_Sampler(0)
 				.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
@@ -3292,7 +3296,7 @@ void W3DShaderManager::setShadowFrustum(const Vector3 &eye, const Vector3 &lookD
 	}
 	fwd.Normalize();
 
-	// The same basis D3DXMatrixLookAtLH builds from the same hint, so that "up" here is
+	// The same basis Gfx_Matrix_LookAtLH builds from the same hint, so that "up" here is
 	// the axis the projection's asymmetric up range is quoted in. Pick the world axis the
 	// light is least aligned with so the cross product never degenerates.
 	const Vector3 hint = (fabsf(fwd.Z) > 0.9f) ? Vector3(0.0f, 1.0f, 0.0f)
@@ -3675,7 +3679,8 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 		DX8Wrapper::Set_Pixel_Shader(m_toneMapPS);
 		// y = 0: this site never adds bloom, it only curves. See the composite for the pass
 		// that does both and why it has to be the one the player actually sees.
-		DX8Wrapper::Set_Pixel_Shader_Constant(0, D3DXVECTOR4(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f), 1);
+		const Vector4 toneMapOnly(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f);
+		DX8Wrapper::Set_Pixel_Shader_Constant(0, &toneMapOnly, 1);
 		DX8Wrapper::Set_DX8_Texture(0, m_hdrTexture);
 		// Point sampling: source and destination are the same size, so this is a copy, and a
 		// bilinear tap would soften the whole scene by half a texel for nothing.
@@ -3853,8 +3858,8 @@ void W3DShaderManager::applyDisplayGamma()
 	DX8Wrapper::Apply_Render_State_Changes();
 
 	DX8Wrapper::Set_Pixel_Shader(m_gammaPS);
-	const D3DXVECTOR4 gammaCtl(1.0f / gamma, bright, contrast, 0.0f);
-	DX8Wrapper::Set_Pixel_Shader_Constant(0, gammaCtl, 1);
+	const Vector4 gammaCtl(1.0f / gamma, bright, contrast, 0.0f);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, &gammaCtl, 1);
 	DX8Wrapper::Set_DX8_Texture(0, m_gammaCopyTexture);
 	// Point sampling: source and destination are the same size, so this is a lookup table
 	// applied in place and a bilinear tap would soften the whole frame for nothing.
@@ -4786,14 +4791,14 @@ Int W3DShaderManager::setShroudTex(Int stage)
 		DX8Wrapper::Set_DX8_Texture_Stage_State( stage, D3DTSS_COLOROP,   D3DTOP_MODULATE );
 		DX8Wrapper::Set_DX8_Texture_Stage_State( stage, D3DTSS_ALPHAOP,   D3DTOP_SELECTARG2 );
 
-		D3DXMATRIX curView;
+		GfxMatrix4 curView;
 		DX8Wrapper::_Get_DX8_Transform(D3DTS_VIEW, curView);
 
-		D3DXMATRIX inv;
+		GfxMatrix4 inv;
 		float det;
-		D3DXMatrixInverse(&inv, &det, &curView);
+		Gfx_Matrix_Inverse(&inv, &det, &curView);
 
-		D3DXMATRIX scale,offset;
+		GfxMatrix4 scale,offset;
 
 		//We need to make all world coordinates be relative to the heightmap data origin since that
 		//is where the shroud begins.
@@ -4809,11 +4814,11 @@ Int W3DShaderManager::setShroudTex(Int stage)
 			yoffset = -(float)shroud->getDrawOriginY() + height;
 		}
 
-		D3DXMatrixTranslation(&offset, xoffset, yoffset,0);
+		Gfx_Matrix_Translation(&offset, xoffset, yoffset,0);
 
 		width = 1.0f/(width*shroud->getTextureWidth());
 		height = 1.0f/(height*shroud->getTextureHeight());
-		D3DXMatrixScaling(&scale, width, height, 1);
+		Gfx_Matrix_Scaling(&scale, width, height, 1);
 		curView = (inv * offset) * scale;
 		DX8Wrapper::_Set_DX8_Transform((D3DTRANSFORMSTATETYPE )(D3DTS_TEXTURE0+stage), curView);
 		return TRUE;

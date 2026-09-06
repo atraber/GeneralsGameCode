@@ -44,7 +44,7 @@
 #include <assert.h>
 
 #include "WWLib/win.h"
-#include <d3d9types.h>
+#include "gfxmatrix4.h"
 
 /***********************************************************************************************
  * Matrix4x4::Multiply -- Multiply two Matrix4x4's together                                        *
@@ -199,62 +199,62 @@ int operator != (const Matrix4x4 & a, const Matrix4x4 & b)
 }
 
 
-void To_D3DMATRIX(_D3DMATRIX& dxm, const Matrix4x4& m)
+void To_GfxMatrix4(GfxMatrix4& gfxm, const Matrix4x4& m)
 {
-	dxm.m[0][0] = m[0][0];
-	dxm.m[0][1] = m[1][0];
-	dxm.m[0][2] = m[2][0];
-	dxm.m[0][3] = m[3][0];
+	gfxm.m[0][0] = m[0][0];
+	gfxm.m[0][1] = m[1][0];
+	gfxm.m[0][2] = m[2][0];
+	gfxm.m[0][3] = m[3][0];
 
-	dxm.m[1][0] = m[0][1];
-	dxm.m[1][1] = m[1][1];
-	dxm.m[1][2] = m[2][1];
-	dxm.m[1][3] = m[3][1];
+	gfxm.m[1][0] = m[0][1];
+	gfxm.m[1][1] = m[1][1];
+	gfxm.m[1][2] = m[2][1];
+	gfxm.m[1][3] = m[3][1];
 
-	dxm.m[2][0] = m[0][2];
-	dxm.m[2][1] = m[1][2];
-	dxm.m[2][2] = m[2][2];
-	dxm.m[2][3] = m[3][2];
+	gfxm.m[2][0] = m[0][2];
+	gfxm.m[2][1] = m[1][2];
+	gfxm.m[2][2] = m[2][2];
+	gfxm.m[2][3] = m[3][2];
 
-	dxm.m[3][0] = m[0][3];
-	dxm.m[3][1] = m[1][3];
-	dxm.m[3][2] = m[2][3];
-	dxm.m[3][3] = m[3][3];
+	gfxm.m[3][0] = m[0][3];
+	gfxm.m[3][1] = m[1][3];
+	gfxm.m[3][2] = m[2][3];
+	gfxm.m[3][3] = m[3][3];
 }
 
-_D3DMATRIX To_D3DMATRIX(const Matrix4x4& m)
+GfxMatrix4 To_GfxMatrix4(const Matrix4x4& m)
 {
-	_D3DMATRIX dxm;
-	To_D3DMATRIX(dxm, m);
-	return dxm;
+	GfxMatrix4 gfxm;
+	To_GfxMatrix4(gfxm, m);
+	return gfxm;
 }
 
-void To_Matrix4x4(Matrix4x4& m, const _D3DMATRIX& dxm)
+void To_Matrix4x4(Matrix4x4& m, const GfxMatrix4& gfxm)
 {
-	m[0][0] = dxm.m[0][0];
-	m[0][1] = dxm.m[1][0];
-	m[0][2] = dxm.m[2][0];
-	m[0][3] = dxm.m[3][0];
+	m[0][0] = gfxm.m[0][0];
+	m[0][1] = gfxm.m[1][0];
+	m[0][2] = gfxm.m[2][0];
+	m[0][3] = gfxm.m[3][0];
 
-	m[1][0] = dxm.m[0][1];
-	m[1][1] = dxm.m[1][1];
-	m[1][2] = dxm.m[2][1];
-	m[1][3] = dxm.m[3][1];
+	m[1][0] = gfxm.m[0][1];
+	m[1][1] = gfxm.m[1][1];
+	m[1][2] = gfxm.m[2][1];
+	m[1][3] = gfxm.m[3][1];
 
-	m[2][0] = dxm.m[0][2];
-	m[2][1] = dxm.m[1][2];
-	m[2][2] = dxm.m[2][2];
-	m[2][3] = dxm.m[3][2];
+	m[2][0] = gfxm.m[0][2];
+	m[2][1] = gfxm.m[1][2];
+	m[2][2] = gfxm.m[2][2];
+	m[2][3] = gfxm.m[3][2];
 
-	m[3][0] = dxm.m[0][3];
-	m[3][1] = dxm.m[1][3];
-	m[3][2] = dxm.m[2][3];
-	m[3][3] = dxm.m[3][3];
+	m[3][0] = gfxm.m[0][3];
+	m[3][1] = gfxm.m[1][3];
+	m[3][2] = gfxm.m[2][3];
+	m[3][3] = gfxm.m[3][3];
 }
 
-Matrix4x4 To_Matrix4x4(const _D3DMATRIX& dxm)
+Matrix4x4 To_Matrix4x4(const GfxMatrix4& gfxm)
 {
 	Matrix4x4 m;
-	To_Matrix4x4(m, dxm);
+	To_Matrix4x4(m, gfxm);
 	return m;
 }

@@ -1697,9 +1697,9 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 
 	if (m_dwTreeVertexShader) {
 		GfxMatrix4 matProj, matView, matWorld;
-		DX8Wrapper::_Get_DX8_Transform(D3DTS_WORLD, reinterpret_cast<D3DMATRIX&>(matWorld));
-		DX8Wrapper::_Get_DX8_Transform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX&>(matView));
-		DX8Wrapper::_Get_DX8_Transform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX&>(matProj));
+		DX8Wrapper::_Get_DX8_Transform(D3DTS_WORLD, matWorld);
+		DX8Wrapper::_Get_DX8_Transform(D3DTS_VIEW, matView);
+		DX8Wrapper::_Get_DX8_Transform(D3DTS_PROJECTION, matProj);
 		GfxMatrix4 mat;
 		Gfx_Matrix_Multiply( &mat, &matView, &matProj );
 		Gfx_Matrix_Multiply( &mat, &matWorld, &mat );

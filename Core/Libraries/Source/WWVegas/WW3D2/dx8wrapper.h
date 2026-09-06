@@ -45,6 +45,7 @@
 #include "dllist.h"
 #include "gfxstatewords.h"
 #include "gfxdevice.h"
+#include "WWMath/gfxmatrix4.h"
 #include "WWMath/matrix4.h"
 #include "statistics.h"
 #include "WWLib/wwstring.h"
@@ -209,8 +210,8 @@ struct RenderStateStruct
 	TextureBaseClass * Textures[MAX_TEXTURE_STAGES];
 	D3DLIGHT9 Lights[4];
 	bool LightEnable[4];
-	D3DMATRIX world;
-	D3DMATRIX view;
+	GfxMatrix4 world;
+	GfxMatrix4 view;
 	unsigned vertex_buffer_types[MAX_VERTEX_STREAMS];
 	unsigned index_buffer_type;
 	unsigned short vba_offset;
@@ -426,12 +427,12 @@ public:
 
 	static void Set_Transform(D3DTRANSFORMSTATETYPE transform,const Matrix4x4& m);
 	static void Set_Transform(D3DTRANSFORMSTATETYPE transform,const Matrix3D& m);
-	// Same, for a caller that already holds a D3DMATRIX -- deferred draws replay one they
+	// Same, for a caller that already holds a GfxMatrix4 -- deferred draws replay one they
 	// captured. The distinction from _Set_DX8_Transform is not the argument type: this
 	// updates the *tracked* world/view, which is where the programmable path reads the
 	// matrices it concatenates on the CPU, while _Set_DX8_Transform reaches past it to the
 	// device and so is visible only to the fixed-function pipeline.
-	static void Set_Transform(D3DTRANSFORMSTATETYPE transform,const D3DMATRIX& m);
+	static void Set_Transform(D3DTRANSFORMSTATETYPE transform,const GfxMatrix4& m);
 	static void Get_Transform(D3DTRANSFORMSTATETYPE transform, Matrix4x4& m);
 	static void Set_World_Identity();
 	static void Set_View_Identity();
@@ -440,14 +441,14 @@ public:
 
 	// Note that *_DX8_Transform() functions take the matrix in DX8 format - transposed from Westwood convention.
 
-	static void _Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, const D3DMATRIX& m);
-	static void _Get_DX8_Transform(D3DTRANSFORMSTATETYPE transform, D3DMATRIX& m);
+	static void _Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, const GfxMatrix4& m);
+	static void _Get_DX8_Transform(D3DTRANSFORMSTATETYPE transform, GfxMatrix4& m);
 
 	// The one place a matrix is handed to the device. Every path that writes a transform
 	// goes through here -- _Set_DX8_Transform, the three Set_Transform overloads and
 	// Set_Projection_Transform_With_Z_Bias -- so there is a single point at which what was
 	// sent can be recorded, which is what the device-state audit compares against.
-	static void Send_Transform_To_Device(unsigned which, const D3DMATRIX& m);
+	static void Send_Transform_To_Device(unsigned which, const GfxMatrix4& m);
 	// Which deferred slot a transform belongs in, and back again. -1 for a transform the
 	// engine never writes -- D3DTS_WORLD1..3 and the rest of D3D's 256 world matrices --
 	// which is sent straight through rather than given a slot it would never reuse.
@@ -1113,7 +1114,7 @@ protected:
 
 	static RenderStateStruct			render_state;
 	static unsigned						render_state_changed;
-	static D3DMATRIX						DX8Transforms[D3DTS_WORLD+1];
+	static GfxMatrix4						DX8Transforms[D3DTS_WORLD+1];
 
 	static bool								IsInitted;
 	static bool								IsDeviceLost;
@@ -1189,7 +1190,7 @@ protected:
 	// actually been handed -- the equivalent of the 0x12345678 sentinel for a matrix, which
 	// has no spare bit pattern to spare.
 	enum { FF_TRANSFORM_SLOTS = 11 };
-	static D3DMATRIX					FFDeviceTransform[FF_TRANSFORM_SLOTS];
+	static GfxMatrix4					FFDeviceTransform[FF_TRANSFORM_SLOTS];
 	static unsigned						FFTransformPending;
 	static unsigned						FFDeviceTransformValid;
 	// The material is tracked rather than bit-flagged because there is no array behind it
@@ -2101,7 +2102,7 @@ WWINLINE unsigned DX8Wrapper::FF_Transform_Which(unsigned slot)
 	}
 }
 
-WWINLINE void DX8Wrapper::Send_Transform_To_Device(unsigned which, const D3DMATRIX& m)
+WWINLINE void DX8Wrapper::Send_Transform_To_Device(unsigned which, const GfxMatrix4& m)
 {
 	// Tracked here and nowhere else, which is what makes DX8Transforms readable in place of
 	// the device: every path that writes a matrix comes through this function.
@@ -2125,7 +2126,7 @@ WWINLINE void DX8Wrapper::Send_Transform_To_Device(unsigned which, const D3DMATR
 #endif
 }
 
-WWINLINE void DX8Wrapper::_Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, const D3DMATRIX& m)
+WWINLINE void DX8Wrapper::_Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, const GfxMatrix4& m)
 {
 	WWASSERT(transform<=D3DTS_WORLD);
 	// The redundancy check that used to live here was disabled with the note "this
@@ -2152,7 +2153,7 @@ WWINLINE void DX8Wrapper::_Set_DX8_Transform(D3DTRANSFORMSTATETYPE transform, co
 	Send_Transform_To_Device((unsigned)transform,m);
 }
 
-WWINLINE void DX8Wrapper::_Get_DX8_Transform(D3DTRANSFORMSTATETYPE transform, D3DMATRIX& m)
+WWINLINE void DX8Wrapper::_Get_DX8_Transform(D3DTRANSFORMSTATETYPE transform, GfxMatrix4& m)
 {
 	// Read from what the wrapper sent, not from the device. D3D11 has no transform state to
 	// ask, so a read-back here would be a call no second backend could answer; and there is
@@ -3046,7 +3047,7 @@ WWINLINE void DX8Wrapper::Set_Projection_Transform_With_Z_Bias(const Matrix4x4& 
 {
 	ZFar=zfar;
 	ZNear=znear;
-	D3DMATRIX projection=To_D3DMATRIX(matrix);
+	GfxMatrix4 projection=To_GfxMatrix4(matrix);
 
 	if (!Get_Current_Caps()->Support_ZBias() && ZNear!=ZFar) {
 		float tmp_zbias=ZBias;
@@ -3061,12 +3062,12 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 {
 	switch ((int)transform) {
 	case D3DTS_WORLD:
-		render_state.world=To_D3DMATRIX(m);
+		render_state.world=To_GfxMatrix4(m);
 		render_state_changed|=(unsigned)WORLD_CHANGED;
 		render_state_changed&=~(unsigned)WORLD_IDENTITY;
 		break;
 	case D3DTS_VIEW:
-		render_state.view=To_D3DMATRIX(m);
+		render_state.view=To_GfxMatrix4(m);
 		render_state_changed|=(unsigned)VIEW_CHANGED;
 		render_state_changed&=~(unsigned)VIEW_IDENTITY;
 		break;
@@ -3080,7 +3081,7 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 			// read-back and only fell through to the static if that failed. Both are gone
 			// now: there is one tracked projection, DX8Transforms[D3DTS_PROJECTION], written
 			// on the way to the device and read by everything.
-			D3DMATRIX projection=To_D3DMATRIX(m);
+			GfxMatrix4 projection=To_GfxMatrix4(m);
 			ZFar=0.0f;
 			ZNear=0.0f;
 			Send_Transform_To_Device((unsigned)D3DTS_PROJECTION,projection);
@@ -3088,14 +3089,14 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 		break;
 	default:
 		DX8_RECORD_MATRIX_CHANGE();
-		D3DMATRIX dxm=To_D3DMATRIX(m);
+		GfxMatrix4 dxm=To_GfxMatrix4(m);
 		Note_Texture_Transform_Write(transform);
 		Send_Transform_To_Device((unsigned)transform,dxm);
 		break;
 	}
 }
 
-WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const D3DMATRIX& m)
+WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const GfxMatrix4& m)
 {
 	switch ((int)transform) {
 	case D3DTS_WORLD:
@@ -3120,18 +3121,18 @@ WWINLINE void DX8Wrapper::Set_Transform(D3DTRANSFORMSTATETYPE transform,const Ma
 {
 	switch ((int)transform) {
 	case D3DTS_WORLD:
-		render_state.world=To_D3DMATRIX(m);
+		render_state.world=To_GfxMatrix4(m);
 		render_state_changed|=(unsigned)WORLD_CHANGED;
 		render_state_changed&=~(unsigned)WORLD_IDENTITY;
 		break;
 	case D3DTS_VIEW:
-		render_state.view=To_D3DMATRIX(m);
+		render_state.view=To_GfxMatrix4(m);
 		render_state_changed|=(unsigned)VIEW_CHANGED;
 		render_state_changed&=~(unsigned)VIEW_IDENTITY;
 		break;
 	default:
 		DX8_RECORD_MATRIX_CHANGE();
-		D3DMATRIX dxm=To_D3DMATRIX(m);
+		GfxMatrix4 dxm=To_GfxMatrix4(m);
 		Note_Texture_Transform_Write(transform);
 		Send_Transform_To_Device((unsigned)transform,dxm);
 		break;

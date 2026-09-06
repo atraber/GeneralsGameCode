@@ -66,7 +66,7 @@
 #include "quat.h"
 
 #include "WWLib/win.h"
-#include <d3d9types.h>
+#include "gfxmatrix4.h"
 
 // some static matrices which are sometimes useful
 const Matrix3D Matrix3D::Identity
@@ -1291,33 +1291,33 @@ bool Matrix3D::Solve_Linear_System(Matrix3D & system)
 }
 
 
-void To_D3DMATRIX(_D3DMATRIX& dxm, const Matrix3D& m)
+void To_GfxMatrix4(GfxMatrix4& gfxm, const Matrix3D& m)
 {
-	dxm.m[0][0] = m[0][0];
-	dxm.m[0][1] = m[1][0];
-	dxm.m[0][2] = m[2][0];
-	dxm.m[0][3] = 0.0f;
+	gfxm.m[0][0] = m[0][0];
+	gfxm.m[0][1] = m[1][0];
+	gfxm.m[0][2] = m[2][0];
+	gfxm.m[0][3] = 0.0f;
 
-	dxm.m[1][0] = m[0][1];
-	dxm.m[1][1] = m[1][1];
-	dxm.m[1][2] = m[2][1];
-	dxm.m[1][3] = 0.0f;
+	gfxm.m[1][0] = m[0][1];
+	gfxm.m[1][1] = m[1][1];
+	gfxm.m[1][2] = m[2][1];
+	gfxm.m[1][3] = 0.0f;
 
-	dxm.m[2][0] = m[0][2];
-	dxm.m[2][1] = m[1][2];
-	dxm.m[2][2] = m[2][2];
-	dxm.m[2][3] = 0.0f;
+	gfxm.m[2][0] = m[0][2];
+	gfxm.m[2][1] = m[1][2];
+	gfxm.m[2][2] = m[2][2];
+	gfxm.m[2][3] = 0.0f;
 
-	dxm.m[3][0] = m[0][3];
-	dxm.m[3][1] = m[1][3];
-	dxm.m[3][2] = m[2][3];
-	dxm.m[3][3] = 1.0f;
+	gfxm.m[3][0] = m[0][3];
+	gfxm.m[3][1] = m[1][3];
+	gfxm.m[3][2] = m[2][3];
+	gfxm.m[3][3] = 1.0f;
 }
 
-_D3DMATRIX To_D3DMATRIX(const Matrix3D& m)
+GfxMatrix4 To_GfxMatrix4(const Matrix3D& m)
 {
-	_D3DMATRIX dxm;
-	To_D3DMATRIX(dxm, m);
-	return dxm;
+	GfxMatrix4 gfxm;
+	To_GfxMatrix4(gfxm, m);
+	return gfxm;
 }
 

@@ -51,7 +51,6 @@ class DrawObject;
 class CWorldBuilderView;
 class BuildListInfo;
 class TransRenderObj;
-struct ID3DXFont;
 
 /////////////////////////////////////////////////////////////////////////////
 // WbView3d view
@@ -212,7 +211,6 @@ private:
 	Bool										m_showLetterbox;
 
 
-	ID3DXFont*							m3DFont;
 	Int											m_pickPixels;
 	Int											m_partialMapSize;
 

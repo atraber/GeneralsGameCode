@@ -77,7 +77,6 @@
 #include "textureloader.h"
 #include "missingtexture.h"
 #include "WWLib/thread.h"
-#include <d3dx9.h>
 #include <DxErr.h>
 #include "WWMath/gfxmatrix4.h"
 #include "WWMath/pot.h"
@@ -152,7 +151,7 @@ unsigned							DX8Wrapper::FFRenderPending[8] = { 0 };
 bool								DX8Wrapper::FFStatePending = false;
 unsigned							DX8Wrapper::FFDeviceStage[MAX_TEXTURE_STAGES][32];
 unsigned							DX8Wrapper::FFDeviceRender[256];
-D3DMATRIX						DX8Wrapper::FFDeviceTransform[DX8Wrapper::FF_TRANSFORM_SLOTS];
+GfxMatrix4						DX8Wrapper::FFDeviceTransform[DX8Wrapper::FF_TRANSFORM_SLOTS];
 unsigned							DX8Wrapper::FFTransformPending = 0;
 unsigned							DX8Wrapper::FFDeviceTransformValid = 0;
 D3DMATERIAL9						DX8Wrapper::CurrentMaterial = { { 1.0f, 1.0f, 1.0f, 1.0f },
@@ -182,7 +181,7 @@ bool								DX8Wrapper::IsDeviceLost;
 int								DX8Wrapper::ZBias;
 float								DX8Wrapper::ZNear;
 float								DX8Wrapper::ZFar;
-D3DMATRIX						DX8Wrapper::DX8Transforms[D3DTS_WORLD+1];
+GfxMatrix4						DX8Wrapper::DX8Transforms[D3DTS_WORLD+1];
 
 DX8Caps*							DX8Wrapper::CurrentCaps = nullptr;
 
@@ -445,9 +444,9 @@ void DX8Wrapper::Flush_Fixed_Function_State()
 		_BitScanForward(&bit, FFTransformPending);
 		FFTransformPending &= FFTransformPending - 1;
 		const unsigned which = FF_Transform_Which(bit);
-		const D3DMATRIX & wanted = DX8Transforms[which];
+		const GfxMatrix4 & wanted = DX8Transforms[which];
 		if ((FFDeviceTransformValid & (1u << bit)) &&
-			memcmp(&FFDeviceTransform[bit], &wanted, sizeof(D3DMATRIX)) == 0) continue;
+			memcmp(&FFDeviceTransform[bit], &wanted, sizeof(GfxMatrix4)) == 0) continue;
 		FFDeviceTransform[bit] = wanted;
 		FFDeviceTransformValid |= (1u << bit);
 		GFXCALL(Set_Transform(which,(const float*)&wanted));
@@ -1617,9 +1616,9 @@ unsigned DX8Wrapper::Debug_Audit_Invalidation(const char * site)
 	for (unsigned slot = 0; slot < FF_TRANSFORM_SLOTS; ++slot) {
 		if (!(FFDeviceTransformValid & (1u << slot))) continue;
 		const unsigned which = FF_Transform_Which(slot);
-		D3DMATRIX actual;
+		GfxMatrix4 actual;
 		if (!Gfx->Get_Transform(which, (float*)&actual)) continue;
-		if (memcmp(&actual, &FFDeviceTransform[slot], sizeof(D3DMATRIX)) == 0) continue;
+		if (memcmp(&actual, &FFDeviceTransform[slot], sizeof(GfxMatrix4)) == 0) continue;
 		++wrong;
 		NoteInvWord(3, which);
 	}
@@ -1663,8 +1662,8 @@ void DX8Wrapper::Debug_Audit_Frame_End()
 		unsigned long slot;
 		_BitScanForward(&slot, FFDeviceTransformValid);
 		const unsigned which = FF_Transform_Which(slot);
-		const D3DMATRIX real = FFDeviceTransform[slot];
-		D3DMATRIX bogus = real;
+		const GfxMatrix4 real = FFDeviceTransform[slot];
+		GfxMatrix4 bogus = real;
 		bogus.m[3][0] += 12345.0f;
 		Gfx->Set_Transform(which, (const float*)&bogus);
 		s_invControlSawXform = (int)Debug_Audit_Invalidation("(control -- one transform poked at the device)");
@@ -3240,7 +3239,7 @@ bool DX8Wrapper::Bind_Ui_Shader_Direct(const float * wvp, bool sampleColour, boo
 	// (samples colour, desaturate, samples alpha, unused). The desaturate path exists for
 	// disabled interface buttons and for the black-and-white screen filter, which asked
 	// two texture stages for the same thing.
-	const D3DXVECTOR4 uiCtl(sampleColour ? 1.0f : 0.0f, desaturate ? 1.0f : 0.0f,
+	const Vector4 uiCtl(sampleColour ? 1.0f : 0.0f, desaturate ? 1.0f : 0.0f,
 							sampleAlpha ? 1.0f : 0.0f, 0.0f);
 	Set_Pixel_Shader_Constant(0, &uiCtl, 1);
 
@@ -3275,7 +3274,7 @@ bool DX8Wrapper::Bind_Ui_Shader_World(const float * world, bool sampleColour, bo
 	if (m_dwUiVS == 0 || m_dwUiPS == 0) return false;
 	if (world == nullptr || Gfx == nullptr) return false;
 
-	D3DXMATRIX view, proj;
+	GfxMatrix4 view, proj;
 	if (!Gfx->Get_Transform(D3DTS_VIEW, reinterpret_cast<float*>(&view)) ||
 		!Gfx->Get_Transform(D3DTS_PROJECTION, reinterpret_cast<float*>(&proj)))
 		return false;
@@ -3284,9 +3283,9 @@ bool DX8Wrapper::Bind_Ui_Shader_World(const float * world, bool sampleColour, bo
 	// and the shader's mul(float4(position, 1), WorldViewProj). Getting this backwards does
 	// not draw the geometry wrong, it draws nothing, which is worth knowing before going
 	// looking for a blend state.
-	D3DXMATRIX wvp;
-	D3DXMatrixMultiply(&wvp, reinterpret_cast<const D3DXMATRIX*>(world), &view);
-	D3DXMatrixMultiply(&wvp, &wvp, &proj);
+	GfxMatrix4 wvp;
+	Gfx_Matrix_Multiply(&wvp, reinterpret_cast<const GfxMatrix4*>(world), &view);
+	Gfx_Matrix_Multiply(&wvp, &wvp, &proj);
 
 	return Bind_Ui_Shader_Direct(&wvp._11, sampleColour, sampleAlpha);
 }
@@ -3354,15 +3353,15 @@ bool DX8Wrapper::Build_Pixels_To_Clip(float * out)
 		for (int i = 0; i < seenCount; ++i) if (seen[i] == key) { isNew = false; break; }
 		if (isNew && seenCount < 4) {
 			seen[seenCount++] = key;
-			D3DXVECTOR4 tl, br;
-			D3DXVECTOR4 tlIn(0.0f, 0.0f, 0.0f, 1.0f);
-			D3DXVECTOR4 brIn((float)vp.Width, (float)vp.Height, 0.0f, 1.0f);
-			const D3DXMATRIX * const mm = reinterpret_cast<const D3DXMATRIX*>(out);
-			D3DXVec4Transform(&tl, &tlIn, mm);
-			D3DXVec4Transform(&br, &brIn, mm);
+			Vector4 tl, br;
+			const Vector4 tlIn(0.0f, 0.0f, 0.0f, 1.0f);
+			const Vector4 brIn((float)vp.Width, (float)vp.Height, 0.0f, 1.0f);
+			const GfxMatrix4 * const mm = reinterpret_cast<const GfxMatrix4*>(out);
+			Gfx_Vec4_Transform(&tl, &tlIn, mm);
+			Gfx_Vec4_Transform(&br, &brIn, mm);
 			WWDEBUG_SAY(("SCREEN-SPACE SHADER: viewport %ux%u -> top-left (%.3f, %.3f) "
 						 "bottom-right (%.3f, %.3f)  [expect (-1, 1) and (1, -1)]",
-				vp.Width, vp.Height, tl.x, tl.y, br.x, br.y));
+				vp.Width, vp.Height, tl.X, tl.Y, br.X, br.Y));
 		}
 	}
 #endif
@@ -3744,7 +3743,7 @@ void DX8Wrapper::Invalidate_Cached_Render_States(const char * site)
 	//
 	// Unverifiable by the replay harness, which creates one device and never resets it.
 	for (unsigned t = 0; t < D3DTS_WORLD+1; ++t) {
-		memset(&DX8Transforms[t], 0, sizeof(D3DMATRIX));
+		memset(&DX8Transforms[t], 0, sizeof(GfxMatrix4));
 		DX8Transforms[t].m[0][0] = 1.0f;
 		DX8Transforms[t].m[1][1] = 1.0f;
 		DX8Transforms[t].m[2][2] = 1.0f;
@@ -5065,10 +5064,10 @@ void DX8Wrapper::Apply_Debug_Draw_Override(bool fixedFunction, bool hasNormal,
 				// PBR draw puts plain world there, because unit_pbr_ps shades in world space.
 				// Inheriting it would draw PBR meshes' normals in a different space from
 				// everything else's, which is exactly the comparison this view exists to make.
-				D3DXMATRIX nWorld = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
-				D3DXMATRIX nView  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-				D3DXMATRIX nWorldView;
-				D3DXMatrixMultiply(&nWorldView, &nWorld, &nView);
+				GfxMatrix4 nWorld = render_state.world;
+				GfxMatrix4 nView  = render_state.view;
+				GfxMatrix4 nWorldView;
+				Gfx_Matrix_Multiply(&nWorldView, &nWorld, &nView);
 				Set_Vertex_Shader_Constant(4, &nWorldView, 4);
 				Set_Vertex_Shader(m_dwDebugNormalVS);
 				Set_Pixel_Shader(m_dwDebugNormalPS);
@@ -6000,15 +5999,15 @@ void DX8Wrapper::Draw_Strip(
 // ALPHAREPLICATE modifiers -- those draws stay on the fixed-function path rather than
 // being reproduced approximately.
 // ----------------------------------------------------------------------------
-static bool Map_Texture_Stage_Arg(DWORD arg, D3DXVECTOR4& selector)
+static bool Map_Texture_Stage_Arg(DWORD arg, Vector4& selector)
 {
 	if ((arg & ~(DWORD)D3DTA_SELECTMASK) != 0) {
 		return false;   // COMPLEMENT / ALPHAREPLICATE not reproduced
 	}
 	switch (arg & D3DTA_SELECTMASK) {
-		case D3DTA_TEXTURE: selector = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f); return true;
-		case D3DTA_CURRENT: selector = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f); return true;
-		case D3DTA_DIFFUSE: selector = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f); return true;
+		case D3DTA_TEXTURE: selector = Vector4(1.0f, 0.0f, 0.0f, 0.0f); return true;
+		case D3DTA_CURRENT: selector = Vector4(0.0f, 1.0f, 0.0f, 0.0f); return true;
+		case D3DTA_DIFFUSE: selector = Vector4(0.0f, 0.0f, 1.0f, 0.0f); return true;
 		default:            return false;
 	}
 }
@@ -6554,10 +6553,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 		// assuming the latter double-darkens the pass (this rendered foliage with black
 		// splotches). Any op or argument the shader cannot express keeps the draw on the
 		// fixed-function path.
-		D3DXVECTOR4 s1CArg1(1.0f, 0.0f, 0.0f, 0.0f), s1CArg2(0.0f, 1.0f, 0.0f, 0.0f);
-		D3DXVECTOR4 s1AArg1(1.0f, 0.0f, 0.0f, 0.0f), s1AArg2(0.0f, 1.0f, 0.0f, 0.0f);
-		D3DXVECTOR4 s1COp(0.0f, 0.0f, 0.0f, 1.0f);   // (modulate, add, select1, select2)
-		D3DXVECTOR4 s1AOp(0.0f, 0.0f, 0.0f, 1.0f);
+		Vector4 s1CArg1(1.0f, 0.0f, 0.0f, 0.0f), s1CArg2(0.0f, 1.0f, 0.0f, 0.0f);
+		Vector4 s1AArg1(1.0f, 0.0f, 0.0f, 0.0f), s1AArg2(0.0f, 1.0f, 0.0f, 0.0f);
+		Vector4 s1COp(0.0f, 0.0f, 0.0f, 1.0f);   // (modulate, add, select1, select2)
+		Vector4 s1AOp(0.0f, 0.0f, 0.0f, 1.0f);
 		float s1CScale = 1.0f;
 		bool detailCombineSupported = false;
 
@@ -6582,16 +6581,16 @@ void DX8Wrapper::Apply_Render_State_Changes()
 
 			switch (s1ColorOp) {
 				case D3DTOP_DISABLE:      // stage off: result is the stage 0 output
-					s1CArg2 = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
-					s1COp   = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+					s1CArg2 = Vector4(0.0f, 1.0f, 0.0f, 0.0f);
+					s1COp   = Vector4(0.0f, 0.0f, 0.0f, 1.0f);
 					break;
 				case D3DTOP_SELECTARG1:
 					ok = Map_Texture_Stage_Arg(cArg1, s1CArg1);
-					s1COp = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);
+					s1COp = Vector4(0.0f, 0.0f, 1.0f, 0.0f);
 					break;
 				case D3DTOP_SELECTARG2:
 					ok = Map_Texture_Stage_Arg(cArg2, s1CArg2);
-					s1COp = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+					s1COp = Vector4(0.0f, 0.0f, 0.0f, 1.0f);
 					break;
 				case D3DTOP_MODULATE4X:
 				case D3DTOP_MODULATE2X:
@@ -6600,12 +6599,12 @@ void DX8Wrapper::Apply_Render_State_Changes()
 							 : (s1ColorOp == D3DTOP_MODULATE2X) ? 2.0f : 1.0f;
 					ok = Map_Texture_Stage_Arg(cArg1, s1CArg1) &&
 						 Map_Texture_Stage_Arg(cArg2, s1CArg2);
-					s1COp = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f);
+					s1COp = Vector4(1.0f, 0.0f, 0.0f, 0.0f);
 					break;
 				case D3DTOP_ADD:
 					ok = Map_Texture_Stage_Arg(cArg1, s1CArg1) &&
 						 Map_Texture_Stage_Arg(cArg2, s1CArg2);
-					s1COp = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
+					s1COp = Vector4(0.0f, 1.0f, 0.0f, 0.0f);
 					break;
 				default:
 					ok = false;
@@ -6615,28 +6614,28 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			if (ok) {
 				switch (s1AlphaOp) {
 					case D3DTOP_DISABLE:
-						s1AArg2 = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
-						s1AOp   = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+						s1AArg2 = Vector4(0.0f, 1.0f, 0.0f, 0.0f);
+						s1AOp   = Vector4(0.0f, 0.0f, 0.0f, 1.0f);
 						break;
 					case D3DTOP_SELECTARG1:
 						ok = Map_Texture_Stage_Arg(aArg1, s1AArg1);
-						s1AOp = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);
+						s1AOp = Vector4(0.0f, 0.0f, 1.0f, 0.0f);
 						break;
 					case D3DTOP_SELECTARG2:
 						ok = Map_Texture_Stage_Arg(aArg2, s1AArg2);
-						s1AOp = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 1.0f);
+						s1AOp = Vector4(0.0f, 0.0f, 0.0f, 1.0f);
 						break;
 					case D3DTOP_MODULATE:
 					case D3DTOP_MODULATE2X:
 					case D3DTOP_MODULATE4X:
 						ok = Map_Texture_Stage_Arg(aArg1, s1AArg1) &&
 							 Map_Texture_Stage_Arg(aArg2, s1AArg2);
-						s1AOp = D3DXVECTOR4(1.0f, 0.0f, 0.0f, 0.0f);
+						s1AOp = Vector4(1.0f, 0.0f, 0.0f, 0.0f);
 						break;
 					case D3DTOP_ADD:
 						ok = Map_Texture_Stage_Arg(aArg1, s1AArg1) &&
 							 Map_Texture_Stage_Arg(aArg2, s1AArg2);
-						s1AOp = D3DXVECTOR4(0.0f, 1.0f, 0.0f, 0.0f);
+						s1AOp = Vector4(0.0f, 1.0f, 0.0f, 0.0f);
 						break;
 					default:
 						ok = false;
@@ -7009,7 +7008,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				(softBlendedCaster && !ditheredMeshCaster) ? 0.45f : 0.0f;
 			const float PARTICLE_SHADOW_DENSITY = 0.85f;
 			const float MESH_SHADOW_DENSITY = 1.0f;
-			const D3DXVECTOR4 shadowCastParams(shadowAlphaCutoff, PARTICLE_SHADOW_DENSITY,
+			const Vector4 shadowCastParams(shadowAlphaCutoff, PARTICLE_SHADOW_DENSITY,
 											   ditheredMeshCaster ? MESH_SHADOW_DENSITY : 0.0f,
 											   0.0f);
 			Set_Pixel_Shader_Constant(0, &shadowCastParams, 1);
@@ -7027,11 +7026,11 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// against this depth expecting an exact match -- a matrix that is merely
 				// close puts every hit test a fraction of a pixel out. Stashed so that
 				// shader is handed the very same one.
-				D3DXMATRIX camView = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-				const D3DXMATRIX camProj =
-					*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
-				D3DXMATRIX camVP;
-				D3DXMatrixMultiply(&camVP, &camView, &camProj);
+				GfxMatrix4 camView = render_state.view;
+				const GfxMatrix4 camProj =
+					DX8Transforms[D3DTS_PROJECTION];
+				GfxMatrix4 camVP;
+				Gfx_Matrix_Multiply(&camVP, &camView, &camProj);
 				memcpy(m_depthVP, &camVP, sizeof(m_depthVP));
 				Set_Vertex_Shader_Constant(0, &camVP, 4);
 
@@ -7058,8 +7057,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_Ssr_Params(1.0f, SSR_MAX_RAY, camProj._33, camProj._43);
 			}
 			else
-				Set_Vertex_Shader_Constant(0, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
-			D3DXMATRIX shadowWorld = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
+				Set_Vertex_Shader_Constant(0, reinterpret_cast<const GfxMatrix4*>(m_sunVP), 4);
+			GfxMatrix4 shadowWorld = render_state.world;
 			Set_Vertex_Shader_Constant(4, &shadowWorld, 4);
 		}
 		else if (m_bShadowDepthPass) {
@@ -7098,20 +7097,20 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			diagRouteBit = 512u;
 #endif
 
-			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
-			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			const D3DXMATRIX proj =
-				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
-			D3DXMATRIX wvp;
-			D3DXMatrixMultiply(&wvp, &world, &view);
-			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			GfxMatrix4 world = render_state.world;
+			GfxMatrix4 view  = render_state.view;
+			const GfxMatrix4 proj =
+				DX8Transforms[D3DTS_PROJECTION];
+			GfxMatrix4 wvp;
+			Gfx_Matrix_Multiply(&wvp, &world, &view);
+			Gfx_Matrix_Multiply(&wvp, &wvp, &proj);
 			Set_Vertex_Shader_Constant(0, &wvp, 4);
 
 			// The two object->world rows the projection needs, in the same layout unit_vs
 			// takes them: a column of the world matrix per constant, dotted against the
 			// object-space position.
-			const D3DXVECTOR4 worldAxisX(world._11, world._21, world._31, world._41);
-			const D3DXVECTOR4 worldAxisY(world._12, world._22, world._32, world._42);
+			const Vector4 worldAxisX(world._11, world._21, world._31, world._41);
+			const Vector4 worldAxisY(world._12, world._22, world._32, world._42);
 			Set_Vertex_Shader_Constant(4, &worldAxisX, 1);
 			Set_Vertex_Shader_Constant(5, &worldAxisY, 1);
 			Set_Vertex_Shader_Constant(6, &m_maskProj, 1);
@@ -7134,17 +7133,17 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			diagRouteBit = 32u;
 #endif
 
-			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
-			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			const D3DXMATRIX proj =
-				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
-			D3DXMATRIX wvp;
-			D3DXMatrixMultiply(&wvp, &world, &view);
-			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			GfxMatrix4 world = render_state.world;
+			GfxMatrix4 view  = render_state.view;
+			const GfxMatrix4 proj =
+				DX8Transforms[D3DTS_PROJECTION];
+			GfxMatrix4 wvp;
+			Gfx_Matrix_Multiply(&wvp, &world, &view);
+			Gfx_Matrix_Multiply(&wvp, &wvp, &proj);
 			Set_Vertex_Shader_Constant(0, &wvp, 4);
 			// Sun view-projection (VS c5) so the terrain can reproject + sample the
 			// shadow map, and the shadow map itself on stage 5 (point + clamp).
-			Set_Vertex_Shader_Constant(5, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			Set_Vertex_Shader_Constant(5, reinterpret_cast<const GfxMatrix4*>(m_sunVP), 4);
 			Set_Pixel_Shader_Constant(1, m_shadowParams, 1);   // bias + strength
 			if (m_pShadowMap != nullptr) {
 				Set_DX8_Texture(5, m_pShadowMap);
@@ -7172,10 +7171,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// device directly and keep the cache coherent so later cached sets work.
 			// c4 is now the two cloud layers' world-space drift rather than one UV offset;
 			// the shader divides each by its own projection period.
-			D3DXVECTOR4 cloudOffset(m_cloudScrollAX, m_cloudScrollAY, m_cloudScrollBX, m_cloudScrollBY);
+			Vector4 cloudOffset(m_cloudScrollAX, m_cloudScrollAY, m_cloudScrollBX, m_cloudScrollBY);
 			GFXCALL(Set_Vertex_Shader_Constants(4, reinterpret_cast<const float*>(&cloudOffset), 1));
 			Vertex_Shader_Constants[4] = *reinterpret_cast<const Vector4*>(&cloudOffset);
-			D3DXVECTOR4 overlayEnable(m_terrainCloudEnable ? 1.0f : 0.0f,
+			Vector4 overlayEnable(m_terrainCloudEnable ? 1.0f : 0.0f,
 									  m_terrainNoiseEnable ? 1.0f : 0.0f,
 									  m_cloudStrength, 0.0f);
 			GFXCALL(Set_Pixel_Shader_Constants(0, reinterpret_cast<const float*>(&overlayEnable), 1));
@@ -7223,13 +7222,13 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// Identity in practice -- Render2DClass nulls all three matrices and builds its
 			// vertices in clip space -- but concatenated and passed rather than assumed, so
 			// that a 2D drawer which does set up a projection routes here unchanged.
-			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
-			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			const D3DXMATRIX proj =
-				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
-			D3DXMATRIX wvp;
-			D3DXMatrixMultiply(&wvp, &world, &view);
-			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			GfxMatrix4 world = render_state.world;
+			GfxMatrix4 view  = render_state.view;
+			const GfxMatrix4 proj =
+				DX8Transforms[D3DTS_PROJECTION];
+			GfxMatrix4 wvp;
+			Gfx_Matrix_Multiply(&wvp, &world, &view);
+			Gfx_Matrix_Multiply(&wvp, &wvp, &proj);
 			Set_Vertex_Shader_Constant(0, &wvp, 4);
 
 			// Whether stage 0 actually samples, asked of the combine rather than of the
@@ -7259,7 +7258,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 
 			const bool haveTexture = render_state.Textures[0] != nullptr;
 			// x gates the texture colour, z the texture alpha, y desaturates.
-			const D3DXVECTOR4 uiCtl(
+			const Vector4 uiCtl(
 				(haveTexture && colourUsesTexture) ? 1.0f : 0.0f,
 				m_uiGreyscale ? 1.0f : 0.0f,
 				(haveTexture && alphaUsesTexture) ? 1.0f : 0.0f, 0.0f);
@@ -7276,17 +7275,17 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			diagRouteBit = 64u;
 #endif
 
-			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
-			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			const D3DXMATRIX proj =
-				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
-			D3DXMATRIX wvp;
-			D3DXMatrixMultiply(&wvp, &world, &view);
-			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			GfxMatrix4 world = render_state.world;
+			GfxMatrix4 view  = render_state.view;
+			const GfxMatrix4 proj =
+				DX8Transforms[D3DTS_PROJECTION];
+			GfxMatrix4 wvp;
+			Gfx_Matrix_Multiply(&wvp, &world, &view);
+			Gfx_Matrix_Multiply(&wvp, &wvp, &proj);
 			Set_Vertex_Shader_Constant(0, &wvp, 4);
 			// Sun view-projection (VS c5) and the shadow map on stage 5, exactly as the
 			// terrain gets them -- this is what the fixed-function road path could not do.
-			Set_Vertex_Shader_Constant(5, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			Set_Vertex_Shader_Constant(5, reinterpret_cast<const GfxMatrix4*>(m_sunVP), 4);
 			Set_Pixel_Shader_Constant(1, m_shadowParams, 1);   // bias + strength + texel
 			if (m_pShadowMap != nullptr) {
 				Set_DX8_Texture(5, m_pShadowMap);
@@ -7309,10 +7308,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// redundant-set cache claiming values the device no longer holds.
 			// c4 is now the two cloud layers' world-space drift rather than one UV offset;
 			// the shader divides each by its own projection period.
-			D3DXVECTOR4 cloudOffset(m_cloudScrollAX, m_cloudScrollAY, m_cloudScrollBX, m_cloudScrollBY);
+			Vector4 cloudOffset(m_cloudScrollAX, m_cloudScrollAY, m_cloudScrollBX, m_cloudScrollBY);
 			GFXCALL(Set_Vertex_Shader_Constants(4, reinterpret_cast<const float*>(&cloudOffset), 1));
 			Vertex_Shader_Constants[4] = *reinterpret_cast<const Vector4*>(&cloudOffset);
-			D3DXVECTOR4 overlayEnable(m_terrainCloudEnable ? 1.0f : 0.0f,
+			Vector4 overlayEnable(m_terrainCloudEnable ? 1.0f : 0.0f,
 									  m_terrainNoiseEnable ? 1.0f : 0.0f,
 									  m_cloudStrength, 0.0f);
 			GFXCALL(Set_Pixel_Shader_Constants(0, reinterpret_cast<const float*>(&overlayEnable), 1));
@@ -7338,13 +7337,13 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			++s_waterRoutedDraws;
 #endif
 
-			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
-			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			const D3DXMATRIX proj =
-				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
-			D3DXMATRIX wvp;
-			D3DXMatrixMultiply(&wvp, &world, &view);
-			D3DXMatrixMultiply(&wvp, &wvp, &proj);
+			GfxMatrix4 world = render_state.world;
+			GfxMatrix4 view  = render_state.view;
+			const GfxMatrix4 proj =
+				DX8Transforms[D3DTS_PROJECTION];
+			GfxMatrix4 wvp;
+			Gfx_Matrix_Multiply(&wvp, &world, &view);
+			Gfx_Matrix_Multiply(&wvp, &wvp, &proj);
 			Set_Vertex_Shader_Constant(0, &wvp, 4);
 			// World on its own as well, because the pixel shader needs the world position:
 			// the depth lookup, the shroud and noise projections and the wave field are all
@@ -7354,9 +7353,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Set_Vertex_Shader_Constant(4, &world, 4);
 
 			// Camera position, from the inverse view, the same way the PBR path derives it.
-			D3DXMATRIX viewInv;
-			D3DXMatrixInverse(&viewInv, nullptr, &view);
-			const D3DXVECTOR4 cameraPos(viewInv._41, viewInv._42, viewInv._43, 1.0f);
+			GfxMatrix4 viewInv;
+			Gfx_Matrix_Inverse(&viewInv, nullptr, &view);
+			const Vector4 cameraPos(viewInv._41, viewInv._42, viewInv._43, 1.0f);
 
 			// Whether the depth prepass actually ran this frame. Without it stage 7 holds
 			// nothing meaningful and the shader has to fall back to treating the column as
@@ -7379,7 +7378,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Set_Pixel_Shader_Constant(9,  &m_waterNoiseUV, 1);
 			Set_Pixel_Shader_Constant(10, &cameraPos, 1);
 			Set_Pixel_Shader_Constant(11, &m_waterBlendCtl, 1);
-			Set_Pixel_Shader_Constant(12, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4);
+			Set_Pixel_Shader_Constant(12, reinterpret_cast<const GfxMatrix4*>(m_sunVP), 4);
 			Set_Pixel_Shader_Constant(16, m_shadowParams, 1);
 			Set_Pixel_Shader_Constant(17, m_ssrParams, 1);
 			// The very matrix the depth prepass rendered with. The shader reprojects this
@@ -7388,7 +7387,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// a pixel out, and near a silhouette a fraction of a pixel is the difference
 			// between the river bed and the tank standing in it.
 			Set_Pixel_Shader_Constant(18,
-				reinterpret_cast<const D3DXMATRIX*>(m_depthVP), 4);   // c18-21
+				reinterpret_cast<const GfxMatrix4*>(m_depthVP), 4);   // c18-21
 			Set_Pixel_Shader_Constant(24, &m_waterFoamCtl, 1);
 			Set_Pixel_Shader_Constant(25, &m_waterFoamCol, 1);
 			// Refraction only claims to be available when the grab texture exists. The
@@ -7468,18 +7467,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// Material ambient/emissive (house-colour tint lives in the material
 			// ambient; white for normal meshes). Computed first because it also gates
 			// PBR below.
-			D3DXVECTOR4 matAmbient(1.0f, 1.0f, 1.0f, 1.0f);
-			D3DXVECTOR4 matDiffuse(1.0f, 1.0f, 1.0f, 1.0f);
-			D3DXVECTOR4 matEmissive(0.0f, 0.0f, 0.0f, 0.0f);
+			Vector4 matAmbient(1.0f, 1.0f, 1.0f, 1.0f);
+			Vector4 matDiffuse(1.0f, 1.0f, 1.0f, 1.0f);
+			Vector4 matEmissive(0.0f, 0.0f, 0.0f, 0.0f);
 			float matOpacity = 1.0f;
 			// Read from the wrapper's own copy rather than with GetMaterial. The device no
 			// longer has it -- a material is fixed-function vertex lighting and is not sent
 			// unless a draw actually needs it -- and asking for it back was a round trip per
 			// draw for a value we set ourselves.
 			const D3DMATERIAL9 & mtl = CurrentMaterial;
-			matAmbient  = D3DXVECTOR4(mtl.Ambient.r,  mtl.Ambient.g,  mtl.Ambient.b,  1.0f);
-			matDiffuse  = D3DXVECTOR4(mtl.Diffuse.r,  mtl.Diffuse.g,  mtl.Diffuse.b,  1.0f);
-			matEmissive = D3DXVECTOR4(mtl.Emissive.r, mtl.Emissive.g, mtl.Emissive.b, 0.0f);
+			matAmbient  = Vector4(mtl.Ambient.r,  mtl.Ambient.g,  mtl.Ambient.b,  1.0f);
+			matDiffuse  = Vector4(mtl.Diffuse.r,  mtl.Diffuse.g,  mtl.Diffuse.b,  1.0f);
+			matEmissive = Vector4(mtl.Emissive.r, mtl.Emissive.g, mtl.Emissive.b, 0.0f);
 			matOpacity  = mtl.Diffuse.a; // stealth/translucency rides in the material alpha
 
 			// Diffuse (stealth) opacity handling. The fixed-function pipeline sourced the
@@ -7519,7 +7518,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					? meshMaterial->Get_Diffuse_Color_Source() == VertexMaterialClass::MATERIAL
 					: RenderStates[D3DRS_DIFFUSEMATERIALSOURCE] == D3DMCS_MATERIAL);
 
-			D3DXVECTOR4 alphaCtl(matOpacity, diffuseAlphaFromMaterial ? 1.0f : 0.0f, 0.0f, 0.0f);
+			Vector4 alphaCtl(matOpacity, diffuseAlphaFromMaterial ? 1.0f : 0.0f, 0.0f, 0.0f);
 			// House-colour meshes carry the team tint in a non-white material ambient
 			// over a white texture; their procedurally-generated ORM reads that bright
 			// texture as near-metallic, which PBR would render as dark metal instead of
@@ -7527,7 +7526,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// says otherwise) -- but they are still shaded by PBR, on the neutral default
 			// map, whose metallic is zero and so cannot make that mistake.
 			const bool houseColoured =
-				(matAmbient.x < 0.95f || matAmbient.y < 0.95f || matAmbient.z < 0.95f);
+				(matAmbient.X < 0.95f || matAmbient.Y < 0.95f || matAmbient.Z < 0.95f);
 
 			// PBR path: every eligible object mesh runs the metallic-roughness shader, not
 			// only the ones that ship an ORM sibling (<name>_orm). A mesh with no map of its
@@ -7658,14 +7657,14 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// World/view/projection. row_major HLSL float4x4 with mul(v,M) takes the
 			// D3D row-major matrices as-is; both unit shaders read the clip-space
 			// transform at c0-3 and their object -> shading space matrix at c4-7.
-			D3DXMATRIX world = *reinterpret_cast<const D3DXMATRIX*>(&render_state.world);
-			D3DXMATRIX view  = *reinterpret_cast<const D3DXMATRIX*>(&render_state.view);
-			const D3DXMATRIX proj =
-				*reinterpret_cast<const D3DXMATRIX*>(&DX8Transforms[D3DTS_PROJECTION]);
-			D3DXMATRIX worldView;
-			D3DXMatrixMultiply(&worldView, &world, &view);
-			D3DXMATRIX wvp;
-			D3DXMatrixMultiply(&wvp, &worldView, &proj);
+			GfxMatrix4 world = render_state.world;
+			GfxMatrix4 view  = render_state.view;
+			const GfxMatrix4 proj =
+				DX8Transforms[D3DTS_PROJECTION];
+			GfxMatrix4 worldView;
+			Gfx_Matrix_Multiply(&worldView, &world, &view);
+			GfxMatrix4 wvp;
+			Gfx_Matrix_Multiply(&wvp, &worldView, &proj);
 			// c0 = world*view*proj (position), the same for either shader.
 			Set_Vertex_Shader_Constant(0, &wvp, 4);
 			// c4 is the object -> shading space matrix, and the two shaders shade in
@@ -7697,9 +7696,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					.With_Mip_Filter(SamplerStateClass::FILTER_LINEAR)
 					.With_Address(SamplerStateClass::ADDRESS_WRAP, SamplerStateClass::ADDRESS_WRAP));
 			}
-			const D3DXVECTOR4 cloudScroll(m_cloudScrollAX, m_cloudScrollAY,
+			const Vector4 cloudScroll(m_cloudScrollAX, m_cloudScrollAY,
 										  m_cloudScrollBX, m_cloudScrollBY);
-			const D3DXVECTOR4 cloudCtl(
+			const Vector4 cloudCtl(
 				(m_terrainCloudEnable && m_pCloudMap != nullptr) ? 1.0f : 0.0f,
 				m_cloudStrength, 0.0f, 0.0f);
 			if (usePbr) {
@@ -7711,8 +7710,8 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// on the ground plane -- so it gets the two columns of world that give
 				// that, rather than a whole matrix it would use twice. Row-vector
 				// convention, so these are columns 0 and 1.
-				const D3DXVECTOR4 worldAxisX(world._11, world._21, world._31, world._41);
-				const D3DXVECTOR4 worldAxisY(world._12, world._22, world._32, world._42);
+				const Vector4 worldAxisX(world._11, world._21, world._31, world._41);
+				const Vector4 worldAxisY(world._12, world._22, world._32, world._42);
 				Set_Vertex_Shader_Constant(22, &worldAxisX, 1);
 				Set_Vertex_Shader_Constant(23, &worldAxisY, 1);
 				Set_Pixel_Shader_Constant(10, &cloudScroll, 1);
@@ -7725,9 +7724,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// out of the vertex shader instead. Without this only PBR meshes -- the
 			// minority, since PBR needs an ORM map -- received any shadow at all.
 			if (!usePbr) {
-				D3DXMATRIX worldSunVP;
-				D3DXMatrixMultiply(&worldSunVP, &world,
-					reinterpret_cast<const D3DXMATRIX*>(m_sunVP));
+				GfxMatrix4 worldSunVP;
+				Gfx_Matrix_Multiply(&worldSunVP, &world,
+					reinterpret_cast<const GfxMatrix4*>(m_sunVP));
 				Set_Vertex_Shader_Constant(32, &worldSunVP, 4);
 				Set_Pixel_Shader_Constant(8, m_shadowParams, 1);   // bias + strength
 				// Normal offset + the small bias that goes with it, but only for the
@@ -7760,23 +7759,23 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// function path is the confirmation: D3DLIGHT9 directionals are specified in
 			// world space, and that is the same array. Rotate per consumer, below.
 			DWORD ambientPacked = RenderStates[D3DRS_AMBIENT];
-			D3DXVECTOR4 sceneAmbient(
+			Vector4 sceneAmbient(
 				((ambientPacked >> 16) & 0xFF) / 255.0f,
 				((ambientPacked >>  8) & 0xFF) / 255.0f,
 				((ambientPacked      ) & 0xFF) / 255.0f,
 				1.0f);
-			D3DXVECTOR4 lightDir[4];
-			D3DXVECTOR4 lightDiff[4];
+			Vector4 lightDir[4];
+			Vector4 lightDiff[4];
 			for (int li = 0; li < 4; ++li) {
-				lightDir[li]  = D3DXVECTOR4(0.0f, 0.0f, 1.0f, 0.0f);
-				lightDiff[li] = D3DXVECTOR4(0.0f, 0.0f, 0.0f, 0.0f);
+				lightDir[li]  = Vector4(0.0f, 0.0f, 1.0f, 0.0f);
+				lightDiff[li] = Vector4(0.0f, 0.0f, 0.0f, 0.0f);
 				if (render_state.LightEnable[li]) {
-					lightDir[li].x = -render_state.Lights[li].Direction.x;
-					lightDir[li].y = -render_state.Lights[li].Direction.y;
-					lightDir[li].z = -render_state.Lights[li].Direction.z;
-					lightDiff[li].x = render_state.Lights[li].Diffuse.r;
-					lightDiff[li].y = render_state.Lights[li].Diffuse.g;
-					lightDiff[li].z = render_state.Lights[li].Diffuse.b;
+					lightDir[li].X = -render_state.Lights[li].Direction.x;
+					lightDir[li].Y = -render_state.Lights[li].Direction.y;
+					lightDir[li].Z = -render_state.Lights[li].Direction.z;
+					lightDiff[li].X = render_state.Lights[li].Diffuse.r;
+					lightDiff[li].Y = render_state.Lights[li].Diffuse.g;
+					lightDiff[li].Z = render_state.Lights[li].Diffuse.b;
 				}
 			}
 
@@ -7854,20 +7853,20 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// The very matrix the depth prepass rendered with, so the shader's
 				// reprojection cannot drift out of step with the depth it is reading.
 				Set_Pixel_Shader_Constant(18,
-					reinterpret_cast<const D3DXMATRIX*>(m_depthVP), 4);  // c18-21
+					reinterpret_cast<const GfxMatrix4*>(m_depthVP), 4);  // c18-21
 				// SM3 pixel-shader lighting constants, all in world space (see c4 above).
 				// The light directions gathered above are in world space (from LightEnvironment),
 				// which matches what unit_pbr_ps expects.
-				D3DXMATRIX viewInv;
-				D3DXMatrixInverse(&viewInv, nullptr, &view);
-				D3DXVECTOR4 cameraPos(viewInv._41, viewInv._42, viewInv._43, 1.0f);
+				GfxMatrix4 viewInv;
+				Gfx_Matrix_Inverse(&viewInv, nullptr, &view);
+				Vector4 cameraPos(viewInv._41, viewInv._42, viewInv._43, 1.0f);
 				Set_Pixel_Shader_Constant(0, lightDir, 4);       // c0-3 directions (world space)
 				Set_Pixel_Shader_Constant(4, lightDiff, 4);      // c4-7 diffuse
 				Set_Pixel_Shader_Constant(8, &sceneAmbient, 1);
 				Set_Pixel_Shader_Constant(9, &cameraPos, 1);
 				Set_Pixel_Shader_Constant(10, &matAmbient, 1);
 				Set_Pixel_Shader_Constant(11, &alphaCtl, 1);   // stealth opacity control
-				Set_Pixel_Shader_Constant(12, reinterpret_cast<const D3DXMATRIX*>(m_sunVP), 4); // c12-15 SunVP
+				Set_Pixel_Shader_Constant(12, reinterpret_cast<const GfxMatrix4*>(m_sunVP), 4); // c12-15 SunVP
 
 				// (The env cubemap used to snapshot light 0 here. It doesn't any more: W3D
 				// gives every object its own LightEnvironment, so light 0 is only sometimes
@@ -7904,18 +7903,18 @@ void DX8Wrapper::Apply_Render_State_Changes()
 						.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
 						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 				}
-				D3DXVECTOR4 softCtl(softOn ? 1.0f : 0.0f,
+				Vector4 softCtl(softOn ? 1.0f : 0.0f,
 									(m_softParticleFade > 0.0f) ? m_softParticleFade : 1.0f,
 									m_ssrParams[2], m_ssrParams[3]);
 				Set_Pixel_Shader_Constant(12, &softCtl, 1);
 				Set_Vertex_Shader_Constant(16, &sceneAmbient, 1);
 				for (int li = 0; li < 4; ++li) {
 					// Transform world-space light direction to camera space for unit_vs
-					D3DXVECTOR3 wrlDir(lightDir[li].x, lightDir[li].y, lightDir[li].z);
-					D3DXVECTOR3 camDir;
-					D3DXVec3TransformNormal(&camDir, &wrlDir, &view);
-					D3DXVec3Normalize(&camDir, &camDir);
-					D3DXVECTOR4 lightDirCam(camDir.x, camDir.y, camDir.z, 0.0f);
+					const Vector3 wrlDir(lightDir[li].X, lightDir[li].Y, lightDir[li].Z);
+					Vector3 camDir;
+					Gfx_Vec3_TransformNormal(&camDir, &wrlDir, &view);
+					camDir.Normalize();
+					const Vector4 lightDirCam(camDir.X, camDir.Y, camDir.Z, 0.0f);
 					Set_Vertex_Shader_Constant(8 + li * 2, &lightDirCam, 1);
 					Set_Vertex_Shader_Constant(9 + li * 2, &lightDiff[li], 1);
 				}
@@ -7962,7 +7961,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				if (effectGain > 1.0f)
 					++s_censusHdrEmissiveDraws;
 #endif
-				D3DXVECTOR4 lightingParams(lightMode, ambientFromVertex,
+				Vector4 lightingParams(lightMode, ambientFromVertex,
 										   effectDraw ? 1.0f : 0.0f, effectGain);
 				Set_Vertex_Shader_Constant(17, &lightingParams, 1);
 				Set_Vertex_Shader_Constant(18, &matAmbient, 1);
@@ -7996,7 +7995,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// y=z=1 forces it to 1 when stage 0 does not source the diffuse at all);
 				// w gates the texture alpha. They share a register because only registers
 				// 0..7 are addressable by the SM2 unit shaders.
-				D3DXVECTOR4 texCtl(
+				Vector4 texCtl(
 					render_state.Textures[0] != nullptr ? 1.0f : 0.0f,
 					alphaUsesDiffuse ? matOpacity : 1.0f,
 					(!alphaUsesDiffuse || diffuseAlphaFromMaterial) ? 1.0f : 0.0f,
@@ -8009,7 +8008,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// would. The defaults make stage 1 a no-op for single-texture passes. The
 				// modulate scale rides in the unused w of the first selector, which only
 				// uses xyz, rather than taking a register of its own.
-				s1CArg1.w = s1CScale;
+				s1CArg1.W = s1CScale;
 				Set_Pixel_Shader_Constant(2, &s1CArg1, 1);
 				Set_Pixel_Shader_Constant(3, &s1CArg2, 1);
 				Set_Pixel_Shader_Constant(4, &s1COp, 1);
@@ -8021,7 +8020,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				// when this draw was claimed with texgen enabled; otherwise both stages
 				// pass the mesh coordinates through, which is the shader default.
 				const bool applyTexGen = texgenRoutingOn && texGenSupported;
-				D3DXVECTOR4 texGenCtl(
+				Vector4 texGenCtl(
 					applyTexGen ? texGenMode0 : 0.0f,
 					applyTexGen ? texGenMode1 : 0.0f,
 					(applyTexGen && texGenMatrix0) ? 1.0f : 0.0f,
@@ -8029,15 +8028,13 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_Vertex_Shader_Constant(21, &texGenCtl, 1);
 
 				if (applyTexGen && texGenMatrix0) {
-					D3DXMATRIX texMat0;
-					_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 0),
-									   *reinterpret_cast<D3DMATRIX*>(&texMat0));
+					GfxMatrix4 texMat0;
+					_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 0), texMat0);
 					Set_Vertex_Shader_Constant(24, &texMat0, 4);
 				}
 				if (applyTexGen && texGenMatrix1) {
-					D3DXMATRIX texMat1;
-					_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 1),
-									   *reinterpret_cast<D3DMATRIX*>(&texMat1));
+					GfxMatrix4 texMat1;
+					_Get_DX8_Transform((D3DTRANSFORMSTATETYPE)(D3DTS_TEXTURE0 + 1), texMat1);
 					Set_Vertex_Shader_Constant(28, &texMat1, 4);
 				}
 			}
@@ -9338,7 +9335,7 @@ bool DX8Wrapper::Is_Display_Gamma_Identity()
 
 namespace wrapper
 {
-void D3DMatrixIdentity(D3DMATRIX* dxm)
+void D3DMatrixIdentity(GfxMatrix4* dxm)
 {
 	memset(dxm, 0, sizeof(*dxm));
 	dxm->_11 = 1.0f;

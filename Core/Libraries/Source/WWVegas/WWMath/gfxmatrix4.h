@@ -22,7 +22,7 @@
 // WHY THIS IS NOT Matrix4x4, which is the question anyone reading it will ask first.
 //
 // WWMath's Matrix4x4 is column-vector: it multiplies M*v, so a translation lives in the
-// last *column*, and To_D3DMATRIX transposes on the way out. Everything on the device side
+// last *column*, and To_GfxMatrix4 transposes on the way out. Everything on the device side
 // of this engine -- the tracked transforms in DX8Wrapper, the sorting node's captured
 // world and view, every matrix that leaves as a vertex-shader constant -- is the other
 // convention, v*M, translation in the last *row*. That is not a preference; it is what the
@@ -85,6 +85,12 @@ struct GfxMatrix4
 
 	float * operator [] (int i) { return m[i]; }
 	const float * operator [] (int i) const { return m[i]; }
+	// D3DXMATRIX spelled element access both ways and this tree used both: m[i][j] in the
+	// sorting renderer's depth test and (i,j) in the water clip matrix.
+	float & operator () (int i, int j) { return m[i][j]; }
+	float operator () (int i, int j) const { return m[i][j]; }
+
+	GfxMatrix4 & operator *= (const GfxMatrix4 & b);
 };
 
 // out = a*b. Safe when out aliases either input, which every caller in this tree relies on
@@ -108,6 +114,12 @@ WWINLINE GfxMatrix4 operator * (const GfxMatrix4 & a, const GfxMatrix4 & b)
 	GfxMatrix4 out;
 	Gfx_Matrix_Multiply(&out, &a, &b);
 	return out;
+}
+
+WWINLINE GfxMatrix4 & GfxMatrix4::operator *= (const GfxMatrix4 & b)
+{
+	Gfx_Matrix_Multiply(this, this, &b);
+	return *this;
 }
 
 // v' = v * m, the row-vector product. The _Coord and _Normal forms are the two things a

@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include <d3dx8math.h>
+#include "WWMath/gfxmatrix4.h"
 #include "Common/STLTypedefs.h"
 
 #define USUAL_TOLERANCE 1.0f
@@ -37,7 +37,7 @@
 class BezierSegment
 {
 	protected:
-		static const D3DXMATRIX s_bezBasisMatrix;
+		static const GfxMatrix4 s_bezBasisMatrix;
 		Coord3D m_controlPoints[4];
 
 	public:	// Constructors

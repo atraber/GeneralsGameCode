@@ -1813,11 +1813,11 @@ public:
 };
 
 
-// TheSuperHackers @info Always convert Matrix3D to D3DMATRIX or vice versa with the conversion functions below.
-// Reason being, D3DMATRIX is row-major, and Matrix3D is column-major and therefore copying one matrix to the
-// other will always require a transpose.
+// TheSuperHackers @info Always convert Matrix3D to GfxMatrix4 or vice versa with the conversion functions
+// below. Reason being, GfxMatrix4 is row-vector (translation in the last row) and Matrix3D is column-vector,
+// and therefore copying one matrix to the other will always require a transpose.
 
-struct _D3DMATRIX;
+struct GfxMatrix4;
 
-extern void To_D3DMATRIX(_D3DMATRIX& dxm, const Matrix3D& m);
-extern _D3DMATRIX To_D3DMATRIX(const Matrix3D& m);
+extern void To_GfxMatrix4(GfxMatrix4& gfxm, const Matrix3D& m);
+extern GfxMatrix4 To_GfxMatrix4(const Matrix3D& m);

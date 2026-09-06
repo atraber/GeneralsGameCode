@@ -93,7 +93,6 @@
 #include "ImpassableOptions.h"
 
 
-#include <d3dx8.h>
 
 
 // ----------------------------------------------------------------------------
@@ -483,10 +482,6 @@ void WbView3d::shutdownWW3D()
 	delete m_buildLayer;
 	m_buildLayer = nullptr;
 
-	if (m3DFont) {
-		m3DFont->Release();
-		m3DFont = nullptr;
-	}
 }
 
 //=============================================================================
@@ -499,10 +494,6 @@ void WbView3d::ReleaseResources()
 	if (TheTerrainRenderObject) {
 		TheTerrainRenderObject->ReleaseResources();
 	}
-	if (m3DFont) {
-		m3DFont->Release();
-	}
-	m3DFont = nullptr;
 }
 
 //=============================================================================
@@ -517,13 +508,6 @@ void WbView3d::ReAcquireResources()
 		TheTerrainRenderObject->loadRoadsAndBridges(nullptr,FALSE);
 		TheTerrainRenderObject->worldBuilderUpdateBridgeTowers( m_assetManager, m_scene );
 	}
-	// WorldBuilder's overlay text was drawn with D3DXFont, which needs a D3D9 device and
-	// has no successor. It was asked for through Peek_Native_Device, the graphics seam's
-	// one declared exception, and the D3D11 backend already answered null -- so the
-	// overlay font has been absent since D3D11 became the default. Phase 10 removed the
-	// D3D9 backend, and with it the exception; every caller of the name-drawing code
-	// below already handles a null font by falling back to GDI text.
-	m3DFont = nullptr;
 
 }
 
@@ -2024,9 +2008,6 @@ void WbView3d::render()
 		// Draw the 3d obj icons on top of the rest of the data.
 		WW3D::Render(m_overlayScene,m_camera);
 		//if (mytext) mytext->Render();
-		if (m3DFont) {
-			drawLabels(nullptr);
-		}
 
 
 		WW3D::End_Render();
@@ -2153,13 +2134,6 @@ void WbView3d::initWW3D()
 			}
 		}
 
-		// WorldBuilder's overlay text was drawn with D3DXFont, which needs a D3D9 device and
-		// has no successor. It was asked for through Peek_Native_Device, the graphics seam's
-		// one declared exception, and the D3D11 backend already answered null -- so the
-		// overlay font has been absent since D3D11 became the default. Phase 10 removed the
-		// D3D9 backend, and with it the exception; every caller of the name-drawing code
-		// below already handles a null font by falling back to GDI text.
-		m3DFont = nullptr;
 
 		WW3D::Enable_Static_Sort_Lists(true);
 		WW3D::Set_Thumbnail_Enabled(false);
@@ -2333,16 +2307,7 @@ void WbView3d::drawLabels(HDC hdc)
 							red = 255, green = 0;
 						}
 
-						if (m3DFont && !hdc) {
-							RECT rct;
-							pt.y -= 5;
-							pt.x += 1;
-							rct.top = rct.bottom = pt.y;
-							rct.left = rct.right = pt.x;
-							m3DFont->DrawText(nullptr, name.str(), name.getLength(), &rct,
-								DT_LEFT | DT_NOCLIP | DT_TOP | DT_SINGLELINE, 0xAF000000 + (red<<16) + (green<<8));
-
-						} else if (!m3DFont) {
+						{
 							//docToViewCoords(pos, &pt);
 							::SetBkMode(hdc, TRANSPARENT);
 							pt.y -= 5;

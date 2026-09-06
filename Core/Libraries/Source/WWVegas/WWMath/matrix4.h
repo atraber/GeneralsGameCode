@@ -880,14 +880,14 @@ WWINLINE void	Matrix4x4::Transform_Vector(const Matrix4x4 & A,const Vector4 & in
 }
 
 
-// TheSuperHackers @info Always convert Matrix4x4 to D3DMATRIX or vice versa with the conversion functions below.
-// Reason being, D3DMATRIX is row-major, and Matrix4x4 is column-major and therefore copying one matrix to the
-// other will always require a transpose.
+// TheSuperHackers @info Always convert Matrix4x4 to GfxMatrix4 or vice versa with the conversion functions
+// below. Reason being, GfxMatrix4 is row-vector (translation in the last row) and Matrix4x4 is column-vector,
+// and therefore copying one matrix to the other will always require a transpose.
 
-struct _D3DMATRIX;
+struct GfxMatrix4;
 
-extern void To_D3DMATRIX(_D3DMATRIX& dxm, const Matrix4x4& m);
-extern _D3DMATRIX To_D3DMATRIX(const Matrix4x4& m);
+extern void To_GfxMatrix4(GfxMatrix4& gfxm, const Matrix4x4& m);
+extern GfxMatrix4 To_GfxMatrix4(const Matrix4x4& m);
 
-extern void To_Matrix4x4(Matrix4x4& m, const _D3DMATRIX& dxm);
-extern Matrix4x4 To_Matrix4x4(const _D3DMATRIX& dxm);
+extern void To_Matrix4x4(Matrix4x4& m, const GfxMatrix4& gfxm);
+extern Matrix4x4 To_Matrix4x4(const GfxMatrix4& gfxm);
