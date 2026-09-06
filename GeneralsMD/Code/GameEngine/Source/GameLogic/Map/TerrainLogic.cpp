@@ -960,7 +960,6 @@ TerrainLogic::TerrainLogic()
 	Int i;
 
 	m_activeBoundary = 0;
-	m_waterGridEnabled = FALSE;
 	for( i = 0; i < MAX_DYNAMIC_WATER; ++i )
 	{
 
@@ -1124,138 +1123,15 @@ void TerrainLogic::newMap( Bool saveGame )
 		const Coord3D* loc = way->getLocation();
 		way->setLocationZ(getGroundHeight(loc->x, loc->y));
 	}
-	//
-	// until we have a real way to specify different water planes in the map, we will check
-	// for a special waypoint name that we will put in maps that we want to have a
-	// water grid
-	/// @todo Mark W, remove this when you have water plane placements in the map done (Colin)
-	//
-	Waypoint *waypoint = getWaypointByName( "WaveGuide1" );
-	Bool enable = FALSE;
-	if( waypoint )
-		enable = TRUE;
-#if defined(RTS_DEBUG)
-	// ...and no map on this machine has that waypoint. All 116 shipped maps in MapsZH.big
-	// and all 66 in the user Maps folder were scanned for the string in Phase 9: zero hits,
-	// against a control of 182 of 182 containing "Waypoint". So renderWaterMesh -- the last
-	// unconverted fixed-function drawer, WATER_MESH_FVF with no vertex shader -- is dead on
-	// every piece of content that exists here, which is why no replay reaches it and why one
-	// cannot be recorded.
-	//
-	// W3D_FORCE_WATER_GRID=1 turns it on anyway, so that the path can be run once under each
-	// backend and the question settled while there is still a D3D9 to compare against. It is
-	// an env var and debug only, so a build left in the game directory cannot do it to
-	// somebody playing.
-	if( !enable && getenv( "W3D_FORCE_WATER_GRID" ) != nullptr )
-	{
-		enable = TRUE;
-		DEBUG_LOG(( "WATER GRID: forced on by W3D_FORCE_WATER_GRID -- this map has no WaveGuide1 waypoint." ));
-	}
-#endif
-	enableWaterGrid( enable );
+	// The WaveGuide1 waypoint hack was here, and so was the W3D_FORCE_WATER_GRID probe
+	// that let Phase 9 get past it. It turned on the vertex-animated water grid, which
+	// Phase 10 deleted: it was a fixed-function vertex path Direct3D 11 cannot draw, and
+	// three independent gates in front of it fail on every map on this machine -- 0 of 182
+	// maps contain "WaveGuide1", none is named in VertexWaterAvailableMaps1..4, and any map
+	// with a river switched the grid off permanently after its first river draw.
 
 }
 
-// ------------------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------------------
-void TerrainLogic::enableWaterGrid( Bool enable )
-{
-
-	// set our internal variable we can query
-	m_waterGridEnabled = enable;
-
-	//
-	// set the vertex animated water properties, that is, the clamps, the water position,
-	// the grid resolution etc ...
-	//
-	if( enable == TRUE )
-	{
-
-		/** @todo we should have this stuff stored with the map and have a real interface for
-		design to edit such things so that people can put gridded water in any map without all
-		this hard coded nasty stuff, but this is what "they" want for now */
-
-		Int waterSettingIndex = -1;
-		for( Int i = 0; i < GlobalData::MAX_WATER_GRID_SETTINGS; i++ )
-		{
-
-			if( TheGlobalData->m_mapName.compareNoCase( TheGlobalData->m_vertexWaterAvailableMaps[ i ].str() ) == 0 )
-			{
-
-				waterSettingIndex = i;
-				break;  // exit for i
-
-			}
-
-			//
-			// no exact map name (including path) was found, try to look for a match in just the
-			// mapname.map without any path information.  This is necessary for save/load due to
-			// the fact that the map Data\CHI01\CHI01.map will turn into Save\CHI01.map when
-			// loading the map from a save game file
-			//
-			AsciiString strippedMapNameOnly;
-			AsciiString strippedCompareMapNameOnly;
-			const char *c;
-
-			// create stripped map name
-			c = strrchr( TheGlobalData->m_mapName.str(), '\\' );
-			if( c )
-				strippedMapNameOnly.set( c );
-			else
-				strippedMapNameOnly = TheGlobalData->m_mapName;
-
-			// create stripped compare name
-			c = strrchr( TheGlobalData->m_vertexWaterAvailableMaps[ i ].str(), '\\' );
-			if( c )
-				strippedCompareMapNameOnly.set( c );
-			else
-				strippedCompareMapNameOnly = TheGlobalData->m_vertexWaterAvailableMaps[ i ];
-
-			// now try this compare
-			if( strippedMapNameOnly.compareNoCase( strippedCompareMapNameOnly.str() ) == 0 )
-			{
-
-				waterSettingIndex = i;
-				break;  // exit for i
-
-			}
-
-		}
-
-		// check for no match found
-		if( waterSettingIndex == -1 )
-		{
-
-			DEBUG_CRASH(( "!!!!!! Deformable water won't work because there was no group of vertex water data defined in GameData.INI for this map name '%s' !!!!!! (C. Day)",
-										TheGlobalData->m_mapName.str() ));
-			return;
-
-		}
-
-		TheTerrainVisual->setWaterGridHeightClamps( nullptr,
-																								TheGlobalData->m_vertexWaterHeightClampLow[ waterSettingIndex ],
-																								TheGlobalData->m_vertexWaterHeightClampHi[ waterSettingIndex ] );
-		TheTerrainVisual->setWaterTransform( nullptr,
-																				 TheGlobalData->m_vertexWaterAngle[ waterSettingIndex ],
-																				 TheGlobalData->m_vertexWaterXPosition[ waterSettingIndex ],
-																				 TheGlobalData->m_vertexWaterYPosition[ waterSettingIndex ],
-																				 TheGlobalData->m_vertexWaterZPosition[ waterSettingIndex ] );
-		TheTerrainVisual->setWaterGridResolution( nullptr,
-																							TheGlobalData->m_vertexWaterXGridCells[ waterSettingIndex ],
-																							TheGlobalData->m_vertexWaterYGridCells[ waterSettingIndex ],
-																							TheGlobalData->m_vertexWaterGridSize[ waterSettingIndex ] );
-		TheTerrainVisual->setWaterAttenuationFactors( nullptr,
-																									TheGlobalData->m_vertexWaterAttenuationA[ waterSettingIndex ],
-																									TheGlobalData->m_vertexWaterAttenuationB[ waterSettingIndex ],
-																									TheGlobalData->m_vertexWaterAttenuationC[ waterSettingIndex ],
-																									TheGlobalData->m_vertexWaterAttenuationRange[ waterSettingIndex ] );
-
-	}
-
-	// notify the terrain visual of the change
-	TheTerrainVisual->enableWaterGrid( enable );
-
-}
 
 //-------------------------------------------------------------------------------------------------
 /** device independent terrain logic load.  If query is true, we are just loading it to get

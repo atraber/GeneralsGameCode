@@ -220,7 +220,6 @@ public:
 	//
 	// water methods
 	//
-	virtual void enableWaterGrid( Bool enable ) = 0;
 	/// set min/max height values allowed in water grid pointed to by waterTable
 	virtual void setWaterGridHeightClamps( const WaterHandle *waterTable, Real minZ, Real maxZ ) = 0;
 	/// adjust falloff parameters for grid change method

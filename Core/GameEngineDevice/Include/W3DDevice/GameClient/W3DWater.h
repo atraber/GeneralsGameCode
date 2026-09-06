@@ -100,7 +100,6 @@ public:
 	void reset();  ///< reset any resources we need to
 	void load();	///< load/setup any map dependent features
 	void update(); ///< update phase of the water
-	void enableWaterGrid(Bool state);	///< used to active custom water for special maps. (i.e DAM).
 	void updateMapOverrides();	///< used to update any map specific map overrides for water appearance.
 	void setTimeOfDay(TimeOfDay tod); ///<change sky/water for time of day
 	void toggleCloudLayer(Bool state)	{	m_useCloudLayer=state;}	///<enables/disables the cloud layer
@@ -185,7 +184,6 @@ protected:
 	WaterMeshData *m_meshData;  ///< heightmap data for 3D Mesh based water.
 	UnsignedInt m_meshDataSize;	///< size of m_meshData
 	Bool m_meshInMotion;				///< TRUE once we've messed with velocities and are in motion
-	Bool m_doWaterGrid;	///< allows/prevents water grid rendering.
 
 	Vector2	m_gridDirectionX;			///<vector along water grid's x-axis (scaled to world-space)
 	Vector2	m_gridDirectionY;			///<vector along water grid's y-axis (scaled to world-space)
@@ -240,7 +238,6 @@ protected:
 	void renderSky();	///<draw the sky layer (clouds, stars, etc.)
 	void testCurvedWater();	///<draw the sky layer (clouds, stars, etc.)
 	void renderSkyBody(Matrix3D *mat);	///<draw the sky body (sun, moon, etc.)
-	void renderWaterMesh();			///<draw the water surface mesh (deformed 3d mesh).
 	HRESULT initBumpMap(GfxTexture **pTex, TextureClass *pBumpSource);	///<copies data into bump-map format.
 	void renderMirror(CameraClass *cam);	///< Draw reflected scene into texture
 	void drawSea(RenderInfoClass & rinfo);	///< Draw the surface of the water

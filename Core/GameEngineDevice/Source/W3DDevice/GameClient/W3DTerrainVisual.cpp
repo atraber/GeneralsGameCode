@@ -641,7 +641,6 @@ Bool W3DTerrainVisual::load( AsciiString filename )
 	if (m_waterRenderObject)
 	{
 		W3DDisplay::m_3DScene->Add_Render_Object( m_waterRenderObject);
-		m_waterRenderObject->enableWaterGrid(false);
 		m_waterRenderObject->updateMapOverrides();
 	}
 #endif
@@ -672,17 +671,9 @@ Bool W3DTerrainVisual::load( AsciiString filename )
 
 // ------------------------------------------------------------------------------------------------
 // ------------------------------------------------------------------------------------------------
-void W3DTerrainVisual::enableWaterGrid( Bool enable )
-{
-
-	//Get default water type
-	m_isWaterGridRenderingEnabled = enable;
-
-	// make the changes in the water render object
-	if( m_waterRenderObject )
-		m_waterRenderObject->enableWaterGrid( enable );
-
-}
+// W3DTerrainVisual::enableWaterGrid was here. m_isWaterGridRenderingEnabled stays a
+// member because the save-game xfer reads and checks it; it is FALSE from the constructor
+// onward now, which is what it already was on every map that exists.
 
 //-------------------------------------------------------------------------------------------------
 /** intersect the ray with the terrain, if a hit occurs TRUE is returned

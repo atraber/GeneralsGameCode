@@ -305,7 +305,6 @@ public:
 	// (unlike getLayerForDestination, which will return the closest layer)
 	PathfindLayerEnum getHighestLayerForDestination(const Coord3D *pos, Bool onlyHealthyBridges = false);
 
-	void enableWaterGrid( Bool enable );			///< enable/disable the water grid
 
 	// This is stuff to get the currently active boundary information
 	Int getActiveBoundary() { return m_activeBoundary; }
@@ -351,7 +350,6 @@ protected:
 
 	AsciiString m_filenameString;  ///< filename for terrain data
 
-	Bool m_waterGridEnabled;			 ///< TRUE when water grid is enabled
 
 	static WaterHandle m_gridWaterHandle;		///< water handle for the grid water (we only presently have one)
 

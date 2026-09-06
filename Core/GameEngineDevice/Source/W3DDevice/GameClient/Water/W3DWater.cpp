@@ -612,7 +612,6 @@ WaterRenderObjClass::WaterRenderObjClass()
 	m_dy=0;
 	m_indexBuffer=nullptr;
 	m_waterTrackSystem = nullptr;
-	m_doWaterGrid = FALSE;
 	m_meshVertexMaterialClass=nullptr;
 	m_meshLight=nullptr;
 	m_vertexMaterialClass=nullptr;
@@ -1120,17 +1119,8 @@ void WaterRenderObjClass::ReAcquireResources()
 	// Prepare_Direct_Draw("waterDirect"), which is what flushes the deferred
 	// fixed-function words and tells the wrapper its bindings were taken over.
 
-	//We're using the same grid for either 3D Water Mesh or Pixel/Vertex shader.  Just
-	//allocate the right size depending on usage
-	if (m_meshData)
-	{
-		//Create new grid data
-		if (FAILED(generateIndexBuffer(m_gridCellsX+1,m_gridCellsY+1)))
-			return;
-		if (FAILED(generateVertexBuffer(m_gridCellsX+1,m_gridCellsY+1,sizeof(MaterMeshVertexFormat),false)))
-			return;
-	}
-	else
+	// The 3D water mesh used to share this grid and be allocated here when m_meshData
+	// existed. It never exists now.
 	if (m_waterType == WATER_TYPE_2_PVSHADER)
 	{	//pixel/vertex shader based water assets.
 		if (FAILED(hr=generateIndexBuffer(PATCH_SIZE,PATCH_SIZE)))
@@ -1411,35 +1401,11 @@ void WaterRenderObjClass::reset()
 		m_waterTrackSystem->reset();
 }
 
-void WaterRenderObjClass::enableWaterGrid(Bool state)
-{
-	m_doWaterGrid = state;
-
-	m_drawingRiver = false;
-	m_disableRiver = false;
-
-	if (state && m_meshData == nullptr)
-	{	//water type has changed, must allocate necessary assets for new water.
-		//contains the current deformed water surface z(height) values.  With 1 vertex invisible border
-		//around surface to speed up normal calculations.
-		m_meshDataSize = (m_gridCellsX+1+2)*(m_gridCellsY+1+2);
-		m_meshData=NEW WaterMeshData[ m_meshDataSize ];
-		memset(m_meshData,0,sizeof(WaterMeshData)*(m_gridCellsX+1+2)*(m_gridCellsY+1+2));
-		reset();
-
-		//Release existing grid data
-		DX8Wrapper::Release_DX8_Vertex_Buffer(m_vertexBufferD3D);
-	m_vertexBufferD3D=nullptr;
-		DX8Wrapper::Release_DX8_Index_Buffer(m_indexBufferD3D);
-	m_indexBufferD3D=nullptr;
-
-		//Create new grid data
-		if (FAILED(generateIndexBuffer(m_gridCellsX+1,m_gridCellsY+1)))
-			return;
-		if (FAILED(generateVertexBuffer(m_gridCellsX+1,m_gridCellsY+1,sizeof(MaterMeshVertexFormat),false)))
-			return;
-	}
-}
+// WaterRenderObjClass::enableWaterGrid was here. It set m_doWaterGrid, allocated
+// m_meshData, and built the index and vertex buffers renderWaterMesh drew from -- so it
+// was the only allocator of the grid, and with the drawer gone there is nothing to
+// allocate for. m_meshData is therefore null for the life of the object, which is what
+// the two remaining guards test instead of the flag.
 
 // ------------------------------------------------------------------------------------------------
 /** Update phase for water if we need it. */
@@ -1465,7 +1431,7 @@ void WaterRenderObjClass::update()
 			m_fBumpFrame = 0.0f;
 
 		// for vertex animated water we need to update the vector field
-		if( m_doWaterGrid && m_meshInMotion == TRUE )
+		if( m_meshData != nullptr && m_meshInMotion == TRUE )
 		{
 			const Real PREFERRED_HEIGHT_FUDGE = 1.0f;		///< this is close enough to at rest
 			const Real AT_REST_VELOCITY_FUDGE = 1.0f;		///< when we're close enough to at rest height and velocity we will stop
@@ -1784,9 +1750,6 @@ void WaterRenderObjClass::Render(RenderInfoClass & rinfo)
 		case WATER_TYPE_3_GRIDMESH:
 			//Draw the water surface as a bunch of alpha blended tiles covering areas where water is visible
 			renderWater();
-			if (!m_drawingRiver || m_disableRiver) {
-				renderWaterMesh();	//Draw water surface as 3D deforming mesh if it's enabled on this map.
-			}
 			break;
 
 		case WATER_TYPE_2_PVSHADER:
@@ -2491,233 +2454,31 @@ void WaterRenderObjClass::renderSkyBody(Matrix3D *mat)
 #define WATER_AMP	(1.0f)
 #define	WATER_OFFSET (0.1f)
 
-//-------------------------------------------------------------------------------------------------
-/** Renders (draws) the water surface mesh geometry.
-	*	This is a work-in-progress!  Do not use this code! */
-//-------------------------------------------------------------------------------------------------
-void WaterRenderObjClass::renderWaterMesh()
-{
-	FF_SITE("WaterRenderObjClass::renderWaterMesh");
-
-	if (!m_doWaterGrid)
-		return;	//the water grid is disabled.
-
-	//According to Nvidia there's a D3D bug that happens if you don't start with a
-	//new dynamic VB each frame - so we force a DISCARD by overflowing the counter.
-	m_vertexBufferD3DOffset = 0xffff;
-
-	Setting *setting=&m_settings[m_tod];
-
-	WaterMeshData *pData;
-	Int	mx=m_gridCellsX+1;
-	Int my=m_gridCellsY+1;
-	Int i,j;
-
-	Real cellSizeX=m_gridCellSize;
-	Real cellSizeY=m_gridCellSize;
-//	Real	uScale2=5.0f*setting->waterRepeatCount/(128.0f)*cellSizeX/10.0f;
-//	Real	vScale2=5.0f*setting->waterRepeatCount/(128.0f)*cellSizeY/10.0f;
-
-	//Old waterRepeatCount settings in INI were based on 128x128 water grid of cellsize=10
-	//Scale values to correct size.
-	Real	uScale=setting->waterRepeatCount/(128.0f)*cellSizeX/10.0f*0.2f;
-	Real	vScale=setting->waterRepeatCount/(128.0f)*cellSizeY/10.0f*0.2f;
-
-	Vector3	nx(cellSizeX*2.0f,0,0);
-	Vector3 ny(0,cellSizeY*2.0f,0);
-	Vector3 C;
-
-#ifdef DO_WATER_SIMULATION		//Debug code used to create a dummy water animation
-	//
-	// Mark: If you re-enable this water simulation, you might want to consider moving
-	// this code to the update() method of the water render object (Colin)
-	//
-
-	static Real PhasePerFrameX=0.1f;
-	static Real PhasePerFrameY=0.1f;
-
-	//update the mesh heights for this frame (update buffer is 2 samples wider/taller due to border)
-	for (j=0,pData=m_meshData; j<(my+2); j++)
-	{
-		for (i=0; i<(mx+2); i++)
-		{
-			//*pData = WATER_AMP * sin(WATER_FREQ*(0.7f*i + 0.7f*j) - PhasePerFrame);
-
-			pData->height=WATER_OFFSET+WATER_AMP*(sin((float)i*WATER_FREQ*0.4+PhasePerFrameX*0.5)+sin((float)i*WATER_FREQ*0.6+PhasePerFrameX*0.2)+sin((float)j*WATER_FREQ+PhasePerFrameX)+sin((float)j*WATER_FREQ*0.7+PhasePerFrameX*0.3));
-//			*pData=WATER_OFFSET+WATER_AMP*(sin((float)i*WATER_FREQ*0.4+PhasePerFrameX*0.5)+sin((float)i*WATER_FREQ*0.6+PhasePerFrameX*0.2)+sin((float)j*WATER_FREQ+PhasePerFrameX)+sin((float)j*WATER_FREQ*0.7+PhasePerFrameX*0.3));
-			pData++;
-		}
-	}
-
-	PhasePerFrameX -= 0.08f;
-	PhasePerFrameY -= 0.1f;
-#endif
-
-	MaterMeshVertexFormat *vb;
-	if (m_vertexBufferD3DOffset < m_numVertices)
-	{	//we have room in current VB, append new verts
-		if(!DX8Wrapper::Map_DX8_Vertex_Buffer(m_vertexBufferD3D,
-			m_vertexBufferD3DOffset*sizeof(MaterMeshVertexFormat),
-			mx*my*sizeof(MaterMeshVertexFormat), GFX_MAP_WRITE_NO_OVERWRITE, (void**)&vb))
-			return;
-	}
-	else
-	{	//ran out of room in last VB, request a substitute VB.
-		if(!DX8Wrapper::Map_DX8_Vertex_Buffer(m_vertexBufferD3D, 0,
-			mx*my*sizeof(MaterMeshVertexFormat), GFX_MAP_WRITE_DISCARD, (void**)&vb))
-			return;
-		m_vertexBufferD3DOffset=0;	//reset start of page to first vertex
-	}
-	Int diffuse;
-	diffuse = setting->waterDiffuse&0x00ffffff;
-	Int alpha = (setting->waterDiffuse & 0xff000000)>>24;
-	// Reduce alpha for wave mesh
-	alpha -= 0x20;
-	diffuse |= alpha<<24;
-
-	//I pulled some of these constants out of the loops for speed:
-	Real uvCosScale=0.02*cos(3*m_riverVOrigin);
-	Real sinOffset=25*m_riverVOrigin;
-	Real originScale=m_riverVOrigin/vScale;
-	Real bumpSizeDiv=cellSizeY/BUMP_SIZE;
-	Real bumpSizeDiv2=0.3f*cellSizeY/BUMP_SIZE;
-
-	//Data has a 1 vertex padding all around it so we don't need to special-case edges.  Improves performance
-	for (j=0,pData=m_meshData+mx+2+1; j<my; j++,pData+=2)	//skip 2 horizontal border samples after each row
-	{
-		Real y=(float)j*cellSizeY;
-		Real v1Offset=m_riverVOrigin+(float)j*vScale + uvCosScale*WWMath::Fast_Sin(sinOffset+y*PI/(8*MAP_XY_FACTOR));
-		Real v2Offset=((float)j+originScale)*bumpSizeDiv + (float)j*bumpSizeDiv2;
-
-		for (i=0; i<mx; i++)
-		{
-			//compute normal by looking at 4 vertex neightbors
-#ifdef USE_MESH_NORMALS
-			nx.Z=(pData+1)->height - (pData-1)->height;
-			ny.Z=(pData+mx+2)->height - (pData-mx-2)->height;
-//			nx.Z=*(pData+1)-*(pData-1);
-//			ny.Z=*(pData+mx+2)-*(pData-mx-2);
-			Vector3::Cross_Product(nx,ny,&C);
-			C.Normalize();
-			vb->nx = C.X;
-			vb->ny = C.X;
-			vb->nz = C.X;
-#endif
-			Real x = (float)i*cellSizeX;
-			vb->x=	x;
-			vb->y=	y;
-			vb->z=  pData->height;//WATER_OFFSET+WATER_AMP*(sin((float)i*WATER_FREQ+PhasePerFrame)+cos((float)j*WATER_FREQ+PhasePerFrame));
-
-			vb->diffuse = diffuse;
-#ifdef SCROLL_UV
-//			vb->diffuse=0x80ffffff;
-			vb->u1=(float)i*uScale;
-			vb->v1=v1Offset;
-
-			//old slow version
-			//vb->v1=m_riverVOrigin+(float)j*vScale + 0.02*cos(3*m_riverVOrigin)*sin(25*m_riverVOrigin+y*PI/(8*MAP_XY_FACTOR));
-
-//			vb->u2=m_initialGridU2+(float)i*uScale2;
-//			vb->v2=m_initialGridV2+(float)j*vScale2;
-#else
-			vb->u1=(float)i*uScale;
-			vb->v1=(float)j*vScale;
-#endif
-			vb->u2=(float)(i)*cellSizeX/BUMP_SIZE;
-			vb->v2=v2Offset;
-			//old slow code
-			//vb->v2=(float)(j+m_riverVOrigin/vScale )*cellSizeY/BUMP_SIZE+ 0.3f*(float)j*cellSizeY/BUMP_SIZE;
-			vb++;
-			pData++;
-		}
-	}
-
-	DX8Wrapper::Unmap_DX8_Vertex_Buffer(m_vertexBufferD3D);
-
-	DX8Wrapper::Set_Transform(D3DTS_WORLD,Transform);	//position the water surface
-	DX8Wrapper::Set_Material(m_meshVertexMaterialClass);
-
-	ShaderClass::CullModeType oldCullMode=m_shaderClass.Get_Cull_Mode();
-
-	ShaderClass::DepthMaskType oldDepthMask=m_shaderClass.Get_Depth_Mask();
-	m_shaderClass.Set_Depth_Mask(ShaderClass::DEPTH_WRITE_DISABLE);	//disable writing to z-buffer to prevent particle clipping.
-
-	m_shaderClass.Set_Cull_Mode(ShaderClass::CULL_MODE_ENABLE);	//water should be visible from both sides
-
-	DX8Wrapper::Set_Shader(m_shaderClass);
-#if 1
-	setupFlatWaterShader();
-#else
-	//DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);
-	DX8Wrapper::Set_Texture(0,setting->waterTexture);
-	DX8Wrapper::Set_Texture(1,setting->waterTexture);
-
-	DX8Wrapper::Set_Light(0,*m_meshLight);
-	DX8Wrapper::Set_Light(1,nullptr);
-	DX8Wrapper::Set_Light(2,nullptr);
-	DX8Wrapper::Set_Light(3,nullptr);
-/*
-	DX8Wrapper::Set_DX8_Render_State(D3DRS_AMBIENT,0);	//turn off scene ambient
-	DX8Wrapper::Set_DX8_Render_State(D3DRS_SPECULARENABLE,TRUE);
-	DX8Wrapper::Set_DX8_Render_State(D3DRS_LOCALVIEWER,TRUE);
-*/
-
-	DX8Wrapper::Apply_Render_State_Changes();	//force update of view and projection matrices
-#endif
-
-
-//	m_pDev->SetRenderState(D3DRS_ZFUNC,D3DCMP_ALWAYS);	//used to display grid under map.
-
-	DX8Wrapper::Set_DX8_Indices(m_indexBufferD3D,m_vertexBufferD3DOffset);
-	DX8Wrapper::Set_DX8_Stream_Source(0,m_vertexBufferD3D,sizeof(MaterMeshVertexFormat));
-	DX8Wrapper::Set_Vertex_Shader(WATER_MESH_FVF);
-
-
-	if (TheTerrainRenderObject->getShroud() && !m_trapezoidWaterPixelShader)
-	{	//we have a shroud to apply and can't do it inside the pixel shader.
-		//so do it in stage1
-		W3DShaderManager::setTexture(0,TheTerrainRenderObject->getShroud()->getShroudTexture());
-		W3DShaderManager::setShader(W3DShaderManager::ST_SHROUD_TEXTURE, 1);
-
-		//modulate with shroud texture
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLORARG1, D3DTA_TEXTURE );	//stage 1 texture
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLORARG2, D3DTA_CURRENT );	//previous stage texture
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_COLOROP,   D3DTOP_MODULATE );
-		DX8Wrapper::Set_DX8_Texture_Stage_State( 1, D3DTSS_ALPHAOP,   D3DTOP_MODULATE );
-
-		//Shroud shader uses z-compare of EQUAL which wouldn't work on water because it doesn't
-		//write to the zbuffer.  Change to LESSEQUAL.
-		DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-		DX8Wrapper::Prepare_Direct_Draw("waterDirect");
-		DX8Wrapper::Draw_DX8_Indexed_Primitive(D3DPT_TRIANGLESTRIP,m_vertexBufferD3DOffset,0,mx*my,0,m_numIndices-2);
-		DX8Wrapper::Set_DX8_Render_State(D3DRS_ZFUNC, D3DCMP_EQUAL);
-		W3DShaderManager::resetShader(W3DShaderManager::ST_SHROUD_TEXTURE);
-	}
-	else
-	{
-		DX8Wrapper::Prepare_Direct_Draw("waterDirect");
-		DX8Wrapper::Draw_DX8_Indexed_Primitive(D3DPT_TRIANGLESTRIP,m_vertexBufferD3DOffset,0,mx*my,0,m_numIndices-2);
-	}
-
-	Debug_Statistics::Record_DX8_Polys_And_Vertices(m_numIndices-2,mx*my,ShaderClass::_PresetOpaqueShader);
-
-//	m_pDev->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID);
-
-	if (m_trapezoidWaterPixelShader) DX8Wrapper::Set_Pixel_Shader(0);
-
-	m_vertexBufferD3DOffset += mx*my;	//advance past vertices already in buffer
-
-	DX8Wrapper::Set_Texture(0,nullptr);
-	DX8Wrapper::Set_Texture(1,nullptr);
-	ShaderClass::Invalidate();
-	m_shaderClass.Set_Cull_Mode(oldCullMode);	//water should be visible from both sides
-
-	// restore shader to old mask
-	m_shaderClass.Set_Depth_Mask(oldDepthMask);
-
-	//W3DShaderManager::resetShader(W3DShaderManager::ST_SHROUD_TEXTURE);
-
-}
+// renderWaterMesh was here, and with it the vertex-animated water grid.
+//
+// It was the last unconverted fixed-function drawer -- a deformed mesh in WATER_MESH_FVF
+// with no vertex shader, which is a thing Direct3D 11 cannot draw at all -- and Phase 9
+// established three independent gates in front of it, every one of which fails on every
+// piece of content on this machine:
+//
+//   1. a waypoint literally named "WaveGuide1" (TerrainLogic.cpp, a hardcoded hack with
+//      the comment still attached). 0 of 182 maps here contain the string, against a
+//      control of 182 of 182 containing "Waypoint";
+//   2. the map's own name in VertexWaterAvailableMaps1..4 in GameData.INI, or
+//      TerrainLogic::enableWaterGrid logged and returned without reaching the render
+//      object. The four shipped entries name base-Generals campaign paths that exist in
+//      no archive here;
+//   3. a map with no river -- drawRiverWater latches m_drawingRiver and only
+//      enableWaterGrid cleared it, so any map with a river switched the grid off
+//      permanently after its first river draw.
+//
+// With W3D_FORCE_WATER_GRID=1 past gate 1, renderWaterMesh was entered 1677 times per
+// 600-frame window on chinooks and **wrote no state, submitted no draw and changed 0
+// pixels**, because gate 2 still held.
+//
+// The INI tokens keep parsing -- VertexWaterAvailableMaps1..4 and the rest of the vertex
+// water block are in shipped data, and Phase 4.1 established that shipped tokens must
+// keep having somewhere to go even when nothing reads them.
 
 inline void WaterRenderObjClass::setGridVertexHeight(Int x, Int y, Real value)
 {
@@ -2739,7 +2500,7 @@ void WaterRenderObjClass::addVelocity( Real worldX, Real worldY,
 																			 Real zVelocity, Real preferredHeight )
 {
 
-	if( m_doWaterGrid)
+	if( m_meshData != nullptr )
 	{
 		Real gx,gy;
 		Real minX,maxX,minY,maxY;
@@ -2900,15 +2661,11 @@ void WaterRenderObjClass::setGridResolution(Real gridCellsX, Real gridCellsY, Re
 
 		if (m_meshData)
 		{
-
-			delete [] m_meshData;//free previously allocated grid and allocate new size
-			m_meshData = nullptr;	 // must set to null so that we properly re-allocate
+			// Freed, and not re-allocated: enableWaterGrid was the only thing that ever
+			// built one and it went with the drawer.
+			delete [] m_meshData;
+			m_meshData = nullptr;
 			m_meshDataSize = 0;
-
-			Bool enable = m_doWaterGrid;
-			enableWaterGrid(true);	// allocates buffers.
-			m_doWaterGrid = enable;
-
 		}
 	}
 }
