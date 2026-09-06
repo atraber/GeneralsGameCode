@@ -569,6 +569,7 @@ struct D3D11Surface
 	bool					is_depth;
 	ID3D11RenderTargetView * rtv;			// made on first use
 	ID3D11DepthStencilView * dsv;			// made on first use
+	ID3D11ShaderResourceView * srv;			// made on first use
 	unsigned char *			scratch;		// Map on a surface D3D11 will not map
 	unsigned				scratch_pitch;
 	ID3D11Texture2D *		readback;		// staging copy, for a mapped read
@@ -889,6 +890,23 @@ struct GfxD3D11Impl
 	// it numbers 256.
 	float						transforms[GFX_TRANSFORM_SLOTS][16];
 	bool						transform_set[GFX_TRANSFORM_SLOTS];
+
+	// Blit / StretchRect GPU pipeline objects
+	ID3D11VertexShader *		blit_vs;
+	ID3D11PixelShader *			blit_ps;
+	ID3D11Buffer *				blit_cb;
+	ID3D11SamplerState *		blit_sampler_point;
+	ID3D11SamplerState *		blit_sampler_linear;
+	ID3D11BlendState *			blit_blend_state;
+	ID3D11DepthStencilState *	blit_depth_state;
+	ID3D11RasterizerState *		blit_raster_state;
+
+	// Intermediate texture cache for blit sources that cannot be sampled directly
+	ID3D11Texture2D *			blit_cache_tex;
+	ID3D11ShaderResourceView *	blit_cache_srv;
+	unsigned					blit_cache_width;
+	unsigned					blit_cache_height;
+	DXGI_FORMAT					blit_cache_format;
 
 	GfxD3D11Impl()
 	{
@@ -1725,7 +1743,7 @@ GfxDeviceClass * GfxAdapterD3D11::Create_Device(unsigned adapter_index, GfxSwapC
 	scd.SampleDesc.Count = (desc.MultiSample != WW3D_MULTISAMPLE_NONE)
 		? (UINT)desc.MultiSample : 1;
 	scd.SampleDesc.Quality = 0;
-	scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
 	scd.BufferCount = desc.BackBufferCount != 0 ? desc.BackBufferCount : 1;
 	scd.OutputWindow = (HWND)desc.Window;
 	scd.Windowed = desc.Windowed ? TRUE : FALSE;
@@ -1733,6 +1751,10 @@ GfxDeviceClass * GfxAdapterD3D11::Create_Device(unsigned adapter_index, GfxSwapC
 	scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
 	hr = m_impl->factory->CreateSwapChain(device, &scd, &impl->swap_chain);
+	if (FAILED(hr) && (scd.BufferUsage & DXGI_USAGE_SHADER_INPUT) != 0) {
+		scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+		hr = m_impl->factory->CreateSwapChain(device, &scd, &impl->swap_chain);
+	}
 	if (FAILED(hr) && scd.SampleDesc.Count > 1) {
 		// Say so rather than falling back silently: a run that asked for 8x and measured
 		// 1x is the kind of thing this tree has mistaken for a rendering change before.
@@ -1849,6 +1871,7 @@ namespace
 		if (s == nullptr) return;
 		if (s->rtv != nullptr) s->rtv->Release();
 		if (s->dsv != nullptr) s->dsv->Release();
+		if (s->srv != nullptr) s->srv->Release();
 		if (s->readback != nullptr) s->readback->Release();
 		if (s->texture != nullptr) s->texture->Release();
 		delete [] s->scratch;
@@ -1857,8 +1880,11 @@ namespace
 
 	ID3D11RenderTargetView * Get_RTV(ID3D11Device * device, D3D11Surface * s)
 	{
-		if (s == nullptr || s->is_depth) return nullptr;
+		if (s == nullptr || s->is_depth || s->texture == nullptr) return nullptr;
 		if (s->rtv != nullptr) return s->rtv;
+		D3D11_TEXTURE2D_DESC td;
+		s->texture->GetDesc(&td);
+		if ((td.BindFlags & D3D11_BIND_RENDER_TARGET) == 0) return nullptr;
 		D3D11_RENDER_TARGET_VIEW_DESC desc;
 		memset(&desc, 0, sizeof(desc));
 		desc.Format = s->view_format;
@@ -1896,6 +1922,29 @@ namespace
 		return s->dsv;
 	}
 
+	ID3D11ShaderResourceView * Get_SRV(ID3D11Device * device, D3D11Surface * s)
+	{
+		if (s == nullptr || s->is_depth || s->texture == nullptr) return nullptr;
+		if (s->srv != nullptr) return s->srv;
+		D3D11_TEXTURE2D_DESC td;
+		s->texture->GetDesc(&td);
+		if ((td.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0) return nullptr;
+		D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+		memset(&desc, 0, sizeof(desc));
+		desc.Format = s->view_format;
+		if (s->multisample != WW3D_MULTISAMPLE_NONE) {
+			desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMS;
+		} else {
+			desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+			desc.Texture2D.MostDetailedMip = s->subresource;
+			desc.Texture2D.MipLevels = 1;
+		}
+		if (FAILED(device->CreateShaderResourceView(s->texture, &desc, &s->srv))) {
+			s->srv = nullptr;
+		}
+		return s->srv;
+	}
+
 	void Free_Texture(D3D11Texture * t)
 	{
 #ifdef RTS_DEBUG
@@ -1930,6 +1979,10 @@ namespace
 			if (impl->back_buffer->rtv != nullptr) {
 				impl->back_buffer->rtv->Release();
 				impl->back_buffer->rtv = nullptr;
+			}
+			if (impl->back_buffer->srv != nullptr) {
+				impl->back_buffer->srv->Release();
+				impl->back_buffer->srv = nullptr;
 			}
 			if (impl->back_buffer->texture != nullptr) impl->back_buffer->texture->Release();
 			back->AddRef();
@@ -1967,7 +2020,11 @@ namespace
 		dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 
 		ID3D11Texture2D * depth = nullptr;
-		if (FAILED(impl->device->CreateTexture2D(&dd, nullptr, &depth))) return false;
+		if (FAILED(impl->device->CreateTexture2D(&dd, nullptr, &depth))) {
+			Free_Surface(impl->back_buffer);
+			impl->back_buffer = nullptr;
+			return false;
+		}
 
 		if (impl->depth_buffer == nullptr) {
 #ifdef RTS_DEBUG
@@ -1986,9 +2043,14 @@ namespace
 			impl->depth_buffer->height = dd.Height;
 			impl->depth_buffer->dxgi = dd.Format;
 			impl->depth_buffer->view_format = zf.depth;
+			impl->depth_buffer->ww = (WW3DFormat)0;
 		}
 		depth->Release();
-		if (impl->depth_buffer == nullptr) return false;
+		if (impl->depth_buffer == nullptr) {
+			Free_Surface(impl->back_buffer);
+			impl->back_buffer = nullptr;
+			return false;
+		}
 
 		impl->current_rt = impl->back_buffer;
 		impl->current_ds = impl->depth_buffer;
@@ -2001,6 +2063,10 @@ namespace
 			if (impl->back_buffer->rtv != nullptr) {
 				impl->back_buffer->rtv->Release();
 				impl->back_buffer->rtv = nullptr;
+			}
+			if (impl->back_buffer->srv != nullptr) {
+				impl->back_buffer->srv->Release();
+				impl->back_buffer->srv = nullptr;
 			}
 			if (impl->back_buffer->texture != nullptr) {
 				impl->back_buffer->texture->Release();
@@ -2109,6 +2175,17 @@ GfxDeviceD3D11::~GfxDeviceD3D11()
 	if (m_impl->ps_constant_buffer != nullptr) m_impl->ps_constant_buffer->Release();
 	if (m_impl->zero_stream != nullptr) m_impl->zero_stream->Release();
 	if (m_impl->up_buffer != nullptr) m_impl->up_buffer->Release();
+
+	if (m_impl->blit_vs != nullptr) m_impl->blit_vs->Release();
+	if (m_impl->blit_ps != nullptr) m_impl->blit_ps->Release();
+	if (m_impl->blit_cb != nullptr) m_impl->blit_cb->Release();
+	if (m_impl->blit_sampler_point != nullptr) m_impl->blit_sampler_point->Release();
+	if (m_impl->blit_sampler_linear != nullptr) m_impl->blit_sampler_linear->Release();
+	if (m_impl->blit_blend_state != nullptr) m_impl->blit_blend_state->Release();
+	if (m_impl->blit_depth_state != nullptr) m_impl->blit_depth_state->Release();
+	if (m_impl->blit_raster_state != nullptr) m_impl->blit_raster_state->Release();
+	if (m_impl->blit_cache_srv != nullptr) m_impl->blit_cache_srv->Release();
+	if (m_impl->blit_cache_tex != nullptr) m_impl->blit_cache_tex->Release();
 
 	Release_Swap_Chain_Surfaces(m_impl);
 	Free_Surface(m_impl->back_buffer);
@@ -2796,6 +2873,101 @@ void GfxDeviceD3D11::Set_Index_Buffer(GfxIndexBuffer * buffer, int base_vertex_i
 
 namespace
 {
+	static const unsigned char s_blit_vs_bytecode[824] = {
+		0x44, 0x58, 0x42, 0x43, 0x7d, 0x55, 0x0d, 0x69, 0x3b, 0x79, 0x6a, 0xe0, 0x2a, 0x9f, 0xed, 0x59,
+		0x5a, 0x9e, 0xe2, 0xc7, 0x01, 0x00, 0x00, 0x00, 0x38, 0x03, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+		0x34, 0x00, 0x00, 0x00, 0xf0, 0x00, 0x00, 0x00, 0x24, 0x01, 0x00, 0x00, 0x7c, 0x01, 0x00, 0x00,
+		0xbc, 0x02, 0x00, 0x00, 0x52, 0x44, 0x45, 0x46, 0xb4, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x44, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x04, 0xfe, 0xff,
+		0x00, 0x01, 0x00, 0x00, 0x8c, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x42, 0x6c, 0x69, 0x74, 0x43, 0x42, 0x00, 0xab,
+		0x3c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x5c, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x10, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x7c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x75, 0x76, 0x5f, 0x72, 0x65, 0x63, 0x74, 0x00, 0x01, 0x00, 0x03, 0x00, 0x01, 0x00, 0x04, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4d, 0x69, 0x63, 0x72, 0x6f, 0x73, 0x6f, 0x66,
+		0x74, 0x20, 0x28, 0x52, 0x29, 0x20, 0x48, 0x4c, 0x53, 0x4c, 0x20, 0x53, 0x68, 0x61, 0x64, 0x65,
+		0x72, 0x20, 0x43, 0x6f, 0x6d, 0x70, 0x69, 0x6c, 0x65, 0x72, 0x20, 0x31, 0x30, 0x2e, 0x31, 0x00,
+		0x49, 0x53, 0x47, 0x4e, 0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+		0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x53, 0x56, 0x5f, 0x56, 0x65, 0x72, 0x74, 0x65,
+		0x78, 0x49, 0x44, 0x00, 0x4f, 0x53, 0x47, 0x4e, 0x50, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x08, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x44, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x03, 0x0c, 0x00, 0x00, 0x53, 0x56, 0x5f, 0x50, 0x6f, 0x73, 0x69, 0x74, 0x69, 0x6f, 0x6e, 0x00,
+		0x54, 0x45, 0x58, 0x43, 0x4f, 0x4f, 0x52, 0x44, 0x00, 0xab, 0xab, 0xab, 0x53, 0x48, 0x44, 0x52,
+		0x38, 0x01, 0x00, 0x00, 0x40, 0x00, 0x01, 0x00, 0x4e, 0x00, 0x00, 0x00, 0x59, 0x00, 0x00, 0x04,
+		0x46, 0x8e, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x60, 0x00, 0x00, 0x04,
+		0x12, 0x10, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x67, 0x00, 0x00, 0x04,
+		0xf2, 0x20, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x65, 0x00, 0x00, 0x03,
+		0x32, 0x20, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00,
+		0x36, 0x00, 0x00, 0x08, 0xc2, 0x20, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x40, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f,
+		0x20, 0x00, 0x00, 0x0a, 0x32, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x10, 0x10, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x02, 0x40, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0a, 0x32, 0x00, 0x10, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x46, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x40, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x32, 0x00, 0x00, 0x09, 0x12, 0x20, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x10, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x01, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x01, 0x40, 0x00, 0x00,
+		0x00, 0x00, 0x80, 0xbf, 0x32, 0x00, 0x00, 0x0a, 0x22, 0x20, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x1a, 0x00, 0x10, 0x80, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x40, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x40, 0x01, 0x40, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x32, 0x00, 0x00, 0x0b,
+		0x32, 0x20, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x46, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0xe6, 0x8a, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x80, 0x20, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3e, 0x00, 0x00, 0x01, 0x53, 0x54, 0x41, 0x54,
+		0x74, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+	};
+
+	static const unsigned char s_blit_ps_bytecode[584] = {
+		0x44, 0x58, 0x42, 0x43, 0x7d, 0x11, 0x73, 0x0c, 0xff, 0xc1, 0x39, 0xa9, 0x8c, 0xc0, 0xe1, 0xed,
+		0x07, 0x85, 0x1c, 0xc7, 0x01, 0x00, 0x00, 0x00, 0x48, 0x02, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+		0x34, 0x00, 0x00, 0x00, 0xd4, 0x00, 0x00, 0x00, 0x2c, 0x01, 0x00, 0x00, 0x60, 0x01, 0x00, 0x00,
+		0xcc, 0x01, 0x00, 0x00, 0x52, 0x44, 0x45, 0x46, 0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x04, 0xff, 0xff,
+		0x00, 0x01, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x5c, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x73, 0x72, 0x63, 0x5f, 0x73, 0x61, 0x6d, 0x70,
+		0x6c, 0x65, 0x72, 0x00, 0x73, 0x72, 0x63, 0x5f, 0x74, 0x65, 0x78, 0x00, 0x4d, 0x69, 0x63, 0x72,
+		0x6f, 0x73, 0x6f, 0x66, 0x74, 0x20, 0x28, 0x52, 0x29, 0x20, 0x48, 0x4c, 0x53, 0x4c, 0x20, 0x53,
+		0x68, 0x61, 0x64, 0x65, 0x72, 0x20, 0x43, 0x6f, 0x6d, 0x70, 0x69, 0x6c, 0x65, 0x72, 0x20, 0x31,
+		0x30, 0x2e, 0x31, 0x00, 0x49, 0x53, 0x47, 0x4e, 0x50, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x08, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x44, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x03, 0x03, 0x00, 0x00, 0x53, 0x56, 0x5f, 0x50, 0x6f, 0x73, 0x69, 0x74, 0x69, 0x6f, 0x6e, 0x00,
+		0x54, 0x45, 0x58, 0x43, 0x4f, 0x4f, 0x52, 0x44, 0x00, 0xab, 0xab, 0xab, 0x4f, 0x53, 0x47, 0x4e,
+		0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x0f, 0x00, 0x00, 0x00, 0x53, 0x56, 0x5f, 0x54, 0x61, 0x72, 0x67, 0x65, 0x74, 0x00, 0xab, 0xab,
+		0x53, 0x48, 0x44, 0x52, 0x64, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x19, 0x00, 0x00, 0x00,
+		0x5a, 0x00, 0x00, 0x03, 0x00, 0x60, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0x18, 0x00, 0x04,
+		0x00, 0x70, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x55, 0x55, 0x00, 0x00, 0x62, 0x10, 0x00, 0x03,
+		0x32, 0x10, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x65, 0x00, 0x00, 0x03, 0xf2, 0x20, 0x10, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x45, 0x00, 0x00, 0x09, 0xf2, 0x20, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x46, 0x10, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00, 0x46, 0x7e, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x60, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3e, 0x00, 0x00, 0x01, 0x53, 0x54, 0x41, 0x54,
+		0x74, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+	};
+
 	bool Create_Device_Resources(GfxD3D11Impl * impl)
 	{
 		D3D11_BUFFER_DESC desc;
@@ -2879,6 +3051,61 @@ namespace
 		impl->raster_dirty = true;
 		impl->vs_constants_dirty = true;
 		impl->ps_constants_dirty = true;
+
+		// GPU Blit / StretchRect pipeline resources
+		if (FAILED(impl->device->CreateVertexShader(s_blit_vs_bytecode, sizeof(s_blit_vs_bytecode), nullptr, &impl->blit_vs)))
+			return false;
+		if (FAILED(impl->device->CreatePixelShader(s_blit_ps_bytecode, sizeof(s_blit_ps_bytecode), nullptr, &impl->blit_ps)))
+			return false;
+
+		D3D11_BUFFER_DESC cbd;
+		memset(&cbd, 0, sizeof(cbd));
+		cbd.ByteWidth = 16;
+		cbd.Usage = D3D11_USAGE_DYNAMIC;
+		cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		if (FAILED(impl->device->CreateBuffer(&cbd, nullptr, &impl->blit_cb)))
+			return false;
+
+		D3D11_SAMPLER_DESC samp;
+		memset(&samp, 0, sizeof(samp));
+		samp.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+		samp.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+		samp.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+		samp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+		samp.ComparisonFunc = D3D11_COMPARISON_NEVER;
+		samp.MinLOD = 0.0f;
+		samp.MaxLOD = D3D11_FLOAT32_MAX;
+		if (FAILED(impl->device->CreateSamplerState(&samp, &impl->blit_sampler_point)))
+			return false;
+
+		samp.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+		if (FAILED(impl->device->CreateSamplerState(&samp, &impl->blit_sampler_linear)))
+			return false;
+
+		D3D11_BLEND_DESC bd;
+		memset(&bd, 0, sizeof(bd));
+		bd.RenderTarget[0].BlendEnable = FALSE;
+		bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+		if (FAILED(impl->device->CreateBlendState(&bd, &impl->blit_blend_state)))
+			return false;
+
+		D3D11_DEPTH_STENCIL_DESC dsd;
+		memset(&dsd, 0, sizeof(dsd));
+		dsd.DepthEnable = FALSE;
+		dsd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+		dsd.DepthFunc = D3D11_COMPARISON_ALWAYS;
+		if (FAILED(impl->device->CreateDepthStencilState(&dsd, &impl->blit_depth_state)))
+			return false;
+
+		D3D11_RASTERIZER_DESC rd;
+		memset(&rd, 0, sizeof(rd));
+		rd.FillMode = D3D11_FILL_SOLID;
+		rd.CullMode = D3D11_CULL_NONE;
+		rd.DepthClipEnable = FALSE;
+		if (FAILED(impl->device->CreateRasterizerState(&rd, &impl->blit_raster_state)))
+			return false;
+
 		return true;
 	}
 }
@@ -4901,6 +5128,234 @@ namespace
 		}
 		return true;
 	}
+
+	bool GPU_Blit(GfxD3D11Impl * impl, D3D11Surface * src, const GfxRect * source_rect,
+		D3D11Surface * dst, const GfxRect * dest_rect, bool linear_filter)
+	{
+		if (impl == nullptr || src == nullptr || dst == nullptr) return false;
+		if (src->texture == nullptr || dst->texture == nullptr) return false;
+		if (impl->blit_vs == nullptr || impl->blit_ps == nullptr || impl->blit_cb == nullptr) return false;
+
+		// Only default GPU textures can participate in GPU blit. Staging/CPU textures go to CPU_Blit.
+		D3D11_TEXTURE2D_DESC src_td, dst_td;
+		src->texture->GetDesc(&src_td);
+		dst->texture->GetDesc(&dst_td);
+		if (src_td.Usage != D3D11_USAGE_DEFAULT || dst_td.Usage != D3D11_USAGE_DEFAULT)
+			return false;
+		if ((dst_td.BindFlags & D3D11_BIND_RENDER_TARGET) == 0)
+			return false;
+
+		ID3D11RenderTargetView * dst_rtv = Get_RTV(impl->device, dst);
+		if (dst_rtv == nullptr) return false;
+
+		ID3D11ShaderResourceView * src_srv = nullptr;
+		bool need_intermediate = false;
+
+		if (src->multisample != WW3D_MULTISAMPLE_NONE) {
+			need_intermediate = true;
+		} else if (src->texture == dst->texture) {
+			need_intermediate = true;
+		} else {
+			src_srv = Get_SRV(impl->device, src);
+			if (src_srv == nullptr) {
+				need_intermediate = true;
+			}
+		}
+
+		if (need_intermediate) {
+			if (impl->blit_cache_tex == nullptr ||
+			    impl->blit_cache_width != src->width ||
+			    impl->blit_cache_height != src->height ||
+			    impl->blit_cache_format != src->view_format) {
+				if (impl->blit_cache_srv != nullptr) { impl->blit_cache_srv->Release(); impl->blit_cache_srv = nullptr; }
+				if (impl->blit_cache_tex != nullptr) { impl->blit_cache_tex->Release(); impl->blit_cache_tex = nullptr; }
+
+				D3D11_TEXTURE2D_DESC td;
+				memset(&td, 0, sizeof(td));
+				td.Width = src->width;
+				td.Height = src->height;
+				td.MipLevels = 1;
+				td.ArraySize = 1;
+				td.Format = src->view_format;
+				td.SampleDesc.Count = 1;
+				td.Usage = D3D11_USAGE_DEFAULT;
+				td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+				if (FAILED(impl->device->CreateTexture2D(&td, nullptr, &impl->blit_cache_tex))) {
+					td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+					if (FAILED(impl->device->CreateTexture2D(&td, nullptr, &impl->blit_cache_tex)))
+						return false;
+				}
+
+				D3D11_SHADER_RESOURCE_VIEW_DESC srvd;
+				memset(&srvd, 0, sizeof(srvd));
+				srvd.Format = src->view_format;
+				srvd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+				srvd.Texture2D.MipLevels = 1;
+				if (FAILED(impl->device->CreateShaderResourceView(impl->blit_cache_tex, &srvd, &impl->blit_cache_srv))) {
+					impl->blit_cache_tex->Release();
+					impl->blit_cache_tex = nullptr;
+					return false;
+				}
+				impl->blit_cache_width = src->width;
+				impl->blit_cache_height = src->height;
+				impl->blit_cache_format = src->view_format;
+			}
+
+			if (src->multisample != WW3D_MULTISAMPLE_NONE) {
+				impl->context->ResolveSubresource(impl->blit_cache_tex, 0,
+					src->texture, src->subresource, src->view_format);
+			} else {
+				impl->context->CopySubresourceRegion(impl->blit_cache_tex, 0, 0, 0, 0,
+					src->texture, src->subresource, nullptr);
+			}
+			src_srv = impl->blit_cache_srv;
+		}
+
+		if (src_srv == nullptr) return false;
+
+		// Calculate UV coordinates and viewport
+		float u0 = 0.0f, v0 = 0.0f, u_w = 1.0f, v_h = 1.0f;
+		if (source_rect != nullptr && src->width > 0 && src->height > 0) {
+			u0 = (float)source_rect->left / (float)src->width;
+			v0 = (float)source_rect->top / (float)src->height;
+			u_w = (float)(source_rect->right - source_rect->left) / (float)src->width;
+			v_h = (float)(source_rect->bottom - source_rect->top) / (float)src->height;
+		}
+		const float uv_rect[4] = { u0, v0, u_w, v_h };
+
+		D3D11_VIEWPORT vp;
+		if (dest_rect != nullptr) {
+			vp.TopLeftX = (float)dest_rect->left;
+			vp.TopLeftY = (float)dest_rect->top;
+			vp.Width = (float)(dest_rect->right - dest_rect->left);
+			vp.Height = (float)(dest_rect->bottom - dest_rect->top);
+		} else {
+			vp.TopLeftX = 0.0f;
+			vp.TopLeftY = 0.0f;
+			vp.Width = (float)dst->width;
+			vp.Height = (float)dst->height;
+		}
+		vp.MinDepth = 0.0f;
+		vp.MaxDepth = 1.0f;
+
+		if (vp.Width <= 0.0f || vp.Height <= 0.0f) return false;
+
+		// Upload constant buffer
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		if (FAILED(impl->context->Map(impl->blit_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+			return false;
+		}
+		memcpy(mapped.pData, uv_rect, sizeof(uv_rect));
+		impl->context->Unmap(impl->blit_cb, 0);
+
+		// Save pipeline state
+		ID3D11RenderTargetView * saved_rtv = nullptr;
+		ID3D11DepthStencilView * saved_dsv = nullptr;
+		impl->context->OMGetRenderTargets(1, &saved_rtv, &saved_dsv);
+
+		UINT saved_num_vps = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+		D3D11_VIEWPORT saved_vps[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+		impl->context->RSGetViewports(&saved_num_vps, saved_vps);
+
+		ID3D11VertexShader * saved_vs = nullptr;
+		ID3D11PixelShader * saved_ps = nullptr;
+		impl->context->VSGetShader(&saved_vs, nullptr, nullptr);
+		impl->context->PSGetShader(&saved_ps, nullptr, nullptr);
+
+		ID3D11ShaderResourceView * saved_ps_srv0 = nullptr;
+		ID3D11SamplerState * saved_ps_samp0 = nullptr;
+		impl->context->PSGetShaderResources(0, 1, &saved_ps_srv0);
+		impl->context->PSGetSamplers(0, 1, &saved_ps_samp0);
+
+		ID3D11Buffer * saved_vs_cb0 = nullptr;
+		impl->context->VSGetConstantBuffers(0, 1, &saved_vs_cb0);
+
+		ID3D11BlendState * saved_blend = nullptr;
+		FLOAT saved_blend_factor[4];
+		UINT saved_sample_mask = 0xFFFFFFFF;
+		impl->context->OMGetBlendState(&saved_blend, saved_blend_factor, &saved_sample_mask);
+
+		ID3D11DepthStencilState * saved_depth = nullptr;
+		UINT saved_stencil_ref = 0;
+		impl->context->OMGetDepthStencilState(&saved_depth, &saved_stencil_ref);
+
+		ID3D11RasterizerState * saved_raster = nullptr;
+		impl->context->RSGetState(&saved_raster);
+
+		D3D11_PRIMITIVE_TOPOLOGY saved_topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		impl->context->IAGetPrimitiveTopology(&saved_topology);
+
+		ID3D11InputLayout * saved_layout = nullptr;
+		impl->context->IAGetInputLayout(&saved_layout);
+
+		// Set render target and viewport
+		impl->context->OMSetRenderTargets(1, &dst_rtv, nullptr);
+		impl->context->RSSetViewports(1, &vp);
+
+		// Set shaders and buffers
+		impl->context->VSSetShader(impl->blit_vs, nullptr, 0);
+		impl->context->PSSetShader(impl->blit_ps, nullptr, 0);
+		impl->context->VSSetConstantBuffers(0, 1, &impl->blit_cb);
+
+		// Set SRV and sampler
+		impl->context->PSSetShaderResources(0, 1, &src_srv);
+		ID3D11SamplerState * sampler = linear_filter ? impl->blit_sampler_linear : impl->blit_sampler_point;
+		impl->context->PSSetSamplers(0, 1, &sampler);
+
+		// Set pipeline states
+		impl->context->OMSetBlendState(impl->blit_blend_state, nullptr, 0xFFFFFFFF);
+		impl->context->OMSetDepthStencilState(impl->blit_depth_state, 0);
+		impl->context->RSSetState(impl->blit_raster_state);
+
+		impl->context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		impl->context->IASetInputLayout(nullptr);
+
+		// Render fullscreen triangle
+		impl->context->Draw(3, 0);
+
+		// Unbind SRV 0 to prevent hazard
+		ID3D11ShaderResourceView * null_srv = nullptr;
+		impl->context->PSSetShaderResources(0, 1, &null_srv);
+
+		// Restore pipeline state
+		impl->context->OMSetRenderTargets(1, &saved_rtv, saved_dsv);
+		if (saved_rtv != nullptr) saved_rtv->Release();
+		if (saved_dsv != nullptr) saved_dsv->Release();
+
+		if (saved_num_vps > 0) impl->context->RSSetViewports(saved_num_vps, saved_vps);
+
+		impl->context->VSSetShader(saved_vs, nullptr, 0);
+		if (saved_vs != nullptr) saved_vs->Release();
+		impl->context->PSSetShader(saved_ps, nullptr, 0);
+		if (saved_ps != nullptr) saved_ps->Release();
+
+		impl->context->VSSetConstantBuffers(0, 1, &saved_vs_cb0);
+		if (saved_vs_cb0 != nullptr) saved_vs_cb0->Release();
+
+		impl->context->PSSetShaderResources(0, 1, &saved_ps_srv0);
+		if (saved_ps_srv0 != nullptr) saved_ps_srv0->Release();
+		impl->context->PSSetSamplers(0, 1, &saved_ps_samp0);
+		if (saved_ps_samp0 != nullptr) saved_ps_samp0->Release();
+
+		impl->context->OMSetBlendState(saved_blend, saved_blend_factor, saved_sample_mask);
+		if (saved_blend != nullptr) saved_blend->Release();
+
+		impl->context->OMSetDepthStencilState(saved_depth, saved_stencil_ref);
+		if (saved_depth != nullptr) saved_depth->Release();
+
+		impl->context->RSSetState(saved_raster);
+		if (saved_raster != nullptr) saved_raster->Release();
+
+		impl->context->IASetPrimitiveTopology(saved_topology);
+		impl->context->IASetInputLayout(saved_layout);
+		if (saved_layout != nullptr) saved_layout->Release();
+
+		impl->vs_constants_dirty = true;
+		impl->ps_constants_dirty = true;
+
+		return true;
+	}
 }
 
 bool GfxDeviceD3D11::Copy_Surface(GfxSurface * source, const GfxRect * source_rect,
@@ -4972,6 +5427,23 @@ bool GfxDeviceD3D11::Copy_Surface(GfxSurface * source, const GfxRect * source_re
 		return true;
 	}
 
+	// GPU blit for format conversion or scaling
+	if (GPU_Blit(m_impl, src, source_rect, dst, dest_rect, false)) {
+		return true;
+	}
+
+#ifdef RTS_DEBUG
+	static unsigned s_fallback_log_count = 0;
+	if (++s_fallback_log_count <= 10) {
+		WWDEBUG_SAY(("Copy_Surface fallback to CPU: src=%ux%u dxgi=%d ms=%d, dst=%ux%u dxgi=%d ms=%d, srect=(%d,%d,%d,%d) drect=(%d,%d,%d,%d)",
+			src->width, src->height, (int)src->dxgi, (int)src->multisample,
+			dst->width, dst->height, (int)dst->dxgi, (int)dst->multisample,
+			source_rect ? source_rect->left : -1, source_rect ? source_rect->top : -1,
+			source_rect ? source_rect->right : -1, source_rect ? source_rect->bottom : -1,
+			dest_rect ? dest_rect->left : -1, dest_rect ? dest_rect->top : -1,
+			dest_rect ? dest_rect->right : -1, dest_rect ? dest_rect->bottom : -1));
+	}
+#endif
 	return Copy_Surface_Rect(source, source_rect, dest, dest_rect, GFX_COPY_NO_FILTER);
 }
 
@@ -4986,6 +5458,10 @@ bool GfxDeviceD3D11::Copy_Surface_Rect(GfxSurface * source, const GfxRect * sour
 	D3D11Surface * src = (D3D11Surface *)source;
 	D3D11Surface * dst = (D3D11Surface *)dest;
 	if (src == nullptr || dst == nullptr) return false;
+
+	if (GPU_Blit(m_impl, src, source_rect, dst, dest_rect, filter != GFX_COPY_NO_FILTER)) {
+		return true;
+	}
 
 	SurfaceView sv, dv;
 	if (!Open_Surface_View(m_impl, src, false, sv)) return false;
