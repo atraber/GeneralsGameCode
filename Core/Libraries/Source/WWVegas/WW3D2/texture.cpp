@@ -545,6 +545,27 @@ int TextureBaseClass::_Get_Total_Locked_Surface_Count()
 	return texture_count;
 }
 
+// The engine's own placement word, translated into what the seam takes.
+//
+// This used to translate into D3DPOOL and hand that to DX8Wrapper, which translated it
+// again. A pool is exactly the thing that cannot cross a seam -- D3DPOOL_MANAGED, which is
+// what a plain static texture was, has no D3D11 equivalent at all -- so the vocabulary
+// that crosses is what the engine will DO with the memory, not where it lives. The three
+// placements stay distinct here because the texture path depends on all three existing
+// separately: Update_Texture copies staging into GPU-resident and works in no other
+// direction, which is the trap that would have been sprung by collapsing them.
+static unsigned Pool_To_Usage(TextureBaseClass::PoolType pool)
+{
+	switch (pool)
+	{
+	case TextureBaseClass::POOL_DEFAULT:   return GFX_USAGE_GPU_RESIDENT;
+	case TextureBaseClass::POOL_MANAGED:   return GFX_USAGE_STATIC;
+	case TextureBaseClass::POOL_SYSTEMMEM: return GFX_USAGE_STAGING;
+	default: WWASSERT(0);
+	}
+	return GFX_USAGE_STATIC;
+}
+
 /*************************************************************************
 **                             TextureClass
 *************************************************************************/
@@ -578,14 +599,7 @@ TextureClass::TextureClass
 	default : break;
 	}
 
-	D3DPOOL d3dpool=(D3DPOOL)0;
-	switch(pool)
-	{
-	case POOL_DEFAULT		: d3dpool=D3DPOOL_DEFAULT; break;
-	case POOL_MANAGED		: d3dpool=D3DPOOL_MANAGED; break;
-	case POOL_SYSTEMMEM	: d3dpool=D3DPOOL_SYSTEMMEM; break;
-	default: WWASSERT(0);
-	}
+	unsigned usage=Pool_To_Usage(pool);
 
 	Poke_Texture
 	(
@@ -595,7 +609,7 @@ TextureClass::TextureClass
 			height,
 			format,
 			mip_level_count,
-			d3dpool,
+			usage,
 			rendertarget
 		)
 	);
@@ -779,10 +793,10 @@ TextureClass::TextureClass(GfxTexture* d3d_texture)
 	DX8Wrapper::Describe_DX8_Surface(surface, d3d_desc);
 	// GetSurfaceLevel returns the surface with a reference taken, and a mip surface holds
 	// one on its container, so dropping this on the floor pins the texture for the life of
-	// the process. That is invisible for a MANAGED texture and fatal for a D3DPOOL_DEFAULT
+	// the process. That is invisible for a static texture and fatal for a GPU-resident one
 	// one: it survives every device teardown, and Reset() then fails with
 	// D3DERR_INVALIDCALL forever -- which is what alt-tabbing out of a game did, once the
-	// heat haze started wrapping its D3DPOOL_DEFAULT scene copy in a TextureClass here.
+	// heat haze started wrapping its GPU-resident scene copy in a TextureClass here.
 	DX8Wrapper::Release_DX8_Surface_Resource(surface);
 	Width=d3d_desc.Width;
 	Height=d3d_desc.Height;
@@ -1173,14 +1187,7 @@ ZTextureClass::ZTextureClass
 :	TextureBaseClass(width,height, mip_level_count, pool),
 	DepthStencilTextureFormat(zformat)
 {
-	D3DPOOL d3dpool=(D3DPOOL)0;
-	switch (pool)
-	{
-	case POOL_DEFAULT: d3dpool=D3DPOOL_DEFAULT; break;
-	case POOL_MANAGED: d3dpool=D3DPOOL_MANAGED; break;
-	case POOL_SYSTEMMEM: d3dpool=D3DPOOL_SYSTEMMEM;	break;
-	default:	WWASSERT(0);
-	}
+	unsigned usage=Pool_To_Usage(pool);
 
 	Poke_Texture
 	(
@@ -1190,7 +1197,7 @@ ZTextureClass::ZTextureClass
 			height,
 			zformat,
 			mip_level_count,
-			d3dpool
+			usage
 		)
 	);
 
@@ -1326,14 +1333,7 @@ CubeTextureClass::CubeTextureClass
 	default : break;
 	}
 
-	D3DPOOL d3dpool=(D3DPOOL)0;
-	switch(pool)
-	{
-	case POOL_DEFAULT		: d3dpool=D3DPOOL_DEFAULT; break;
-	case POOL_MANAGED		: d3dpool=D3DPOOL_MANAGED; break;
-	case POOL_SYSTEMMEM	: d3dpool=D3DPOOL_SYSTEMMEM; break;
-	default: WWASSERT(0);
-	}
+	unsigned usage=Pool_To_Usage(pool);
 
 	Poke_Texture
 	(
@@ -1343,7 +1343,7 @@ CubeTextureClass::CubeTextureClass
 			height,
 			format,
 			mip_level_count,
-			d3dpool,
+			usage,
 			rendertarget
 		)
 	);
@@ -1608,14 +1608,7 @@ VolumeTextureClass::VolumeTextureClass
 	default : break;
 	}
 
-	D3DPOOL d3dpool=(D3DPOOL)0;
-	switch(pool)
-	{
-	case POOL_DEFAULT		: d3dpool=D3DPOOL_DEFAULT; break;
-	case POOL_MANAGED		: d3dpool=D3DPOOL_MANAGED; break;
-	case POOL_SYSTEMMEM	: d3dpool=D3DPOOL_SYSTEMMEM; break;
-	default: WWASSERT(0);
-	}
+	unsigned usage=Pool_To_Usage(pool);
 
 	Poke_Texture
 	(
@@ -1626,7 +1619,7 @@ VolumeTextureClass::VolumeTextureClass
 			depth,
 			format,
 			mip_level_count,
-			d3dpool
+			usage
 		)
 	);
 

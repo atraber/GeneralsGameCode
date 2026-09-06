@@ -817,7 +817,7 @@ WW3DErrorType WW3D::Begin_Render(bool clear,bool clearz,const Vector3 & color, f
 	// because the replay harness never executes them: a windowed device is never lost, so
 	// nothing ever asks for a reset and nothing ever notices when the reset path breaks.
 	// Reset() itself does not care whether the device was ever lost -- it refuses over any
-	// outstanding D3DPOOL_DEFAULT resource either way -- so calling Reset_Device() here at a
+	// outstanding GPU-resident resource either way -- so calling Reset_Device() here at a
 	// nominated frame reproduces what alt-tabbing out of a fullscreen game does, unattended,
 	// in a run that can then be compared frame-for-frame against a run without it.
 	//

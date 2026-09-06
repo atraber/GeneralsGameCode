@@ -2398,7 +2398,7 @@ void W3DShaderManager::shutdownDebugVis()
 	m_debugBloomPS = 0;
 	DX8Wrapper::Release_Pixel_Shader(m_debugShroudPS);
 	m_debugShroudPS = 0;
-	// Released here as well as at device reset: this is a D3DPOOL_DEFAULT render target,
+	// Released here as well as at device reset: this is a GPU-resident render target,
 	// and one of those outliving a Reset() is exactly the leak that pinned the device
 	// shut on alt-tab once already.
 	DX8Wrapper::Release_DX8_Resource(m_debugBrightSurface);
@@ -2843,7 +2843,7 @@ void W3DShaderManager::clearOrmCache()
 //                      normal is left exactly as the geometry gave it. (Moot while
 //                      BUMP_STRENGTH is 0, but correct if it is ever raised.)
 //
-// One texel, D3DPOOL_MANAGED, no mip chain: it is sampled at every UV of every
+// One texel, plain static, no mip chain: it is sampled at every UV of every
 // mesh and returns the same value each time.
 //=============================================================================
 static const float DEFAULT_ORM_AO        = 1.0f;

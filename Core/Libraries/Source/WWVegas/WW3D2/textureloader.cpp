@@ -444,9 +444,9 @@ GfxTexture* TextureLoader::Load_Thumbnail(const StringClass& filename, const Vec
 		dest_format,
 		MIP_LEVELS_ALL,
 #ifdef USE_MANAGED_TEXTURES
-		D3DPOOL_MANAGED);
+		GFX_USAGE_STATIC);
 #else
-		D3DPOOL_SYSTEMMEM);
+		GFX_USAGE_STAGING);
 #endif
 
 	unsigned level=0;
@@ -499,7 +499,7 @@ GfxTexture* TextureLoader::Load_Thumbnail(const StringClass& filename, const Vec
 		thumb->Get_Height(),
 		dest_format,
 		TextureBaseClass::MIP_LEVELS_ALL,
-		D3DPOOL_DEFAULT);
+		GFX_USAGE_GPU_RESIDENT);
 	GFXCALL(Update_Texture((GfxTexture*)sysmem_texture,(GfxTexture*)d3d_texture));
 	DX8Wrapper::Release_DX8_Texture_Resource(sysmem_texture);
 
@@ -1540,9 +1540,9 @@ bool TextureLoadTaskClass::Begin_Compressed_Load()
 		Format,
 		(MipCountType)MipLevelCount,
 #ifdef USE_MANAGED_TEXTURES
-		D3DPOOL_MANAGED
+		GFX_USAGE_STATIC
 #else
-		D3DPOOL_SYSTEMMEM
+		GFX_USAGE_STAGING
 #endif
 	);
 
@@ -1619,9 +1619,9 @@ bool TextureLoadTaskClass::Begin_Uncompressed_Load()
 		Format,
 		Texture->MipLevelCount,
 #ifdef USE_MANAGED_TEXTURES
-		D3DPOOL_MANAGED
+		GFX_USAGE_STATIC
 #else
-		D3DPOOL_SYSTEMMEM
+		GFX_USAGE_STAGING
 #endif
 	);
 
@@ -1667,7 +1667,7 @@ void TextureLoadTaskClass::Unlock_Surfaces()
 	}
 
 #ifndef USE_MANAGED_TEXTURES
-	GfxTexture* tex = DX8Wrapper::_Create_DX8_Texture(Width, Height, Format, Texture->MipLevelCount,D3DPOOL_DEFAULT);
+	GfxTexture* tex = DX8Wrapper::_Create_DX8_Texture(Width, Height, Format, Texture->MipLevelCount,GFX_USAGE_GPU_RESIDENT);
 	GFXCALL(Update_Texture((GfxTexture*)Peek_D3D_Texture(),(GfxTexture*)tex));
 	Peek_D3D_Texture()->Release();
 	D3DTexture=tex;
@@ -2041,7 +2041,7 @@ void CubeTextureLoadTaskClass::Unlock_Surfaces()
 		Height,
 		Format,
 		Texture->MipLevelCount,
-		D3DPOOL_DEFAULT
+		GFX_USAGE_GPU_RESIDENT
 	);
 	GFXCALL(Update_Texture((GfxTexture*)Peek_D3D_Volume_Texture(),(GfxTexture*)tex));
 	Peek_D3D_Volume_Texture()->Release();
@@ -2091,9 +2091,9 @@ bool CubeTextureLoadTaskClass::Begin_Compressed_Load()
 		Format,
 		(MipCountType)MipLevelCount,
 #ifdef USE_MANAGED_TEXTURES
-		D3DPOOL_MANAGED
+		GFX_USAGE_STATIC
 #else
-		D3DPOOL_SYSTEMMEM
+		GFX_USAGE_STAGING
 #endif
 	);
 
@@ -2160,9 +2160,9 @@ bool CubeTextureLoadTaskClass::Begin_Uncompressed_Load()
 		Format,
 		Texture->MipLevelCount,
 #ifdef USE_MANAGED_TEXTURES
-		D3DPOOL_MANAGED
+		GFX_USAGE_STATIC
 #else
-		D3DPOOL_SYSTEMMEM
+		GFX_USAGE_STAGING
 #endif
 	);
 
@@ -2337,7 +2337,7 @@ void VolumeTextureLoadTaskClass::Unlock_Surfaces()
 	}
 
 #ifndef USE_MANAGED_TEXTURES
-	GfxTexture* tex = DX8Wrapper::_Create_DX8_Volume_Texture(Width, Height, Depth, Format, Texture->MipLevelCount,D3DPOOL_DEFAULT);
+	GfxTexture* tex = DX8Wrapper::_Create_DX8_Volume_Texture(Width, Height, Depth, Format, Texture->MipLevelCount,GFX_USAGE_GPU_RESIDENT);
 	GFXCALL(Update_Texture((GfxTexture*)Peek_D3D_Volume_Texture(),(GfxTexture*)tex));
 	Peek_D3D_Volume_Texture()->Release();
 	D3DTexture=tex;
@@ -2388,9 +2388,9 @@ bool VolumeTextureLoadTaskClass::Begin_Compressed_Load()
 		Format,
 		(MipCountType)MipLevelCount,
 #ifdef USE_MANAGED_TEXTURES
-		D3DPOOL_MANAGED
+		GFX_USAGE_STATIC
 #else
-		D3DPOOL_SYSTEMMEM
+		GFX_USAGE_STAGING
 #endif
 	);
 
@@ -2460,9 +2460,9 @@ bool VolumeTextureLoadTaskClass::Begin_Uncompressed_Load()
 		Format,
 		Texture->MipLevelCount,
 #ifdef USE_MANAGED_TEXTURES
-		D3DPOOL_MANAGED
+		GFX_USAGE_STATIC
 #else
-		D3DPOOL_SYSTEMMEM
+		GFX_USAGE_STAGING
 #endif
 	);
 

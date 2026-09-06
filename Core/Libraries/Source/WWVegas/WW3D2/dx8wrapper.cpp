@@ -3866,7 +3866,7 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 		}
 		// Take everything off the device first. A resource that is still bound stays
 		// alive however many times the app releases it -- the driver holds its own
-		// reference on whatever is bound -- and one live D3DPOOL_DEFAULT resource is all
+		// reference on whatever is bound -- and one live GPU-resident resource is all
 		// it takes for Reset() to return D3DERR_INVALIDCALL. It then does so on every
 		// retry, because nothing here ever unbinds, so the device never comes back and
 		// the frame loop runs on with the terrain and shaders already released.
@@ -3892,7 +3892,7 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 		// The wrapper's own render state holds ref-counted TextureClass / vertex buffer /
 		// material pointers of its own, separate from the raw bindings above, and they
 		// outlive whatever the owning subsystem does in its ReleaseResources. The smudge
-		// manager's scene copy is the one that bites: it is a D3DPOOL_DEFAULT render
+		// manager's scene copy is the one that bites: it is a GPU-resident render
 		// target bound with Set_Texture, so the render state kept it alive on its own and
 		// no amount of releasing elsewhere could get the device down to zero.
 		Release_Render_State();
@@ -8260,22 +8260,6 @@ void DX8Wrapper::Adjust_Texture_Requirements(unsigned & width, unsigned & height
 	if (levels > max_levels) levels = max_levels;
 }
 
-unsigned DX8Wrapper::Texture_Pool_To_Usage(D3DPOOL pool, bool rendertarget)
-{
-	unsigned usage = rendertarget ? (unsigned)GFX_USAGE_RENDER_TARGET : (unsigned)GFX_USAGE_STATIC;
-	// Placement first and exactly, because the engine's texture path depends on all
-	// three homes existing separately -- see the note at GfxResourceUsage. Managed is
-	// the absence of a placement bit, which is why it is the default arm here as it is
-	// the default argument at every call site.
-	switch (pool) {
-	case D3DPOOL_SYSTEMMEM:
-	case D3DPOOL_SCRATCH:	usage |= GFX_USAGE_STAGING; break;
-	case D3DPOOL_DEFAULT:	usage |= GFX_USAGE_GPU_RESIDENT; break;
-	default:				break;
-	}
-	return usage;
-}
-
 /*
 ** Make a texture, retrying once if the device could not.
 **
@@ -8318,7 +8302,7 @@ GfxTexture * DX8Wrapper::_Create_DX8_Texture
 	unsigned int height,
 	WW3DFormat format,
 	MipCountType mip_level_count,
-	D3DPOOL pool,
+	unsigned usage,
 	bool rendertarget
 )
 {
@@ -8336,7 +8320,7 @@ GfxTexture * DX8Wrapper::_Create_DX8_Texture
 	Adjust_Texture_Requirements(use_w, use_h, use_fmt, use_levels);
 
 	GfxTexture * texture = Create_Texture_With_Retry(use_w, use_h, use_levels, use_fmt,
-		Texture_Pool_To_Usage(pool, rendertarget),
+		usage | (rendertarget ? (unsigned)GFX_USAGE_RENDER_TARGET : 0u),
 		rendertarget ? "render target" : "texture");
 
 #ifdef RTS_DEBUG
@@ -8391,7 +8375,7 @@ GfxTexture * DX8Wrapper::_Create_DX8_ZTexture
 	unsigned int height,
 	WW3DZFormat zformat,
 	MipCountType mip_level_count,
-	D3DPOOL pool
+	unsigned usage
 )
 {
 	DX8_THREAD_ASSERT();
@@ -8401,7 +8385,6 @@ GfxTexture * DX8Wrapper::_Create_DX8_ZTexture
 	const unsigned max_levels = Max_Mip_Levels(width, height);
 	if (levels > max_levels) levels = max_levels;
 
-	const unsigned usage = Texture_Pool_To_Usage(pool, false);
 
 	GfxTexture * texture = Gfx->Create_Depth_Texture(width, height, levels, zformat, usage);
 	if (texture == nullptr) {
@@ -8432,7 +8415,7 @@ GfxTexture* DX8Wrapper::_Create_DX8_Cube_Texture
 	unsigned int height,
 	WW3DFormat format,
 	MipCountType mip_level_count,
-	D3DPOOL pool,
+	unsigned usage,
 	bool rendertarget
 )
 {
@@ -8451,7 +8434,7 @@ GfxTexture* DX8Wrapper::_Create_DX8_Cube_Texture
 	// a device limit clamped one of them.
 	const unsigned edge = use_w < use_h ? use_w : use_h;
 
-	const unsigned usage = Texture_Pool_To_Usage(pool, rendertarget);
+	usage |= rendertarget ? (unsigned)GFX_USAGE_RENDER_TARGET : 0u;
 	const char * const what = rendertarget ? "cube render target" : "cube texture";
 
 	GfxTexture * texture = Gfx->Create_Cube_Texture(edge, use_levels, use_fmt, usage);
@@ -8479,7 +8462,7 @@ GfxTexture* DX8Wrapper::_Create_DX8_Volume_Texture
 	unsigned int depth,
 	WW3DFormat format,
 	MipCountType mip_level_count,
-	D3DPOOL pool
+	unsigned usage
 )
 {
 	DX8_THREAD_ASSERT();
@@ -8492,7 +8475,6 @@ GfxTexture* DX8Wrapper::_Create_DX8_Volume_Texture
 	WW3DFormat use_fmt = format;
 	Adjust_Texture_Requirements(use_w, use_h, use_fmt, use_levels);
 
-	const unsigned usage = Texture_Pool_To_Usage(pool, false);
 
 	GfxTexture * texture = Gfx->Create_Volume_Texture(use_w, use_h, depth, use_levels,
 		use_fmt, usage);

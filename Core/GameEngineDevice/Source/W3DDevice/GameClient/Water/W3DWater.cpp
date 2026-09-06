@@ -734,7 +734,7 @@ HRESULT WaterRenderObjClass::initBumpMap(GfxTexture **pTex, TextureClass *pBumpS
 	else
 		return S_OK;
 
-	pTex[0]=DX8Wrapper::_Create_DX8_Texture(d3dsd.Width,d3dsd.Height,WW3D_FORMAT_U8V8,MIP_LEVELS_ALL,D3DPOOL_MANAGED,false);
+	pTex[0]=DX8Wrapper::_Create_DX8_Texture(d3dsd.Width,d3dsd.Height,WW3D_FORMAT_U8V8,MIP_LEVELS_ALL,GFX_USAGE_STATIC,false);
 
 	for (Int level=0; level < numLevels; level++)
 	{
@@ -820,7 +820,7 @@ HRESULT WaterRenderObjClass::initBumpMap(GfxTexture **pTex, TextureClass *pBumpS
 	pSrc=(unsigned char *)surf->Lock((int *)&dwSrcPitch);
 
     // Create the bumpmap's surface and texture objects
-	m_pBumpTexture[i]=DX8Wrapper::_Create_DX8_Texture(d3dsd.Width,d3dsd.Height,WW3D_FORMAT_U8V8,TextureClass::MIP_LEVELS_1,D3DPOOL_MANAGED,false);
+	m_pBumpTexture[i]=DX8Wrapper::_Create_DX8_Texture(d3dsd.Width,d3dsd.Height,WW3D_FORMAT_U8V8,TextureClass::MIP_LEVELS_1,GFX_USAGE_STATIC,false);
 
     // Fill the bits of the new texture surface with bits from
     // a private format.

@@ -676,7 +676,7 @@ public:
 		unsigned int depth,
 		WW3DFormat format,
 		MipCountType mip_level_count,
-		D3DPOOL pool=D3DPOOL_MANAGED
+		unsigned usage=GFX_USAGE_STATIC
 	);
 
 	static GfxTexture* _Create_DX8_Cube_Texture
@@ -685,7 +685,7 @@ public:
 		unsigned int height,
 		WW3DFormat format,
 		MipCountType mip_level_count,
-		D3DPOOL pool=D3DPOOL_MANAGED,
+		unsigned usage=GFX_USAGE_STATIC,
 		bool rendertarget=false
 	);
 
@@ -696,7 +696,7 @@ public:
 		unsigned int height,
 		WW3DZFormat zformat,
 		MipCountType mip_level_count,
-		D3DPOOL pool=D3DPOOL_MANAGED
+		unsigned usage=GFX_USAGE_STATIC
 	);
 
 
@@ -706,7 +706,7 @@ public:
 		unsigned int height,
 		WW3DFormat format,
 		MipCountType mip_level_count,
-		D3DPOOL pool=D3DPOOL_MANAGED,
+		unsigned usage=GFX_USAGE_STATIC,
 		bool rendertarget=false
 	);
 	static GfxTexture * _Create_DX8_Texture(const char *filename, MipCountType mip_level_count);
@@ -1055,7 +1055,6 @@ protected:
 	/// The engine's three texture homes, said in the seam's vocabulary. The pool stays
 	/// in these helpers' public signatures because 30 call sites across the tree name
 	/// one; it stops here.
-	static unsigned Texture_Pool_To_Usage(D3DPOOL pool, bool rendertarget);
 
 	static void Reset_Statistics();
 	static void Enumerate_Devices();
