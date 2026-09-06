@@ -75,7 +75,7 @@ namespace FrameTiming
 
 	static const char* s_phaseNames[PHASE_COUNT] =
 	{
-		"logic", "client", "draw", "shadow", "depth", "scene", "postfx", "ui", "gpuwait", "wait"
+		"logic", "client", "draw", "lights", "shadow", "depth", "scene", "postfx", "ui", "gpuwait", "wait"
 	};
 
 

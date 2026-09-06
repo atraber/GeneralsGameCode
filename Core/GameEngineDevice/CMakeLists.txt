@@ -47,6 +47,7 @@ set(GAMEENGINEDEVICE_SRC
     Include/W3DDevice/GameClient/W3DGameFont.h
     Include/W3DDevice/GameClient/W3DGameWindow.h
     Include/W3DDevice/GameClient/W3DGameWindowManager.h
+    Include/W3DDevice/GameClient/W3DGpuLightList.h
     Include/W3DDevice/GameClient/W3DGUICallbacks.h
     Include/W3DDevice/GameClient/W3DInGameUI.h
     Include/W3DDevice/GameClient/W3DMirror.h
@@ -149,6 +150,7 @@ set(GAMEENGINEDEVICE_SRC
     Source/W3DDevice/GameClient/W3DDynamicLight.cpp
     Source/W3DDevice/GameClient/W3DFileSystem.cpp
 #    Source/W3DDevice/GameClient/W3DGameClient.cpp
+    Source/W3DDevice/GameClient/W3DGpuLightList.cpp
     Source/W3DDevice/GameClient/W3DInGameUI.cpp
     Source/W3DDevice/GameClient/W3DMouse.cpp
     Source/W3DDevice/GameClient/W3DParticleSys.cpp

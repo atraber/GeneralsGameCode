@@ -1881,6 +1881,19 @@ void W3DView::draw()
 	CustomScenePassModes customScenePassMode  = SCENE_PASS_DEFAULT;
 	Bool preRenderResult = false;
 
+	// ---- C3's clustered light list: rebuild once, before anything else this frame reads
+	// it ---- see the clustered lighting plan, section "C3 -- The scene light list".
+	// Enumerates the scene's local lights, culls each against the camera's own frustum
+	// (not any per-object sphere), and uploads the survivors to LightBuffer. Placed here,
+	// immediately before the shadow-map pass, because C4-C6's cluster-grid dispatch reads
+	// this same light list and belongs right after it -- this is where that dispatch will
+	// go. Nothing downstream consumes LightBuffer yet, so this changes no pixel.
+	if (W3DDisplay::m_3DScene != nullptr && m_3DCamera != nullptr)
+	{
+		FRAME_TIMING_SCOPE(PHASE_LIGHTLIST);
+		W3DDisplay::m_3DScene->updateGpuLightList(*m_3DCamera);
+	}
+
 	// ---- Directional shadow map: render scene depth from the sun's view first ----
 	// The shadow-depth shaders transform by SunVP (ignoring the camera), and the
 	// camera's normalised viewport maps to the bound square target, so a plain

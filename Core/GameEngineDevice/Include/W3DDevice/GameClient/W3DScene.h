@@ -40,6 +40,7 @@
 #include "WW3D2/rinfo.h"
 #include "WW3D2/coltest.h"
 #include "WW3D2/lightenvironment.h"
+#include "W3DDevice/GameClient/W3DGpuLightList.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 // PROTOTYPES /////////////////////////////////////////////////////////////////
@@ -92,6 +93,20 @@ public:
 	void setGlobalLight(LightClass *pLight,Int lightIndex=0);
 	LightEnvironmentClass &getDefaultLightEnv() {return m_defaultLightEnv;}
 
+	// TheSuperHackers @feature andytraber 06/09/2026 The scene's own light list, exposed
+	// for GpuLightListClass (C3, the clustered lighting plan) to enumerate -- the
+	// same RefRenderObjListClass Render_Seg walks per-drawable today. LightList lives on
+	// the SimpleSceneClass base and was protected; GpuLightListClass is not a subclass of
+	// this one (it is a plain value member, not derived), so it needs a real accessor
+	// rather than a friend declaration reaching across the inheritance boundary.
+	RefRenderObjListClass &getLightList() {return LightList;}
+
+	/// Rebuild this frame's clustered light list against camera's frustum. See
+	/// GpuLightListClass::Update() for what that does; called once per frame from
+	/// W3DView::draw(), before the shadow-map pass.
+	void updateGpuLightList(CameraClass & camera) {m_gpuLightList.Update(*this, camera);}
+	GpuLightListClass &getGpuLightList() {return m_gpuLightList;}
+
 	virtual void init() override {}
 	virtual void update() override {}
 	virtual void draw() override;
@@ -137,6 +152,8 @@ protected:
 	Int m_numNonOccluderOrOccludee;
 
 	CameraClass *m_camera;
+
+	GpuLightListClass	m_gpuLightList;	///< C3's clustered light list -- see W3DGpuLightList.h. A value member, not a pointer: its GPU buffer is created lazily on first Update() rather than here, since the device does not exist yet when this scene is constructed (see W3DDisplay::init()).
 };
 
 //-----------------------------------------------------------------------------

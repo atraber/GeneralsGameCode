@@ -58,6 +58,7 @@ namespace FrameTiming
 		PHASE_LOGIC = 0,		///< TheGameLogic->UPDATE()
 		PHASE_CLIENT,			///< TheGameClient->UPDATE(), less the display draw below
 		PHASE_DRAW,				///< the display draw, less the render phases below
+		PHASE_LIGHTLIST,		///< C3's clustered light list rebuild (the clustered lighting plan): enumerate, frustum-cull, pack, upload -- once a frame, before the shadow map
 		PHASE_SHADOWMAP,		///< the sun's depth pass
 		PHASE_DEPTHPREPASS,		///< the camera depth pass SSR needs
 		PHASE_SCENE,			///< the main scene render

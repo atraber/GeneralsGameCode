@@ -79,6 +79,7 @@ set(WW3D2_SRC
     gfxdevice_png.cpp
     d3dx_parity.cpp
     gfxstatewords.h
+    gpulight.h
     FramGrab.cpp
     framgrab.h
     hanim.cpp
