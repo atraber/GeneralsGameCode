@@ -87,7 +87,7 @@ enum
 #include "WW3D2/matinfo.h"
 #include "WW3D2/mesh.h"
 #include "WW3D2/meshmdl.h"
-#include "d3dx8tex.h"
+#include "WWMath/gfxmatrix4.h"
 
 
 // If TEST_AND_BLEND is defined, it will do an alpha test and blend.  Otherwise just alpha test. jba. [5/30/2003]
@@ -1696,14 +1696,14 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 	DX8Wrapper::Apply_Render_State_Changes();
 
 	if (m_dwTreeVertexShader) {
-		D3DXMATRIX matProj, matView, matWorld;
-		DX8Wrapper::_Get_DX8_Transform(D3DTS_WORLD, matWorld);
-		DX8Wrapper::_Get_DX8_Transform(D3DTS_VIEW, matView);
-		DX8Wrapper::_Get_DX8_Transform(D3DTS_PROJECTION, matProj);
-		D3DXMATRIX mat;
-		D3DXMatrixMultiply( &mat, &matView, &matProj );
-		D3DXMatrixMultiply( &mat, &matWorld, &mat );
-		D3DXMatrixTranspose( &mat, &mat );
+		GfxMatrix4 matProj, matView, matWorld;
+		DX8Wrapper::_Get_DX8_Transform(D3DTS_WORLD, reinterpret_cast<D3DMATRIX&>(matWorld));
+		DX8Wrapper::_Get_DX8_Transform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX&>(matView));
+		DX8Wrapper::_Get_DX8_Transform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX&>(matProj));
+		GfxMatrix4 mat;
+		Gfx_Matrix_Multiply( &mat, &matView, &matProj );
+		Gfx_Matrix_Multiply( &mat, &matWorld, &mat );
+		Gfx_Matrix_Transpose( &mat, &mat );
 
 		// c4  - Composite World-View-Projection Matrix
 		DX8Wrapper::Set_Vertex_Shader_Constant(  4, &mat,  4 );
@@ -1744,8 +1744,8 @@ void W3DTreeBuffer::drawTrees(CameraClass * camera, RefRenderObjListIterator *pD
 		// Whether stage 1 actually has a shroud texture in it. The shader cannot work this
 		// out for itself: on a map with no fog of war the stage is left empty, and sampling
 		// an unbound sampler is undefined rather than white.
-		DX8Wrapper::Set_Pixel_Shader_Constant(0,
-			D3DXVECTOR4(shroud != nullptr ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f), 1);
+		const Vector4 shroudBound(shroud != nullptr ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+		DX8Wrapper::Set_Pixel_Shader_Constant(0, &shroudBound, 1);
 
 	} else {
 		DX8Wrapper::Set_Vertex_Shader(DX8_FVF_XYZNDUV1);

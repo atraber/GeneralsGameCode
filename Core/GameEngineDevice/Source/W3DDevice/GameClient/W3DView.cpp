@@ -86,7 +86,7 @@
 #include "W3DDevice/GameClient/W3DDisplay.h"
 #include "W3DDevice/GameClient/W3DScene.h"
 #include "W3DDevice/GameClient/W3DView.h"
-#include "d3dx8math.h"
+#include "WWMath/gfxmatrix4.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
 #include "W3DDevice/GameClient/Module/W3DModelDraw.h"
@@ -2005,14 +2005,14 @@ void W3DView::draw()
 		const float frustumSunElev = max(fabsf(sunDir.Z), 0.10f);
 
 		// Light basis in world space: forward is the travel direction of the light rays (-sunDir)
-		D3DXVECTOR3 lightFwd(-sunDir.X, -sunDir.Y, -sunDir.Z);
-		D3DXVECTOR3 lightHint = (fabsf(sunDir.Z) > 0.9f) ? D3DXVECTOR3(0.0f, 1.0f, 0.0f)
-														  : D3DXVECTOR3(0.0f, 0.0f, 1.0f);
-		D3DXVECTOR3 lightRight, lightUp;
-		D3DXVec3Cross(&lightRight, &lightHint, &lightFwd);
-		D3DXVec3Normalize(&lightRight, &lightRight);
-		D3DXVec3Cross(&lightUp, &lightFwd, &lightRight);
-		D3DXVec3Normalize(&lightUp, &lightUp);
+		Vector3 lightFwd(-sunDir.X, -sunDir.Y, -sunDir.Z);
+		Vector3 lightHint = (fabsf(sunDir.Z) > 0.9f) ? Vector3(0.0f, 1.0f, 0.0f)
+														  : Vector3(0.0f, 0.0f, 1.0f);
+		Vector3 lightRight, lightUp;
+		Vector3::Cross_Product(lightHint, lightFwd, &lightRight);
+		lightRight.Normalize();
+		Vector3::Cross_Product(lightFwd, lightRight, &lightUp);
+		lightUp.Normalize();
 
 		// How far the terrain rises above and falls below the fitted ground plane. Taken
 		// from the map's own extremes rather than a constant: a byte height field caps
@@ -2120,20 +2120,20 @@ void W3DView::draw()
 
 		// Eye one unit up-sun of the near plane, so the projection's near distance of 1.0
 		// lands exactly on nearZ and its far distance exactly on farZ.
-		D3DXVECTOR3 centrePos((float)shadowCentre.x, (float)shadowCentre.y, (float)shadowCentre.z);
-		D3DXVECTOR3 lightEye(centrePos.x + (nearZ - 1.0f) * lightFwd.x,
-							 centrePos.y + (nearZ - 1.0f) * lightFwd.y,
-							 centrePos.z + (nearZ - 1.0f) * lightFwd.z);
-		D3DXVECTOR3 lookAt(lightEye.x + lightFwd.x,
-						   lightEye.y + lightFwd.y,
-						   lightEye.z + lightFwd.z);
+		Vector3 centrePos((float)shadowCentre.x, (float)shadowCentre.y, (float)shadowCentre.z);
+		Vector3 lightEye(centrePos.X + (nearZ - 1.0f) * lightFwd.X,
+							 centrePos.Y + (nearZ - 1.0f) * lightFwd.Y,
+							 centrePos.Z + (nearZ - 1.0f) * lightFwd.Z);
+		Vector3 lookAt(lightEye.X + lightFwd.X,
+						   lightEye.Y + lightFwd.Y,
+						   lightEye.Z + lightFwd.Z);
 
-		D3DXMATRIX sunView, sunProj, sunVP;
-		D3DXMatrixLookAtLH(&sunView, &lightEye, &lookAt, &lightUp);
-		D3DXMatrixOrthoOffCenterLH(&sunProj, -halfWidth, halfWidth,
+		GfxMatrix4 sunView, sunProj, sunVP;
+		Gfx_Matrix_LookAtLH(&sunView, &lightEye, &lookAt, &lightUp);
+		Gfx_Matrix_OrthoOffCenterLH(&sunProj, -halfWidth, halfWidth,
 								   -downExtent, upExtent,
 								   1.0f, shadowFar);
-		D3DXMatrixMultiply(&sunVP, &sunView, &sunProj);
+		Gfx_Matrix_Multiply(&sunVP, &sunView, &sunProj);
 
 		// Snap the fitted frustum to whole shadow-map texels. Without this the centre
 		// slides by sub-texel amounts as the camera scrolls, the depth pass rasterises a
@@ -2142,14 +2142,14 @@ void W3DView::draw()
 		// frustum and applies to the depth pass and the lookups alike (both use SunVP).
 		{
 			const float halfMap = 0.5f * (float)DX8Wrapper::SHADOW_MAP_SIZE;
-			D3DXVECTOR3 originNDC(0.0f, 0.0f, 0.0f);
-			D3DXVec3TransformCoord(&originNDC, &originNDC, &sunVP);
-			D3DXMATRIX snap;
-			D3DXMatrixTranslation(&snap,
-				(floorf(originNDC.x * halfMap + 0.5f) - originNDC.x * halfMap) / halfMap,
-				(floorf(originNDC.y * halfMap + 0.5f) - originNDC.y * halfMap) / halfMap,
+			Vector3 originNDC(0.0f, 0.0f, 0.0f);
+			Gfx_Vec3_TransformCoord(&originNDC, &originNDC, &sunVP);
+			GfxMatrix4 snap;
+			Gfx_Matrix_Translation(&snap,
+				(floorf(originNDC.X * halfMap + 0.5f) - originNDC.X * halfMap) / halfMap,
+				(floorf(originNDC.Y * halfMap + 0.5f) - originNDC.Y * halfMap) / halfMap,
 				0.0f);
-			D3DXMatrixMultiply(&sunVP, &sunVP, &snap);
+			Gfx_Matrix_Multiply(&sunVP, &sunVP, &snap);
 		}
 
 		DX8Wrapper::Set_Sun_VP(reinterpret_cast<const float*>(&sunVP));
@@ -2161,8 +2161,8 @@ void W3DView::draw()
 		// Built from the same eye, direction and extent that went into sunVP above; the
 		// texel snap is left out, being worth less than a texel.
 		W3DShaderManager::setShadowFrustum(
-			Vector3(lightEye.x, lightEye.y, lightEye.z),
-			Vector3(lightFwd.x, lightFwd.y, lightFwd.z),
+			Vector3(lightEye.X, lightEye.Y, lightEye.Z),
+			Vector3(lightFwd.X, lightFwd.Y, lightFwd.Z),
 			halfWidth, -downExtent, upExtent, 1.0f, shadowFar);
 
 		// Depth-compare bias, in the sun-clip depth units the shaders compare in. What it

@@ -45,7 +45,7 @@
 #include "WW3D2/vertmaterial.h"
 #include "texture.h"
 #include "gfxstatewords.h"
-#include <d3dx9math.h>
+#include "WWMath/gfxmatrix4.h"
 #include "statistics.h"
 #include <WWDebug/wwprofile.h>
 #include <algorithm>
@@ -282,14 +282,15 @@ void SortingRendererClass::Insert_Triangles(
 
 	if (bounding_sphere.Is_Valid())
 	{
-		D3DXMATRIX mtx=(D3DXMATRIX&)state->sorting_state.world*(D3DXMATRIX&)state->sorting_state.view;
-		D3DXVECTOR3 vec=(D3DXVECTOR3&)bounding_sphere.Center;
-		D3DXVECTOR4 transformed_vec;
-		D3DXVec3Transform(
-			&transformed_vec,
-			&vec,
-			&mtx);
-		state->transformed_center=Vector3(transformed_vec[0],transformed_vec[1],transformed_vec[2]);
+		// The sorting node's captured world and view are row-major device matrices, so this
+		// is a row-vector product and the sphere centre goes through it on the left.
+		GfxMatrix4 mtx;
+		Gfx_Matrix_Multiply(&mtx,
+			reinterpret_cast<const GfxMatrix4*>(&state->sorting_state.world),
+			reinterpret_cast<const GfxMatrix4*>(&state->sorting_state.view));
+		Vector4 transformed_vec;
+		Gfx_Vec3_Transform(&transformed_vec,&bounding_sphere.Center,&mtx);
+		state->transformed_center=Vector3(transformed_vec.X,transformed_vec.Y,transformed_vec.Z);
 
 		Insert_To_Sorted_List(state);
 	}
@@ -577,8 +578,14 @@ void SortingRendererClass::Flush_Sorting_Pool()
 			memcpy(dest_verts, src_verts, sizeof(VertexFormatXYZNDUV2)*state->vertex_count);
 			dest_verts += state->vertex_count;
 
-			D3DXMATRIX d3d_mtx=(D3DXMATRIX&)state->sorting_state.world*(D3DXMATRIX&)state->sorting_state.view;
-			const Matrix4x4& mtx=(const Matrix4x4&)d3d_mtx;
+			// mtx[i][2] below is column 2 of a row-major world-view, which is exactly the z
+			// a row vector picks up: z' = x*_13 + y*_23 + z*_33 + _43. The old code reached
+			// the same storage by reinterpreting the product as a Matrix4x4, which reads the
+			// same elements under a name that means the other convention.
+			GfxMatrix4 mtx;
+			Gfx_Matrix_Multiply(&mtx,
+				reinterpret_cast<const GfxMatrix4*>(&state->sorting_state.world),
+				reinterpret_cast<const GfxMatrix4*>(&state->sorting_state.view));
 
 			unsigned short* indices=nullptr;
 			SortingIndexBufferClass* index_buffer=static_cast<SortingIndexBufferClass*>(state->sorting_state.index_buffer);

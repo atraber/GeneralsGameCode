@@ -86,7 +86,7 @@
 #include "WW3D2/rinfo.h"
 #include "WW3D2/camera.h"
 #include "dx8fvf.h"
-#include <d3dx9math.h>
+#include "WWMath/gfxmatrix4.h"
 #include "sortingrenderer.h"
 
 // Upgraded to DX8 2/2/01 HY
@@ -1320,11 +1320,21 @@ void PointGroupClass::Update_Arrays(
 				for (i = 0; i < active_points; i++) {
 					if (!Billboard) {
 						// If we're not billboarding, then the coordinate we have is in screen space.
-						Matrix4x4 rotMat;
-						D3DXMatrixRotationZ(&(D3DXMATRIX&) rotMat, ((float)point_orientation[i] / 255.0f * 2 * D3DX_PI));
+						// A TRANSPOSITION, preserved exactly. This built a row-vector rotation
+						// with D3DXMatrixRotationZ, reinterpreted the storage as a Matrix4x4 --
+						// which is the column-vector convention -- and multiplied on the left.
+						// Reading a row-vector rotation as a column-vector one transposes it, and
+						// the transpose of a Z rotation is the rotation the other way, so what the
+						// quads have always been given is R(-angle) applied as v*R. That is what
+						// this is, spelled so it says so; the pixels are identical. Whether the
+						// sense was ever intended is a separate question and moves the picture.
+						const float orient = (float)point_orientation[i] / 255.0f * 2 * GFX_PI;
+						GfxMatrix4 rotMat;
+						Gfx_Matrix_RotationZ(&rotMat, -orient);
 
-						Vector4 orientedVecX = rotMat * GroundMultiplierX;
-						Vector4 orientedVecY = rotMat * GroundMultiplierY;
+						Vector4 orientedVecX, orientedVecY;
+						Gfx_Vec3_Transform(&orientedVecX, &GroundMultiplierX, &rotMat);
+						Gfx_Vec3_Transform(&orientedVecY, &GroundMultiplierY, &rotMat);
 
 						vertex_loc[vert + 0].X = point_loc[i].X +	(orientedVecX.X + orientedVecY.X) * point_size[i];
 						vertex_loc[vert + 0].Y = point_loc[i].Y +	(orientedVecX.Y + orientedVecY.Y) * point_size[i];
