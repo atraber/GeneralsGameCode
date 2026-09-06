@@ -463,7 +463,36 @@ void ShaderClass::Apply()
 	FF_SITE("ShaderClass::Apply");
 	unsigned long diff;
 
-	unsigned int TextureOpCaps=DX8Wrapper::Get_Current_Caps()->Get_Texture_Op_Caps();
+	// The texture-operation words this function writes are a *description* of a combine,
+	// not a request for a fixed-function combiner: there is no combiner behind them any
+	// more. The routing block in DX8Wrapper::Draw reads exactly these tracked words to
+	// build the stage-1 constants unit_detail_ps evaluates -- which is what the routing
+	// census means when it says "what ShaderClass::Apply and VertexMaterialClass::Apply
+	// write *is* the description the shader path translates, it is this census's input
+	// language, not its backlog".
+	//
+	// So gating them on GfxDeviceCaps::FixedFunctionCombineOps, which D3D11 answers 0,
+	// did not disable a combiner nobody uses. It silently deleted the description, and
+	// every mesh pass with a second texture stage lost that stage.
+	//
+	// Measured on shadow_frustum2 over a 600-frame window, against the stored D3D9 log of
+	// the same replay: this function wrote 95200 stage words under D3D9 and 84296 under
+	// D3D11 at the same call count (68267 against 68231), with every other row of the
+	// call-site census identical. At the draw that showed it, the tracked stage 1
+	// COLOROP and ALPHAOP both read D3DTOP_DISABLE, so the shader was handed
+	// "stage 1 contributes nothing" and drew the base page alone -- an opaque black quad
+	// under every parked aircraft, because that page's alpha is a house-colour mask that
+	// remapAlphaTexture32Bit deliberately forces to 255 and the transparency lives in the
+	// second stage's texture.
+	//
+	// Describing unconditionally is exactly the set of words D3D9 wrote here: its answer
+	// on this adapter was 0x03feffff, and every bit these branches test is in it. The one
+	// bit it lacked, D3DTEXOPCAPS_PREMODULATE, is tested nowhere. Anything the routing
+	// cannot express it still declines for itself -- Map_Texture_Stage_Arg and the op
+	// switch return false and the draw takes unit_ps instead of unit_detail_ps.
+	//
+	// This was the only reader of DX8Caps::Get_Texture_Op_Caps.
+	const unsigned int TextureOpCaps = 0xffffffffu;
 
 	if (ShaderDirty)
 	{
