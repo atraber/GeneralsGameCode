@@ -42,7 +42,6 @@
 #include "texture.h"
 
 #include "gfxstatewords.h"
-#include <d3dx9.h>
 #include "dx8wrapper.h"
 #include "WWLib/TARGA.h"
 #include <WWLib/nstrdup.h>
