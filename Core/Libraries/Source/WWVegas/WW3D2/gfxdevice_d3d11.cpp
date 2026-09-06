@@ -191,7 +191,6 @@ struct D3D11TimerScope {
 #define PROFILE_D3D11_SCOPE(field)
 #endif
 
-
 // ---------------------------------------------------------------------------
 // D3D9 state words, spelled out.
 //
@@ -573,6 +572,7 @@ struct D3D11Surface
 	unsigned char *			scratch;		// Map on a surface D3D11 will not map
 	unsigned				scratch_pitch;
 	ID3D11Texture2D *		readback;		// staging copy, for a mapped read
+	D3D11Texture *			parent_texture;
 };
 
 struct D3D11Buffer
@@ -582,14 +582,9 @@ struct D3D11Buffer
 	unsigned				size;
 	unsigned				fvf;			// vertex buffers only
 	unsigned				usage;
-	// Every buffer in this backend is D3D11_USAGE_DEFAULT with a system-memory shadow,
-	// and Map hands back a pointer into the shadow. That is a deliberate simplification
-	// for a first backend and not the shape this wants to keep: D3D11 will not map a
-	// default buffer at all, and will not take a plain (non-discard, non-append) write
-	// map against a dynamic one -- so the ring-buffer path and the static path need
-	// different treatment, and getting either wrong loses vertices silently. One shadow
-	// is correct for all five map modes. The cost is a memcpy per fill, which is a
-	// measurement for a later phase, not a correctness question for this one.
+	bool					is_dynamic;
+	// Dynamic buffers are created with D3D11_USAGE_DYNAMIC and mapped directly with DISCARD
+	// or NO_OVERWRITE, requiring no CPU shadow. Default/static buffers keep a shadow.
 	unsigned char *			shadow;
 	unsigned				map_offset, map_size;
 	bool					mapped;
@@ -723,13 +718,20 @@ template <class KEY, class OBJ, int N> struct StateCache
 	KEY		keys[N];
 	OBJ *	objects[N];
 	int		count;
+	int		last_index;
 
-	StateCache() : count(0) { }
+	StateCache() : count(0), last_index(-1) { }
 
 	OBJ * Find(const KEY & key)
 	{
+		if (last_index >= 0 && last_index < count) {
+			if (memcmp(&keys[last_index], &key, sizeof(KEY)) == 0) return objects[last_index];
+		}
 		for (int i = 0; i < count; ++i) {
-			if (memcmp(&keys[i], &key, sizeof(KEY)) == 0) return objects[i];
+			if (i != last_index && memcmp(&keys[i], &key, sizeof(KEY)) == 0) {
+				last_index = i;
+				return objects[i];
+			}
 		}
 		return nullptr;
 	}
@@ -739,6 +741,7 @@ template <class KEY, class OBJ, int N> struct StateCache
 		if (count >= N) return;			// full; the object leaks into the device's own cache
 		keys[count] = key;
 		objects[count] = object;
+		last_index = count;
 		++count;
 	}
 
@@ -748,6 +751,7 @@ template <class KEY, class OBJ, int N> struct StateCache
 			if (objects[i] != nullptr) objects[i]->Release();
 		}
 		count = 0;
+		last_index = -1;
 	}
 };
 
@@ -817,11 +821,11 @@ struct GfxD3D11Impl
 	// stage is sampling through D3D11's own default sampler, which is not D3D9's.
 	bool						sampler_applied[GFX_MAX_STAGES];
 
-	StateCache<BlendKey, ID3D11BlendState, 64>			blend_cache;
-	StateCache<DepthKey, ID3D11DepthStencilState, 64>	depth_cache;
-	StateCache<RasterKey, ID3D11RasterizerState, 32>	raster_cache;
-	StateCache<SamplerKey, ID3D11SamplerState, 64>		sampler_cache;
-	StateCache<LayoutKey, ID3D11InputLayout, 64>		layout_cache;
+	StateCache<BlendKey, ID3D11BlendState, 128>			blend_cache;
+	StateCache<DepthKey, ID3D11DepthStencilState, 128>	depth_cache;
+	StateCache<RasterKey, ID3D11RasterizerState, 128>	raster_cache;
+	StateCache<SamplerKey, ID3D11SamplerState, 128>		sampler_cache;
+	StateCache<LayoutKey, ID3D11InputLayout, 128>		layout_cache;
 
 	// Bindings.
 	D3D11VertexShader *			vertex_shader;
@@ -862,6 +866,19 @@ struct GfxD3D11Impl
 	// can be mapped for reading. Made on first use, never in a release build.
 	ID3D11Buffer *				debug_constant_staging;
 
+	// Redundant state filtering cache.
+	ID3D11InputLayout *			current_layout;
+	D3D11_PRIMITIVE_TOPOLOGY	current_topology;
+	ID3D11Buffer *				current_vb0;
+	UINT						current_stride0;
+	ID3D11Buffer *				current_ib;
+	ID3D11BlendState *			current_blend_state;
+	unsigned					current_blend_factor;
+	ID3D11DepthStencilState *	current_depth_state;
+	unsigned					current_stencil_ref;
+	ID3D11RasterizerState *		current_raster_state;
+	ID3D11SamplerState *		current_ps_samplers[GFX_MAX_STAGES];
+
 	// The stream that supplies whatever a vertex shader declares and the vertex format
 	// does not carry. D3D9's FVF path defaulted those registers to (0,0,0,1) and never
 	// failed; D3D11's CreateInputLayout refuses the pair outright. Binding a stride-zero
@@ -875,21 +892,6 @@ struct GfxD3D11Impl
 	ID3D11Buffer *				up_buffer;
 	unsigned					up_capacity;
 	unsigned					up_offset;
-
-	GfxViewport					viewport;
-
-	// The transforms the wrapper sent, kept rather than used.
-	//
-	// There is no fixed-function pipeline for one to drive, so nothing here rasterises
-	// anything -- but Get_Transform is not only the audit's read-back, whatever
-	// gfxdevice.h says. DX8Wrapper::Bind_Ui_Shader_World reads the view and projection
-	// back on the *render path* to build a world-view-projection constant, and a backend
-	// that answers false there sends the shadow decals down their fixed-function fallback:
-	// 1676 draws a window arriving with no vertex shader, on a backend that cannot make
-	// one. Sixteen floats each, for the slots D3D9 numbers 0..31 plus D3DTS_WORLD, which
-	// it numbers 256.
-	float						transforms[GFX_TRANSFORM_SLOTS][16];
-	bool						transform_set[GFX_TRANSFORM_SLOTS];
 
 	// Blit / StretchRect GPU pipeline objects
 	ID3D11VertexShader *		blit_vs;
@@ -908,9 +910,42 @@ struct GfxD3D11Impl
 	unsigned					blit_cache_height;
 	DXGI_FORMAT					blit_cache_format;
 
+	GfxViewport					viewport;
+
+	// The transforms the wrapper sent, kept rather than used.
+	//
+	// There is no fixed-function pipeline for one to drive, so nothing here rasterises
+	// anything -- but Get_Transform is not only the audit's read-back, whatever
+	// gfxdevice.h says. DX8Wrapper::Bind_Ui_Shader_World reads the view and projection
+	// back on the *render path* to build a world-view-projection constant, and a backend
+	// that answers false there sends the shadow decals down their fixed-function fallback:
+	// 1676 draws a window arriving with no vertex shader, on a backend that cannot make
+	// one. Sixteen floats each, for the slots D3D9 numbers 0..31 plus D3DTS_WORLD, which
+	// it numbers 256.
+	float						transforms[GFX_TRANSFORM_SLOTS][16];
+	bool						transform_set[GFX_TRANSFORM_SLOTS];
+
+	void Invalidate_Bound_States()
+	{
+		current_layout = (ID3D11InputLayout *)(intptr_t)-1;
+		current_topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		current_vb0 = (ID3D11Buffer *)(intptr_t)-1;
+		current_stride0 = 0xFFFFFFFF;
+		current_ib = (ID3D11Buffer *)(intptr_t)-1;
+		current_blend_state = (ID3D11BlendState *)(intptr_t)-1;
+		current_blend_factor = 0xFFFFFFFF;
+		current_depth_state = (ID3D11DepthStencilState *)(intptr_t)-1;
+		current_stencil_ref = 0xFFFFFFFF;
+		current_raster_state = (ID3D11RasterizerState *)(intptr_t)-1;
+		for (unsigned i = 0; i < GFX_MAX_STAGES; ++i) {
+			current_ps_samplers[i] = (ID3D11SamplerState *)(intptr_t)-1;
+		}
+	}
+
 	GfxD3D11Impl()
 	{
 		memset(this, 0, sizeof(*this));
+		Invalidate_Bound_States();
 	}
 };
 
@@ -1863,12 +1898,18 @@ namespace
 		return s;
 	}
 
+	void Free_Texture(D3D11Texture * t);
+
 	void Free_Surface(D3D11Surface * s)
 	{
 #ifdef RTS_DEBUG
 		if (s != nullptr) { ++s_surfFreed; Note_Res_Freed(s_liveSurf, s_liveSurfCount, s); }
 #endif
 		if (s == nullptr) return;
+		if (s->parent_texture != nullptr) {
+			if (--s->parent_texture->refs <= 0) Free_Texture(s->parent_texture);
+			s->parent_texture = nullptr;
+		}
 		if (s->rtv != nullptr) s->rtv->Release();
 		if (s->dsv != nullptr) s->dsv->Release();
 		if (s->srv != nullptr) s->srv->Release();
@@ -2020,11 +2061,7 @@ namespace
 		dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 
 		ID3D11Texture2D * depth = nullptr;
-		if (FAILED(impl->device->CreateTexture2D(&dd, nullptr, &depth))) {
-			Free_Surface(impl->back_buffer);
-			impl->back_buffer = nullptr;
-			return false;
-		}
+		if (FAILED(impl->device->CreateTexture2D(&dd, nullptr, &depth))) return false;
 
 		if (impl->depth_buffer == nullptr) {
 #ifdef RTS_DEBUG
@@ -2043,14 +2080,9 @@ namespace
 			impl->depth_buffer->height = dd.Height;
 			impl->depth_buffer->dxgi = dd.Format;
 			impl->depth_buffer->view_format = zf.depth;
-			impl->depth_buffer->ww = (WW3DFormat)0;
 		}
 		depth->Release();
-		if (impl->depth_buffer == nullptr) {
-			Free_Surface(impl->back_buffer);
-			impl->back_buffer = nullptr;
-			return false;
-		}
+		if (impl->depth_buffer == nullptr) return false;
 
 		impl->current_rt = impl->back_buffer;
 		impl->current_ds = impl->depth_buffer;
@@ -2222,6 +2254,7 @@ void GfxDeviceD3D11::Begin_Scene()
 {
 	TRACE("Begin_Scene");
 #ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_begin_scene);
 	++s_d3d11_prof.n_begin_scene;
 	LARGE_INTEGER now_b;
 	QueryPerformanceCounter(&now_b);
@@ -2421,6 +2454,7 @@ void GfxDeviceD3D11::Set_Render_State(unsigned state, unsigned value)
 	case RS_ALPHABLENDENABLE: case RS_SRCBLEND: case RS_DESTBLEND: case RS_BLENDOP:
 	case RS_COLORWRITEENABLE: case RS_SEPARATEALPHABLENDENABLE:
 	case RS_SRCBLENDALPHA: case RS_DESTBLENDALPHA: case RS_BLENDOPALPHA:
+	case RS_BLENDFACTOR:
 		m_impl->blend_dirty = true;
 		return;
 
@@ -2631,13 +2665,14 @@ void GfxDeviceD3D11::Set_Texture(unsigned stage, GfxTexture * texture)
 	++s_d3d11_prof.n_set_texture;
 #endif
 	if (stage >= GFX_MAX_STAGES) return;
-	m_impl->textures[stage] = (D3D11Texture *)texture;
+	D3D11Texture * t = (D3D11Texture *)texture;
+	if (m_impl->textures[stage] == t && (m_impl->srv_unbound_mask & (1u << stage)) == 0) return;
+	m_impl->textures[stage] = t;
 	m_impl->srv_unbound_mask &= ~(1u << stage);
 	// The wrapper has spoken for this stage, so the rescue window closes: from here the
 	// slot would have been right with or without the fix.
 	m_impl->srv_rescued_mask &= ~(1u << stage);
 
-	D3D11Texture * t = (D3D11Texture *)texture;
 	// The same hazard from the other side. Binding a texture that is the current target
 	// would make D3D11 unbind the *target* instead, which is the worse half of the trade.
 	// Null the slot and remember, exactly as Set_Render_Target does; the next draw after
@@ -2670,13 +2705,16 @@ void GfxDeviceD3D11::Set_Vertex_Shader(GfxShaderHandle shader)
 	// other side, and it reads 0 on civ_buildings.
 	if (shader < 0x10000) {
 		m_impl->fvf = (unsigned)shader;
-		m_impl->vertex_shader = nullptr;
-		m_impl->context->VSSetShader(nullptr, nullptr, 0);
-		DX8Wrapper_Increment_Call_Count();
+		if (m_impl->vertex_shader != nullptr) {
+			m_impl->vertex_shader = nullptr;
+			m_impl->context->VSSetShader(nullptr, nullptr, 0);
+			DX8Wrapper_Increment_Call_Count();
+		}
 		return;
 	}
 
 	D3D11VertexShader * vs = (D3D11VertexShader *)shader;
+	if (m_impl->vertex_shader == vs) return;
 	m_impl->vertex_shader = vs;
 	m_impl->context->VSSetShader(vs->shader, nullptr, 0);
 	DX8Wrapper_Increment_Call_Count();
@@ -2690,6 +2728,7 @@ void GfxDeviceD3D11::Set_Pixel_Shader(GfxShaderHandle shader)
 	++s_d3d11_prof.n_set_ps;
 #endif
 	D3D11PixelShader * ps = (D3D11PixelShader *)shader;
+	if (m_impl->pixel_shader == ps) return;
 	m_impl->pixel_shader = ps;
 	m_impl->context->PSSetShader(ps != nullptr ? ps->shader : nullptr, nullptr, 0);
 	DX8Wrapper_Increment_Call_Count();
@@ -2788,8 +2827,12 @@ void GfxDeviceD3D11::Set_Vertex_Shader_Constants(unsigned reg, const float * dat
 #endif
 	if (data == nullptr || reg >= GFX_VS_CONSTANTS) return;
 	if (reg + vec4_count > GFX_VS_CONSTANTS) vec4_count = GFX_VS_CONSTANTS - reg;
-	memcpy(&m_impl->vs_constants[reg * 4], data, vec4_count * 4 * sizeof(float));
-	m_impl->vs_constants_dirty = true;
+	const size_t bytes = vec4_count * 4 * sizeof(float);
+	float * dst = &m_impl->vs_constants[reg * 4];
+	if (memcmp(dst, data, bytes) != 0) {
+		memcpy(dst, data, bytes);
+		m_impl->vs_constants_dirty = true;
+	}
 }
 
 void GfxDeviceD3D11::Set_Pixel_Shader_Constants(unsigned reg, const float * data,
@@ -2802,8 +2845,12 @@ void GfxDeviceD3D11::Set_Pixel_Shader_Constants(unsigned reg, const float * data
 #endif
 	if (data == nullptr || reg >= GFX_PS_CONSTANTS) return;
 	if (reg + vec4_count > GFX_PS_CONSTANTS) vec4_count = GFX_PS_CONSTANTS - reg;
-	memcpy(&m_impl->ps_constants[reg * 4], data, vec4_count * 4 * sizeof(float));
-	m_impl->ps_constants_dirty = true;
+	const size_t bytes = vec4_count * 4 * sizeof(float);
+	float * dst = &m_impl->ps_constants[reg * 4];
+	if (memcmp(dst, data, bytes) != 0) {
+		memcpy(dst, data, bytes);
+		m_impl->ps_constants_dirty = true;
+	}
 }
 
 void GfxDeviceD3D11::Set_Vertex_Stream(unsigned stream, GfxVertexBuffer * buffer,
@@ -2858,9 +2905,11 @@ void GfxDeviceD3D11::Set_Index_Buffer(GfxIndexBuffer * buffer, int base_vertex_i
 	m_impl->base_vertex_index = base_vertex_index;
 	ID3D11Buffer * ib = (m_impl->index_buffer != nullptr)
 		? m_impl->index_buffer->buffer : nullptr;
-	// Sixteen-bit indices, which is the only width the engine has ever asked for.
-	m_impl->context->IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
-	DX8Wrapper_Increment_Call_Count();
+	if (ib != m_impl->current_ib) {
+		m_impl->context->IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
+		m_impl->current_ib = ib;
+		DX8Wrapper_Increment_Call_Count();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -3173,8 +3222,12 @@ namespace
 			((bf >> 16) & 0xff) / 255.0f, ((bf >> 8) & 0xff) / 255.0f,
 			((bf >> 0) & 0xff) / 255.0f,  ((bf >> 24) & 0xff) / 255.0f
 		};
-		impl->context->OMSetBlendState(state, factor, 0xffffffff);
-		DX8Wrapper_Increment_Call_Count();
+		if (state != impl->current_blend_state || bf != impl->current_blend_factor) {
+			impl->context->OMSetBlendState(state, factor, 0xffffffff);
+			impl->current_blend_state = state;
+			impl->current_blend_factor = bf;
+			DX8Wrapper_Increment_Call_Count();
+		}
 	}
 
 	void Apply_Depth_State(GfxD3D11Impl * impl)
@@ -3219,8 +3272,13 @@ namespace
 
 		// Like the blend factor, the stencil reference is an argument to the bind here
 		// and a render state there, so it stays out of the key.
-		impl->context->OMSetDepthStencilState(state, impl->rs[RS_STENCILREF]);
-		DX8Wrapper_Increment_Call_Count();
+		const unsigned sref = impl->rs[RS_STENCILREF];
+		if (state != impl->current_depth_state || sref != impl->current_stencil_ref) {
+			impl->context->OMSetDepthStencilState(state, sref);
+			impl->current_depth_state = state;
+			impl->current_stencil_ref = sref;
+			DX8Wrapper_Increment_Call_Count();
+		}
 	}
 
 	void Apply_Raster_State(GfxD3D11Impl * impl)
@@ -3278,8 +3336,11 @@ namespace
 #endif
 			impl->raster_cache.Add(key, state);
 		}
-		impl->context->RSSetState(state);
-		DX8Wrapper_Increment_Call_Count();
+		if (state != impl->current_raster_state) {
+			impl->context->RSSetState(state);
+			impl->current_raster_state = state;
+			DX8Wrapper_Increment_Call_Count();
+		}
 	}
 
 	void Apply_Sampler_State(GfxD3D11Impl * impl, unsigned stage)
@@ -3342,10 +3403,13 @@ namespace
 			if (FAILED(impl->device->CreateSamplerState(&desc, &state))) return;
 			impl->sampler_cache.Add(key, state);
 		}
-		impl->context->PSSetSamplers(stage, 1, &state);
-		impl->context->VSSetSamplers(stage, 1, &state);
+		if (state != impl->current_ps_samplers[stage]) {
+			impl->context->PSSetSamplers(stage, 1, &state);
+			impl->context->VSSetSamplers(stage, 1, &state);
+			impl->current_ps_samplers[stage] = state;
+			DX8Wrapper_Increment_Call_Count();
+		}
 		impl->sampler_applied[stage] = true;
-		DX8Wrapper_Increment_Call_Count();
 	}
 
 	/// The input layout for one (vertex format x vertex shader) pair. The census says
@@ -3454,6 +3518,10 @@ namespace
 	}
 
 #ifdef RTS_DEBUG
+	static const D3D11VertexShader * s_last_link_vs = (const D3D11VertexShader *)(intptr_t)-1;
+	static const D3D11PixelShader * s_last_link_ps = (const D3D11PixelShader *)(intptr_t)-1;
+	static bool s_last_link_result = true;
+
 	/// Whether the bound pair can be linked: every non-system input the pixel shader
 	/// declares must be written by the vertex shader *into the same register*.
 	///
@@ -3467,6 +3535,12 @@ namespace
 		const D3D11VertexShader * vs = impl->vertex_shader;
 		const D3D11PixelShader * ps = impl->pixel_shader;
 		if (vs == nullptr || ps == nullptr) return true;
+		if (vs == s_last_link_vs && ps == s_last_link_ps) return s_last_link_result;
+
+		s_last_link_vs = vs;
+		s_last_link_ps = ps;
+		s_last_link_result = true;
+
 		for (unsigned i = 0; i < ps->inputs.count; ++i) {
 			const SignatureElement & in = ps->inputs.elements[i];
 			if (Is_System_Value(in.semantic)) continue;
@@ -3478,7 +3552,10 @@ namespace
 				matched = (out.reg == in.reg);
 				break;
 			}
-			if (!matched) return false;
+			if (!matched) {
+				s_last_link_result = false;
+				return false;
+			}
 		}
 		return true;
 	}
@@ -3507,28 +3584,40 @@ namespace
 			return false;
 		}
 
-		ID3D11InputLayout * layout = Get_Input_Layout(impl);
-		if (layout == nullptr) {
-			ABSORB(s_dropped_no_input_layout);
-			return false;
-		}
+		ID3D11InputLayout * layout;
 		{
 #ifdef RTS_DEBUG
 			PROFILE_D3D11_SCOPE(t_input_layout);
 #endif
-			impl->context->IASetInputLayout(layout);
+			layout = Get_Input_Layout(impl);
+			if (layout == nullptr) {
+				ABSORB(s_dropped_no_input_layout);
+				return false;
+			}
+			if (layout != impl->current_layout) {
+				impl->context->IASetInputLayout(layout);
+				impl->current_layout = layout;
+			}
 		}
-		impl->context->IASetPrimitiveTopology(topology);
+		if (topology != impl->current_topology) {
+			impl->context->IASetPrimitiveTopology(topology);
+			impl->current_topology = topology;
+		}
 
-		ID3D11Buffer * buffers[2];
-		buffers[0] = (impl->stream0 != nullptr) ? impl->stream0->buffer : nullptr;
-		buffers[1] = impl->zero_stream;
-		// Stride zero on slot 1 makes every vertex read the same sixteen bytes, which is
-		// the whole trick: one (0,0,0,1) supplies every element the vertex format does
-		// not carry, at the value D3D9 defaulted an unwritten input register to.
-		const UINT strides[2] = { impl->stream0_stride, 0 };
-		const UINT offsets[2] = { 0, 0 };
-		impl->context->IASetVertexBuffers(0, 2, buffers, strides, offsets);
+		ID3D11Buffer * b0 = (impl->stream0 != nullptr) ? impl->stream0->buffer : nullptr;
+		if (b0 != impl->current_vb0 || impl->stream0_stride != impl->current_stride0) {
+			ID3D11Buffer * buffers[2];
+			buffers[0] = b0;
+			buffers[1] = impl->zero_stream;
+			// Stride zero on slot 1 makes every vertex read the same sixteen bytes, which is
+			// the whole trick: one (0,0,0,1) supplies every element the vertex format does
+			// not carry, at the value D3D9 defaulted an unwritten input register to.
+			const UINT strides[2] = { impl->stream0_stride, 0 };
+			const UINT offsets[2] = { 0, 0 };
+			impl->context->IASetVertexBuffers(0, 2, buffers, strides, offsets);
+			impl->current_vb0 = b0;
+			impl->current_stride0 = impl->stream0_stride;
+		}
 
 		{
 #ifdef RTS_DEBUG
@@ -3565,7 +3654,6 @@ namespace
 		}
 		if (impl->srv_rescued_mask != 0) ++s_draws_rescued;
 #endif
-
 #ifdef RTS_DEBUG
 		// The sampler census, taken per *stage that has a texture on it* rather than per
 		// draw, because a draw sampling four textures is four sampling decisions.
@@ -3758,6 +3846,21 @@ bool GfxDeviceD3D11::Set_Render_Target(GfxSurface * color, GfxSurface * depth)
 	m_impl->current_rt = rt;
 	m_impl->current_ds = ds;
 
+	ID3D11Resource * rt_res = (rt != nullptr) ? rt->texture : nullptr;
+	ID3D11Resource * ds_res = (ds != nullptr) ? ds->texture : nullptr;
+	for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
+		if (m_impl->textures[s] != nullptr) {
+			ID3D11Resource * tex_res = m_impl->textures[s]->resource;
+			if ((rt_res != nullptr && tex_res == rt_res) ||
+			    (ds_res != nullptr && tex_res == ds_res)) {
+				m_impl->textures[s] = nullptr;
+				ID3D11ShaderResourceView * null_srv = nullptr;
+				m_impl->context->PSSetShaderResources(s, 1, &null_srv);
+				m_impl->context->VSSetShaderResources(s, 1, &null_srv);
+			}
+		}
+	}
+
 	ID3D11RenderTargetView * rtv = Get_RTV(m_impl->device, rt);
 	ID3D11DepthStencilView * dsv = Get_DSV(m_impl->device, ds);
 	m_impl->context->OMSetRenderTargets(1, &rtv, dsv);
@@ -3814,6 +3917,7 @@ void GfxDeviceD3D11::Set_Viewport(const GfxViewport & viewport)
 	PROFILE_D3D11_SCOPE(t_set_vp);
 	++s_d3d11_prof.n_set_vp;
 #endif
+	if (memcmp(&m_impl->viewport, &viewport, sizeof(viewport)) == 0) return;
 	m_impl->viewport = viewport;
 	D3D11_VIEWPORT vp;
 	vp.TopLeftX = (float)viewport.X;
@@ -3862,11 +3966,14 @@ namespace
 	{
 		if (size == 0) return nullptr;
 
+		const bool is_dyn = (usage & GFX_USAGE_DYNAMIC) != 0;
+
 		D3D11_BUFFER_DESC desc;
 		memset(&desc, 0, sizeof(desc));
 		desc.ByteWidth = size;
-		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.Usage = is_dyn ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_DEFAULT;
 		desc.BindFlags = bind;
+		desc.CPUAccessFlags = is_dyn ? D3D11_CPU_ACCESS_WRITE : 0;
 
 		ID3D11Buffer * buffer = nullptr;
 		if (FAILED(impl->device->CreateBuffer(&desc, nullptr, &buffer))) return nullptr;
@@ -3877,8 +3984,11 @@ namespace
 		b->buffer = buffer;
 		b->size = size;
 		b->usage = usage;
-		b->shadow = new unsigned char[size];
-		memset(b->shadow, 0, size);
+		b->is_dynamic = is_dyn;
+		if (!is_dyn) {
+			b->shadow = new unsigned char[size];
+			memset(b->shadow, 0, size);
+		}
 #ifdef RTS_DEBUG
 		Note_Buffer_Made(b, size, usage, bind == D3D11_BIND_INDEX_BUFFER);
 #endif
@@ -3896,17 +4006,35 @@ namespace
 		delete b;
 	}
 
-	bool Map_Buffer(D3D11Buffer * b, unsigned offset, unsigned size, void ** data)
+	bool Map_Buffer(GfxD3D11Impl * impl, D3D11Buffer * b, unsigned offset, unsigned size, GfxMapMode mode, void ** data)
 	{
 #ifdef RTS_DEBUG
 		PROFILE_D3D11_SCOPE(t_map_buffer);
 		++s_d3d11_prof.n_map_buffer;
 #endif
-		if (b == nullptr || data == nullptr || b->shadow == nullptr) return false;
+		if (b == nullptr || data == nullptr) return false;
 		if (offset > b->size) return false;
 		// A size of zero means "the rest of it", which is what D3D9's Lock means by it and
 		// what several callers rely on.
 		if (size == 0 || offset + size > b->size) size = b->size - offset;
+
+		if (b->is_dynamic) {
+			D3D11_MAP map_type = D3D11_MAP_WRITE_NO_OVERWRITE;
+			if (mode == GFX_MAP_WRITE_DISCARD || offset == 0) {
+				map_type = D3D11_MAP_WRITE_DISCARD;
+			}
+			D3D11_MAPPED_SUBRESOURCE ms;
+			if (FAILED(impl->context->Map(b->buffer, 0, map_type, 0, &ms))) {
+				return false;
+			}
+			b->map_offset = offset;
+			b->map_size = size;
+			b->mapped = true;
+			*data = (unsigned char *)ms.pData + offset;
+			return true;
+		}
+
+		if (b->shadow == nullptr) return false;
 		b->map_offset = offset;
 		b->map_size = size;
 		b->mapped = true;
@@ -3922,6 +4050,12 @@ namespace
 #endif
 		if (b == nullptr || !b->mapped) return;
 		b->mapped = false;
+
+		if (b->is_dynamic) {
+			impl->context->Unmap(b->buffer, 0);
+			return;
+		}
+
 		if (b->map_size == 0) return;
 
 		D3D11_BOX box;
@@ -3971,14 +4105,10 @@ void GfxDeviceD3D11::Release_Index_Buffer(GfxIndexBuffer * buffer)
 }
 
 bool GfxDeviceD3D11::Map_Vertex_Buffer(GfxVertexBuffer * buffer, unsigned offset_in_bytes,
-	unsigned size_in_bytes, GfxMapMode, void ** data)
+	unsigned size_in_bytes, GfxMapMode mode, void ** data)
 {
 	TRACE("Map_Vertex_Buffer");
-	// The map mode does not change what happens here, and that is the point of the shadow:
-	// discard, append and plain write all land in the same system-memory copy, so the
-	// pairing D3D11 enforces between a buffer's usage and its map mode -- the thing the
-	// discard audit was built in Phase 3.5 to count -- cannot fail this backend.
-	return Map_Buffer((D3D11Buffer *)buffer, offset_in_bytes, size_in_bytes, data);
+	return Map_Buffer(m_impl, (D3D11Buffer *)buffer, offset_in_bytes, size_in_bytes, mode, data);
 }
 
 void GfxDeviceD3D11::Unmap_Vertex_Buffer(GfxVertexBuffer * buffer)
@@ -3988,10 +4118,10 @@ void GfxDeviceD3D11::Unmap_Vertex_Buffer(GfxVertexBuffer * buffer)
 }
 
 bool GfxDeviceD3D11::Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
-	unsigned size_in_bytes, GfxMapMode, void ** data)
+	unsigned size_in_bytes, GfxMapMode mode, void ** data)
 {
 	TRACE("Map_Index_Buffer");
-	return Map_Buffer((D3D11Buffer *)buffer, offset_in_bytes, size_in_bytes, data);
+	return Map_Buffer(m_impl, (D3D11Buffer *)buffer, offset_in_bytes, size_in_bytes, mode, data);
 }
 
 void GfxDeviceD3D11::Unmap_Index_Buffer(GfxIndexBuffer * buffer)
@@ -4303,7 +4433,14 @@ void GfxDeviceD3D11::Release_Texture(GfxTexture * texture)
 	D3D11Texture * t = (D3D11Texture *)texture;
 	if (t == nullptr) return;
 	for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
-		if (m_impl->textures[s] == t) m_impl->textures[s] = nullptr;
+		if (m_impl->textures[s] == t) {
+			m_impl->textures[s] = nullptr;
+			m_impl->srv_unbound_mask &= ~(1u << s);
+			m_impl->srv_rescued_mask &= ~(1u << s);
+			ID3D11ShaderResourceView * null_srv = nullptr;
+			m_impl->context->PSSetShaderResources(s, 1, &null_srv);
+			m_impl->context->VSSetShaderResources(s, 1, &null_srv);
+		}
 	}
 	if (--t->refs <= 0) Free_Texture(t);
 }
@@ -4335,7 +4472,11 @@ GfxSurface * GfxDeviceD3D11::Get_Texture_Surface_Level(GfxTexture * texture, uns
 	s_surfaceSite = "Get_Texture_Surface_Level";
 #endif
 	D3D11Surface * s = Wrap_Surface(tex2d, level, view, t->is_depth);
-	if (s != nullptr && !t->is_depth) s->ww = t->ww;
+	if (s != nullptr) {
+		if (!t->is_depth) s->ww = t->ww;
+		s->parent_texture = t;
+		++t->refs;
+	}
 	return (GfxSurface *)s;
 }
 
@@ -4772,6 +4913,10 @@ bool GfxDeviceD3D11::Map_Surface(GfxSurface * surface, const GfxRect * rect,
 	D3D11Surface * s = (D3D11Surface *)surface;
 	if (s == nullptr || s->texture == nullptr) return false;
 
+	if (s->parent_texture != nullptr) {
+		return Map_Texture_Subresource(m_impl, s->parent_texture, s->subresource, rect, mode, mapped);
+	}
+
 	D3D11_TEXTURE2D_DESC desc;
 	s->texture->GetDesc(&desc);
 	if (desc.Usage == D3D11_USAGE_STAGING) {
@@ -4882,6 +5027,11 @@ void GfxDeviceD3D11::Unmap_Surface(GfxSurface * surface)
 #endif
 	D3D11Surface * s = (D3D11Surface *)surface;
 	if (s == nullptr || s->texture == nullptr) return;
+
+	if (s->parent_texture != nullptr) {
+		Unmap_Texture_Subresource(m_impl, s->parent_texture, s->subresource);
+		return;
+	}
 
 	if (s->readback != nullptr) {
 		m_impl->context->Unmap(s->readback, 0);
@@ -5002,14 +5152,9 @@ namespace
 			sd.Usage = D3D11_USAGE_STAGING;
 			sd.BindFlags = 0;
 			sd.MiscFlags = 0;
-			sd.CPUAccessFlags = for_write
-				? (D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE)
-				: D3D11_CPU_ACCESS_READ;
-
-			if (FAILED(impl->device->CreateTexture2D(&sd, nullptr, &view.temporary))) {
-				view.temporary = nullptr;
+			sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
+			if (FAILED(impl->device->CreateTexture2D(&sd, nullptr, &view.temporary)))
 				return false;
-			}
 			if (desc.SampleDesc.Count > 1) {
 				// Resolve into a plain intermediate, then take the staging copy off that.
 				D3D11_TEXTURE2D_DESC rd = sd;
@@ -5035,16 +5180,12 @@ namespace
 			subresource = 0;
 		}
 
-		D3D11_MAP map = for_write ? D3D11_MAP_READ_WRITE : D3D11_MAP_READ;
 		D3D11_MAPPED_SUBRESOURCE m;
+		const D3D11_MAP map = for_write ? D3D11_MAP_READ_WRITE : D3D11_MAP_READ;
 		if (FAILED(impl->context->Map(target, subresource, map, 0, &m))) {
-			if (view.temporary != nullptr) {
-				view.temporary->Release();
-				view.temporary = nullptr;
-			}
+			if (view.temporary != nullptr) { view.temporary->Release(); view.temporary = nullptr; }
 			return false;
 		}
-
 		view.data = (unsigned char *)m.pData;
 		view.pitch = m.RowPitch;
 		view.width = s->width;
@@ -5060,26 +5201,20 @@ namespace
 	{
 		if (view.mapped_texture == nullptr) return;
 		impl->context->Unmap(view.mapped_texture, view.mapped_subresource);
-
-		if (view.temporary != nullptr) {
-			if (write_back && s != nullptr && s->texture != nullptr) {
-				impl->context->CopySubresourceRegion(s->texture, s->subresource, 0, 0, 0,
-					view.temporary, 0, nullptr);
-			}
-			view.temporary->Release();
-			view.temporary = nullptr;
+		if (write_back && view.temporary != nullptr && s != nullptr) {
+			impl->context->CopySubresourceRegion(s->texture, s->subresource, 0, 0, 0,
+				view.temporary, 0, nullptr);
 		}
-		view.mapped_texture = nullptr;
-		view.data = nullptr;
+		if (view.temporary != nullptr) view.temporary->Release();
+		memset(&view, 0, sizeof(view));
 	}
 
-	/// Cross-format blit in system memory. Replaces D3DXLoadSurfaceFromSurface for the
-	/// small set of pairs the engine asks for: mostly A8R8G8B8 to A8R8G8B8 with a scale
-	/// or a sub-rectangle, with R5G6B5 to A8R8G8B8 on the font-generation path.
+	/// A rectangle copy on the CPU, in whichever of the two supported widths the surfaces
+	/// are. Point sampling unless the caller asked to resample, which is the one thing
+	/// SurfaceClass::Copy and SurfaceClass::Stretch_Copy genuinely differ on.
 	bool CPU_Blit(const SurfaceView & src, const GfxRect * src_rect,
-		const SurfaceView & dst, const GfxRect * dst_rect, bool resample)
+		SurfaceView & dst, const GfxRect * dst_rect, bool resample)
 	{
-		if (src.data == nullptr || dst.data == nullptr) return false;
 		const unsigned bpp = Bytes_Per_Pixel(src.format);
 		if (bpp == 0 || bpp != Bytes_Per_Pixel(dst.format)) return false;
 		if (src.format != dst.format) return false;
@@ -5351,6 +5486,7 @@ namespace
 		impl->context->IASetInputLayout(saved_layout);
 		if (saved_layout != nullptr) saved_layout->Release();
 
+		impl->Invalidate_Bound_States();
 		impl->vs_constants_dirty = true;
 		impl->ps_constants_dirty = true;
 
@@ -6049,6 +6185,7 @@ bool GfxDeviceD3D11::Reset_Swap_Chain(GfxSwapChainDesc & desc)
 	m_impl->context->OMSetRenderTargets(0, nullptr, nullptr);
 	m_impl->current_rt = nullptr;
 	m_impl->current_ds = nullptr;
+	m_impl->Invalidate_Bound_States();
 	Release_Swap_Chain_Surfaces(m_impl);
 
 	HRESULT hr = m_impl->swap_chain->ResizeBuffers(
