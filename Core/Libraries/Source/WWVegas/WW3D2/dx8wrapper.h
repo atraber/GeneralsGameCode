@@ -95,6 +95,14 @@ const unsigned MAX_PIXEL_SHADER_CONSTANTS=32;
 // cache from being written past -- see the warning above.
 const unsigned ALPHA_TEST_PS_CONSTANT=28;
 
+// b1, C2 of the clustered-lighting plan: a second constant buffer, written once a frame
+// rather than once a draw, because the per-draw file above is full -- water_ps alone
+// claims 29 of MAX_PIXEL_SHADER_CONSTANTS's 32. See GfxDeviceClass::Set_Frame_Constants
+// for the buffer this backs and the clustered lighting plan for what fills it.
+// Sixteen is generous for the three vec4 the plan names (ClusterParams, ClusterDepth,
+// CameraForward) with room for frame-global data that migrates here later.
+const unsigned MAX_FRAME_CONSTANTS=16;
+
 const unsigned MAX_SHADOW_MAPS=1;
 
 enum {
@@ -806,6 +814,12 @@ public:
 	static DWORD Create_Pixel_Shader(const void * bytecode, unsigned size);
 	static void Release_Vertex_Shader(DWORD vertex_shader);
 	static void Release_Pixel_Shader(DWORD pixel_shader);
+	// The third stage. Here only so that the shader manager's loader -- the one place in
+	// the engine that turns a file into a shader -- can make one without reaching past the
+	// wrapper to DX8Wrapper::Gfx. Binding and dispatching are not wrapped: they have no
+	// tracked state to guard and exactly one caller, which goes through the seam directly.
+	static DWORD Create_Compute_Shader(const void * bytecode, unsigned size);
+	static void Release_Compute_Shader(DWORD compute_shader);
 	// What is bound right now. For the callers that draw straight on the device after
 	// Apply_Render_State_Changes: whatever it left standing is what rasterises them.
 	static DWORD Get_Vertex_Shader() { return Vertex_Shader; }
@@ -816,6 +830,10 @@ public:
 
 	static void Set_Vertex_Shader_Constant(int reg, const void* data, int count);
 	static void Set_Pixel_Shader_Constant(int reg, const void* data, int count);
+	// b1, written once a frame rather than once a draw -- see MAX_FRAME_CONSTANTS above.
+	// Always from offset 0: this buffer has one writer per frame, not the many callers
+	// the per-draw registers share, so there is no reg argument to go with count.
+	static void Set_Frame_Constants(const void* data, int count);
 
 
 	// Needed by scene lighting class
@@ -1153,6 +1171,7 @@ protected:
 
 	static Vector4							Vertex_Shader_Constants[MAX_VERTEX_SHADER_CONSTANTS];
 	static Vector4							Pixel_Shader_Constants[MAX_PIXEL_SHADER_CONSTANTS];
+	static Vector4							Frame_Constants[MAX_FRAME_CONSTANTS];
 
 	static LightEnvironmentClass*		Light_Environment;
 
@@ -2078,6 +2097,18 @@ WWINLINE void DX8Wrapper::Set_Pixel_Shader_Constant(int reg, const void* data, i
 
 	memcpy(&Pixel_Shader_Constants[reg],data,memsize);
 	GFXCALL(Set_Pixel_Shader_Constants(reg,(const float*)data,count));
+}
+
+WWINLINE void DX8Wrapper::Set_Frame_Constants(const void* data, int count)
+{
+	int memsize=sizeof(Vector4)*count;
+
+	// Same redundancy filter as the two above, against the whole buffer rather than a
+	// register range -- there is no reg to slice by, this call always writes from 0.
+	if (memcmp(data, &Frame_Constants[0],memsize)==0) return;
+
+	memcpy(&Frame_Constants[0],data,memsize);
+	GFXCALL(Set_Frame_Constants((const float*)data,(unsigned)count));
 }
 // shader system updates KJM ^
 

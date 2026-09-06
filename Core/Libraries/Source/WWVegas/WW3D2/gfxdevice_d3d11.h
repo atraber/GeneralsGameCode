@@ -141,6 +141,7 @@ public:
 	virtual void			Release_Pixel_Shader(GfxShaderHandle shader);
 	virtual void			Set_Vertex_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count);
 	virtual void			Set_Pixel_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count);
+	virtual void			Set_Frame_Constants(const float * data, unsigned vec4_count);
 	virtual void			Set_Vertex_Stream(unsigned stream, GfxVertexBuffer * buffer, unsigned stride);
 	virtual bool			Get_Vertex_Stream(unsigned stream, GfxVertexBuffer ** buffer,
 								unsigned * offset, unsigned * stride);
@@ -190,6 +191,22 @@ public:
 	virtual bool			Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
 								unsigned size_in_bytes, GfxMapMode mode, void ** data);
 	virtual void			Unmap_Index_Buffer(GfxIndexBuffer * buffer);
+
+	// ---- compute ---------------------------------------------------------
+
+	virtual GfxShaderHandle	Create_Compute_Shader(const void * bytecode, unsigned size);
+	virtual void			Release_Compute_Shader(GfxShaderHandle shader);
+	virtual void			Set_Compute_Shader(GfxShaderHandle shader);
+	virtual void			Dispatch(unsigned x, unsigned y, unsigned z);
+	virtual GfxBuffer *		Create_Structured_Buffer(unsigned stride, unsigned count,
+								unsigned usage);
+	virtual void			Release_Buffer(GfxBuffer * buffer);
+	virtual bool			Map_Buffer(GfxBuffer * buffer, GfxMapMode mode, void ** data);
+	virtual void			Unmap_Buffer(GfxBuffer * buffer);
+	virtual void			Set_Compute_Buffer(unsigned slot, GfxBuffer * buffer);
+	virtual void			Set_Compute_RW_Buffer(unsigned slot, GfxBuffer * buffer);
+	virtual void			Set_Pixel_Buffer(unsigned slot, GfxBuffer * buffer);
+	virtual void			Clear_RW_Buffer_UInt(GfxBuffer * buffer, unsigned value);
 
 	// ---- textures and surfaces -------------------------------------------
 

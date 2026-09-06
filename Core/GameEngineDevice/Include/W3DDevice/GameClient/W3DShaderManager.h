@@ -200,8 +200,26 @@ public:
 	static TextureClass *getShaderTexture(Int stage) { return m_Textures[stage];}	///<returns currently selected texture for given stage
 	///Return last activated shader.
 	static ShaderTypes getCurrentShader() {return m_currentShader;}
-	/// Loads a .vso file and creates a vertex shader for it
-	static HRESULT LoadAndCreateD3DShader(const char* strFilePath, const DWORD* pDeclaration, DWORD Usage, Bool ShaderType, DWORD* pHandle);
+	/// Which pipeline stage LoadAndCreateD3DShader is being asked to make a shader for.
+	///
+	/// It took a Bool -- true for vertex, false for pixel -- and 42 call sites spell that
+	/// literal out. Widening the parameter to an Int keeps every one of them compiling and
+	/// meaning what it always meant, because false and true convert to 0 and 1 and those
+	/// are still the same two stages. A real enum would be the tidier spelling and would
+	/// have required editing all 42 to say the same thing, so it is offered rather than
+	/// imposed: new callers pass one of these, old callers keep their literal.
+	enum ShaderStage
+	{
+		SHADER_STAGE_PIXEL = 0,
+		SHADER_STAGE_VERTEX = 1,
+		SHADER_STAGE_COMPUTE = 2
+	};
+	/// Loads a compiled shader blob and creates a shader of the named stage for it
+	static HRESULT LoadAndCreateD3DShader(const char* strFilePath, const DWORD* pDeclaration, DWORD Usage, Int ShaderType, DWORD* pHandle);
+#ifdef RTS_DEBUG
+	/// The compute stage's positive control. See the definition; deleted with C4.
+	static void runComputeSelfTest();
+#endif
 
 	static Bool testMinimumRequirements(ChipsetType *videoChipType, CpuType *cpuType, Int *cpuFreq, MemValueType *numRAM, Real *intBenchIndex, Real *floatBenchIndex, Real *memBenchIndex);
 	static StaticGameLODLevel getGPUPerformanceIndex();

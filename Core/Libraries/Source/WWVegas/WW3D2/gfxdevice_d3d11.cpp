@@ -73,6 +73,7 @@ struct D3D11ProfileStats {
 	LONGLONG t_set_texture;
 	LONGLONG t_set_vs_const;
 	LONGLONG t_set_ps_const;
+	LONGLONG t_set_frame_const;
 	LONGLONG t_map_buffer;
 	LONGLONG t_unmap_buffer;
 	LONGLONG t_begin_scene;
@@ -95,6 +96,9 @@ struct D3D11ProfileStats {
 	LONGLONG t_set_rs;
 	LONGLONG t_set_tss;
 
+	LONGLONG t_dispatch;
+	LONGLONG t_map_buffer_read;
+
 	LONGLONG t_pass_backbuffer;
 	LONGLONG t_pass_shadow;
 	LONGLONG t_pass_depthprepass;
@@ -105,11 +109,13 @@ struct D3D11ProfileStats {
 	unsigned n_draw_up;
 	unsigned n_upload_vs;
 	unsigned n_upload_ps;
+	unsigned n_upload_frame;
 	unsigned n_set_rt;
 	unsigned n_clear;
 	unsigned n_set_texture;
 	unsigned n_set_vs_const;
 	unsigned n_set_ps_const;
+	unsigned n_set_frame_const;
 	unsigned n_map_buffer;
 	unsigned n_unmap_buffer;
 
@@ -129,6 +135,8 @@ struct D3D11ProfileStats {
 	unsigned n_set_tss;
 	unsigned n_begin_scene;
 	unsigned n_end_scene;
+	unsigned n_dispatch;
+	unsigned n_map_buffer_read;
 
 	unsigned n_draws_backbuffer;
 	unsigned n_draws_shadow;
@@ -275,6 +283,21 @@ enum {
 #define GFX_VS_CONSTANTS 96
 #define GFX_PS_CONSTANTS 32
 
+// The b1 buffer, C2 of the clustered-lighting plan. Sixteen vec4 is generous for the
+// three the plan names today (ClusterParams, ClusterDepth, CameraForward) with room for
+// frame-global data that migrates here later -- see the comment on
+// GfxDeviceClass::Set_Frame_Constants for why anything migrates here at all.
+#define GFX_FRAME_CONSTANTS 16
+
+// The two halves of the pixel stage's t register file have to meet exactly: the texture
+// stages own 0..GFX_MAX_STAGES-1 and the shader buffers own the rest. A gap wastes a
+// register; an overlap means Set_Texture and Set_Pixel_Buffer fight over one slot and
+// whichever wrote last wins silently, which is the failure this arrangement exists to
+// prevent. GFX_MAX_STAGES tracks the engine's MAX_TEXTURE_STAGES, so raising that means
+// raising GFX_FIRST_PIXEL_BUFFER_SLOT with it -- and this is what says so.
+static_assert(GFX_FIRST_PIXEL_BUFFER_SLOT == GFX_MAX_STAGES,
+	"the shader-buffer slots must start exactly where the texture stages end");
+
 // ---------------------------------------------------------------------------
 // What was swallowed and what was dropped.
 //
@@ -347,6 +370,22 @@ static unsigned s_sampler_stage_no_sampler = 0;
 static unsigned s_sampler_keys[64][10];
 static unsigned s_sampler_key_uses[64];
 static int s_sampler_key_count = 0;
+// The SRV/UAV hazard, which is the render-target hazard above in its other clothes.
+//
+// s_buffer_srv_forced_unbound is how often a buffer had to leave a read slot -- on the
+// pixel stage or the compute stage -- because it was about to be bound for writing;
+// s_buffer_uav_forced_unbound is the same in the other direction. Both should be small
+// and non-zero in a frame that dispatches: a grid is cleared and filled by the compute
+// stage and then read by every lit pixel shader, so it changes hands twice a frame.
+//
+// Two zeroes is the instrument not running, and that matters more here than it did for
+// textures: D3D11 nulls the conflicting binding on its own and says so only to the debug
+// layer, so the failure mode with these at zero is not a crash, it is a buffer that reads
+// entirely as zeroes. For a cluster grid that is "no lights near this pixel", everywhere,
+// which is a picture nobody would look at twice.
+static unsigned s_buffer_srv_forced_unbound = 0;
+static unsigned s_buffer_uav_forced_unbound = 0;
+static unsigned s_csMade = 0, s_csFreed = 0;
 #define ABSORB(counter) do { ++(counter); } while (0)
 #else
 #define ABSORB(counter) do { } while (0)
@@ -588,6 +627,20 @@ struct D3D11Buffer
 	unsigned char *			shadow;
 	unsigned				map_offset, map_size;
 	bool					mapped;
+
+	// The shader-buffer half. Null on a vertex or index buffer, which is every buffer this
+	// backend made before the clustered-lighting work: those are bound through the input
+	// assembler and have no view at all.
+	ID3D11ShaderResourceView *	srv;
+	ID3D11UnorderedAccessView *	uav;		// only when GFX_BUFFER_UAV was asked for
+	unsigned				stride, count;
+	bool					uint_view;		// a typed R32_UINT view, not a structured one
+	// The staging copy a GFX_MAP_READ lands in, made on first use. A buffer a compute
+	// shader writes cannot be mapped for reading -- it is D3D11_USAGE_DEFAULT -- so the
+	// read is a CopyResource into this and a map of that. Same arrangement as
+	// D3D11Surface::readback, and it stalls the pipeline just as hard.
+	ID3D11Buffer *			readback;
+	bool					mapped_readback;
 };
 
 namespace {
@@ -601,7 +654,10 @@ namespace {
 // this backend makes is registered here and struck off when it is freed, so what is left
 // at shutdown can be listed with its size, its usage and its vertex format instead of
 // being recognised by the size of its allocation.
-struct LiveBuffer { const D3D11Buffer * b; unsigned size, usage; bool index; };
+// `kind` was a bool meaning "index buffer" until a third kind of buffer existed. A
+// structured buffer reported as a vertex buffer is exactly the sort of mis-attribution
+// this register was written to stop.
+struct LiveBuffer { const D3D11Buffer * b; unsigned size, usage; const char * kind; };
 static LiveBuffer s_liveBuffers[64];
 static int s_liveBufferCount = 0;
 static unsigned s_buffersMade = 0, s_buffersFreed = 0, s_liveOverflow = 0;
@@ -637,12 +693,12 @@ static void Note_Res_Freed(LiveRes * table, int & count, const void * p)
 	}
 }
 
-void Note_Buffer_Made(const D3D11Buffer * b, unsigned size, unsigned usage, bool index)
+void Note_Buffer_Made(const D3D11Buffer * b, unsigned size, unsigned usage, const char * kind)
 {
 	++s_buffersMade;
 	if (s_liveBufferCount >= 64) { ++s_liveOverflow; return; }
 	LiveBuffer & e = s_liveBuffers[s_liveBufferCount++];
-	e.b = b; e.size = size; e.usage = usage; e.index = index;
+	e.b = b; e.size = size; e.usage = usage; e.kind = kind;
 }
 
 void Note_Buffer_Freed(const D3D11Buffer * b)
@@ -700,6 +756,14 @@ struct D3D11PixelShader
 	Signature				inputs;
 	// Which t registers it declares a texture in, for the render-target hazard census.
 	unsigned				texture_mask;
+};
+
+// No signature and no bytecode kept. A compute shader is never linked to another stage --
+// there is no input layout to build and no interpolator alignment to check -- so the two
+// reasons D3D11VertexShader holds its bytes do not arise.
+struct D3D11ComputeShader
+{
+	ID3D11ComputeShader *	shader;
 };
 
 struct D3D11Query { int unused; };
@@ -854,6 +918,19 @@ struct GfxD3D11Impl
 	// zero. Nothing reads it but the census.
 	unsigned					srv_rescued_mask;
 
+	// The compute stage, and the shader buffers bound to it and to the pixel stage.
+	//
+	// These are kept for exactly one reason and it is not redundancy filtering: it is the
+	// SRV/UAV hazard. To null the read binding of a buffer that is about to be written,
+	// this backend has to be able to answer "which slots is that buffer in", and D3D11
+	// will not be asked -- there is no cheap Get for a shader-resource slot. So the
+	// bindings are mirrored here. See Unbind_Buffer_From_Read_Slots and its opposite
+	// number, and the section comment above them for what happens without them.
+	D3D11ComputeShader *		compute_shader;
+	D3D11Buffer *				cs_buffers[GFX_COMPUTE_BUFFER_SLOTS];
+	D3D11Buffer *				cs_rw_buffers[GFX_COMPUTE_RW_SLOTS];
+	D3D11Buffer *				ps_buffers[GFX_PIXEL_BUFFER_SLOTS];
+
 	// Constants. One buffer per stage at the register offsets the shaders already declare;
 	// Phase 3.8 established that register(cN) survives to Shader Model 4 unchanged, so
 	// there is nothing to reflect and nothing to renumber.
@@ -862,6 +939,15 @@ struct GfxD3D11Impl
 	ID3D11Buffer *				vs_constant_buffer;
 	ID3D11Buffer *				ps_constant_buffer;
 	bool						vs_constants_dirty, ps_constants_dirty;
+
+	// b1, C2 of the clustered-lighting plan: a second constant buffer, written once a
+	// frame instead of once a draw, because the two above are full (see
+	// GfxDeviceClass::Set_Frame_Constants). Bound on VS, PS and CS alike -- CSSetShader
+	// has no per-draw setup step to bind it from, so if it is not bound here it is not
+	// bound anywhere a compute shader can see.
+	float						frame_constants[GFX_FRAME_CONSTANTS * 4];
+	ID3D11Buffer *				frame_constant_buffer;
+	bool						frame_constants_dirty;
 	// Debug only: where Debug_Read_Vertex_Constants copies the constant buffer to so it
 	// can be mapped for reading. Made on first use, never in a release build.
 	ID3D11Buffer *				debug_constant_staging;
@@ -2153,12 +2239,14 @@ void Gfx_Report_Live_Objects(const char * when)
 		"alive (%u could not be registered -- the register holds 64). A non-zero \"still "
 		"alive\" is the engine's, not this backend's: nothing here can free one on its own.",
 		s_buffersMade, s_buffersFreed, s_liveBufferCount, s_liveOverflow));
-	WWDEBUG_SAY(("D3D11 LIVE OBJECTS, the other four kinds (made/freed, sizeof): vertex "
-		"shaders %u/%u (%u bytes), pixel shaders %u/%u (%u), textures %u/%u (%u), surfaces "
-		"%u/%u (%u), buffers (%u). A kind whose two figures differ is the one to look for in "
-		"the engine's leak report, and its sizeof says which block.",
+	WWDEBUG_SAY(("D3D11 LIVE OBJECTS, the other five kinds (made/freed, sizeof): vertex "
+		"shaders %u/%u (%u bytes), pixel shaders %u/%u (%u), compute shaders %u/%u (%u), "
+		"textures %u/%u (%u), surfaces %u/%u (%u), buffers (%u). A kind whose two figures "
+		"differ is the one to look for in the engine's leak report, and its sizeof says "
+		"which block.",
 		s_vsMade, s_vsFreed, (unsigned)sizeof(D3D11VertexShader),
 		s_psMade, s_psFreed, (unsigned)sizeof(D3D11PixelShader),
+		s_csMade, s_csFreed, (unsigned)sizeof(D3D11ComputeShader),
 		s_texMade, s_texFreed, (unsigned)sizeof(D3D11Texture),
 		s_surfMade, s_surfFreed, (unsigned)sizeof(D3D11Surface),
 		(unsigned)sizeof(D3D11Buffer)));
@@ -2184,7 +2272,7 @@ if (s_resOverflow != 0)
 	for (int i = 0; i < s_liveBufferCount; ++i) {
 		shadowBytes += s_liveBuffers[i].size;
 		WWDEBUG_SAY(("    live %s buffer %u bytes, usage 0x%x, fvf 0x%x",
-			s_liveBuffers[i].index ? "index" : "vertex", s_liveBuffers[i].size,
+			s_liveBuffers[i].kind, s_liveBuffers[i].size,
 			s_liveBuffers[i].usage,
 			s_liveBuffers[i].b != nullptr ? s_liveBuffers[i].b->fvf : 0u));
 	}
@@ -2212,6 +2300,7 @@ GfxDeviceD3D11::~GfxDeviceD3D11()
 		m_impl->debug_constant_staging->Release();
 	if (m_impl->vs_constant_buffer != nullptr) m_impl->vs_constant_buffer->Release();
 	if (m_impl->ps_constant_buffer != nullptr) m_impl->ps_constant_buffer->Release();
+	if (m_impl->frame_constant_buffer != nullptr) m_impl->frame_constant_buffer->Release();
 	if (m_impl->zero_stream != nullptr) m_impl->zero_stream->Release();
 	if (m_impl->up_buffer != nullptr) m_impl->up_buffer->Release();
 
@@ -2860,6 +2949,24 @@ void GfxDeviceD3D11::Set_Pixel_Shader_Constants(unsigned reg, const float * data
 	}
 }
 
+void GfxDeviceD3D11::Set_Frame_Constants(const float * data, unsigned vec4_count)
+{
+	TRACE("Set_Frame_Constants");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_frame_const);
+	++s_d3d11_prof.n_set_frame_const;
+#endif
+	// Always from offset 0 -- see the interface comment on why this one call has no reg
+	// argument, unlike its per-draw neighbours above.
+	if (data == nullptr) return;
+	if (vec4_count > GFX_FRAME_CONSTANTS) vec4_count = GFX_FRAME_CONSTANTS;
+	const size_t bytes = vec4_count * 4 * sizeof(float);
+	if (memcmp(m_impl->frame_constants, data, bytes) != 0) {
+		memcpy(m_impl->frame_constants, data, bytes);
+		m_impl->frame_constants_dirty = true;
+	}
+}
+
 void GfxDeviceD3D11::Set_Vertex_Stream(unsigned stream, GfxVertexBuffer * buffer,
 	unsigned stride)
 {
@@ -3046,8 +3153,25 @@ namespace
 		if (FAILED(impl->device->CreateBuffer(&desc, nullptr, &impl->ps_constant_buffer)))
 			return false;
 
+		// b1, C2 of the clustered-lighting plan. Same dynamic/CPU-write arrangement as the
+		// two above, at the next slot along, and bound on all three stages a shader can run
+		// on -- see the comment on GfxDeviceClass::Set_Frame_Constants for why the compute
+		// binding is not optional.
+		desc.ByteWidth = GFX_FRAME_CONSTANTS * 4 * sizeof(float);
+		if (FAILED(impl->device->CreateBuffer(&desc, nullptr, &impl->frame_constant_buffer)))
+			return false;
+
 		impl->context->VSSetConstantBuffers(0, 1, &impl->vs_constant_buffer);
 		impl->context->PSSetConstantBuffers(0, 1, &impl->ps_constant_buffer);
+		impl->context->VSSetConstantBuffers(1, 1, &impl->frame_constant_buffer);
+		impl->context->PSSetConstantBuffers(1, 1, &impl->frame_constant_buffer);
+		impl->context->CSSetConstantBuffers(1, 1, &impl->frame_constant_buffer);
+
+#ifdef RTS_DEBUG
+		WWDEBUG_SAY(("D3D11: frame constant buffer created at b1, %u bytes (%u vec4) -- "
+			"bound on VS, PS and CS. the clustered lighting plan C2.",
+			(unsigned)(GFX_FRAME_CONSTANTS * 4 * sizeof(float)), (unsigned)GFX_FRAME_CONSTANTS));
+#endif
 
 		// (0, 0, 0, 1) -- what D3D9 left in a vertex shader input register the vertex
 		// declaration did not write. Read through a stride of zero, one copy of it fills
@@ -3107,6 +3231,7 @@ namespace
 		impl->raster_dirty = true;
 		impl->vs_constants_dirty = true;
 		impl->ps_constants_dirty = true;
+		impl->frame_constants_dirty = true;
 
 		// GPU Blit / StretchRect pipeline resources
 		if (FAILED(impl->device->CreateVertexShader(s_blit_vs_bytecode, sizeof(s_blit_vs_bytecode), nullptr, &impl->blit_vs)))
@@ -3521,6 +3646,18 @@ namespace
 				impl->context->Unmap(impl->ps_constant_buffer, 0);
 			}
 			impl->ps_constants_dirty = false;
+		}
+		if (impl->frame_constants_dirty && impl->frame_constant_buffer != nullptr) {
+#ifdef RTS_DEBUG
+			++s_d3d11_prof.n_upload_frame;
+#endif
+			D3D11_MAPPED_SUBRESOURCE mapped;
+			if (SUCCEEDED(impl->context->Map(impl->frame_constant_buffer, 0,
+					D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+				memcpy(mapped.pData, impl->frame_constants, sizeof(impl->frame_constants));
+				impl->context->Unmap(impl->frame_constant_buffer, 0);
+			}
+			impl->frame_constants_dirty = false;
 		}
 	}
 
@@ -3997,7 +4134,8 @@ namespace
 			memset(b->shadow, 0, size);
 		}
 #ifdef RTS_DEBUG
-		Note_Buffer_Made(b, size, usage, bind == D3D11_BIND_INDEX_BUFFER);
+		Note_Buffer_Made(b, size, usage,
+			(bind == D3D11_BIND_INDEX_BUFFER) ? "index" : "vertex");
 #endif
 		return b;
 	}
@@ -4008,6 +4146,11 @@ namespace
 #ifdef RTS_DEBUG
 		Note_Buffer_Freed(b);
 #endif
+		// The views before the resource they view. Null on a vertex or index buffer, which
+		// is what the release ladder looked like before shader buffers existed.
+		if (b->srv != nullptr) b->srv->Release();
+		if (b->uav != nullptr) b->uav->Release();
+		if (b->readback != nullptr) b->readback->Release();
 		if (b->buffer != nullptr) b->buffer->Release();
 		delete [] b->shadow;
 		delete b;
@@ -4115,26 +4258,434 @@ bool GfxDeviceD3D11::Map_Vertex_Buffer(GfxVertexBuffer * buffer, unsigned offset
 	unsigned size_in_bytes, GfxMapMode mode, void ** data)
 {
 	TRACE("Map_Vertex_Buffer");
-	return Map_Buffer(m_impl, (D3D11Buffer *)buffer, offset_in_bytes, size_in_bytes, mode, data);
+	// Qualified, here and in the three below: GfxDeviceD3D11 now has its own Map_Buffer and
+	// Unmap_Buffer -- the shader-buffer pair -- and an unqualified call from inside the
+	// class finds those members and stops looking, whatever their arity.
+	return ::Map_Buffer(m_impl, (D3D11Buffer *)buffer, offset_in_bytes, size_in_bytes, mode, data);
 }
 
 void GfxDeviceD3D11::Unmap_Vertex_Buffer(GfxVertexBuffer * buffer)
 {
 	TRACE("Unmap_Vertex_Buffer");
-	Unmap_Buffer(m_impl, (D3D11Buffer *)buffer);
+	::Unmap_Buffer(m_impl, (D3D11Buffer *)buffer);
 }
 
 bool GfxDeviceD3D11::Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
 	unsigned size_in_bytes, GfxMapMode mode, void ** data)
 {
 	TRACE("Map_Index_Buffer");
-	return Map_Buffer(m_impl, (D3D11Buffer *)buffer, offset_in_bytes, size_in_bytes, mode, data);
+	return ::Map_Buffer(m_impl, (D3D11Buffer *)buffer, offset_in_bytes, size_in_bytes, mode, data);
 }
 
 void GfxDeviceD3D11::Unmap_Index_Buffer(GfxIndexBuffer * buffer)
 {
 	TRACE("Unmap_Index_Buffer");
-	Unmap_Buffer(m_impl, (D3D11Buffer *)buffer);
+	::Unmap_Buffer(m_impl, (D3D11Buffer *)buffer);
+}
+
+// ---------------------------------------------------------------------------
+// Compute, and the buffers it reads and writes
+//
+// THE SRV/UAV HAZARD, which is the whole reason this section is longer than the four
+// D3D11 calls it wraps.
+//
+// D3D11 will not have one resource bound for reading and for writing at the same time,
+// and it does not say so: CSSetUnorderedAccessViews nulls any shader-resource slot
+// holding the same resource, and CSSetShaderResources / PSSetShaderResources null the
+// unordered-access slot, and both report it to the debug layer and to nothing else. A
+// null buffer SRV does not fault -- it reads as **zero**, for every element, forever.
+//
+// That is the same shape as the render-target hazard above and it is worse in one
+// respect. A texture stage that reads zero draws a black patch somebody notices. A
+// cluster grid that reads zero says "no lights are near this pixel", which is a perfectly
+// ordinary thing for a cluster grid to say, and the frame it produces is the frame you
+// would get with the feature working and no lights in the scene. There is no picture to
+// look at that distinguishes them; only the counters below and the self-test do.
+//
+// So this backend nulls the conflicting binding itself, before D3D11 does it silently,
+// and counts it. The difference from the render-target rule is deliberate: that one
+// *restores* the texture afterwards, because the wrapper's redundancy check would
+// otherwise never re-send a texture it believes is still bound. Here the record is
+// cleared along with the device binding, so the next Set_ of that slot is not filtered
+// out as redundant and simply re-binds. That works because the caller of these is one
+// piece of clustered-lighting code that re-binds what it needs each frame, where
+// Set_Texture's callers are the whole engine.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+	/// Take a buffer out of every slot it is bound in for reading, on either stage.
+	/// Called just before it is bound for writing.
+	void Unbind_Buffer_From_Read_Slots(GfxD3D11Impl * impl, D3D11Buffer * b)
+	{
+		if (b == nullptr) return;
+		ID3D11ShaderResourceView * none = nullptr;
+		for (unsigned i = 0; i < GFX_COMPUTE_BUFFER_SLOTS; ++i) {
+			if (impl->cs_buffers[i] != b) continue;
+			impl->context->CSSetShaderResources(i, 1, &none);
+			impl->cs_buffers[i] = nullptr;
+			ABSORB(s_buffer_srv_forced_unbound);
+		}
+		for (unsigned i = 0; i < GFX_PIXEL_BUFFER_SLOTS; ++i) {
+			if (impl->ps_buffers[i] != b) continue;
+			impl->context->PSSetShaderResources(GFX_FIRST_PIXEL_BUFFER_SLOT + i, 1, &none);
+			impl->ps_buffers[i] = nullptr;
+			ABSORB(s_buffer_srv_forced_unbound);
+		}
+	}
+
+	/// ...and the other direction: out of every write slot, before it is bound for reading.
+	void Unbind_Buffer_From_Write_Slots(GfxD3D11Impl * impl, D3D11Buffer * b)
+	{
+		if (b == nullptr) return;
+		ID3D11UnorderedAccessView * none = nullptr;
+		// -1 means "leave the append/consume counter alone", which is what every caller
+		// that is not using one passes. These buffers have none.
+		const UINT keep_counter = (UINT)-1;
+		for (unsigned i = 0; i < GFX_COMPUTE_RW_SLOTS; ++i) {
+			if (impl->cs_rw_buffers[i] != b) continue;
+			impl->context->CSSetUnorderedAccessViews(i, 1, &none, &keep_counter);
+			impl->cs_rw_buffers[i] = nullptr;
+			ABSORB(s_buffer_uav_forced_unbound);
+		}
+	}
+
+	/// Every slot a buffer about to be destroyed is bound in, on the way out. The same
+	/// service Release_Texture performs for a texture, and for the same reason: a released
+	/// resource left in a slot is a dangling binding the next draw or dispatch uses.
+	void Unbind_Buffer_Everywhere(GfxD3D11Impl * impl, D3D11Buffer * b)
+	{
+		Unbind_Buffer_From_Read_Slots(impl, b);
+		Unbind_Buffer_From_Write_Slots(impl, b);
+	}
+}
+
+GfxShaderHandle GfxDeviceD3D11::Create_Compute_Shader(const void * bytecode, unsigned size)
+{
+	TRACE("Create_Compute_Shader");
+	if (bytecode == nullptr || size == 0) return 0;
+
+	D3D11ComputeShader * cs = new D3D11ComputeShader;
+#ifdef RTS_DEBUG
+	++s_csMade;
+#endif
+	memset(cs, 0, sizeof(*cs));
+	if (FAILED(m_impl->device->CreateComputeShader(bytecode, size, nullptr, &cs->shader))) {
+#ifdef RTS_DEBUG
+		++s_csFreed;
+#endif
+		delete cs;
+		return 0;
+	}
+	return (GfxShaderHandle)cs;
+}
+
+void GfxDeviceD3D11::Release_Compute_Shader(GfxShaderHandle shader)
+{
+	TRACE("Release_Compute_Shader");
+	if (shader == 0) return;
+	D3D11ComputeShader * cs = (D3D11ComputeShader *)shader;
+	if (m_impl->compute_shader == cs) m_impl->compute_shader = nullptr;
+	if (cs->shader != nullptr) cs->shader->Release();
+#ifdef RTS_DEBUG
+	++s_csFreed;
+#endif
+	delete cs;
+}
+
+void GfxDeviceD3D11::Set_Compute_Shader(GfxShaderHandle shader)
+{
+	TRACE("Set_Compute_Shader");
+	// No FVF escape hatch here, unlike Set_Vertex_Shader: there has never been a
+	// fixed-function compute stage for a small handle to mean.
+	D3D11ComputeShader * cs = (D3D11ComputeShader *)shader;
+	if (m_impl->compute_shader == cs) return;
+	m_impl->compute_shader = cs;
+	m_impl->context->CSSetShader(cs != nullptr ? cs->shader : nullptr, nullptr, 0);
+	DX8Wrapper_Increment_Call_Count();
+}
+
+void GfxDeviceD3D11::Dispatch(unsigned x, unsigned y, unsigned z)
+{
+	TRACE("Dispatch");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_dispatch);
+	++s_d3d11_prof.n_dispatch;
+#endif
+	// Nothing like Prepare_Draw runs first, and that is not an omission. Everything
+	// Prepare_Draw materialises -- blend, depth, raster, samplers, the input layout -- is
+	// state for a rasteriser this has none of. A dispatch's whole state is the shader, its
+	// buffers and its constants, and all three are set by their own calls.
+	if (m_impl->compute_shader == nullptr) return;
+	if (x == 0 || y == 0 || z == 0) return;
+	m_impl->context->Dispatch(x, y, z);
+	DX8Wrapper_Increment_Call_Count();
+}
+
+GfxBuffer * GfxDeviceD3D11::Create_Structured_Buffer(unsigned stride, unsigned count,
+	unsigned usage)
+{
+	TRACE("Create_Structured_Buffer");
+	if (stride == 0 || count == 0) return nullptr;
+
+	const bool wants_uav = (usage & GFX_BUFFER_UAV) != 0;
+	const bool wants_dynamic = (usage & GFX_BUFFER_DYNAMIC) != 0;
+	const bool uint_view = (usage & GFX_BUFFER_UINT) != 0;
+
+	// Said rather than silently dropped, because the two ways this can be asked for
+	// wrongly both produce a working-looking buffer that is not what was wanted.
+	if (wants_uav && wants_dynamic) {
+		WWDEBUG_SAY(("D3D11: a buffer cannot be both GFX_BUFFER_DYNAMIC and GFX_BUFFER_UAV "
+			"-- D3D11 has no usage that is CPU-written every frame and GPU-written. Ask for "
+			"one or the other; they are two buffers."));
+		return nullptr;
+	}
+	if (uint_view && stride != 4) {
+		WWDEBUG_SAY(("D3D11: GFX_BUFFER_UINT asks for a typed view of 32-bit words and the "
+			"stride is %u. That view has no way to describe an element of another size.",
+			stride));
+		return nullptr;
+	}
+
+	D3D11_BUFFER_DESC desc;
+	memset(&desc, 0, sizeof(desc));
+	desc.ByteWidth = stride * count;
+	desc.Usage = wants_dynamic ? D3D11_USAGE_DYNAMIC : D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE
+		| (wants_uav ? D3D11_BIND_UNORDERED_ACCESS : 0);
+	desc.CPUAccessFlags = wants_dynamic ? D3D11_CPU_ACCESS_WRITE : 0;
+	// STRUCTURED and a stride, or neither. A typed R32_UINT view is the other kind of
+	// buffer entirely and D3D11 refuses a resource that claims to be both.
+	if (!uint_view) {
+		desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+		desc.StructureByteStride = stride;
+	}
+
+	ID3D11Buffer * buffer = nullptr;
+	if (FAILED(m_impl->device->CreateBuffer(&desc, nullptr, &buffer))) return nullptr;
+
+	D3D11Buffer * b = new D3D11Buffer;
+	memset(b, 0, sizeof(*b));
+	b->refs = 1;
+	b->buffer = buffer;
+	b->size = desc.ByteWidth;
+	b->usage = usage;
+	b->is_dynamic = wants_dynamic;
+	b->stride = stride;
+	b->count = count;
+	b->uint_view = uint_view;
+	// No shadow. The vertex and index path keeps one so that a partial CPU write to a
+	// static buffer can be replayed through UpdateSubresource; a shader buffer is either
+	// dynamic and mapped directly, or GPU-written and never CPU-written at all. A shadow
+	// for the light-index list would be 5.6 MB of system memory nothing would ever read.
+#ifdef RTS_DEBUG
+	// Registered before the views, not after: the two failure paths below free the buffer
+	// through Free_Buffer, which strikes it off this register, and striking off something
+	// that was never registered leaves made and freed disagreeing for a reason that has
+	// nothing to do with a leak.
+	Note_Buffer_Made(b, desc.ByteWidth, usage, uint_view ? "uint shader" : "structured");
+#endif
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvd;
+	memset(&srvd, 0, sizeof(srvd));
+	srvd.Format = uint_view ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_UNKNOWN;
+	srvd.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+	srvd.Buffer.FirstElement = 0;
+	srvd.Buffer.NumElements = count;
+	if (FAILED(m_impl->device->CreateShaderResourceView(buffer, &srvd, &b->srv))) {
+		Free_Buffer(b);
+		return nullptr;
+	}
+
+	if (wants_uav) {
+		D3D11_UNORDERED_ACCESS_VIEW_DESC uavd;
+		memset(&uavd, 0, sizeof(uavd));
+		uavd.Format = uint_view ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_UNKNOWN;
+		uavd.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+		uavd.Buffer.FirstElement = 0;
+		uavd.Buffer.NumElements = count;
+		if (FAILED(m_impl->device->CreateUnorderedAccessView(buffer, &uavd, &b->uav))) {
+			Free_Buffer(b);
+			return nullptr;
+		}
+	}
+
+	return (GfxBuffer *)b;
+}
+
+void GfxDeviceD3D11::Release_Buffer(GfxBuffer * buffer)
+{
+	TRACE("Release_Buffer");
+	D3D11Buffer * b = (D3D11Buffer *)buffer;
+	if (b == nullptr) return;
+	if (--b->refs > 0) return;
+	// Out of every slot before it is freed. A released resource left in a shader-resource
+	// or unordered-access slot is a dangling binding the next dispatch or draw uses --
+	// the same service Release_Texture performs for the texture stages.
+	Unbind_Buffer_Everywhere(m_impl, b);
+	Free_Buffer(b);
+}
+
+bool GfxDeviceD3D11::Map_Buffer(GfxBuffer * buffer, GfxMapMode mode, void ** data)
+{
+	TRACE("Map_Buffer");
+	D3D11Buffer * b = (D3D11Buffer *)buffer;
+	if (b == nullptr || data == nullptr || b->mapped) return false;
+
+	if (mode == GFX_MAP_READ) {
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_map_buffer_read);
+		++s_d3d11_prof.n_map_buffer_read;
+#endif
+		// A staging copy, because the buffer itself is D3D11_USAGE_DEFAULT and the CPU
+		// cannot see one. Made on first use and kept, so an oracle that reads the grid
+		// every frame does not allocate every frame.
+		//
+		// BindFlags 0 and no structure stride even when the source has one: CopyResource
+		// between two buffers asks only that they be the same size, and a staging buffer
+		// is not allowed the structured flag because nothing binds it.
+		if (b->readback == nullptr) {
+			D3D11_BUFFER_DESC desc;
+			memset(&desc, 0, sizeof(desc));
+			desc.ByteWidth = b->size;
+			desc.Usage = D3D11_USAGE_STAGING;
+			desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			if (FAILED(m_impl->device->CreateBuffer(&desc, nullptr, &b->readback))) {
+				b->readback = nullptr;
+				return false;
+			}
+		}
+		// This stalls until the GPU has finished everything queued ahead of it. That is
+		// the price of reading a GPU-written buffer on the CPU and there is no cheaper
+		// way; it is why the seam says nothing on the render path may call this.
+		m_impl->context->CopyResource(b->readback, b->buffer);
+		D3D11_MAPPED_SUBRESOURCE ms;
+		if (FAILED(m_impl->context->Map(b->readback, 0, D3D11_MAP_READ, 0, &ms))) return false;
+		b->mapped = true;
+		b->mapped_readback = true;
+		*data = ms.pData;
+		return true;
+	}
+
+	// The write half. Only a dynamic buffer takes one: a GPU-written buffer has no CPU
+	// path in and answering with a shadow that never reaches it would be a write that
+	// silently does nothing.
+	if (!b->is_dynamic) return false;
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_map_buffer);
+	++s_d3d11_prof.n_map_buffer;
+#endif
+	D3D11_MAPPED_SUBRESOURCE ms;
+	if (FAILED(m_impl->context->Map(b->buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
+	b->mapped = true;
+	b->mapped_readback = false;
+	*data = ms.pData;
+	return true;
+}
+
+void GfxDeviceD3D11::Unmap_Buffer(GfxBuffer * buffer)
+{
+	TRACE("Unmap_Buffer");
+	D3D11Buffer * b = (D3D11Buffer *)buffer;
+	if (b == nullptr || !b->mapped) return;
+	b->mapped = false;
+	if (b->mapped_readback) {
+		m_impl->context->Unmap(b->readback, 0);
+		b->mapped_readback = false;
+		return;
+	}
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_unmap_buffer);
+	++s_d3d11_prof.n_unmap_buffer;
+#endif
+	m_impl->context->Unmap(b->buffer, 0);
+}
+
+void GfxDeviceD3D11::Set_Compute_Buffer(unsigned slot, GfxBuffer * buffer)
+{
+	TRACE("Set_Compute_Buffer");
+	if (slot >= GFX_COMPUTE_BUFFER_SLOTS) return;
+	D3D11Buffer * b = (D3D11Buffer *)buffer;
+	if (m_impl->cs_buffers[slot] == b) return;
+	// Reading it and writing it cannot both stand. See the hazard note above this section.
+	Unbind_Buffer_From_Write_Slots(m_impl, b);
+	m_impl->cs_buffers[slot] = b;
+	ID3D11ShaderResourceView * srv = (b != nullptr) ? b->srv : nullptr;
+	m_impl->context->CSSetShaderResources(slot, 1, &srv);
+	DX8Wrapper_Increment_Call_Count();
+}
+
+void GfxDeviceD3D11::Set_Compute_RW_Buffer(unsigned slot, GfxBuffer * buffer)
+{
+	TRACE("Set_Compute_RW_Buffer");
+	if (slot >= GFX_COMPUTE_RW_SLOTS) return;
+	D3D11Buffer * b = (D3D11Buffer *)buffer;
+	if (b != nullptr && b->uav == nullptr) {
+		// A buffer created without GFX_BUFFER_UAV has no view to bind, and binding
+		// nothing would leave the dispatch writing into whatever was there before.
+		WWDEBUG_SAY(("D3D11: Set_Compute_RW_Buffer on a buffer created without "
+			"GFX_BUFFER_UAV (usage 0x%x). Nothing is bound at u%u.", b->usage, slot));
+		return;
+	}
+	if (m_impl->cs_rw_buffers[slot] == b) return;
+	Unbind_Buffer_From_Read_Slots(m_impl, b);
+	m_impl->cs_rw_buffers[slot] = b;
+	ID3D11UnorderedAccessView * uav = (b != nullptr) ? b->uav : nullptr;
+	const UINT keep_counter = (UINT)-1;
+	m_impl->context->CSSetUnorderedAccessViews(slot, 1, &uav, &keep_counter);
+	DX8Wrapper_Increment_Call_Count();
+}
+
+void GfxDeviceD3D11::Set_Pixel_Buffer(unsigned slot, GfxBuffer * buffer)
+{
+	TRACE("Set_Pixel_Buffer");
+	// Below the first buffer slot is the mesh's texture stage range, which Set_Texture
+	// owns and whose redundancy check knows nothing about buffers. A buffer bound there
+	// would be replaced by the next texture at that stage with nothing to say so.
+	//
+	// Said once rather than never and rather than every frame. Never is how a shader ends
+	// up sampling a slot nothing was ever put in -- which reads as zero, which is the
+	// failure this whole section exists to make visible -- and every frame is a log nobody
+	// can read the rest of.
+	if (slot < GFX_FIRST_PIXEL_BUFFER_SLOT || slot - GFX_FIRST_PIXEL_BUFFER_SLOT >= GFX_PIXEL_BUFFER_SLOTS) {
+		static bool warned = false;
+		if (!warned) {
+			warned = true;
+			WWDEBUG_SAY(("D3D11: Set_Pixel_Buffer refused slot t%u. The pixel stage's buffer "
+				"slots are t%u..t%u; below that is the texture stage range, where a buffer "
+				"would be silently replaced by the next Set_Texture for that stage.",
+				slot, (unsigned)GFX_FIRST_PIXEL_BUFFER_SLOT,
+				(unsigned)(GFX_FIRST_PIXEL_BUFFER_SLOT + GFX_PIXEL_BUFFER_SLOTS - 1)));
+		}
+		return;
+	}
+	const unsigned index = slot - GFX_FIRST_PIXEL_BUFFER_SLOT;
+	D3D11Buffer * b = (D3D11Buffer *)buffer;
+	if (m_impl->ps_buffers[index] == b) return;
+	Unbind_Buffer_From_Write_Slots(m_impl, b);
+	m_impl->ps_buffers[index] = b;
+	ID3D11ShaderResourceView * srv = (b != nullptr) ? b->srv : nullptr;
+	m_impl->context->PSSetShaderResources(slot, 1, &srv);
+	DX8Wrapper_Increment_Call_Count();
+}
+
+void GfxDeviceD3D11::Clear_RW_Buffer_UInt(GfxBuffer * buffer, unsigned value)
+{
+	TRACE("Clear_RW_Buffer_UInt");
+	D3D11Buffer * b = (D3D11Buffer *)buffer;
+	if (b == nullptr || b->uav == nullptr) return;
+	if (!b->uint_view) {
+		// Refused rather than attempted. ClearUnorderedAccessViewUint is defined against a
+		// typed or raw view; against a structured one the result is the driver's business,
+		// and a clear that does nothing leaves the previous frame's contents in place --
+		// which for a cluster grid is lights that are no longer there, drawn confidently.
+		WWDEBUG_SAY(("D3D11: Clear_RW_Buffer_UInt on a structured buffer (usage 0x%x). "
+			"Create it with GFX_BUFFER_UINT if it is to be cleared this way.", b->usage));
+		return;
+	}
+	const UINT values[4] = { value, value, value, value };
+	m_impl->context->ClearUnorderedAccessViewUint(b->uav, values);
+	DX8Wrapper_Increment_Call_Count();
 }
 
 // ---------------------------------------------------------------------------
@@ -6269,6 +6820,13 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 		"above read zero whatever the truth was -- it would be the RDEF parse failing, "
 		"reported as a result.",
 		s_ps_with_textures, s_ps_created, s_ps_texture_union));
+	WWDEBUG_SAY(("D3D11 SRV/UAV HAZARD: %u buffer read bindings were force-unbound because "
+		"the buffer was about to be written by a dispatch, and %u write bindings were "
+		"force-unbound because the buffer was about to be read. Both zero on a frame that "
+		"dispatched means this backend is not enforcing the rule and D3D11 is doing it "
+		"silently instead -- and a dropped buffer SRV reads as zero, which for a cluster "
+		"grid is \"no lights near this pixel\" and looks entirely plausible.",
+		s_buffer_srv_forced_unbound, s_buffer_uav_forced_unbound));
 	WWDEBUG_SAY(("D3D11 SAMPLER CENSUS over 600 frames: %u textured stages were drawn -- "
 		"%u with a linear mip filter, %u point, %u with no mipmapping at all, %u "
 		"anisotropic, and %u through no sampler object of ours at all. That last figure is "
@@ -6306,11 +6864,11 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 			s_d3d11_prof.n_draw_indexed,
 			(double)s_d3d11_prof.t_raw_draw_call * to_ms * inv_frames,
 			(double)s_d3d11_prof.t_prepare_draw * to_ms * inv_frames));
-		WWDEBUG_SAY(("    Prepare:    layout=%6.2f ms, states=%6.2f ms, const_upload=%6.2f ms (vs_up=%u, ps_up=%u)",
+		WWDEBUG_SAY(("    Prepare:    layout=%6.2f ms, states=%6.2f ms, const_upload=%6.2f ms (vs_up=%u, ps_up=%u, frame_up=%u)",
 			(double)s_d3d11_prof.t_input_layout * to_ms * inv_frames,
 			(double)s_d3d11_prof.t_apply_states * to_ms * inv_frames,
 			(double)s_d3d11_prof.t_upload_constants * to_ms * inv_frames,
-			s_d3d11_prof.n_upload_vs, s_d3d11_prof.n_upload_ps));
+			s_d3d11_prof.n_upload_vs, s_d3d11_prof.n_upload_ps, s_d3d11_prof.n_upload_frame));
 		WWDEBUG_SAY(("  Draw / DrawUp: %6.2f ms / %6.2f ms (cnt=%u / %u)",
 			(double)s_d3d11_prof.t_draw * to_ms * inv_frames,
 			(double)s_d3d11_prof.t_draw_up * to_ms * inv_frames,
@@ -6326,9 +6884,11 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 		WWDEBUG_SAY(("  SetTexture:   %6.2f ms (cnt=%u)",
 			(double)s_d3d11_prof.t_set_texture * to_ms * inv_frames,
 			s_d3d11_prof.n_set_texture));
-		WWDEBUG_SAY(("  SetConstants: %6.2f ms (vs_cnt=%u, ps_cnt=%u)",
-			((double)s_d3d11_prof.t_set_vs_const + (double)s_d3d11_prof.t_set_ps_const) * to_ms * inv_frames,
-			s_d3d11_prof.n_set_vs_const, s_d3d11_prof.n_set_ps_const));
+		WWDEBUG_SAY(("  SetConstants: %6.2f ms (vs_cnt=%u, ps_cnt=%u, frame_cnt=%u)",
+			((double)s_d3d11_prof.t_set_vs_const + (double)s_d3d11_prof.t_set_ps_const +
+				(double)s_d3d11_prof.t_set_frame_const) * to_ms * inv_frames,
+			s_d3d11_prof.n_set_vs_const, s_d3d11_prof.n_set_ps_const,
+			s_d3d11_prof.n_set_frame_const));
 		WWDEBUG_SAY(("  SetShaders:   vs=%6.2f ms, ps=%6.2f ms (cnt=%u / %u)",
 			(double)s_d3d11_prof.t_set_vs * to_ms * inv_frames,
 			(double)s_d3d11_prof.t_set_ps * to_ms * inv_frames,
@@ -6346,6 +6906,10 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 			(double)s_d3d11_prof.t_map_buffer * to_ms * inv_frames,
 			(double)s_d3d11_prof.t_unmap_buffer * to_ms * inv_frames,
 			s_d3d11_prof.n_map_buffer, s_d3d11_prof.n_unmap_buffer));
+		WWDEBUG_SAY(("  Dispatch:     %6.2f ms (cnt=%u); buffer read-back %6.2f ms (cnt=%u)",
+			(double)s_d3d11_prof.t_dispatch * to_ms * inv_frames, s_d3d11_prof.n_dispatch,
+			(double)s_d3d11_prof.t_map_buffer_read * to_ms * inv_frames,
+			s_d3d11_prof.n_map_buffer_read));
 		WWDEBUG_SAY(("  MapTexture:   map=%6.2f ms, unmap=%6.2f ms, readback=%6.2f ms (cnt=%u / %u / %u)",
 			(double)s_d3d11_prof.t_map_texture * to_ms * inv_frames,
 			(double)s_d3d11_prof.t_unmap_texture * to_ms * inv_frames,
@@ -6383,5 +6947,7 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 	s_draws_target_conflict_read = 0;
 	s_draws_target_conflict_noshader = 0;
 	s_draws_rescued = 0;
+	s_buffer_srv_forced_unbound = 0;
+	s_buffer_uav_forced_unbound = 0;
 #endif
 }

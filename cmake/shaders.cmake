@@ -42,7 +42,7 @@ set(RTS_SHADER_OUT_DIR "${CMAKE_BINARY_DIR}/shaders" CACHE INTERNAL "Compiled sh
 
 
 # Shaders to compile. The pipeline stage (and therefore the target profile and the
-# output extension) is derived from the "_vs"/"_ps" suffix of each name.
+# output extension) is derived from the "_vs"/"_ps"/"_cs" suffix of each name.
 set(_rts_shaders
     unit_vs
     # Same body as unit_vs, declaring the mesh's second coordinate set as well
@@ -102,6 +102,10 @@ set(_rts_shaders
     # ... and its particle-sprite variant (vertex alpha + dithered coverage)
     shadowdepthparticle_vs
     shadowdepthparticle_ps
+    # The compute stage's positive control. Throwaway: it exists so that "the backend can
+    # dispatch and the CPU can read the result back" is a number rather than a belief, and
+    # it goes when C4 of the clustered-lighting plan has a control of its own.
+    selftest_cs
 )
 
 file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")
@@ -119,6 +123,10 @@ foreach(_name ${_rts_shaders})
     set(_profile "ps_5_0")
     if(_name MATCHES "_vs$")
         set(_profile "vs_5_0")
+    elseif(_name MATCHES "_cs$")
+        # Compute. cs_5_0 is the only compute profile Feature Level 11_0 accepts, and
+        # 11_0 is this backend's floor, so there is no lower fallback to offer.
+        set(_profile "cs_5_0")
     endif()
     set(_src "${RTS_SHADER_SRC_DIR}/${_name}.hlsl")
     set(_out "${RTS_SHADER_OUT_DIR}/${_name}.sm5")

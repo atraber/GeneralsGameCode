@@ -2266,6 +2266,12 @@ void W3DShaderManager::initUnitShaders()
 
 	// The in-game debug visualizations.
 	initDebugVis();
+
+	// The compute stage's positive control, once, before anything depends on it. See the
+	// definition; it goes when C4 has a control of its own.
+#ifdef RTS_DEBUG
+	runComputeSelfTest();
+#endif
 }
 
 //=============================================================================
@@ -4560,7 +4566,7 @@ ChipsetType W3DShaderManager::getChipset()
 //=============================================================================
 /** Loads and creates a D3D pixel or vertex shader.*/
 //=============================================================================
-HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const DWORD* pDeclaration, DWORD Usage, Bool ShaderType, DWORD* pHandle)
+HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const DWORD* pDeclaration, DWORD Usage, Int ShaderType, DWORD* pHandle)
 {
 	if (getChipset() < DC_GENERIC_PIXEL_SHADER_1_1)
 		return E_FAIL;	//don't allow loading any shaders if hardware can't handle it.
@@ -4616,9 +4622,22 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 		// signature only because 30 call sites spell them out.
 		(void)pDeclaration;
 		(void)Usage;
-		*pHandle = ShaderType
-			? DX8Wrapper::Create_Vertex_Shader(pShader, dwFileSize)
-			: DX8Wrapper::Create_Pixel_Shader(pShader, dwFileSize);
+		// A switch rather than the ternary this was, now that there are three stages. The
+		// two old values keep their old meaning exactly -- see ShaderStage in the header --
+		// so the 42 call sites passing false and true are unaffected.
+		switch (ShaderType)
+		{
+			case SHADER_STAGE_VERTEX:
+				*pHandle = DX8Wrapper::Create_Vertex_Shader(pShader, dwFileSize);
+				break;
+			case SHADER_STAGE_COMPUTE:
+				*pHandle = DX8Wrapper::Create_Compute_Shader(pShader, dwFileSize);
+				break;
+			case SHADER_STAGE_PIXEL:
+			default:
+				*pHandle = DX8Wrapper::Create_Pixel_Shader(pShader, dwFileSize);
+				break;
+		}
 		hr = (*pHandle != 0) ? S_OK : E_FAIL;
 
 		HeapFree(GetProcessHeap(), 0, (void*)pShader);
@@ -4643,6 +4662,202 @@ HRESULT W3DShaderManager::LoadAndCreateD3DShader(const char* strFilePath, const 
 
 	return S_OK;
 }
+
+#ifdef RTS_DEBUG
+//=============================================================================
+// The compute stage's positive control.
+//=============================================================================
+/** THROWAWAY -- delete with selftest_cs.hlsl once C4 of the clustered-lighting plan has
+	a control of its own (a cluster grid compared against a CPU-built reference).
+
+	Everything the clustered path is about to be built on is new here and none of it is
+	visible in a frame: a cs_5_0 blob is compiled and loaded, buffers are created with
+	unordered-access views, one is cleared on the GPU, both are bound, a dispatch runs,
+	and the results are copied back and read on the CPU. If any one of those is wrong the
+	symptom downstream is a buffer full of zeroes, which reads as "no lights near this
+	pixel" -- a picture nobody would look at twice. So it is measured here, once, with a
+	number, before anything depends on it.
+
+	Three things are checked and each has a control in front of it:
+
+	  1. Clear_RW_Buffer_UInt writes 0xA5A5A5A5 into the typed buffer and the read-back
+	     finds it. This runs BEFORE the dispatch, so it is the control for the read-back
+	     path itself: if this fails, the compare afterwards would be reporting a broken
+	     read as a broken dispatch.
+	  2. The dispatch writes 7n+3 into both a structured buffer and a typed one. Not n,
+	     and not a constant -- an unwritten buffer reads as zero and a mis-strided view
+	     reads as the wrong element, and neither can be mistaken for an arithmetic
+	     progression with that slope.
+	  3. The SRV/UAV hazard. The buffer is bound for writing, then for reading, then for
+	     writing again before the dispatch. That ordering is the one that catches a
+	     backend which does not enforce the rule: the middle bind makes D3D11 silently
+	     null the unordered-access slot, and a backend still believing the buffer is
+	     bound there would filter the third bind out as redundant and dispatch into
+	     nothing. The pattern check then reads 0xA5A5A5A5 instead of 7n+3.
+
+	Gated on RTS_DEBUG and run once from initUnitShaders rather than on an environment
+	variable, deliberately: it is the gate for the stage, it costs one pipeline stall at
+	startup, and a control somebody has to remember to switch on is a control that is off. */
+//=============================================================================
+void W3DShaderManager::runComputeSelfTest()
+{
+	static Bool alreadyRun = FALSE;
+	if (alreadyRun)
+		return;
+	alreadyRun = TRUE;
+
+	GfxDeviceClass * const gfx = DX8Wrapper::Gfx;
+	if (gfx == nullptr)
+		return;
+
+	// 64 is selftest_cs.hlsl's numthreads and the two have to agree; four groups is
+	// enough for a mis-strided view or an off-by-one group count to show.
+	enum
+	{
+		SELFTEST_GROUP_SIZE = 64,
+		SELFTEST_GROUPS = 4,
+		SELFTEST_ELEMENTS = SELFTEST_GROUP_SIZE * SELFTEST_GROUPS,
+		SELFTEST_SENTINEL = 0xA5A5A5A5
+	};
+
+	DWORD computeShader = 0;
+	if (FAILED(LoadAndCreateD3DShader("shaders\\selftest_cs.sm5", nullptr, 0,
+			SHADER_STAGE_COMPUTE, &computeShader)) || computeShader == 0)
+	{
+		DEBUG_LOG(("COMPUTE SELF-TEST: FAILED -- selftest_cs.sm5 did not load or the device "
+			"refused it. Nothing downstream of C1 can be trusted until this passes.\n"));
+		return;
+	}
+
+	// The two kinds the clustered path needs. Structured for the light records (48 bytes
+	// each there, 4 here -- the size is not what is being tested, the view is), typed for
+	// the grid, which is the only one Clear_RW_Buffer_UInt will take.
+	GfxBuffer * structuredBuffer = gfx->Create_Structured_Buffer(sizeof(UnsignedInt),
+		SELFTEST_ELEMENTS, GFX_BUFFER_UAV);
+	GfxBuffer * typedBuffer = gfx->Create_Structured_Buffer(sizeof(UnsignedInt),
+		SELFTEST_ELEMENTS, GFX_BUFFER_UAV | GFX_BUFFER_UINT);
+	if (structuredBuffer == nullptr || typedBuffer == nullptr)
+	{
+		DEBUG_LOG(("COMPUTE SELF-TEST: FAILED -- Create_Structured_Buffer returned null "
+			"(structured %s, typed %s).\n",
+			(structuredBuffer != nullptr) ? "ok" : "NULL",
+			(typedBuffer != nullptr) ? "ok" : "NULL"));
+		if (structuredBuffer != nullptr) gfx->Release_Buffer(structuredBuffer);
+		if (typedBuffer != nullptr) gfx->Release_Buffer(typedBuffer);
+		DX8Wrapper::Release_Compute_Shader(computeShader);
+		return;
+	}
+
+	// Check 1, and the control for the read-back. Both buffers get the sentinel; only the
+	// typed one can be cleared this way, so the structured one is filled by the dispatch
+	// alone and its "was it written" question is answered by the sentinel NOT being there.
+	gfx->Clear_RW_Buffer_UInt(typedBuffer, (unsigned)SELFTEST_SENTINEL);
+
+	Bool clearOk = FALSE;
+	void * mapped = nullptr;
+	if (gfx->Map_Buffer(typedBuffer, GFX_MAP_READ, &mapped) && mapped != nullptr)
+	{
+		const UnsignedInt * words = (const UnsignedInt *)mapped;
+		clearOk = TRUE;
+		for (Int i = 0; i < SELFTEST_ELEMENTS; ++i)
+		{
+			if (words[i] != (UnsignedInt)SELFTEST_SENTINEL) { clearOk = FALSE; break; }
+		}
+		gfx->Unmap_Buffer(typedBuffer);
+	}
+
+	// Check 3's ordering, then check 2. Write, read, write again -- see the note above for
+	// why that order and not the other one.
+	gfx->Set_Compute_Shader((GfxShaderHandle)computeShader);
+	gfx->Set_Compute_RW_Buffer(0, structuredBuffer);
+	gfx->Set_Compute_RW_Buffer(1, typedBuffer);
+	gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT, typedBuffer);
+	gfx->Set_Compute_RW_Buffer(1, typedBuffer);
+	gfx->Dispatch(SELFTEST_GROUPS, 1, 1);
+
+	// Off the compute stage before the read-back. A buffer left bound for writing cannot
+	// be copied out of, and leaving the pixel slot bound would hand the first draw of the
+	// frame a resource it declares nothing for.
+	gfx->Set_Compute_RW_Buffer(0, nullptr);
+	gfx->Set_Compute_RW_Buffer(1, nullptr);
+	gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT, nullptr);
+	gfx->Set_Compute_Shader(0);
+
+	// Check 2, on both buffers. The first mismatch is reported with the index and both
+	// values, because "it failed" does not say whether the dispatch never ran (every
+	// element still the sentinel, or zero), ran on the wrong element count (the tail is
+	// wrong and the head is right) or read through the wrong stride (the slope is wrong).
+	Int structuredFirstWrong = -1;
+	UnsignedInt structuredGot = 0;
+	if (gfx->Map_Buffer(structuredBuffer, GFX_MAP_READ, &mapped) && mapped != nullptr)
+	{
+		const UnsignedInt * words = (const UnsignedInt *)mapped;
+		for (Int i = 0; i < SELFTEST_ELEMENTS; ++i)
+		{
+			const UnsignedInt want = (UnsignedInt)(i * 7 + 3);
+			if (words[i] != want) { structuredFirstWrong = i; structuredGot = words[i]; break; }
+		}
+		gfx->Unmap_Buffer(structuredBuffer);
+	}
+	else
+	{
+		structuredFirstWrong = 0;
+	}
+
+	Int typedFirstWrong = -1;
+	UnsignedInt typedGot = 0;
+	if (gfx->Map_Buffer(typedBuffer, GFX_MAP_READ, &mapped) && mapped != nullptr)
+	{
+		const UnsignedInt * words = (const UnsignedInt *)mapped;
+		for (Int i = 0; i < SELFTEST_ELEMENTS; ++i)
+		{
+			const UnsignedInt want = (UnsignedInt)(i * 7 + 3);
+			if (words[i] != want) { typedFirstWrong = i; typedGot = words[i]; break; }
+		}
+		gfx->Unmap_Buffer(typedBuffer);
+	}
+	else
+	{
+		typedFirstWrong = 0;
+	}
+
+	const Bool passed = clearOk && structuredFirstWrong < 0 && typedFirstWrong < 0;
+	DEBUG_LOG(("COMPUTE SELF-TEST: %s -- %d elements, %d groups of %d. GPU clear to "
+		"0x%08x %s; structured buffer %s; typed buffer %s.\n",
+		passed ? "PASSED" : "FAILED",
+		(Int)SELFTEST_ELEMENTS, (Int)SELFTEST_GROUPS, (Int)SELFTEST_GROUP_SIZE,
+		(unsigned)SELFTEST_SENTINEL,
+		clearOk ? "read back correct" : "DID NOT READ BACK",
+		(structuredFirstWrong < 0) ? "7n+3 correct throughout" : "WRONG",
+		(typedFirstWrong < 0) ? "7n+3 correct throughout" : "WRONG"));
+	if (structuredFirstWrong >= 0)
+	{
+		DEBUG_LOG(("COMPUTE SELF-TEST: structured buffer first wrong at element %d: "
+			"wanted %u, got %u (0x%08x). %s\n", structuredFirstWrong,
+			(unsigned)(structuredFirstWrong * 7 + 3), structuredGot, structuredGot,
+			(structuredGot == 0)
+				? "Zero throughout is the dispatch never running, or its unordered-access "
+				  "slot being nulled by the SRV/UAV hazard."
+				: "A non-zero wrong value is arithmetic or stride, not a missing write."));
+	}
+	if (typedFirstWrong >= 0)
+	{
+		DEBUG_LOG(("COMPUTE SELF-TEST: typed buffer first wrong at element %d: wanted %u, "
+			"got %u (0x%08x). %s\n", typedFirstWrong,
+			(unsigned)(typedFirstWrong * 7 + 3), typedGot, typedGot,
+			(typedGot == (UnsignedInt)SELFTEST_SENTINEL)
+				? "Still the sentinel, so the clear worked and the dispatch did not reach "
+				  "this buffer -- which is exactly what an unenforced SRV/UAV hazard looks "
+				  "like, because the pixel-stage bind between the two writes nulled u1."
+				: "Not the sentinel and not the pattern, so it was written with the wrong "
+				  "value or read through the wrong view."));
+	}
+
+	gfx->Release_Buffer(structuredBuffer);
+	gfx->Release_Buffer(typedBuffer);
+	DX8Wrapper::Release_Compute_Shader(computeShader);
+}
+#endif // RTS_DEBUG
 
 //For the MP test, we're enforcing high min-spec requirements that need to be verified.
 #define MIN_INTEL_CPU_FREQ	1300

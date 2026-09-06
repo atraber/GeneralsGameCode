@@ -77,6 +77,11 @@ struct GfxSurface;
 struct GfxVertexBuffer;
 struct GfxIndexBuffer;
 struct GfxQuery;
+// A buffer a shader reads as an array rather than as vertices or indices, and that a
+// compute shader may also write. Opaque for the same reason the four above are: what it
+// is on the other side of the seam -- a structured buffer with a shader-resource view and
+// perhaps an unordered-access view, under D3D11 -- is the backend's business.
+struct GfxBuffer;
 
 /*
 ** A bound shader, as the engine has always carried one: an opaque word that is
@@ -136,6 +141,67 @@ enum GfxResourceUsage
 	// the engine's own restore path is the one that runs.
 	GFX_USAGE_STAGING = 64,				// CPU-side; nothing draws from it (D3D9 SYSTEMMEM)
 	GFX_USAGE_GPU_RESIDENT = 128		// device memory the API will not restore (D3D9 DEFAULT)
+};
+
+/*
+** What a shader buffer is for.
+**
+** Separate from GfxResourceUsage above rather than more bits in it, because the two
+** vocabularies have nothing in common: a vertex buffer is never written by the GPU and a
+** cluster grid is never a render target. Sharing one enum would mean every backend
+** answering for combinations no caller can make.
+**
+** GFX_BUFFER_UINT is the one that is not obvious. A structured buffer -- `stride` bytes
+** per element, viewed with no format -- is what a light record wants. A grid of counts
+** wants the other thing: a *typed* view of 32-bit words, because Clear_RW_Buffer_UInt is
+** only defined against a typed or raw unordered-access view. Clearing a structured one is
+** not portable, and a clear that silently does nothing leaves last frame's grid in place,
+** which reads as lights that are no longer there. So the two kinds are declared at
+** creation and Clear_RW_Buffer_UInt refuses the wrong one rather than being quietly
+** ignored by a driver.
+**
+** GFX_BUFFER_DYNAMIC and GFX_BUFFER_UAV are mutually exclusive, and not by choice: D3D11
+** will not create a buffer that the CPU writes every frame *and* the GPU writes. A buffer
+** the CPU uploads (C4's grid) and one a compute shader fills (C6's) are therefore two
+** different creations, which is what the stage boundary between them already is.
+*/
+enum GfxBufferUsage
+{
+	GFX_BUFFER_SHADER_READ	= 0,	// a shader reads it; always true, and the default
+	GFX_BUFFER_UAV			= 1,	// ...and a compute shader writes it
+	GFX_BUFFER_DYNAMIC		= 2,	// the CPU rewrites the whole thing every frame
+	GFX_BUFFER_UINT			= 4		// an array of 32-bit words, not of stride-byte structs
+};
+
+/*
+** Where a shader buffer may be bound on the pixel stage.
+**
+** The eight texture stages below this are the mesh's -- DX8Wrapper::Textures[] is
+** MAX_TEXTURE_STAGES long and water_ps already declares all eight of them. A buffer bound
+** inside that range would be overwritten by the next Set_Texture for that stage without
+** anything noticing, because the wrapper's redundancy check ("the texture at this stage is
+** already the one you want") has no idea a buffer went in there. So the buffer slots start
+** above it and Set_Pixel_Buffer refuses anything lower, rather than the two binding paths
+** sharing a numbering and racing for it.
+**
+** Raising MAX_TEXTURE_STAGES instead was the other option, and the audit that declined it
+** is worth writing down rather than repeating. 33 sites name it. Most are one-off --
+** texturefilter's tables, the reset path, the device-state audit -- but four are not:
+** RenderStateStruct holds Textures[MAX_TEXTURE_STAGES] of ref-counted pointers, and its
+** constructor, destructor, operator= and DX8Wrapper::Release_Render_State each walk the
+** whole array. That struct is copied per render state, so raising 8 to 12 buys four more
+** REF_PTR_SET and four more REF_PTR_RELEASE on every one of them, plus a wider
+** TextureStageStates[N][32] and FFDeviceStage[N][32] and four more iterations of the
+** backend's per-draw sampler loop and its two hazard loops. All of that to make room in a
+** range the buffers do not want to be in, and none of it was measured, because a change
+** whose only benefit is avoiding this enum does not need to be.
+*/
+enum
+{
+	GFX_FIRST_PIXEL_BUFFER_SLOT	= 8,
+	GFX_PIXEL_BUFFER_SLOTS		= 4,	// t8..t11: the clustered trio and one spare
+	GFX_COMPUTE_BUFFER_SLOTS	= 8,	// t0..t7 on the compute stage, which is all ours
+	GFX_COMPUTE_RW_SLOTS		= 4		// u0..u3
 };
 
 /*
@@ -576,6 +642,24 @@ public:
 	virtual void			Set_Vertex_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count) = 0;
 	virtual void			Set_Pixel_Shader_Constants(unsigned reg, const float * data, unsigned vec4_count) = 0;
 
+	// A second constant buffer, at b1, written once per frame rather than once per draw.
+	//
+	// The per-draw register file above is full: water_ps uses c0-c28 of the 32 vec4
+	// GFX_PS_CONSTANTS gives it, unit_pbr_ps c0-c25 plus c28. Neither has room for anything
+	// a clustered light grid needs, and nothing does -- the c-register file is an emulated D3D9
+	// artefact this wrapper still round-trips, and per-frame data (cluster parameters
+	// today; cloud scroll, shadow params, sun and camera later) never belonged in a
+	// per-draw file to start with. Always written from offset 0 -- there is no reg
+	// argument, unlike the two calls above, because nothing yet shares this buffer with a
+	// second writer the way the per-draw constants are shared across every shader stage
+	// that draws.
+	//
+	// A backend binds the same buffer on the vertex, pixel AND compute stages. The compute
+	// stage matters as much as the other two: Dispatch has no per-draw setup step like
+	// Prepare_Draw to fall back on, so a compute shader that wants a frame constant has
+	// nowhere else to read it from.
+	virtual void			Set_Frame_Constants(const float * data, unsigned vec4_count) = 0;
+
 	virtual void			Set_Vertex_Stream(unsigned stream, GfxVertexBuffer * buffer, unsigned stride) = 0;
 	// Hands back a reference the caller must give to Release_Vertex_Buffer -- the same
 	// borrowing rule the three Get_ target calls below use, and stated here for the same
@@ -630,6 +714,73 @@ public:
 	virtual bool			Map_Index_Buffer(GfxIndexBuffer * buffer, unsigned offset_in_bytes,
 								unsigned size_in_bytes, GfxMapMode mode, void ** data) = 0;
 	virtual void			Unmap_Index_Buffer(GfxIndexBuffer * buffer) = 0;
+
+	// ---- compute ---------------------------------------------------------
+	//
+	// A shader that is dispatched rather than drawn, and the buffers it reads and writes.
+	// Added for the clustered-lighting path, which needs to bin an arbitrary number of
+	// lights into a screen-space grid once per frame -- work that has no vertices and no
+	// pixels and therefore no place in the draw vocabulary above.
+	//
+	// A backend with no compute stage answers 0 from Create_Compute_Shader and nullptr from
+	// Create_Structured_Buffer, and the caller keeps whatever CPU path it has. That is not
+	// hypothetical politeness: C4 of the clustered plan builds the same grid on the CPU on
+	// purpose, so that the shader and the grid can be wrong independently.
+
+	// Compiled compute bytecode becomes a handle, exactly as the vertex and pixel halves
+	// do, and for the same reason it is a third call rather than a flag: the three handles
+	// are three unrelated objects and the handle does not say which it is.
+	virtual GfxShaderHandle	Create_Compute_Shader(const void * bytecode, unsigned size) = 0;
+	virtual void			Release_Compute_Shader(GfxShaderHandle shader) = 0;
+	virtual void			Set_Compute_Shader(GfxShaderHandle shader) = 0;
+	// Thread *groups*, not threads. The group size is declared in the shader and the
+	// caller has to divide by it, which is what every API that has this means by these
+	// three numbers.
+	virtual void			Dispatch(unsigned x, unsigned y, unsigned z) = 0;
+
+	// stride * count bytes, viewed as count elements. Returns nullptr on failure, like
+	// every other creation call here; usage is a mask of GfxBufferUsage.
+	virtual GfxBuffer *		Create_Structured_Buffer(unsigned stride, unsigned count,
+								unsigned usage) = 0;
+	virtual void			Release_Buffer(GfxBuffer * buffer) = 0;
+
+	// The whole buffer, with the caller's intent stated the way the vertex and texture
+	// halves state it -- and here the intent is load-bearing rather than a hint.
+	//
+	// GFX_MAP_WRITE_DISCARD is the only write a GFX_BUFFER_DYNAMIC buffer takes, which is
+	// what "the CPU rewrites the whole thing every frame" means. GFX_MAP_READ is the
+	// self-test's and the oracle's read-back, and a backend is expected to stage it: a
+	// buffer a compute shader writes cannot be mapped for reading directly, so the read
+	// goes through a copy. That copy is a full pipeline stall and this seam does not
+	// pretend otherwise -- nothing on the render path may call it.
+	virtual bool			Map_Buffer(GfxBuffer * buffer, GfxMapMode mode, void ** data) = 0;
+	virtual void			Unmap_Buffer(GfxBuffer * buffer) = 0;
+
+	// Where a buffer is bound. Three calls rather than one with a stage argument, because
+	// the three are three different register files: a compute shader's t#, a compute
+	// shader's u#, and a pixel shader's t#.
+	//
+	// THE HAZARD, stated here because a caller has to know it exists even though the
+	// backend is what enforces it. No resource may be bound for reading and for writing at
+	// the same time. D3D11 does not refuse that: it silently drops the older binding and
+	// says so only to the debug layer, and a dropped buffer SRV reads as *zero* -- which
+	// for a cluster grid is indistinguishable from "no lights near this pixel", the most
+	// plausible-looking wrong answer this feature can produce. So a backend must null the
+	// other binding itself when these calls collide, and the two counters behind that are
+	// the only way anyone finds out it happened.
+	//
+	// slot for Set_Pixel_Buffer is an absolute t register and must be at least
+	// GFX_FIRST_PIXEL_BUFFER_SLOT; see the note there. The compute slots start at 0
+	// because the compute stage has no texture stages competing for them.
+	virtual void			Set_Compute_Buffer(unsigned slot, GfxBuffer * buffer) = 0;
+	virtual void			Set_Compute_RW_Buffer(unsigned slot, GfxBuffer * buffer) = 0;
+	virtual void			Set_Pixel_Buffer(unsigned slot, GfxBuffer * buffer) = 0;
+
+	// Fill every word of a GFX_BUFFER_UINT | GFX_BUFFER_UAV buffer with one value, on the
+	// GPU. This is how the cluster grid is reset each frame; doing it from the CPU would
+	// mean uploading 88 KB a frame to write zeroes. Refused for a buffer created without
+	// both bits -- see GfxBufferUsage for why that is a refusal and not a fallback.
+	virtual void			Clear_RW_Buffer_UInt(GfxBuffer * buffer, unsigned value) = 0;
 
 	// ---- textures and surfaces -------------------------------------------
 	//

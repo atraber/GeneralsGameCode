@@ -133,6 +133,7 @@ DWORD								DX8Wrapper::Pixel_Shader								= 0;
 
 Vector4							DX8Wrapper::Vertex_Shader_Constants[MAX_VERTEX_SHADER_CONSTANTS];
 Vector4							DX8Wrapper::Pixel_Shader_Constants[MAX_PIXEL_SHADER_CONSTANTS];
+Vector4							DX8Wrapper::Frame_Constants[MAX_FRAME_CONSTANTS];
 
 LightEnvironmentClass*		DX8Wrapper::Light_Environment							= nullptr;
 
@@ -398,6 +399,18 @@ void DX8Wrapper::Release_Pixel_Shader(DWORD pixel_shader)
 {
 	if (Gfx == nullptr || pixel_shader == 0) return;
 	Gfx->Release_Pixel_Shader((GfxShaderHandle)pixel_shader);
+}
+
+DWORD DX8Wrapper::Create_Compute_Shader(const void * bytecode, unsigned size)
+{
+	if (Gfx == nullptr) return 0;
+	return (DWORD)Gfx->Create_Compute_Shader(bytecode, size);
+}
+
+void DX8Wrapper::Release_Compute_Shader(DWORD compute_shader)
+{
+	if (Gfx == nullptr || compute_shader == 0) return;
+	Gfx->Release_Compute_Shader((GfxShaderHandle)compute_shader);
 }
 
 bool DX8Wrapper::Is_Deferred_FF_Stage_State(unsigned state)
@@ -3924,6 +3937,7 @@ bool DX8Wrapper::Reset_Device(bool reload_assets)
 
 		memset(Vertex_Shader_Constants,0,sizeof(Vector4)*MAX_VERTEX_SHADER_CONSTANTS);
 		memset(Pixel_Shader_Constants,0,sizeof(Vector4)*MAX_PIXEL_SHADER_CONSTANTS);
+		memset(Frame_Constants,0,sizeof(Vector4)*MAX_FRAME_CONSTANTS);
 
 		// The device is put back through the backend, which owns the API's own creation
 		// parameters and knows what "not ready yet" looks like. A false here is not a
