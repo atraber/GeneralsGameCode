@@ -32,6 +32,40 @@
 //      CPU array a second time.
 // Never call Verify_Upload() from the render path: GFX_MAP_READ stalls the pipeline (see
 // gfxdevice.h's Map_Buffer comment). This is a break-and-inspect tool, not instrumentation.
+//
+// C5.1'S SUN-EQUIVALENCE CONTROL (the plan's gate for the shader stage, and the one it
+// calls "the single most valuable control in the whole plan"). Full reasoning at
+// Collect_Sun_Check_Lights below; the recipe is:
+//
+//   1. Debug build. Options.ini: UseClusteredLighting = yes.
+//      (Without it the stand-in lights are uploaded and then consumed by nobody, and the
+//      directional term is NOT suppressed either -- deliberately, so a mis-run reads as
+//      "nothing happened" and not as "the control failed". It is logged, once.)
+//   2. Two runs of the SAME BINARY over the same replay frame, one variable apart:
+//        run A:  (nothing set)                         -- the directional path
+//        run B:  set W3D_CLUSTER_SUN_CHECK=1           -- the punctual path
+//      A rebuild between them invalidates the comparison; see the replay test harness documentation
+//      and the "a rebuild is not a re-run" rule.
+//   3. Compare the two captures over the PBR meshes only. Terrain, roads, water, particles
+//      and the UI are not on this path yet (C5.2/C5.3) and are unchanged by definition, so
+//      any difference on them is harness noise and is itself worth knowing.
+//
+//   PASS looks like: differences confined to PBR mesh pixels, at most 1 of 255 per channel,
+//   with no spatial structure -- scattered single-LSB rounding, not a shape. That residual
+//   is the stand-in light's own inverse-square variation across the map (see the note on
+//   SUN_CHECK_DISTANCE), and it is bounded at about a tenth of a level by construction.
+//   FAIL, and what each kind means:
+//     - a uniform ratio over every lit pixel (~3.14, or ~1/3.14): the PI convention. The
+//       punctual path is not applying LIGHT_IRRADIANCE, or is applying it twice.
+//     - a ratio that varies with brightness rather than being constant: a SPACE error --
+//       something added in linear that the other path adds in gamma, or the reverse. This
+//       is the SHADOW_MIN bug's shape.
+//     - lit pixels correct but shadowed ones not: shadowFill or the cloud shade is reaching
+//       one term and not the other.
+//     - units black: the stand-in lights never reached the shader. Check the census line
+//       and whether the buffers bound (W3DShaderManager::isClusteredLightingActive).
+//   Do not run it together with W3D_SYNTHETIC_LIGHTS: those add lights the directional run
+//   does not have, and the difference then measures them instead.
 
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +73,7 @@
 #include "W3DDevice/GameClient/W3DGpuLightList.h"
 #include "W3DDevice/GameClient/W3DClusterGrid.h"
 #include "W3DDevice/GameClient/W3DScene.h"
+#include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "W3DDevice/GameClient/W3DDynamicLight.h"
 #include "WW3D2/camera.h"
 #include "WW3D2/light.h"
@@ -51,6 +86,7 @@
 #include "WWMath/matrix3d.h"
 
 #ifdef RTS_DEBUG
+#include "Common/GlobalData.h"	// TheGlobalData, for the sun check's "...but the option is off" note
 #include "WW3D2/ww3d.h"
 #include "WW3D2/colorspace.h"
 #include "W3DDevice/GameClient/BaseHeightMap.h"
@@ -154,6 +190,7 @@ GpuLightListClass::GpuLightListClass()
 	, m_censusEnumerated(0)
 	, m_censusCulled(0)
 	, m_censusDropped(0)
+	, m_sunCheckActive(false)
 #endif
 {
 }
@@ -200,6 +237,7 @@ void GpuLightListClass::Update(RTS3DScene & scene, CameraClass & camera)
 	m_censusEnumerated = 0;
 	m_censusCulled = 0;
 	m_censusDropped = 0;
+	m_sunCheckActive = false;
 #endif
 
 	const FrustumClass & frustum = camera.Get_Frustum();
@@ -217,18 +255,18 @@ void GpuLightListClass::Update(RTS3DScene & scene, CameraClass & camera)
 
 void GpuLightListClass::Collect_Lights(RTS3DScene & scene, const FrustumClass & frustum, const Vector3 & cameraPos)
 {
-	// Each source below only ever appends -- see the class comment in W3DGpuLightList.h
-	// for why, and for the second source this is deliberately not wired up to.
+	// Each source below only ever appends -- see the class comment in W3DGpuLightList.h for
+	// why a new source should be a new method here and not a rewrite of one of these.
 	Collect_Scene_Lights(scene, frustum, cameraPos);
+	// ...and with it, every bone-parented HLOD light. There is deliberately no
+	// Collect_Hlod_Lights() here: W3DModelDraw allocates those through
+	// RTS3DScene::getADynamicLight(), so they are already in m_dynamicLightList and adding
+	// a source of their own would enumerate each one twice.
 	Collect_Dynamic_Lights(scene, frustum, cameraPos);
 #ifdef RTS_DEBUG
 	Collect_Synthetic_Lights(frustum, cameraPos);
+	Collect_Sun_Check_Lights(scene);
 #endif
-	// Collect_Hlod_Lights(frustum, cameraPos); -- THE SEAM. Bone-parented HLOD lights
-	// (W3D_CHUNK_HLOD_LIGHT_ARRAY / HLodLightArrayClass) are the obvious second source
-	// and, once that in-progress work lands elsewhere in this tree, belong here as their
-	// own Collect_Hlod_Lights() call -- appending, not restructuring. Not present yet:
-	// this stage must not touch W3DModelDraw.h/.cpp, hlod.h/.cpp, light.h or w3d_file.h.
 }
 
 void GpuLightListClass::Collect_Scene_Lights(RTS3DScene & scene, const FrustumClass & frustum, const Vector3 & cameraPos)
@@ -388,15 +426,46 @@ void GpuLightListClass::Write_Frame_Constants(CameraClass & camera)
 	const Vector3 forward = camera.Get_Forward_Dir();
 	frameConstants[2].Set(forward.X, forward.Y, forward.Z, (float)m_lightCount);	// CameraForward; .w is C3's own field
 
+	// C5.1's two gates, in ClusterLimits.z and .w.
+	//
+	// **ZERO IS OFF FOR BOTH, and that polarity is what makes this stage verifiable.** Every
+	// path that leaves the b1 block unwritten -- a frame before the first Update(), a
+	// degenerate camera, a menu, a device that could not create the buffers -- reads zero in
+	// the shader, which means "no clustered contribution, directional term as it always
+	// was", i.e. exactly the frame that existed before C5. The plan's gate here is a replay
+	// with the option off showing 0 differing pixels, and that claim only means something
+	// because there is no state in which off is a guess.
+	//
+	// isClusteredLightingActive() is the SAME predicate W3DView::draw binds the buffers
+	// with, deliberately: the shader's gate and the binding cannot then disagree, and a
+	// frame that says "on" in b1 while nothing is bound would read every buffer as zero --
+	// which looks exactly like "no lights near this pixel" and has no visible symptom at all
+	// (the hazard C1's note names).
+	const float clusteredOn = W3DShaderManager::isClusteredLightingActive() ? 1.0f : 0.0f;
+	float suppressDirectional = 0.0f;
+#ifdef RTS_DEBUG
+	// ...and only when stand-in lights were actually injected THIS frame. See
+	// Collect_Sun_Check_Lights: switching the directional term off on a frame that injected
+	// nothing compares a lit frame against a black one, which is a difference that says
+	// nothing about the irradiance convention the control exists to measure.
+	if (m_sunCheckActive && clusteredOn > 0.0f)
+		suppressDirectional = 1.0f;
+#endif
+
 	if (cluster.valid)
 	{
 		frameConstants[3].Set(cluster.viewportX, cluster.viewportY,
 			cluster.viewportWidth, cluster.viewportHeight);						// ClusterScreen
 		frameConstants[4].Set((float)cluster.gridY,
-			(float)ClusterGridClass::CLUSTER_MAX_LIGHTS, 0.0f, 0.0f);			// ClusterLimits
+			(float)ClusterGridClass::CLUSTER_MAX_LIGHTS,
+			clusteredOn, suppressDirectional);									// ClusterLimits
 	}
 	else
 	{
+		// A degenerate camera. The gates go to zero along with the addressing, which is the
+		// right answer and not merely the tidy one: with no valid grid there is no cluster
+		// to read, so the shader must fall back to the frame it drew before C5 -- and a
+		// suppressed directional term with nothing standing in for it would be a black unit.
 		frameConstants[3].Set(0.0f, 0.0f, 0.0f, 0.0f);
 		frameConstants[4].Set(0.0f, 0.0f, 0.0f, 0.0f);
 	}
@@ -585,6 +654,134 @@ void GpuLightListClass::Collect_Synthetic_Lights(const FrustumClass & frustum, c
 		SphereClass sphere;
 		Generate_Synthetic_Light(i, seed, frameCounter, footprint, light, sphere);
 		Cull_And_Insert(light, sphere, frustum, cameraPos);
+	}
+}
+
+//-------------------------------------------------------------------------------------------------
+// THE C5.1 SUN-EQUIVALENCE CONTROL.
+//
+// The plan calls this "the single most valuable control in the whole plan", and the reason
+// is narrow and specific: two bugs in unit_pbr_ps -- the missing `radiance *= PI` and
+// SHADOW_MIN applied in linear -- were both a value shared between two places that were not
+// in the same *space*, and a new punctual term added beside an existing directional one is
+// exactly that shape again. A local light landing at a different strength from the sun of
+// the same colour is not something a screenshot shows; it reads as a look decision.
+//
+// So: stand a clustered POINT light in for each of the scene's global DIRECTIONAL lights,
+// switch the shader's own directional term off (b1's ClusterLimits.w), and let the two
+// paths draw the same frame of the same binary. If they agree, the convention is right. If
+// they differ by a constant factor, it is PI. If they differ by a curve rather than a
+// factor, it is a space error -- something is being done in linear that belongs in gamma or
+// the reverse.
+//
+// HOW A POINT LIGHT STANDS IN FOR A DIRECTIONAL ONE. Put it very far away along the light's
+// own direction and cancel the inverse square by hand:
+//
+//   position = (direction toward the light) * SUN_CHECK_DISTANCE
+//   colour   = the directional light's diffuse * SUN_CHECK_DISTANCE^2
+//   range    = SUN_CHECK_RANGE, chosen so the smooth window is 1.0 exactly at that distance
+//
+// The distance is what bounds the residual, and it is why it is 1e7 and not something
+// tidier. A directional light is the same everywhere; a point light at distance D varies
+// across a scene of extent E by about 2E/D in irradiance. At D = 1e7 and a Generals map's
+// ~4000 world units that is 8e-4 in linear, about 4e-4 after the sRGB encode -- a tenth of
+// an 8-bit level, so it cannot round any pixel to a different byte. At D = 1e5 it would be
+// 8% and the control would be measuring its own approximation.
+//
+// It deliberately does NOT bypass the attenuation, the window or the packing. Everything
+// except the *value* of the falloff is the shipping path: the same GpuLight record, the same
+// upload, the same cluster grid, the same shader loop, the same DirectLight(). A control
+// that took a short cut around the code it is checking would only ever prove itself.
+//-------------------------------------------------------------------------------------------------
+
+void GpuLightListClass::Collect_Sun_Check_Lights(RTS3DScene & scene)
+{
+	// Same env-var-gated-diagnostic shape as W3D_SYNTHETIC_LIGHTS above and
+	// W3D_FORCE_RESET_FRAME (ww3d.cpp): read once, cached, armed only for a shell that
+	// deliberately exported it.
+	static bool parsed = false;
+	static bool armed = false;
+	if (!parsed)
+	{
+		parsed = true;
+		const char * spec = ::getenv("W3D_CLUSTER_SUN_CHECK");
+		armed = (spec != nullptr && ::strtol(spec, nullptr, 10) != 0);
+		if (armed)
+		{
+			WWDEBUG_SAY(("GpuLightListClass: W3D_CLUSTER_SUN_CHECK is set -- standing a "
+				"clustered point light in for each of the scene's global directional lights "
+				"and suppressing the shaders' own directional term. This frame is NOT the "
+				"game's normal output and no capture from it is a reference for anything "
+				"else."));
+			// Said here rather than left to be discovered from a frame that looks wrong.
+			// The check needs the clustered path switched on to have anything to compare
+			// against, and with it off the only visible result is unlit units -- which
+			// looks like the control failing rather than like it never running.
+			if (TheGlobalData == nullptr || !TheGlobalData->m_useClusteredLighting)
+			{
+				WWDEBUG_SAY(("GpuLightListClass: ...but UseClusteredLighting is off in "
+					"Options.ini, so nothing will consume the stand-in lights and the "
+					"directional term will NOT be suppressed either (see "
+					"Write_Frame_Constants). Set UseClusteredLighting = yes and run again."));
+			}
+		}
+	}
+	if (!armed)
+		return;
+
+	// Far enough that the residual is below an 8-bit level across a whole map; see the note
+	// above. The range is three orders of magnitude beyond it so that the falloff window
+	// evaluates to 1.0 exactly in float32 -- (d/range)^4 = 1e-16 there, and 1 - 1e-16 rounds
+	// to 1.0 -- rather than to a number that is merely close, which would show up as a
+	// uniform factor and be indistinguishable from the PI bug the control is hunting.
+	const float SUN_CHECK_DISTANCE = 1.0e7f;
+	const float SUN_CHECK_RANGE = 1.0e9f;
+	const float gain = SUN_CHECK_DISTANCE * SUN_CHECK_DISTANCE;
+
+	const Int globalCount = scene.getNumGlobalLights();
+	for (Int i = 0; i < globalCount; ++i)
+	{
+		const LightClass * light = scene.getGlobalLight(i);
+		if (light == nullptr || light->Get_Type() != LightClass::DIRECTIONAL)
+			continue;
+
+		Vector3 diffuse;
+		light->Get_Diffuse(&diffuse);
+		// Mirrors LightEnvironmentClass::Add_Light's own near-black reject, so the stand-in
+		// set matches the directional set the shader would otherwise have been given. A
+		// light this drops is one the CPU model drops too, and if the two disagreed about
+		// which lights exist the comparison would be measuring that instead.
+		if (diffuse.X < 0.05f && diffuse.Y < 0.05f && diffuse.Z < 0.05f)
+			continue;
+
+		// The direction toward the light, derived exactly as
+		// LightEnvironmentClass::Init_From_Directional_Light derives it -- -Z of the light's
+		// own transform -- because that is the vector that reaches unit_pbr_ps as LightDirN
+		// (Set_Light_Environment negates it into a D3DLIGHT9 direction, DX8Wrapper negates
+		// it back). Recomputing it from TheGlobalData->m_terrainLightPos would be a second
+		// route to the same number and therefore a second thing that can drift.
+		Vector3 toLight = -light->Get_Transform().Get_Z_Vector();
+		if (toLight.Length2() < 1.0e-6f)
+			continue;
+		toLight.Normalize();
+
+		const Vector3 pos = toLight * SUN_CHECK_DISTANCE;
+
+		GpuLight standIn;
+		standIn.posRange.Set(pos.X, pos.Y, pos.Z, SUN_CHECK_RANGE);
+		// Type 0 = point. A spot would add a cone term that has nothing to do with the
+		// question being asked.
+		standIn.colorType.Set(diffuse.X * gain, diffuse.Y * gain, diffuse.Z * gain, 0.0f);
+		standIn.spotDirCos.Set(0.0f, 0.0f, 0.0f, -1.0f);
+		standIn.spotInner.Set(-1.0f, 0.0f, 0.0f, 0.0f);
+
+		// Straight to Insert_Light, past the frustum test: a sphere of radius 1e9 contains
+		// the frustum, so the test would pass, but relying on CollisionMath to behave at
+		// that scale is a dependency this control does not need. A distance of 0 also makes
+		// it the nearest light in the set, so it can never be the one that loses a capacity
+		// contest -- which would silently turn the check off on a busy frame.
+		Insert_Light(standIn, 0.0f);
+		m_sunCheckActive = true;
 	}
 }
 

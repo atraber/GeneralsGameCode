@@ -147,6 +147,20 @@ public:
 	static void startShadowMapRendering();	///<redirect rendering into the shadow map (sun-view depth pass).
 	static void endShadowMapRendering();	///<restore the back buffer after the shadow depth pass.
 	static Bool isShadowMappingActive();	///<true when the shadow map is enabled and usable; the legacy volume/decal shadows stand down.
+
+	// Clustered lighting (C5 of the clustered lighting plan). isClusteredLightingActive
+	// is the one predicate: the options.ini switch AND all three buffers actually existing.
+	// It is what gates the bind below and what GpuLightListClass publishes into b1, so the
+	// shader's gate and the binding cannot disagree.
+	//
+	// bind/unbind are ONCE PER FRAME, from W3DView::draw -- not per draw. The three buffers
+	// do not change within a frame, so a per-draw bind would be pure noise in the device
+	// census (and this project counts device calls). They are nulled at the end of the frame
+	// for the reason C4's debug inspector nulls its own: a buffer left bound on the pixel
+	// stage is still there for the UI's draws and for the first draw of the next frame.
+	static Bool isClusteredLightingActive();
+	static void bindClusteredLightBuffers();	///<LightBuffer/ClusterGrid/LightIndexList onto t8/t9/t10.
+	static void unbindClusteredLightBuffers();	///<...and off again.
 #ifdef RTS_DEBUG
 	///<save the shadow map to PNG mid-pass, so one draw's contribution to it can be isolated.
 	static void debugDumpShadowMap(const char *tag);

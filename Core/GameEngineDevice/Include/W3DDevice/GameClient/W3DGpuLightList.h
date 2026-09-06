@@ -50,12 +50,11 @@ struct GfxBuffer;
 //
 // THE ENUMERATION SEAM. Collect_Lights() appends from each light source in turn, each its
 // own private Collect_*_Lights() method, specifically so a second source is a new method
-// plus one more line there -- not a rewrite. There is a concrete second source already
-// under construction elsewhere in this tree: bone-parented lights attached to HLOD models
-// (W3D_CHUNK_HLOD_LIGHT_ARRAY / HLodLightArrayClass / HLodClass::Get_Light_Count /
-// Get_Light). This stage deliberately does not touch that work -- W3DModelDraw.h/.cpp,
-// hlod.h/.cpp, light.h and w3d_file.h are all off limits here -- so Collect_Lights() names
-// the seam in a comment instead of wiring it up; see the .cpp.
+// plus one more line there -- not a rewrite.
+//
+// Bone-parented HLOD lights (W3D_CHUNK_HLOD_LIGHT_ARRAY / HLodClass::Get_Light) need NO
+// source of their own: W3DModelDraw allocates them through RTS3DScene::getADynamicLight(),
+// so they arrive in m_dynamicLightList and Collect_Dynamic_Lights() already walks them.
 class GpuLightListClass
 {
 public:
@@ -106,12 +105,17 @@ private:
 	void Collect_Lights(RTS3DScene & scene, const FrustumClass & frustum, const Vector3 & cameraPos);
 	void Collect_Scene_Lights(RTS3DScene & scene, const FrustumClass & frustum, const Vector3 & cameraPos);
 	void Collect_Dynamic_Lights(RTS3DScene & scene, const FrustumClass & frustum, const Vector3 & cameraPos);
-	// Collect_Hlod_Lights() belongs here once HLodLightArrayClass lands -- see the class
-	// comment above. Deliberately not declared as an empty stub: an unused private method
-	// invites bit-rot (wrong signature, silently never called) faster than a comment does.
+	// NO Collect_Hlod_Lights(), and none is needed. The bone-parented HLOD light work
+	// (W3D_CHUNK_HLOD_LIGHT_ARRAY, HLodClass::Get_Light) allocates its lights through
+	// RTS3DScene::getADynamicLight(), so they are already in m_dynamicLightList by the time
+	// this runs and Collect_Dynamic_Lights above walks them like any muzzle flash. C3 left a
+	// comment here anticipating a source of their own, written before that work landed;
+	// adding one now would enumerate every HLOD light twice.
 
 #ifdef RTS_DEBUG
 	void Collect_Synthetic_Lights(const FrustumClass & frustum, const Vector3 & cameraPos);
+	// The C5.1 sun-equivalence control -- see the recipe at the top of W3DGpuLightList.cpp.
+	void Collect_Sun_Check_Lights(RTS3DScene & scene);
 #endif
 
 	// -- cull, pack, capacity -------------------------------------------------------------
@@ -143,5 +147,14 @@ private:
 	unsigned	m_censusEnumerated;	// candidates offered to Cull_And_Insert this frame, before the frustum test
 	unsigned	m_censusCulled;		// of those, how many failed the frustum test
 	unsigned	m_censusDropped;	// of the survivors, how many lost the capacity-overflow contest (see Insert_Light)
+
+	// Set by Collect_Sun_Check_Lights when it actually injected stand-in lights this frame,
+	// and read by Write_Frame_Constants, which publishes it as b1's "suppress the shader's
+	// own directional term". A member and not a static because the two have to describe the
+	// SAME frame: a frame that injected nothing (no global lights yet, no map loaded) must
+	// not switch the directional term off, or the check compares a lit frame against a
+	// black one and reports a difference that is nothing to do with the irradiance
+	// convention it exists to measure.
+	bool		m_sunCheckActive;
 #endif
 };

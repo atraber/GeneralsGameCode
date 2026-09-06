@@ -17,12 +17,20 @@
 // physically-based specular and AO added on top. A shared environment cubemap
 // (s4), re-baked from the scene's dominant light/ambient as time-of-day drifts,
 // supplies the Fresnel-weighted reflection term.
+//
+// On top of those four, and switched off by default, is the clustered local-light path
+// (C5.1 of the clustered lighting plan): an arbitrary number of point and spot lights
+// read per pixel out of a screen-space cluster grid, through the same DirectLight() the
+// directional term uses. This is the first shader in the tree to consume it. Everything it
+// needs beyond the three buffers at t8/t9/t10 comes from b1, so it costs no c register;
+// see clustered.hlsli.
 
 #include "shadermodel.hlsli"
 
 #include "constants.hlsli"
 #include "shadow.hlsli"
 #include "alphatest.hlsli"
+#include "clustered.hlsli"
 
 DECLARE_SAMPLER_2D(AlbedoSampler, 0);
 DECLARE_SAMPLER_2D(OrmSampler, 1);
@@ -64,6 +72,19 @@ float4 ShadowMeshParams : register(c23);
 DECLARE_SAMPLER_2D(CloudSampler, 2);
 float4 CloudScroll : register(c24);  // xy = layer A drift, zw = layer B (world units)
 float4 CloudCtl    : register(c25);  // x = cloud layer on, y = shade strength
+
+// The clustered light path's three buffers (C5.1). Absolute t8/t9/t10, above the eight
+// texture stages, bound once per frame rather than per draw -- see clustered.hlsli and
+// W3DShaderManager::bindClusteredLightBuffers. No sampler for any of them: they are read
+// with Load()/operator[], which wants the t slot and nothing else, and DECLARE_SAMPLER
+// would make them Texture2Ds with an s register nothing binds.
+//
+// These cost no c register at all. Everything the lookup is parameterised by lives in b1,
+// the per-frame constant buffer C2 added -- which is what made this stage possible: this
+// shader was at c0-c25 plus c28 before it, out of GFX_PS_CONSTANTS' 32.
+StructuredBuffer<GpuLight> LightBuffer    : register(t8);
+Buffer<uint>               ClusterGrid    : register(t9);
+Buffer<uint>               LightIndexList : register(t10);
 
 float3 cloudShade(float3 worldPos)
 {
@@ -346,6 +367,38 @@ float3 DirectLight(float3 N, float3 V, float3 L, float3 radiance,
     return (kd * diffuseColor / PI + spec) * radiance * NdotL;
 }
 
+// The clustered local lights reaching this pixel (C5.1 of the clustered lighting plan).
+//
+// **Every light here goes through DirectLight above -- the same function, unmodified, that
+// the four directional lights go through.** That is not tidiness, it is the control this
+// stage exists to satisfy. A punctual light is the same BRDF with a different radiance
+// term, and routing it through the same function is what makes it impossible for the two
+// to end up in different irradiance conventions: LIGHT_IRRADIANCE (= PI) is applied inside
+// DirectLight, so a clustered light of colour C lands at exactly the strength the sun of
+// colour C lands at. The two bugs this shader has already been fixed for -- the missing
+// `radiance *= PI` and SHADOW_MIN applied in linear -- were both a constant shared between
+// two places that were not in the same space, and a second copy of this evaluation is how
+// a third one would arrive. clustered.hlsli deliberately does not contain a BRDF for the
+// same reason; it hands back (L, radiance) and this is the only PBR consumer of it.
+//
+// The loop bound comes from ClusterLightCount, which clamps the grid's UNCLAMPED stored
+// count against the index stride. Never iterate the raw count -- see the note there.
+float3 ClusteredLightingPbr(CLUSTER_BUFFERS_PARAM, uint cluster, float3 worldPos,
+                            float3 N, float3 V, float3 diffuseColor, float3 F0, float rough)
+{
+    float3 sum = 0.0;
+    uint count = ClusterLightCount(clusterGrid, cluster);
+    [loop] for (uint i = 0; i < count; ++i)
+    {
+        GpuLight light = ClusterLightAt(lightBuffer, lightIndexList, cluster, i);
+        float3 L, radiance;
+        if (!ClusterLightRadiance(light, worldPos, L, radiance))
+            continue;
+        sum += DirectLight(N, V, L, radiance, diffuseColor, F0, rough);
+    }
+    return sum;
+}
+
 float4 main(PS_INPUT input) : PS_TARGET
 {
     float4 albedoTex = SAMPLE_2D(AlbedoSampler, input.texcoord);
@@ -392,6 +445,37 @@ float4 main(PS_INPUT input) : PS_TARGET
     Lo += DirectLight(N, V, LightDir2.xyz, LightDiffuse2.rgb, diffuseColor, F0, roughness);
     Lo += DirectLight(N, V, LightDir3.xyz, LightDiffuse3.rgb, diffuseColor, F0, roughness);
 
+    // Clustered local lights, added to Lo IN LINEAR and before anything encodes.
+    //
+    // The whole block sits behind ClusteredLightingEnabled() -- b1's ClusterLimits.z, from
+    // options.ini UseClusteredLighting -- and when that reads zero not one instruction here
+    // touches Lo. That is what makes "with the toggle off, 0 differing pixels" a statement
+    // about this frame and not a hope: there is no multiply by 1.0 and no add of 0.0 left
+    // behind to be rounded differently, and an unwritten b1 block reads as zero, so every
+    // frame before the light list has ever run is also the old frame exactly.
+    //
+    // The view distance is SV_Position.w's reciprocal and nothing else. This engine's
+    // projection is right-handed, so clip.w is the positive distance in front of the
+    // camera, and a pixel shader receives 1/w in SV_Position.w -- no reconstruction from
+    // SsrParams, no extra interpolant, and input.position was already being carried and
+    // ignored. max() only guards the division; ClusterSliceOf clamps the result to the grid
+    // at both ends anyway.
+    //
+    // Lo is scaled by (1 - CLUSTER_SUPPRESS_DIRECTIONAL) rather than being left alone: that
+    // is the sun-equivalence control (W3D_CLUSTER_SUN_CHECK, see W3DGpuLightList.cpp), which
+    // stands a clustered point light in for each of the scene's global directional lights
+    // and turns this term off so the two paths can be compared on one frame of one binary.
+    // It is 0 in every ordinary frame, so the scale is exactly 1.0 and the multiply is
+    // exact -- but it only ever runs inside this branch, so an ordinary frame with the
+    // feature off does not pay for it at all.
+    if (ClusteredLightingEnabled())
+    {
+        uint cluster = ClusterIndexAt(input.position.xy, 1.0 / max(input.position.w, 1e-8));
+        Lo = Lo * (1.0 - CLUSTER_SUPPRESS_DIRECTIONAL)
+           + ClusteredLightingPbr(CLUSTER_BUFFERS_ARG, cluster, input.worldPos,
+                                  N, V, diffuseColor, F0, roughness);
+    }
+
     // Cast shadows.
     //
     // This is what was missing, and it is why PBR meshes read as not receiving shadows.
@@ -430,6 +514,29 @@ float4 main(PS_INPUT input) : PS_TARGET
     // thing the M3 and terrain shaders do with their own baked specular, so it is at
     // least consistent; splitting DirectLight's diffuse from its specular to kill only
     // the latter is the improvement if it ever looks wrong.
+    //
+    // **The clustered term takes the same shadowFill and the same cloud shade as everything
+    // else, and that is a deliberate choice against physics.** A street lamp is not switched
+    // off by the sun's shadow map, and a cloud crossing the field does not occlude it -- so
+    // strictly the local lights should be exempt from both.
+    //
+    // They are not exempt, because exempting them costs more than it buys. Both factors are
+    // applied to the ENCODED colour (see the long note above for why: the constant is shared
+    // with terrain_ps and unit_ps, which work in gamma space throughout, and a fully
+    // shadowed mesh that kept 0.35^(1/2.2) = 0.63 where the ground beside it kept 0.35 is
+    // exactly the bug that note records). Pulling one term out of that multiply means
+    // encoding it separately and adding in sRGB -- a second space, for one term, in the
+    // shader whose two known bugs were both a value used in the wrong space. That trade is
+    // not worth taking while the term is switched off by default and the only lights that
+    // reach it are transient (muzzle flashes, explosions) -- a light that is on for a few
+    // frames inside a shadow, at 51% instead of 100%, is not what anyone will notice first.
+    //
+    // The error it accepts is bounded and small: shadowFill floors at SHADOW_MIN = 0.51, so
+    // a local light standing inside the sun's shadow keeps 51% rather than 100%, and the
+    // cloud tint bottoms out around 0.82-0.92. A dimming, not a hole. The real fix is not
+    // "exempt the clustered term" either -- it is per-light shadowing, which the plan
+    // explicitly excludes (section 5, "No shadow-casting point or spot lights"). C7 deletes
+    // the CPU light path and re-tunes this balance; that is the stage to revisit it in.
     float shadow = computeShadow(input.worldPos, N);
     float shadowFill = lerp(SHADOW_MIN, 1.0, shadow);
 

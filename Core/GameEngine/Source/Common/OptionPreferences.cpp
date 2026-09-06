@@ -151,6 +151,26 @@ Bool OptionPreferences::getHdrEnabled() const
 	return parseIniBool(it->second.str(), TRUE);
 }
 
+Bool OptionPreferences::getClusteredLightingEnabled() const
+{
+	// Clustered forward lighting -- point and spot lights evaluated per pixel out of a
+	// screen-space cluster grid (the clustered lighting plan). **Defaults to OFF, unlike
+	// every other graphics option here**, and that is deliberate for as long as C7 has not
+	// landed: the CPU path this replaces (LightEnvironmentClass) is still running, so with
+	// this on a dynamic light is applied TWICE -- once flattened into the object's four
+	// directional slots, once properly per pixel. It is a bring-up switch, not a quality
+	// setting, until the old path is deleted; at that point the plan says the toggle goes
+	// too, rather than rotting.
+	//
+	// It is also the control the stage is verified with: with it absent or "no" the frame
+	// has to be identical to the one before clustered lighting existed, which is only a
+	// meaningful claim because off is the default and every unwritten path lands there.
+	OptionPreferences::const_iterator it = find("UseClusteredLighting");
+	if (it == end())
+		return FALSE;
+	return parseIniBool(it->second.str(), FALSE);
+}
+
 Bool OptionPreferences::getTerrainTileVariationEnabled() const
 {
 	// Per-cell orientation variation of the base terrain tile. Defaults to on when the

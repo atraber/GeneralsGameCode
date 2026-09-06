@@ -102,6 +102,17 @@ public:
 	// rather than a friend declaration reaching across the inheritance boundary.
 	RefRenderObjListClass &getLightList() {return LightList;}
 
+	// The scene's global directional lights -- the sun (and moon, on maps that place one).
+	// Exposed for the C5.1 sun-equivalence control (GpuLightListClass::Collect_Sun_Check_Lights),
+	// which stands a clustered point light in for each of these so the punctual and
+	// directional shading paths can be compared on one frame. That control has to reproduce
+	// the light environment an ordinary mesh is drawn with, and this array *is* that
+	// environment: updateFixedLightEnvironments builds m_defaultLightEnv out of exactly
+	// these, in this order, so reading them here and reading them there cannot drift.
+	Int getNumGlobalLights() const {return m_numGlobalLights;}
+	const LightClass *getGlobalLight(Int index) const
+		{return (index >= 0 && index < LightEnvironmentClass::MAX_LIGHTS) ? m_globalLight[index] : nullptr;}
+
 	/// Rebuild this frame's clustered light list against camera's frustum. See
 	/// GpuLightListClass::Update() for what that does; called once per frame from
 	/// W3DView::draw(), before the shadow-map pass.

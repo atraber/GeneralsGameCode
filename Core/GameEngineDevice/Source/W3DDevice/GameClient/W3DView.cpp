@@ -1908,6 +1908,17 @@ void W3DView::draw()
 			FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER);
 			W3DDisplay::m_3DScene->updateClusterGrid(*m_3DCamera);
 		}
+
+		// ---- C5's consumption: hand the three buffers to the pixel stage, ONCE ----
+		// After the grid, because a resize releases and recreates its two buffers inside
+		// the call above and binding the old handles would leave two slots pointing at
+		// freed views. Once per frame and not per draw: they cannot change within a frame,
+		// so a per-draw bind would be pure noise in the device census. Bound here rather
+		// than at the top of the scene pass because the shadow-map and depth-prepass passes
+		// come between, and neither runs a shader that declares t8..t10 -- a binding they
+		// carry harmlessly is cheaper than remembering which passes need it.
+		// Nulled again at the end of draw(); see the call there.
+		W3DShaderManager::bindClusteredLightBuffers();
 	}
 
 	// ---- Directional shadow map: render scene depth from the sun's view first ----
@@ -2542,6 +2553,15 @@ void W3DView::draw()
 
 	// Render 2D scene
 	W3DDisplay::m_2DScene->doRender( m_2DCamera );
+
+	// ---- C5: take the clustered buffers back off the pixel stage ----
+	// The same discipline C4's debug inspector already followed. A buffer left bound is
+	// still bound for whatever draws next -- the control bar, the next frame's first draw --
+	// and while nothing else declares t8..t10 that is harmless, "harmless today" is how a
+	// leaked binding survives long enough to matter. It also means the resources are not
+	// held by the device across a frame boundary, so the frame the grid is resized (or the
+	// option switched off) cannot find a released view still in a slot.
+	W3DShaderManager::unbindClusteredLightBuffers();
 }
 
 // ------------------------------------------------------------------------------------------------

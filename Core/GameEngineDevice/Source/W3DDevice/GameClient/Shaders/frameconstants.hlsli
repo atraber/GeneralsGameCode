@@ -44,7 +44,15 @@ cbuffer FrameConstants : register(b1)
     // Grid Y is here rather than beside grid X because ClusterParams was full and
     // recovering it as ceil(viewport height / tile height) in float is one rounding
     // decision away from being off by one, which shifts every slice above the first.
-    float4 ClusterLimits;   // x = grid Y, y = light-index stride (CLUSTER_MAX_LIGHTS), zw = reserved
+    // C5.1 claimed .z and .w. Both are gates and BOTH READ ZERO WHEN THIS BLOCK HAS NEVER
+    // BEEN WRITTEN, which is the property that makes them safe: zero is "clustered lighting
+    // off" and "directional term normal", i.e. exactly the frame that existed before C5.
+    // Named and read through clustered.hlsli (ClusteredLightingEnabled,
+    // CLUSTER_SUPPRESS_DIRECTIONAL), never spelled out component-wise by a shader.
+    float4 ClusterLimits;   // x = grid Y, y = light-index stride (CLUSTER_MAX_LIGHTS),
+                            // z = clustered lighting on (options.ini UseClusteredLighting),
+                            // w = suppress the shader's own directional term (the C5.1
+                            //     sun-equivalence control; 0 in every ordinary frame)
 };
 
 #endif  // RTS_SHADER_FRAMECONSTANTS_HLSLI

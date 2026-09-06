@@ -2770,6 +2770,13 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 			// No sampler is set for any of them, and none is wanted: they are declared in
 			// debugcluster_ps.hlsl as StructuredBuffer/Buffer and read with Load, which
 			// needs the t slot and nothing else.
+			//
+			// C5.1 turned that into a pair of functions (bindClusteredLightBuffers /
+			// unbindClusteredLightBuffers) for the scene's own use, and this inspector
+			// shares the unbind. It does NOT share the bind, on purpose: that one honours
+			// the options.ini switch, and this view must not. It answers "what is in the
+			// grid", which is exactly the question worth asking on a build where the
+			// shading path is switched off.
 			what = "cluster";
 			GfxDeviceClass * const gfx = DX8Wrapper::Gfx;
 			GpuLightListClass &lightList = W3DDisplay::m_3DScene->getGpuLightList();
@@ -2803,10 +2810,8 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 			// Off again immediately. A buffer left bound on the pixel stage would still be
 			// there for the game UI's draws and for the first draw of the next frame --
 			// harmless while nothing declares t8..t10, and exactly the kind of leaked
-			// binding that stops being harmless the moment C5 does.
-			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 0, nullptr);
-			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 1, nullptr);
-			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 2, nullptr);
+			// binding that stopped being harmless the moment C5 did.
+			unbindClusteredLightBuffers();
 			break;
 		}
 
@@ -3376,6 +3381,71 @@ void W3DShaderManager::debugDumpShadowMap(const char *tag)
 Bool W3DShaderManager::isShadowMappingActive()
 {
 	return TheGlobalData->m_useShadowMapping && DX8Wrapper::Has_Shadow_Map();
+}
+
+// ---------------------------------------------------------------------------
+// Clustered lighting: the gate, and the once-a-frame binding.
+//
+// C5.1 of the clustered lighting plan. C4 bound these three buffers only inside its
+// own two debug views; a real scene draw needs them too, and the place they belong is here
+// rather than in the per-draw path -- they do not change within a frame, and this project
+// counts device calls, so a per-draw Set_Pixel_Buffer would show up in the census as pure
+// noise for no gain. (The backend filters a redundant bind anyway, but the call itself is
+// what a census counts.)
+// ---------------------------------------------------------------------------
+
+Bool W3DShaderManager::isClusteredLightingActive()
+{
+	// The options.ini switch first -- off by default until C7 deletes the CPU path, see
+	// OptionPreferences::getClusteredLightingEnabled.
+	if (TheGlobalData == nullptr || !TheGlobalData->m_useClusteredLighting)
+		return FALSE;
+	if (W3DDisplay::m_3DScene == nullptr)
+		return FALSE;
+
+	// ALL THREE BUFFERS, not just the switch. A device that could not create one of them
+	// logs once and carries on (see the Create_Structured_Buffer failure paths in
+	// W3DGpuLightList.cpp and W3DClusterGrid.cpp), and an unbound buffer SRV reads as ZERO
+	// in the shader -- which reads as "no lights near this pixel", which is a perfectly
+	// ordinary thing for a cluster grid to say. That is the failure C1's hazard note names
+	// and it has no visible symptom, so the honest answer is to report the feature as not
+	// running rather than to run it against nothing.
+	ClusterGridClass &grid = W3DDisplay::m_3DScene->getClusterGrid();
+	return (W3DDisplay::m_3DScene->getGpuLightList().Get_Buffer() != nullptr
+		&& grid.Get_Grid_Buffer() != nullptr
+		&& grid.Get_Index_Buffer() != nullptr) ? TRUE : FALSE;
+}
+
+void W3DShaderManager::bindClusteredLightBuffers()
+{
+	if (DX8Wrapper::Gfx == nullptr || !isClusteredLightingActive())
+		return;
+
+	// Absolute t8, t9, t10 -- above the eight texture stages, through Set_Pixel_Buffer and
+	// not Set_Texture, because a buffer bound inside the stage range would be replaced by
+	// the next Set_Texture for that stage with nothing to say so (GFX_FIRST_PIXEL_BUFFER_SLOT,
+	// gfxdevice.h). No sampler for any of them; they are read with Load()/operator[].
+	//
+	// Nothing per-draw can dislodge them: the backend's texture hazard loops are bounded by
+	// GFX_MAX_STAGES (8), so they cannot reach t8 and above.
+	ClusterGridClass &grid = W3DDisplay::m_3DScene->getClusterGrid();
+	DX8Wrapper::Gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 0,
+		W3DDisplay::m_3DScene->getGpuLightList().Get_Buffer());
+	DX8Wrapper::Gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 1, grid.Get_Grid_Buffer());
+	DX8Wrapper::Gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 2, grid.Get_Index_Buffer());
+}
+
+void W3DShaderManager::unbindClusteredLightBuffers()
+{
+	// Unconditionally, and not behind isClusteredLightingActive(): the frame the option is
+	// switched off, or the frame a viewport change releases and recreates the grid buffers,
+	// is exactly the frame a stale binding would survive into. Set_Pixel_Buffer filters a
+	// redundant null itself, so this costs nothing on the frames it has nothing to do.
+	if (DX8Wrapper::Gfx == nullptr)
+		return;
+	DX8Wrapper::Gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 0, nullptr);
+	DX8Wrapper::Gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 1, nullptr);
+	DX8Wrapper::Gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 2, nullptr);
 }
 
 // ---------------------------------------------------------------------------
