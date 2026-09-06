@@ -457,6 +457,76 @@ struct D3D11Buffer
 	bool					mapped;
 };
 
+namespace {
+#ifdef RTS_DEBUG
+// Which buffers are still alive when the device goes away.
+//
+// Phase 8 attributed seven leaked shader handles by matching sizeof(D3D11VertexShader)
+// and sizeof(D3D11PixelShader) against the block sizes in the engine's leak report, and
+// said the nine that remained were "D3D11Buffer objects and their shadow arrays". That
+// was an inference from two numbers. This is the question asked directly: every buffer
+// this backend makes is registered here and struck off when it is freed, so what is left
+// at shutdown can be listed with its size, its usage and its vertex format instead of
+// being recognised by the size of its allocation.
+struct LiveBuffer { const D3D11Buffer * b; unsigned size, usage; bool index; };
+static LiveBuffer s_liveBuffers[64];
+static int s_liveBufferCount = 0;
+static unsigned s_buffersMade = 0, s_buffersFreed = 0, s_liveOverflow = 0;
+// The same question for the other four things this backend allocates. Counters only:
+// what matters is whether made and freed agree, and a disagreement names the kind.
+static unsigned s_vsMade = 0, s_vsFreed = 0;
+static unsigned s_psMade = 0, s_psFreed = 0;
+static unsigned s_texMade = 0, s_texFreed = 0;
+static unsigned s_surfMade = 0, s_surfFreed = 0;
+
+// And which ones, for the two kinds whose counts do not balance. Registered by pointer so
+// the survivors can be listed with their dimensions and format instead of being guessed at
+// from a block size -- which is how the last attribution of these came out wrong.
+struct LiveRes { const void * p; const char * site; };
+static LiveRes s_liveTex[2048];
+static int s_liveTexCount = 0;
+static LiveRes s_liveSurf[4096];
+static int s_liveSurfCount = 0;
+static unsigned s_resOverflow = 0;
+
+static void Note_Res_Made(LiveRes * table, int & count, int cap, const void * p,
+	const char * site)
+{
+	if (count >= cap) { ++s_resOverflow; return; }
+	LiveRes & e = table[count++];
+	e.p = p; e.site = site;
+}
+
+static void Note_Res_Freed(LiveRes * table, int & count, const void * p)
+{
+	for (int i = 0; i < count; ++i) {
+		if (table[i].p == p) { table[i] = table[--count]; return; }
+	}
+}
+
+void Note_Buffer_Made(const D3D11Buffer * b, unsigned size, unsigned usage, bool index)
+{
+	++s_buffersMade;
+	if (s_liveBufferCount >= 64) { ++s_liveOverflow; return; }
+	LiveBuffer & e = s_liveBuffers[s_liveBufferCount++];
+	e.b = b; e.size = size; e.usage = usage; e.index = index;
+}
+
+void Note_Buffer_Freed(const D3D11Buffer * b)
+{
+	++s_buffersFreed;
+	for (int i = 0; i < s_liveBufferCount; ++i) {
+		if (s_liveBuffers[i].b == b) {
+			s_liveBuffers[i] = s_liveBuffers[--s_liveBufferCount];
+			return;
+		}
+	}
+}
+#endif
+
+}
+
+
 /*
 ** One shader stage's signature: what it reads or writes, and in which register.
 **
@@ -1594,9 +1664,17 @@ GfxAdapterClass * Gfx_Create_Adapter_D3D11()
 
 namespace
 {
+#ifdef RTS_DEBUG
+	static const char * s_surfaceSite = "?";
+#endif
+
 	D3D11Surface * New_Surface()
 	{
 		D3D11Surface * s = new D3D11Surface;
+#ifdef RTS_DEBUG
+		++s_surfMade;
+		Note_Res_Made(s_liveSurf, s_liveSurfCount, 4096, s, s_surfaceSite);
+#endif
 		memset(s, 0, sizeof(*s));
 		s->refs = 1;
 		s->ww = WW3D_FORMAT_UNKNOWN;
@@ -1633,6 +1711,9 @@ namespace
 
 	void Free_Surface(D3D11Surface * s)
 	{
+#ifdef RTS_DEBUG
+		if (s != nullptr) { ++s_surfFreed; Note_Res_Freed(s_liveSurf, s_liveSurfCount, s); }
+#endif
 		if (s == nullptr) return;
 		if (s->rtv != nullptr) s->rtv->Release();
 		if (s->dsv != nullptr) s->dsv->Release();
@@ -1685,6 +1766,9 @@ namespace
 
 	void Free_Texture(D3D11Texture * t)
 	{
+#ifdef RTS_DEBUG
+		if (t != nullptr) { ++s_texFreed; Note_Res_Freed(s_liveTex, s_liveTexCount, t); }
+#endif
 		if (t == nullptr) return;
 		if (t->srv != nullptr) t->srv->Release();
 		if (t->resource != nullptr) t->resource->Release();
@@ -1703,6 +1787,9 @@ namespace
 			return false;
 
 		if (impl->back_buffer == nullptr) {
+#ifdef RTS_DEBUG
+			s_surfaceSite = "swap chain back buffer";
+#endif
 			impl->back_buffer = Wrap_Surface(back, 0, DXGI_FORMAT_UNKNOWN, false);
 		} else {
 			// A resize keeps the wrapper object and swaps the texture inside it, so that
@@ -1751,6 +1838,9 @@ namespace
 		if (FAILED(impl->device->CreateTexture2D(&dd, nullptr, &depth))) return false;
 
 		if (impl->depth_buffer == nullptr) {
+#ifdef RTS_DEBUG
+			s_surfaceSite = "swap chain depth buffer";
+#endif
 			impl->depth_buffer = Wrap_Surface(depth, 0, zf.depth, true);
 		} else {
 			if (impl->depth_buffer->dsv != nullptr) {
@@ -1806,6 +1896,7 @@ GfxDeviceD3D11::~GfxDeviceD3D11()
 {
 	if (m_impl == nullptr) return;
 
+
 	m_impl->blend_cache.Release_All();
 	m_impl->depth_cache.Release_All();
 	m_impl->raster_cache.Release_All();
@@ -1837,6 +1928,58 @@ GfxDeviceD3D11::~GfxDeviceD3D11()
 	if (m_impl->info_queue != nullptr) m_impl->info_queue->Release();
 	if (m_impl->device != nullptr) m_impl->device->Release();
 	if (m_impl->adapter != nullptr) m_impl->adapter->Release();
+
+#ifdef RTS_DEBUG
+	// What is still alive when the device goes away, named rather than inferred from the
+	// engine leak report's block sizes. A buffer here is one the engine never released:
+	// this backend frees a D3D11Buffer only from Release_Vertex_Buffer /
+	// Release_Index_Buffer, so the register can only be non-empty because a caller kept it.
+	WWDEBUG_SAY(("D3D11 LIVE OBJECTS at device teardown: %u buffers made, %u freed, %d still "
+		"alive (%u could not be registered -- the register holds 64). A non-zero \"still "
+		"alive\" is the engine's, not this backend's: nothing here can free one on its own.",
+		s_buffersMade, s_buffersFreed, s_liveBufferCount, s_liveOverflow));
+	WWDEBUG_SAY(("D3D11 LIVE OBJECTS, the other four kinds (made/freed, sizeof): vertex "
+		"shaders %u/%u (%u bytes), pixel shaders %u/%u (%u), textures %u/%u (%u), surfaces "
+		"%u/%u (%u), buffers (%u). A kind whose two figures differ is the one to look for in "
+		"the engine's leak report, and its sizeof says which block.",
+		s_vsMade, s_vsFreed, (unsigned)sizeof(D3D11VertexShader),
+		s_psMade, s_psFreed, (unsigned)sizeof(D3D11PixelShader),
+		s_texMade, s_texFreed, (unsigned)sizeof(D3D11Texture),
+		s_surfMade, s_surfFreed, (unsigned)sizeof(D3D11Surface),
+		(unsigned)sizeof(D3D11Buffer)));
+	for (int i = 0; i < s_liveTexCount; ++i) {
+		const D3D11Texture * t = (const D3D11Texture *)s_liveTex[i].p;
+		WWDEBUG_SAY(("    live texture %ux%u ww=%d dxgi=%d levels=%u usage=0x%x refs=%ld "
+			"cube=%d volume=%d depth=%d", t->width, t->height, (int)t->ww, (int)t->dxgi,
+			t->levels, t->usage, t->refs, (int)t->cube, (int)t->volume, (int)t->is_depth));
+	}
+	for (int i = 0; i < s_liveSurfCount; ++i) {
+		const D3D11Surface * sf = (const D3D11Surface *)s_liveSurf[i].p;
+		WWDEBUG_SAY(("    live surface %ux%u ww=%d dxgi=%d sub=%u refs=%ld depth=%d "
+			"rtv=%d dsv=%d scratch=%d, made by %s", sf->width, sf->height, (int)sf->ww,
+			(int)sf->dxgi, sf->subresource, sf->refs, (int)sf->is_depth,
+			sf->rtv != nullptr ? 1 : 0, sf->dsv != nullptr ? 1 : 0,
+			sf->scratch != nullptr ? 1 : 0, s_liveSurf[i].site));
+	}
+	if (s_resOverflow != 0)
+		WWDEBUG_SAY(("    %u resources could not be registered -- the lists are full, so the "
+			"survivors above are a lower bound.", s_resOverflow));
+	{
+		unsigned shadowBytes = 0;
+		for (int i = 0; i < s_liveBufferCount; ++i) {
+			shadowBytes += s_liveBuffers[i].size;
+			WWDEBUG_SAY(("    live %s buffer %u bytes, usage 0x%x, fvf 0x%x",
+				s_liveBuffers[i].index ? "index" : "vertex", s_liveBuffers[i].size,
+				s_liveBuffers[i].usage,
+				s_liveBuffers[i].b != nullptr ? s_liveBuffers[i].b->fvf : 0u));
+		}
+		if (s_liveBufferCount != 0)
+			WWDEBUG_SAY(("    %d objects of %u bytes each plus %u bytes of shadow -- which is "
+				"%d blocks in the engine's leak report, two per buffer.",
+				s_liveBufferCount, (unsigned)sizeof(D3D11Buffer), shadowBytes,
+				s_liveBufferCount * 2));
+	}
+#endif
 
 	delete m_impl;
 	m_impl = nullptr;
@@ -2259,8 +2402,14 @@ GfxShaderHandle GfxDeviceD3D11::Create_Vertex_Shader(const void * bytecode, unsi
 	if (bytecode == nullptr || size == 0) return 0;
 
 	D3D11VertexShader * vs = new D3D11VertexShader;
+#ifdef RTS_DEBUG
+	++s_vsMade;
+#endif
 	memset(vs, 0, sizeof(*vs));
 	if (FAILED(m_impl->device->CreateVertexShader(bytecode, size, nullptr, &vs->shader))) {
+#ifdef RTS_DEBUG
+		++s_vsFreed;
+#endif
 		delete vs;
 		return 0;
 	}
@@ -2280,8 +2429,14 @@ GfxShaderHandle GfxDeviceD3D11::Create_Pixel_Shader(const void * bytecode, unsig
 	TRACE("Create_Pixel_Shader");
 	if (bytecode == nullptr || size == 0) return 0;
 	D3D11PixelShader * ps = new D3D11PixelShader;
+#ifdef RTS_DEBUG
+	++s_psMade;
+#endif
 	memset(ps, 0, sizeof(*ps));
 	if (FAILED(m_impl->device->CreatePixelShader(bytecode, size, nullptr, &ps->shader))) {
+#ifdef RTS_DEBUG
+		++s_psFreed;
+#endif
 		delete ps;
 		return 0;
 	}
@@ -2305,6 +2460,9 @@ void GfxDeviceD3D11::Release_Vertex_Shader(GfxShaderHandle shader)
 	if (m_impl->vertex_shader == vs) m_impl->vertex_shader = nullptr;
 	if (vs->shader != nullptr) vs->shader->Release();
 	delete [] vs->bytecode;
+#ifdef RTS_DEBUG
+	++s_vsFreed;
+#endif
 	delete vs;
 }
 
@@ -2315,6 +2473,9 @@ void GfxDeviceD3D11::Release_Pixel_Shader(GfxShaderHandle shader)
 	D3D11PixelShader * ps = (D3D11PixelShader *)shader;
 	if (m_impl->pixel_shader == ps) m_impl->pixel_shader = nullptr;
 	if (ps->shader != nullptr) ps->shader->Release();
+#ifdef RTS_DEBUG
+	++s_psFreed;
+#endif
 	delete ps;
 }
 
@@ -3185,12 +3346,18 @@ namespace
 		b->usage = usage;
 		b->shadow = new unsigned char[size];
 		memset(b->shadow, 0, size);
+#ifdef RTS_DEBUG
+		Note_Buffer_Made(b, size, usage, bind == D3D11_BIND_INDEX_BUFFER);
+#endif
 		return b;
 	}
 
 	void Free_Buffer(D3D11Buffer * b)
 	{
 		if (b == nullptr) return;
+#ifdef RTS_DEBUG
+		Note_Buffer_Freed(b);
+#endif
 		if (b->buffer != nullptr) b->buffer->Release();
 		delete [] b->shadow;
 		delete b;
@@ -3322,6 +3489,10 @@ namespace
 	D3D11Texture * New_Texture(unsigned levels, unsigned faces)
 	{
 		D3D11Texture * t = new D3D11Texture;
+#ifdef RTS_DEBUG
+		++s_texMade;
+		Note_Res_Made(s_liveTex, s_liveTexCount, 2048, t, "Create_Texture");
+#endif
 		memset(t, 0, sizeof(*t));
 		t->refs = 1;
 		t->levels = levels;
@@ -3619,6 +3790,9 @@ GfxSurface * GfxDeviceD3D11::Get_Texture_Surface_Level(GfxTexture * texture, uns
 
 	const DXGI_FORMAT view = t->is_depth
 		? WW3DZ_To_DXGI(t->wwz).depth : t->dxgi;
+#ifdef RTS_DEBUG
+	s_surfaceSite = "Get_Texture_Surface_Level";
+#endif
 	D3D11Surface * s = Wrap_Surface(tex2d, level, view, t->is_depth);
 	if (s != nullptr && !t->is_depth) s->ww = t->ww;
 	return (GfxSurface *)s;
@@ -3660,6 +3834,9 @@ GfxSurface * GfxDeviceD3D11::Create_Render_Target_Surface(unsigned width, unsign
 
 	ID3D11Texture2D * texture = nullptr;
 	if (FAILED(m_impl->device->CreateTexture2D(&desc, nullptr, &texture))) return nullptr;
+#ifdef RTS_DEBUG
+	s_surfaceSite = "Create_Render_Target_Surface";
+#endif
 	D3D11Surface * s = Wrap_Surface(texture, 0, dxgi, false);
 	texture->Release();
 	if (s != nullptr) s->ww = format;
@@ -3685,6 +3862,9 @@ GfxSurface * GfxDeviceD3D11::Create_Depth_Stencil_Surface(unsigned width, unsign
 
 	ID3D11Texture2D * texture = nullptr;
 	if (FAILED(m_impl->device->CreateTexture2D(&desc, nullptr, &texture))) return nullptr;
+#ifdef RTS_DEBUG
+	s_surfaceSite = "Create_Depth_Stencil_Surface";
+#endif
 	D3D11Surface * s = Wrap_Surface(texture, 0, zf.depth, true);
 	texture->Release();
 	return (GfxSurface *)s;
@@ -3725,6 +3905,9 @@ GfxSurface * GfxDeviceD3D11::Create_Offscreen_Surface(unsigned width, unsigned h
 		m_impl->context->Unmap(texture, 0);
 	}
 
+#ifdef RTS_DEBUG
+	s_surfaceSite = "Create_Offscreen_Surface";
+#endif
 	D3D11Surface * s = Wrap_Surface(texture, 0, dxgi, false);
 	texture->Release();
 	if (s != nullptr) s->ww = format;

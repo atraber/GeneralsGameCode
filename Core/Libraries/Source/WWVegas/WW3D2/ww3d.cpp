@@ -1425,7 +1425,19 @@ void WW3D::Make_Screen_Shot( const char * filename_base , const float gamma, con
 	SurfaceClass::SurfaceDescription surfaceDesc;
 	surface->Get_Description(surfaceDesc);
 
-	SurfaceClass* surfaceCopy = NEW_REF(SurfaceClass, (DX8Wrapper::_Create_DX8_Surface(surfaceDesc.Width, surfaceDesc.Height, surfaceDesc.Format)));
+	// The creation reference has to be given back. SurfaceClass::Attach takes a reference of
+	// its own, so a surface created here and handed straight to the constructor arrives at two
+	// references and leaves at one -- and stays there for the life of the process.
+	//
+	// This has always leaked; the second backend only made it visible, exactly as it did for
+	// the seven shader handles Phase 8 found. Under D3D9 the object was an IDirect3DSurface9
+	// the engine's own allocator never saw, so the leak report said nothing; the D3D11 backend
+	// wraps a surface in an engine allocation and the same omission shows up as a block.
+	// Measured on civ_buildings before the fix: one leaked 1280x720 offscreen surface per
+	// screenshot, one for one dump and three for three.
+	GfxSurface* rawSurface = DX8Wrapper::_Create_DX8_Surface(surfaceDesc.Width, surfaceDesc.Height, surfaceDesc.Format);
+	SurfaceClass* surfaceCopy = NEW_REF(SurfaceClass, (rawSurface));
+	DX8Wrapper::Release_DX8_Surface_Resource(rawSurface);
 	DX8Wrapper::_Copy_DX8_Rects(surface->Peek_D3D_Surface(), nullptr, 0, surfaceCopy->Peek_D3D_Surface(), nullptr);
 
 	surface->Release_Ref();
@@ -1775,7 +1787,19 @@ void WW3D::Update_Movie_Capture()
 	SurfaceClass::SurfaceDescription surfaceDesc;
 	surface->Get_Description(surfaceDesc);
 
-	SurfaceClass* surfaceCopy = NEW_REF(SurfaceClass, (DX8Wrapper::_Create_DX8_Surface(surfaceDesc.Width, surfaceDesc.Height, surfaceDesc.Format)));
+	// The creation reference has to be given back. SurfaceClass::Attach takes a reference of
+	// its own, so a surface created here and handed straight to the constructor arrives at two
+	// references and leaves at one -- and stays there for the life of the process.
+	//
+	// This has always leaked; the second backend only made it visible, exactly as it did for
+	// the seven shader handles Phase 8 found. Under D3D9 the object was an IDirect3DSurface9
+	// the engine's own allocator never saw, so the leak report said nothing; the D3D11 backend
+	// wraps a surface in an engine allocation and the same omission shows up as a block.
+	// Measured on civ_buildings before the fix: one leaked 1280x720 offscreen surface per
+	// screenshot, one for one dump and three for three.
+	GfxSurface* rawSurface = DX8Wrapper::_Create_DX8_Surface(surfaceDesc.Width, surfaceDesc.Height, surfaceDesc.Format);
+	SurfaceClass* surfaceCopy = NEW_REF(SurfaceClass, (rawSurface));
+	DX8Wrapper::Release_DX8_Surface_Resource(rawSurface);
 	DX8Wrapper::_Copy_DX8_Rects(surface->Peek_D3D_Surface(), nullptr, 0, surfaceCopy->Peek_D3D_Surface(), nullptr);
 
 	surface->Release_Ref();
