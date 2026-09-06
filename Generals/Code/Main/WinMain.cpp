@@ -41,6 +41,12 @@
 
 // USER INCLUDES //////////////////////////////////////////////////////////////
 #include "WinMain.h"
+
+#if defined(RTS_DEBUG)
+// gfxdevice_d3d11.cpp. Declared here rather than pulled in through a graphics header:
+// this file wants one debug-only function, not the seam.
+extern void Gfx_Report_Live_Objects(const char * when);
+#endif
 #include "Lib/BaseType.h"
 #include "Common/CommandLine.h"
 #include "Common/CriticalSection.h"
@@ -899,6 +905,17 @@ Int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
 		// run the game main loop
 		exitcode = GameMain();
+
+#if defined(RTS_DEBUG)
+		// The graphics backend's live-object census, asked a SECOND time -- here, after
+		// the engine has finished shutting down, rather than in the device destructor
+		// where it also runs. Phase 11 found one object alive at device teardown (the
+		// projected shadow decal's 64x64 BC3 shadow.tga) and could not say whether it
+		// was a leak or an artefact of teardown ORDER: W3DShadowTextureManager, which
+		// owns it, is destroyed after the device. The difference between the two reports
+		// is the answer, and this is the last point in the process where it can be asked.
+		Gfx_Report_Live_Objects("after the engine's own shutdown");
+#endif
 
 		delete TheVersion;
 		TheVersion = nullptr;

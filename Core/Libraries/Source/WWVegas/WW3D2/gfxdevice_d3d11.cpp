@@ -1887,6 +1887,74 @@ namespace
 // The device: lifetime
 // ---------------------------------------------------------------------------
 
+#ifdef RTS_DEBUG
+// The live-object census, factored out of the destructor so it can be asked twice.
+//
+// Phase 11 found one object alive when the graphics device is destroyed -- a 64x64 BC3
+// texture with five levels, the projected shadow decal's shadow.tga -- and deliberately
+// did not call it a leak, because the census could not tell a leak from a teardown-order
+// artefact: W3DShadowTextureManager, which owns that texture, is destroyed AFTER the
+// device. Its count does not scale with anything, which is what a correctly released
+// cache looks like as well as what a one-off leak looks like.
+//
+// The counters are file statics and outlive the device, so the way to tell the two apart
+// is to ask again once the engine itself has finished shutting down. WinMain does that,
+// after GameMain returns and before the memory manager's own report.
+void Gfx_Report_Live_Objects(const char * when)
+{
+	WWDEBUG_SAY(("D3D11 LIVE OBJECTS -- %s", when));
+	// What is still alive, named rather than inferred from the
+	// engine leak report's block sizes. A buffer here is one the engine never released:
+	// this backend frees a D3D11Buffer only from Release_Vertex_Buffer /
+	// Release_Index_Buffer, so the register can only be non-empty because a caller kept it.
+	WWDEBUG_SAY(("D3D11 LIVE OBJECTS: %u buffers made, %u freed, %d still "
+		"alive (%u could not be registered -- the register holds 64). A non-zero \"still "
+		"alive\" is the engine's, not this backend's: nothing here can free one on its own.",
+		s_buffersMade, s_buffersFreed, s_liveBufferCount, s_liveOverflow));
+	WWDEBUG_SAY(("D3D11 LIVE OBJECTS, the other four kinds (made/freed, sizeof): vertex "
+		"shaders %u/%u (%u bytes), pixel shaders %u/%u (%u), textures %u/%u (%u), surfaces "
+		"%u/%u (%u), buffers (%u). A kind whose two figures differ is the one to look for in "
+		"the engine's leak report, and its sizeof says which block.",
+		s_vsMade, s_vsFreed, (unsigned)sizeof(D3D11VertexShader),
+		s_psMade, s_psFreed, (unsigned)sizeof(D3D11PixelShader),
+		s_texMade, s_texFreed, (unsigned)sizeof(D3D11Texture),
+		s_surfMade, s_surfFreed, (unsigned)sizeof(D3D11Surface),
+		(unsigned)sizeof(D3D11Buffer)));
+	for (int i = 0; i < s_liveTexCount; ++i) {
+		const D3D11Texture * t = (const D3D11Texture *)s_liveTex[i].p;
+		WWDEBUG_SAY(("    live texture %ux%u ww=%d dxgi=%d levels=%u usage=0x%x refs=%ld "
+			"cube=%d volume=%d depth=%d", t->width, t->height, (int)t->ww, (int)t->dxgi,
+			t->levels, t->usage, t->refs, (int)t->cube, (int)t->volume, (int)t->is_depth));
+}
+for (int i = 0; i < s_liveSurfCount; ++i) {
+	const D3D11Surface * sf = (const D3D11Surface *)s_liveSurf[i].p;
+	WWDEBUG_SAY(("    live surface %ux%u ww=%d dxgi=%d sub=%u refs=%ld depth=%d "
+		"rtv=%d dsv=%d scratch=%d, made by %s", sf->width, sf->height, (int)sf->ww,
+		(int)sf->dxgi, sf->subresource, sf->refs, (int)sf->is_depth,
+		sf->rtv != nullptr ? 1 : 0, sf->dsv != nullptr ? 1 : 0,
+		sf->scratch != nullptr ? 1 : 0, s_liveSurf[i].site));
+}
+if (s_resOverflow != 0)
+	WWDEBUG_SAY(("    %u resources could not be registered -- the lists are full, so the "
+		"survivors above are a lower bound.", s_resOverflow));
+{
+	unsigned shadowBytes = 0;
+	for (int i = 0; i < s_liveBufferCount; ++i) {
+		shadowBytes += s_liveBuffers[i].size;
+		WWDEBUG_SAY(("    live %s buffer %u bytes, usage 0x%x, fvf 0x%x",
+			s_liveBuffers[i].index ? "index" : "vertex", s_liveBuffers[i].size,
+			s_liveBuffers[i].usage,
+			s_liveBuffers[i].b != nullptr ? s_liveBuffers[i].b->fvf : 0u));
+	}
+	if (s_liveBufferCount != 0)
+		WWDEBUG_SAY(("    %d objects of %u bytes each plus %u bytes of shadow -- which is "
+			"%d blocks in the engine's leak report, two per buffer.",
+			s_liveBufferCount, (unsigned)sizeof(D3D11Buffer), shadowBytes,
+			s_liveBufferCount * 2));
+}
+}
+#endif
+
 GfxDeviceD3D11::~GfxDeviceD3D11()
 {
 	if (m_impl == nullptr) return;
@@ -1925,55 +1993,7 @@ GfxDeviceD3D11::~GfxDeviceD3D11()
 	if (m_impl->adapter != nullptr) m_impl->adapter->Release();
 
 #ifdef RTS_DEBUG
-	// What is still alive when the device goes away, named rather than inferred from the
-	// engine leak report's block sizes. A buffer here is one the engine never released:
-	// this backend frees a D3D11Buffer only from Release_Vertex_Buffer /
-	// Release_Index_Buffer, so the register can only be non-empty because a caller kept it.
-	WWDEBUG_SAY(("D3D11 LIVE OBJECTS at device teardown: %u buffers made, %u freed, %d still "
-		"alive (%u could not be registered -- the register holds 64). A non-zero \"still "
-		"alive\" is the engine's, not this backend's: nothing here can free one on its own.",
-		s_buffersMade, s_buffersFreed, s_liveBufferCount, s_liveOverflow));
-	WWDEBUG_SAY(("D3D11 LIVE OBJECTS, the other four kinds (made/freed, sizeof): vertex "
-		"shaders %u/%u (%u bytes), pixel shaders %u/%u (%u), textures %u/%u (%u), surfaces "
-		"%u/%u (%u), buffers (%u). A kind whose two figures differ is the one to look for in "
-		"the engine's leak report, and its sizeof says which block.",
-		s_vsMade, s_vsFreed, (unsigned)sizeof(D3D11VertexShader),
-		s_psMade, s_psFreed, (unsigned)sizeof(D3D11PixelShader),
-		s_texMade, s_texFreed, (unsigned)sizeof(D3D11Texture),
-		s_surfMade, s_surfFreed, (unsigned)sizeof(D3D11Surface),
-		(unsigned)sizeof(D3D11Buffer)));
-	for (int i = 0; i < s_liveTexCount; ++i) {
-		const D3D11Texture * t = (const D3D11Texture *)s_liveTex[i].p;
-		WWDEBUG_SAY(("    live texture %ux%u ww=%d dxgi=%d levels=%u usage=0x%x refs=%ld "
-			"cube=%d volume=%d depth=%d", t->width, t->height, (int)t->ww, (int)t->dxgi,
-			t->levels, t->usage, t->refs, (int)t->cube, (int)t->volume, (int)t->is_depth));
-	}
-	for (int i = 0; i < s_liveSurfCount; ++i) {
-		const D3D11Surface * sf = (const D3D11Surface *)s_liveSurf[i].p;
-		WWDEBUG_SAY(("    live surface %ux%u ww=%d dxgi=%d sub=%u refs=%ld depth=%d "
-			"rtv=%d dsv=%d scratch=%d, made by %s", sf->width, sf->height, (int)sf->ww,
-			(int)sf->dxgi, sf->subresource, sf->refs, (int)sf->is_depth,
-			sf->rtv != nullptr ? 1 : 0, sf->dsv != nullptr ? 1 : 0,
-			sf->scratch != nullptr ? 1 : 0, s_liveSurf[i].site));
-	}
-	if (s_resOverflow != 0)
-		WWDEBUG_SAY(("    %u resources could not be registered -- the lists are full, so the "
-			"survivors above are a lower bound.", s_resOverflow));
-	{
-		unsigned shadowBytes = 0;
-		for (int i = 0; i < s_liveBufferCount; ++i) {
-			shadowBytes += s_liveBuffers[i].size;
-			WWDEBUG_SAY(("    live %s buffer %u bytes, usage 0x%x, fvf 0x%x",
-				s_liveBuffers[i].index ? "index" : "vertex", s_liveBuffers[i].size,
-				s_liveBuffers[i].usage,
-				s_liveBuffers[i].b != nullptr ? s_liveBuffers[i].b->fvf : 0u));
-		}
-		if (s_liveBufferCount != 0)
-			WWDEBUG_SAY(("    %d objects of %u bytes each plus %u bytes of shadow -- which is "
-				"%d blocks in the engine's leak report, two per buffer.",
-				s_liveBufferCount, (unsigned)sizeof(D3D11Buffer), shadowBytes,
-				s_liveBufferCount * 2));
-	}
+	Gfx_Report_Live_Objects("at device teardown");
 #endif
 
 	delete m_impl;
