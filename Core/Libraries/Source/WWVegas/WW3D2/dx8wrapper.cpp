@@ -2105,34 +2105,6 @@ void DX8Wrapper::Debug_Report_Depth_Pass_Stencil()
 	s_depthStencilDropped = 0;
 }
 
-bool DX8Wrapper::Is_Inert_Depth_Pass_Draw()
-{
-	// Only the depth pass, because only there is the answer this cheap. That render
-	// target is packed depth written as colour, with a depth buffer behind it, so colour
-	// and depth are the complete list of ways a draw could leave a mark on it. Elsewhere
-	// a draw with both write masks off can still be doing something -- filling stencil for
-	// the player-colour pass -- and the same reads would not settle it.
-	//
-	// Stencil used to be read here as a third condition, and that was the belt-and-braces
-	// version of a claim this now makes directly: **neither depth-pass target has a
-	// stencil plane**. W3DShaderManager creates both at WW3D_ZFORMAT_D16 -- the shadow map
-	// depth surface and the SSR prepass's -- so no stencil state reachable inside this
-	// pass can write a bit of anything, whatever D3DRS_STENCILENABLE says. Reading the
-	// enable instead left 914 draws a window on usa_lightsout submitted for nothing:
-	// vehicle headlight meshes with no technique, masked out of colour and depth like
-	// every other unroutable draw, kept alive by BuildingOcclusion's STENCILENABLE with
-	// STENCILPASS at REPLACE. They were the only draws in the corpus a D3D11 backend
-	// provably could not make and D3D9 could -- and what D3D9 made of them was nothing.
-	//
-	// Switching the enable off at the top of the pass does *not* work and was tried: the
-	// occlusion pass runs inside the shadow render and sets it TRUE again itself. The
-	// format is the durable fact, so it is the one the predicate rests on. If either
-	// surface ever gains a stencil plane, this has to come back.
-	if (!m_bShadowDepthPass) return false;
-	return RenderStates[D3DRS_COLORWRITEENABLE] == 0 &&
-		   RenderStates[D3DRS_ZWRITEENABLE] == FALSE;
-}
-
 const char* DX8Wrapper::Debug_Current_Pass_Name()
 {
 	if (m_bShadowDepthPass)     return "(shadow depth pass)";
@@ -5489,7 +5461,33 @@ void DX8Wrapper::Draw_Sorting_IB_VB(
 //
 //
 //
-// ----------------------------------------------------------------------------
+bool DX8Wrapper::Is_Inert_Depth_Pass_Draw()
+{
+	// Only the depth pass, because only there is the answer this cheap. That render
+	// target is packed depth written as colour, with a depth buffer behind it, so colour
+	// and depth are the complete list of ways a draw could leave a mark on it. Elsewhere
+	// a draw with both write masks off can still be doing something -- filling stencil for
+	// the player-colour pass -- and the same reads would not settle it.
+	//
+	// Stencil used to be read here as a third condition, and that was the belt-and-braces
+	// version of a claim this now makes directly: **neither depth-pass target has a
+	// stencil plane**. W3DShaderManager creates both at WW3D_ZFORMAT_D16 -- the shadow map
+	// depth surface and the SSR prepass's -- so no stencil state reachable inside this
+	// pass can write a bit of anything, whatever D3DRS_STENCILENABLE says. Reading the
+	// enable instead left 914 draws a window on usa_lightsout submitted for nothing:
+	// vehicle headlight meshes with no technique, masked out of colour and depth like
+	// every other unroutable draw, kept alive by BuildingOcclusion's STENCILENABLE with
+	// STENCILPASS at REPLACE. They were the only draws in the corpus a D3D11 backend
+	// provably could not make and D3D9 could -- and what D3D9 made of them was nothing.
+	//
+	// Switching the enable off at the top of the pass does *not* work and was tried: the
+	// occlusion pass runs inside the shadow render and sets it TRUE again itself. The
+	// format is the durable fact, so it is the one the predicate rests on. If either
+	// surface ever gains a stencil plane, this has to come back.
+	if (!m_bShadowDepthPass) return false;
+	return RenderStates[D3DRS_COLORWRITEENABLE] == 0 &&
+		   RenderStates[D3DRS_ZWRITEENABLE] == FALSE;
+}
 
 void DX8Wrapper::Draw(
 	unsigned primitive_type,

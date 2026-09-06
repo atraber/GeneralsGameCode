@@ -854,6 +854,7 @@ WW3DErrorType WW3D::Begin_Render(bool clear,bool clearz,const Vector3 & color, f
 				WWDEBUG_SAY(("FORCED RESET: render frame %d -- calling Reset_Device()", FrameCount));
 				const bool ok = DX8Wrapper::Reset_Device();
 				WWDEBUG_SAY(("FORCED RESET: render frame %d -- Reset_Device() returned %d", FrameCount, ok ? 1 : 0));
+				(void)ok;
 			}
 		}
 	}
