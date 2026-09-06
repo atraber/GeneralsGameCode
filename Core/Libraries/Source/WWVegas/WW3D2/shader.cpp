@@ -598,17 +598,13 @@ void ShaderClass::Apply()
 	DWORD			SecaArg1 = D3DTA_TEXTURE;
 	DWORD			SecaArg2 = D3DTA_CURRENT;
 
-	bool voodoo3=(DX8Wrapper::Get_Current_Caps()->Get_Vendor()==DX8Caps::VENDOR_3DFX) &&
-					 (DX8Wrapper::Get_Current_Caps()->Get_Device()==DX8Caps::DEVICE_3DFX_VOODOO_3);
-	int pri_mask=ShaderClass::MASK_PRIGRADIENT|ShaderClass::MASK_TEXTURING;
-	int sec_mask=ShaderClass::MASK_POSTDETAILALPHAFUNC|ShaderClass::MASK_POSTDETAILCOLORFUNC|ShaderClass::MASK_TEXTURING;
-
-	// Voodoo3s need to keep track of any changes in any of the above
-	// because it shuffles the stages around
-	if (voodoo3) {
-		pri_mask|=sec_mask;
-		sec_mask=pri_mask;
-	}
+	// A 3Dfx Voodoo3 shuffled the texture stages around and needed both masks widened to
+	// each other. It was detected by vendor and device id out of DX8Caps's device tables,
+	// which went in Phase 10 along with the rest of the 2002 hardware database: a Voodoo3
+	// cannot create a Direct3D 11 device, so the branch was unreachable rather than merely
+	// unlikely.
+	const int pri_mask=ShaderClass::MASK_PRIGRADIENT|ShaderClass::MASK_TEXTURING;
+	const int sec_mask=ShaderClass::MASK_POSTDETAILALPHAFUNC|ShaderClass::MASK_POSTDETAILCOLORFUNC|ShaderClass::MASK_TEXTURING;
 
 	if(diff & pri_mask)
 	{
@@ -893,11 +889,10 @@ void ShaderClass::Apply()
 				break;
 
 			case ShaderClass::DETAILCOLOR_MODALPHAADDCOLOR:
-				if (DX8Wrapper::Get_Current_Caps()->Support_ModAlphaAddClr()) {
-					SeccOp = D3DTOP_MODULATEALPHA_ADDCOLOR;
-					SeccArg1 = D3DTA_CURRENT;
-					SeccArg2 = D3DTA_TEXTURE;
-				} else if (TextureOpCaps & D3DTEXOPCAPS_ADD) {
+				// D3DTOP_MODULATEALPHA_ADDCOLOR is a fixed-function combiner op and no
+				// backend after D3D9 has a combiner, so the capability that used to be
+				// asked here is false by construction and this always falls through.
+				if (TextureOpCaps & D3DTEXOPCAPS_ADD) {
 					SeccOp = D3DTOP_ADD;
 					SeccArg1 = D3DTA_TEXTURE;
 					SeccArg2 = D3DTA_CURRENT;
@@ -961,60 +956,14 @@ void ShaderClass::Apply()
 		}
 	}
 
-	bool kill_stage_2=false;
-
 	// Apply the stage settings
 	if (diff & pri_mask) {
-		// for voodoo3 supported blend modes, the stage 0 color and alpha are both diffuse
-		// or both not, so we can check for color diffuse only
-		if ( voodoo3 && (PricArg2==D3DTA_DIFFUSE) &&
-			  ( (SecaOp!=D3DTOP_DISABLE) || (SeccOp!=D3DTOP_DISABLE) )
-			) {
-			// Special Voodoo3 code
-			// If stage 0 has a diffuse input
-			// and stage 1 has an input put the diffuse in stage 2
-
-			DWORD tex_arg=D3DTA_CURRENT;
-			if(Get_Texturing() == ShaderClass::TEXTURING_ENABLE) {
-				tex_arg=D3DTA_TEXTURE;
-			}
-
-			// this is for the bad case of using
-			// stage 0 for diffuse only
-			if ((PricOp==D3DTOP_SELECTARG1)&&(PricArg1==D3DTA_DIFFUSE)) {
-				WWDEBUG_SAY(("Wasted Stage 0 in shader-vertex diffuse only"));
-				// set stage 0 to disable
-				DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_COLOROP,D3DTOP_DISABLE);
-				DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAOP,D3DTOP_DISABLE);
-				// set stage 1 to accept diffuse
-				if (SeccArg2==D3DTA_CURRENT) SeccArg2=D3DTA_DIFFUSE;
-				if (SecaArg2==D3DTA_CURRENT) SecaArg2=D3DTA_DIFFUSE;
-				// and nuke stage 2
-				kill_stage_2=true;
-			} else {
-				// set stage 0 to pass through what it needs
-				DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_COLOROP,D3DTOP_SELECTARG1);
-				DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_COLORARG1,tex_arg);
-				DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1);
-				DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAARG1,tex_arg);
-
-				// Set stage 2 to do the diffuse op, without tracking it: the two blocks
-				// here are the last fixed-function combiner writes in the engine that do
-				// not go through the tracked setter, and making them tracked would defer
-				// them behind a flush that no draw asks for any more. Through the backend
-				// rather than at a device, which is all this change is.
-				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLOROP,PricOp));
-				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLORARG1,D3DTA_CURRENT));
-				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLORARG2,D3DTA_DIFFUSE));
-				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAOP,PriaOp));
-				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAARG1,D3DTA_CURRENT));
-				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE));
-				GFXCALL(Set_Texture_Stage_State(2,D3DTSS_TEXCOORDINDEX,D3DTSS_TCI_PASSTHRU));
-				GFXCALL(Set_Texture(2,nullptr));
-				kill_stage_2=false;
-				ShaderDirty=true;
-			}
-		} else {
+		// The Voodoo3 stage-shuffling special case was here: on that part the stage 0
+		// colour and alpha are both diffuse or both not, and a diffuse input with
+		// anything in stage 1 had to be moved to stage 2. It was selected by vendor and
+		// device id, and Phase 10 deleted the hardware database it read -- a Voodoo3
+		// cannot create a Direct3D 11 device.
+		{
 
 #pragma message("(gth) Generals added a feature here WW3D::Is_Coloring_Enabled() which needs to be merged properly")
 #if 0
@@ -1030,7 +979,6 @@ void ShaderClass::Apply()
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAOP,PriaOp);
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAARG1,PriaArg1);
 			DX8Wrapper::Set_DX8_Texture_Stage_State(0,D3DTSS_ALPHAARG2,PriaArg2);
-			kill_stage_2=true;
 		}
 		diff &= ~(ShaderClass::MASK_PRIGRADIENT);
 	}
@@ -1045,23 +993,6 @@ void ShaderClass::Apply()
 		diff &= ~(ShaderClass::MASK_POSTDETAILCOLORFUNC);
 		diff &= ~(ShaderClass::MASK_POSTDETAILALPHAFUNC);
 		diff &= ~(ShaderClass::MASK_TEXTURING);
-	}
-
-	// Make sure to disable stage 2 for voodoos since we don't have state tracking for
-	// stage 2
-	// bypass the wrapper since it only supports 2 texture stages
-	if (voodoo3 && kill_stage_2) {
-		if ((SeccOp!=D3DTOP_DISABLE)&&(SecaOp!=D3DTOP_DISABLE)) {
-			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLOROP,D3DTOP_SELECTARG1));
-			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLORARG1,D3DTA_CURRENT));
-			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAOP,D3DTOP_SELECTARG1));
-			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAARG1,D3DTA_CURRENT));
-		} else {
-			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_COLOROP,D3DTOP_DISABLE));
-			GFXCALL(Set_Texture_Stage_State(2,D3DTSS_ALPHAOP,D3DTOP_DISABLE));
-		}
-		GFXCALL(Set_Texture_Stage_State(2,D3DTSS_TEXCOORDINDEX,D3DTSS_TCI_PASSTHRU));
-		GFXCALL(Set_Texture(2,nullptr));
 	}
 
 	if(!diff)

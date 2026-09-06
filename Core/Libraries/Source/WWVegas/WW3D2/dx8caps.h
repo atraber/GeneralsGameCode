@@ -53,13 +53,6 @@ struct DX8CapsPrivate;
 class DX8Caps
 {
 public:
-	enum DriverVersionStatusType {
-		DRIVER_STATUS_UNKNOWN,
-		DRIVER_STATUS_GOOD,
-		DRIVER_STATUS_OK,
-		DRIVER_STATUS_BAD
-	};
-
 	enum VendorIdType {
 		VENDOR_UNKNOWN,
 		VENDOR_NVIDIA,
@@ -77,140 +70,11 @@ public:
 		VENDOR_COUNT
 	};
 
-	enum DeviceTypeATI {
-		DEVICE_ATI_UNKNOWN,
-		DEVICE_ATI_RAGE_II,
-		DEVICE_ATI_RAGE_II_PLUS,
-		DEVICE_ATI_RAGE_IIC_PCI,
-		DEVICE_ATI_RAGE_IIC_AGP,
-		DEVICE_ATI_RAGE_128_MOBILITY,
-		DEVICE_ATI_RAGE_128_MOBILITY_M3,
-		DEVICE_ATI_RAGE_128_MOBILITY_M4,
-		DEVICE_ATI_RAGE_128_PRO_ULTRA,
-		DEVICE_ATI_RAGE_128_4X,
-		DEVICE_ATI_RAGE_128_PRO_GL,
-		DEVICE_ATI_RAGE_128_PRO_VR,
-		DEVICE_ATI_RAGE_128_GL,
-		DEVICE_ATI_RAGE_128_VR,
-		DEVICE_ATI_RAGE_PRO,
-		DEVICE_ATI_RAGE_PRO_MOBILITY,
-		DEVICE_ATI_MOBILITY_RADEON,
-		DEVICE_ATI_MOBILITY_RADEON_VE_M6,
-		DEVICE_ATI_RADEON_VE,
-		DEVICE_ATI_RADEON_DDR,
-		DEVICE_ATI_RADEON,
-		DEVICE_ATI_MOBILITY_R7500,
-		DEVICE_ATI_R7500,
-		DEVICE_ATI_R8500
-	};
-
-	enum DeviceType3DLabs {
-		DEVICE_3DLABS_UNKNOWN,
-		DEVICE_3DLABS_PERMEDIA,
-		DEVICE_3DLABS_300SX,
-		DEVICE_3DLABS_500TX,
-		DEVICE_3DLABS_DELTA,
-		DEVICE_3DLABS_MX,
-		DEVICE_3DLABS_GAMMA,
-		DEVICE_3DLABS_PERMEDIA2S_ST,
-		DEVICE_3DLABS_PERMEDIA3,
-		DEVICE_3DLABS_R3,
-		DEVICE_3DLABS_PERMEDIA4,
-		DEVICE_3DLABS_R4,
-		DEVICE_3DLABS_G2,
-		DEVICE_3DLABS_OXYGEN_VX1,
-		DEVICE_3DLABS_TI_P1,
-		DEVICE_3DLABS_PERMEDIA2
-	};
-
-	enum DeviceTypeNVidia {
-		DEVICE_NVIDIA_UNKNOWN,
-		DEVICE_NVIDIA_GEFORCE3,
-		DEVICE_NVIDIA_QUADRO2_PRO,
-		DEVICE_NVIDIA_GEFORCE2_GO,
-		DEVICE_NVIDIA_GEFORCE2_ULTRA,
-		DEVICE_NVIDIA_GEFORCE2_GTS,
-		DEVICE_NVIDIA_QUADRO,
-		DEVICE_NVIDIA_GEFORCE_DDR,
-		DEVICE_NVIDIA_GEFORCE_256,
-		DEVICE_NVIDIA_TNT2_ALADDIN,
-		DEVICE_NVIDIA_TNT2,
-		DEVICE_NVIDIA_TNT2_ULTRA,
-		DEVICE_NVIDIA_TNT2_VANTA,
-		DEVICE_NVIDIA_TNT2_M64,
-		DEVICE_NVIDIA_TNT,
-		DEVICE_NVIDIA_RIVA_128,
-		DEVICE_NVIDIA_TNT_VANTA,
-		DEVICE_NVIDIA_NV1,
-		DEVICE_NVIDIA_GEFORCE2_MX,
-		DEVICE_NVIDIA_GEFORCE4_TI_4600,
-		DEVICE_NVIDIA_GEFORCE4_TI_4400,
-		DEVICE_NVIDIA_GEFORCE4_TI,
-		DEVICE_NVIDIA_GEFORCE4_TI_4200,
-		DEVICE_NVIDIA_GEFORCE4_MX_460,
-		DEVICE_NVIDIA_GEFORCE4_MX_440,
-		DEVICE_NVIDIA_GEFORCE4_MX_420,
-		DEVICE_NVIDIA_GEFORCE4,
-		DEVICE_NVIDIA_GEFORCE4_GO_440,
-		DEVICE_NVIDIA_GEFORCE4_GO_420,
-		DEVICE_NVIDIA_GEFORCE4_GO_420_32M,
-		DEVICE_NVIDIA_GEFORCE4_GO_440_64M,
-		DEVICE_NVIDIA_GEFORCE4_GO,
-		DEVICE_NVIDIA_GEFORCE3_TI_500,
-		DEVICE_NVIDIA_GEFORCE3_TI_200,
-		DEVICE_NVIDIA_GEFORCE2_INTEGRATED,
-		DEVICE_NVIDIA_GEFORCE2_TI,
-		DEVICE_NVIDIA_QUADRO2_MXR_EX_GO,
-		DEVICE_NVIDIA_GEFORCE2_MX_100_200,
-		DEVICE_NVIDIA_GEFORCE2_MX_400,
-		DEVICE_NVIDIA_QUADRO_DCC
-	};
-
-	enum DeviceType3Dfx {
-		DEVICE_3DFX_UNKNOWN,
-		DEVICE_3DFX_VOODOO_5500_AGP,
-		DEVICE_3DFX_VOODOO_3,
-		DEVICE_3DFX_BANSHEE,
-		DEVICE_3DFX_VOODOO_2,
-		DEVICE_3DFX_VOODOO_GRAPHICS,
-		DEVICE_3DFX_VOODOO_RUSH
-	};
-
-	enum DeviceTypeMatrox {
-		DEVICE_MATROX_UNKNOWN,
-		DEVICE_MATROX_G550,
-		DEVICE_MATROX_G400,
-		DEVICE_MATROX_G200_AGP,
-		DEVICE_MATROX_G200_PCI,
-		DEVICE_MATROX_G100_PCI,
-		DEVICE_MATROX_G100_AGP,
-		DEVICE_MATROX_MILLENNIUM_II_AGP,
-		DEVICE_MATROX_MILLENNIUM_II_PCI,
-		DEVICE_MATROX_MYSTIQUE,
-		DEVICE_MATROX_MILLENNIUM,
-		DEVICE_MATROX_PARHELIA,
-		DEVICE_MATROX_PARHELIA_AGP8X
-	};
-
-	enum DeviceTypePowerVR {
-		DEVICE_POWERVR_UNKNOWN,
-		DEVICE_POWERVR_KYRO
-	};
-
-	enum DeviceTypeS3 {
-		DEVICE_S3_UNKNOWN,
-		DEVICE_S3_SAVAGE_MX,
-		DEVICE_S3_SAVAGE_4,
-		DEVICE_S3_SAVAGE_200
-	};
-
-	enum DeviceTypeIntel {
-		DEVICE_INTEL_UNKNOWN,
-		DEVICE_INTEL_810,
-		DEVICE_INTEL_810E,
-		DEVICE_INTEL_815
-	};
-
+	// Eight DeviceType<vendor> enums were here, naming every part those vendors shipped
+	// before 2003 so that Vendor_Specific_Hacks could work around each one. None of
+	// them can create a Direct3D 11 device; deleted in Phase 10 with the tables and
+	// the driver-version blacklist. The vendor enum stays -- one vendor hack is still
+	// live on this machine, see Vendor_Specific_Hacks.
 
 	// Takes nothing from D3D. The adapter, the device and the adapter identifier all
 	// come from DX8Wrapper, which is where they already lived; passing them in only
@@ -222,22 +86,15 @@ public:
 	DX8Caps(WW3DFormat display_format, unsigned adapter_index);
 	~DX8Caps();
 	static void Shutdown();
-	bool Support_TnL() const { return SupportTnL; };
+	// Nine questions were asked here and are not any more, because the answer stopped
+	// being a property of the adapter and became a property of the API. TnL, cube maps
+	// and multipass are unconditional; bump environment maps, ModulateAlphaAddColor,
+	// DOT3 and point sprites are fixed-function features that no backend after D3D9
+	// has; the fog allowance and the display-format whitelist existed only to be
+	// switched off by hardware hacks that are gone.
 	bool Support_DXTC() const { return SupportDXTC; }
-	bool Support_Gamma() const { return supportGamma; }
 	bool Support_NPatches() const { return SupportNPatches; }
-	bool Support_Bump_Envmap() const { return SupportBumpEnvmap; }
-	bool Support_Bump_Envmap_Luminance() const { return SupportBumpEnvmapLuminance; }
 	bool Support_ZBias() const { return SupportZBias; }
-	bool Support_Anisotropic_Filtering() const { return SupportAnisotropicFiltering; }
-	bool Support_ModAlphaAddClr() const { return SupportModAlphaAddClr; }
-	bool Support_Dot3() const { return SupportDot3; }
-	bool Support_PointSprites() const { return SupportPointSprites; }
-	bool Support_Cubemaps() const { return SupportCubemaps; }
-	bool Can_Do_Multi_Pass() const { return CanDoMultiPass; }
-	bool Is_Fog_Allowed() const { return IsFogAllowed; }
-
-	bool Is_Valid_Display_Format(int width, int height, WW3DFormat format);
 
 	int Get_Max_Textures_Per_Pass() const { return MaxTexturesPerPass; }
 
@@ -276,7 +133,6 @@ public:
 
 	bool Support_Linear_Filter() const { return SupportLinearFilter; }
 	bool Support_Mip_Linear_Filter() const { return SupportMipLinearFilter; }
-	bool Support_Anisotropic_Filter() const { return SupportAnisotropicFilter; }
 	bool Support_Color_Write_Enable() const { return SupportColorWriteEnable; }
 
 	/// The fixed-function texture-combine ops the adapter has, as D3DTEXOPCAPS_ bits.
@@ -288,24 +144,9 @@ public:
 	const StringClass& Get_Log() const { return CapsLog; }
 	const StringClass& Get_Compact_Log() const { return CompactLog; }
 
-	unsigned Get_Vendor() const { return VendorId; }
-	unsigned Get_Device() const { return DeviceId; }
-	const StringClass& Get_Driver_Name() const { return DriverDLL; }
-	unsigned Get_Driver_Build_Version() const { return DriverBuildVersion; }
-
-	// This will return false if the driver version is known to have problems.
-	DriverVersionStatusType Get_Driver_Version_Status() { return DriverVersionStatus; }
 
 private:
 	static VendorIdType Define_Vendor(unsigned vendor_id);
-	static DeviceTypeATI Get_ATI_Device(unsigned device_id);
-	static DeviceType3DLabs Get_3DLabs_Device(unsigned device_id);
-	static DeviceTypeNVidia Get_NVidia_Device(unsigned device_id);
-	static DeviceType3Dfx Get_3Dfx_Device(unsigned device_id);
-	static DeviceTypeMatrox Get_Matrox_Device(unsigned device_id);
-	static DeviceTypePowerVR Get_PowerVR_Device(unsigned device_id);
-	static DeviceTypeS3 Get_S3_Device(unsigned device_id);
-	static DeviceTypeIntel Get_Intel_Device(unsigned device_id);
 
 	// Every one of these was handed the same member the caller already had.
 	void Compute_Caps(WW3DFormat display_format);
@@ -319,14 +160,9 @@ private:
 	void Check_Render_To_Texture_Support(WW3DFormat display_format);
 	void Check_Depth_Stencil_Support(WW3DFormat display_format);
 	void Check_Texture_Compression_Support();
-	void Check_Bumpmap_Support();
 	void Check_Shader_Support();
 	void Check_Maximum_Texture_Support();
-	void Check_Driver_Version_Status();
 	void Vendor_Specific_Hacks();
-
-	int MaxDisplayWidth;
-	int MaxDisplayHeight;
 
 	// Copied out of D3DCAPS8 at Compute_Caps, so nothing outside this file needs the
 	// struct to read them.
@@ -337,33 +173,20 @@ private:
 	unsigned TextureOpCaps;
 	bool SupportLinearFilter;
 	bool SupportMipLinearFilter;
-	bool SupportAnisotropicFilter;
 	bool SupportColorWriteEnable;
 
-	bool SupportTnL;
 	bool SupportDXTC;
 	bool supportGamma;
 	bool SupportNPatches;
-	bool SupportBumpEnvmap;
-	bool SupportBumpEnvmapLuminance;
 	bool SupportTextureFormat[WW3D_FORMAT_COUNT];
 	bool SupportRenderToTextureFormat[WW3D_FORMAT_COUNT];
 	bool SupportDepthStencilFormat[WW3D_ZFORMAT_COUNT];
 	bool SupportZBias;
-	bool SupportAnisotropicFiltering;
-	bool SupportModAlphaAddClr;
-	bool SupportDot3;
-	bool SupportPointSprites;
-	bool SupportCubemaps;
-	bool CanDoMultiPass;
-	bool IsFogAllowed;
 	int MaxTexturesPerPass;
 	int VertexShaderVersion;
 	int PixelShaderVersion;
 	int MaxSimultaneousTextures;
-	unsigned DeviceId;
 	unsigned DriverBuildVersion;
-	DriverVersionStatusType DriverVersionStatus;
 	VendorIdType VendorId;
 	StringClass DriverDLL;
 	DX8CapsPrivate * Private;

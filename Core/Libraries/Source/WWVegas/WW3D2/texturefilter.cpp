@@ -201,19 +201,27 @@ void TextureFilterClass::_Init_Filters(TextureFilterMode texture_filter, Anisotr
 
 	case TEXTURE_FILTER_ANISOTROPIC:
 
-		FilterSupported = dx8caps.Support_Anisotropic_Filter();
+		// Unconditional, and that is a bug fix rather than a simplification.
+		//
+		// This used to ask DX8Caps::Support_Anisotropic_Filter, and under D3D9 the answer
+		// on this adapter was NO: GfxDeviceD3D9::Fill_Device_Caps required both
+		// D3DPTFILTERCAPS_MAGFANISOTROPIC and MINFANISOTROPIC, and an RTX 4060 reports
+		// anisotropic minification only. So the else branch below ran and choosing
+		// "Anisotropic" in the options gave you FILTER_POINT -- point sampling, which is
+		// worse than the Bilinear setting it was chosen over. Nobody noticed because the
+		// harness seed says Bilinear and this fork had never once been taken in a measured
+		// session; Phase 9 took it and measured 108008 differing pixels under D3D9 against
+		// 85251 under D3D11, which is what made the two branches visible.
+		//
+		// Anisotropic filtering is not optional in Direct3D 10 or later -- it is required
+		// of every feature level this backend will create a device at -- so there is no
+		// longer a device that can answer no.
+		_MinTextureFilters[0][FILTER_TYPE_BEST]=SamplerStateClass::FILTER_ANISOTROPIC;
+		_MagTextureFilters[0][FILTER_TYPE_BEST]=SamplerStateClass::FILTER_ANISOTROPIC;
+		FilterSupported = true;
 
-		if (FilterSupported) {
-			_MinTextureFilters[0][FILTER_TYPE_BEST]=SamplerStateClass::FILTER_ANISOTROPIC;
-			_MagTextureFilters[0][FILTER_TYPE_BEST]=SamplerStateClass::FILTER_ANISOTROPIC;
-
-			// Set the Anisotropic filtering level for all stages
-			_Set_Max_Anisotropy(anisotropy_level);
-		}
-		else {
-			_MinTextureFilters[0][FILTER_TYPE_BEST]=SamplerStateClass::FILTER_POINT;
-			_MagTextureFilters[0][FILTER_TYPE_BEST]=SamplerStateClass::FILTER_POINT;
-		}
+		// Set the Anisotropic filtering level for all stages
+		_Set_Max_Anisotropy(anisotropy_level);
 
 		if (dx8caps.Support_Mip_Linear_Filter()) {
 			_MipMapFilters[0][FILTER_TYPE_BEST]=SamplerStateClass::FILTER_LINEAR;
