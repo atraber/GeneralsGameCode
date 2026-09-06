@@ -402,6 +402,24 @@ public:
 
 	static void Set_Gamma(float gamma,float bright,float contrast,bool calibrate=true,bool uselimit=true);
 
+	/*
+	** The display curve the options screen asked for, for a backend that has to apply it
+	** itself.
+	**
+	** Set_Gamma builds a 256-entry ramp and hands it to the device. A device that has no
+	** gamma ramp -- GfxDeviceCaps::FullScreenGamma false, which is D3D11's answer and the
+	** reason the slider has done nothing since D3D11 became the default -- takes it here
+	** instead and evaluates the same curve on the finished frame. Answers false when the
+	** device does have a ramp, so exactly one of the two paths runs.
+	**
+	** The identity is reported as such by Is_Display_Gamma_Identity rather than left for
+	** the caller to compare three floats: at the default slider position there must be no
+	** pass at all, which is what makes "the corpus does not move at default settings" a
+	** property of the code and not only a measurement.
+	*/
+	static bool Get_Display_Gamma(float * gamma, float * bright, float * contrast);
+	static bool Is_Display_Gamma_Identity();
+
 	// Set_ and Get_Transform() functions take the matrix in Westwood convention format.
 
 	static void Set_Projection_Transform_With_Z_Bias(const Matrix4x4& matrix,float znear, float zfar);	// pointer to 16 matrices

@@ -85,6 +85,9 @@ set(_rts_shaders
     profilerswizzle_ps
     # HDR scene -> 8-bit scene texture, at the end of render-to-texture
     tonemap_ps
+    # The display gamma/brightness/contrast ramp, applied to the finished frame. This is
+    # what SetDeviceGammaRamp used to do at scanout; D3D11 has no windowed equivalent.
+    gamma_ps
     # Shadow-map depth pass
     shadowdepth_vs
     shadowdepth_ps

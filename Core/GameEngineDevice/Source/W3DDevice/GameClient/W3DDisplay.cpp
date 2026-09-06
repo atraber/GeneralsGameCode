@@ -554,9 +554,15 @@ void W3DDisplay::getDisplayModeDescription(Int modeIndex, Int *xres, Int *yres, 
 
 void W3DDisplay::setGamma(Real gamma, Real bright, Real contrast, Bool calibrate)
 {
-	if (m_windowed)
-		return;	//we don't allow gamma to change in window because it would affect desktop.
-
+	// The windowed early-out is gone, and the reason it existed is gone with it.
+	//
+	// It said "we don't allow gamma to change in window because it would affect desktop",
+	// and that was true of the only mechanism there was: SetDeviceGammaRamp on the desktop
+	// DC changes the gamma of the whole display, and nothing here put it back on exit. The
+	// curve is now applied to this game's own frame, by this game's own pixel shader, so
+	// there is nothing left for it to reach outside the window -- and refusing it in
+	// windowed mode is refusing it in the mode almost everybody plays in, and the only one
+	// the harness can measure.
 	DX8Wrapper::Set_Gamma(gamma,bright,contrast,calibrate, false);
 }
 
@@ -2050,6 +2056,15 @@ void W3DDisplay::draw()
 					m_profilerFrameCapture->Capture(getWidth(), getHeight());
 				}
 #endif
+				// The display gamma ramp, and it has to be here: after the scene, after the
+				// interface, after the letterbox and the debug overlays, because
+				// SetDeviceGammaRamp acted on the scanout values and every one of those was
+				// inside it. Before the frame dump, so a capture holds what the player saw.
+				//
+				// Free at the default slider position -- applyDisplayGamma returns without
+				// making its copy when the curve is the identity.
+				W3DShaderManager::applyDisplayGamma();
+
 				// TheSuperHackers @feature andytraber 17/08/2026 Last thing before the frame
 				// goes out, so a capture holds everything a player would have seen.
 				W3D_UpdateFrameDump(getUnattendedRunFrame());

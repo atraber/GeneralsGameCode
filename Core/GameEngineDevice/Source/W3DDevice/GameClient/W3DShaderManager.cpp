@@ -2090,6 +2090,18 @@ void W3DShaderManager::init()
 		// scene has by then turned out to be.
 		initHdr();
 		initRefraction();
+
+		// The display gamma curve. It needs no render target of its own -- the copy it
+		// samples is made at back-buffer size the first frame the slider is off its default
+		// -- but it is loaded here with everything else so a missing blob is one log line at
+		// startup rather than a slider that silently keeps doing nothing.
+		if (m_gammaPS == 0)
+			LoadAndCreateD3DShader("shaders\\gamma_ps.pso", nullptr, 0, false, &m_gammaPS);
+		DEBUG_LOG(("GAMMA: gamma_ps %s; %s\n",
+			(m_gammaPS != 0) ? "loaded" : "MISSING",
+			DX8Wrapper::Get_Display_Gamma(nullptr, nullptr, nullptr)
+				? "the device has no gamma ramp of its own, so the curve is applied to the frame"
+				: "the device has a gamma ramp of its own and takes the curve there"));
 	}
 
 	W3DShaderInterface **shaders;
@@ -2323,6 +2335,13 @@ void W3DShaderManager::shutdownUnitShaders()
 	shutdownSsr();
 	shutdownRefraction();
 	shutdownHdr();
+	DX8Wrapper::Release_Pixel_Shader(m_gammaPS);
+	m_gammaPS = 0;
+	DX8Wrapper::Release_DX8_Resource(m_gammaCopyTexture);
+	m_gammaCopyTexture = nullptr;
+	m_gammaCopyWidth = 0;
+	m_gammaCopyHeight = 0;
+	m_gammaCopyFormat = WW3D_FORMAT_UNKNOWN;
 	DX8Wrapper::m_bUnitShaderBound = false;
 }
 
@@ -3707,6 +3726,164 @@ void W3DShaderManager::shutdownHdr()
 	DX8Wrapper::Release_DX8_Resource(m_hdrTexture);
 	DX8Wrapper::Release_Pixel_Shader(m_toneMapPS);
 	m_toneMapPS = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Display gamma
+// ---------------------------------------------------------------------------
+
+DWORD W3DShaderManager::m_gammaPS = 0;
+GfxTexture *W3DShaderManager::m_gammaCopyTexture = nullptr;
+unsigned W3DShaderManager::m_gammaCopyWidth = 0;
+unsigned W3DShaderManager::m_gammaCopyHeight = 0;
+WW3DFormat W3DShaderManager::m_gammaCopyFormat = WW3D_FORMAT_UNKNOWN;
+
+/*
+** The gamma ramp, evaluated on the finished frame.
+**
+** Until Phase 10 this was the display's own lookup table, written with
+** SetDeviceGammaRamp. D3D11 has no windowed equivalent -- IDXGIOutput::SetGammaControl is
+** exclusive full-screen only -- so the options screen's Gamma slider has done nothing
+** since D3D11 became the default. This puts it back, as the last thing that happens to
+** the frame.
+**
+** Last, and after the interface, because that is what the hardware ramp did: it acted on
+** the scanout values, so the control bar, the cursor, the letterbox and the debug
+** overlays were all inside it. The alternative that was considered and rejected is
+** folding the curve into the tone map, which is where the deleted branch's comment
+** pointed: it would miss everything the tone map does not write -- half this screen is
+** interface -- and under the bloom filter the tone map is not even what the player sees.
+** See the note at the top of gamma_ps.hlsl.
+**
+** Costs nothing at the default slider position. The identity is checked first and the
+** copy is never made, so a run at default settings is bit-identical to one built before
+** any of this existed -- which is what makes "the corpus does not move" a property of
+** the code rather than only a measurement.
+*/
+void W3DShaderManager::applyDisplayGamma()
+{
+	if (m_gammaPS == 0)
+		return;
+	if (!DX8Wrapper::Has_Device())
+		return;
+
+	// Two questions, in this order. Get_Display_Gamma answers false on a device that has
+	// a ramp of its own and has already been given one, so exactly one path applies the
+	// curve; and the identity is not a pass.
+	float gamma = 1.0f, bright = 0.0f, contrast = 1.0f;
+	if (!DX8Wrapper::Get_Display_Gamma(&gamma, &bright, &contrast))
+		return;
+	if (DX8Wrapper::Is_Display_Gamma_Identity())
+		return;
+
+	SurfaceClass *back = DX8Wrapper::_Get_DX8_Back_Buffer();
+	if (back == nullptr)
+		return;
+	SurfaceClass::SurfaceDescription bd;
+	back->Get_Description(bd);
+
+	// The copy is the frame as it stands, because a pass cannot sample the surface it is
+	// drawing into. Rebuilt when the back buffer changes shape, which a resolution change
+	// or an alt-tab does; kept otherwise, since this runs every frame the slider is off
+	// its default.
+	if (m_gammaCopyTexture != nullptr &&
+		(m_gammaCopyWidth != bd.Width || m_gammaCopyHeight != bd.Height ||
+		 m_gammaCopyFormat != bd.Format))
+	{
+		DX8Wrapper::Release_DX8_Resource(m_gammaCopyTexture);
+		m_gammaCopyTexture = nullptr;
+	}
+	if (m_gammaCopyTexture == nullptr)
+	{
+		m_gammaCopyTexture = DX8Wrapper::Create_DX8_Texture_Resource(
+			bd.Width, bd.Height, 1, bd.Format, GFX_USAGE_RENDER_TARGET);
+		if (m_gammaCopyTexture == nullptr)
+		{
+			static Bool s_reported = FALSE;
+			if (!s_reported)
+			{
+				s_reported = TRUE;
+				DEBUG_LOG(("GAMMA: could not create the %dx%d frame copy (format %d) -- "
+					"the gamma slider will do nothing\n",
+					bd.Width, bd.Height, (Int)bd.Format));
+			}
+			REF_PTR_RELEASE(back);
+			return;
+		}
+		m_gammaCopyWidth = bd.Width;
+		m_gammaCopyHeight = bd.Height;
+		m_gammaCopyFormat = bd.Format;
+	}
+
+	GfxSurface *dst = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_gammaCopyTexture, 0);
+	GfxSurface *src = back->Peek_D3D_Surface();
+	Bool copied = FALSE;
+	if (dst != nullptr && src != nullptr)
+	{
+		// Copy_DX8_Surface and not a lock: the back buffer is multisampled whenever
+		// AntiAliasing is on, and resolving a sample count is the one thing this call
+		// does that a copy cannot.
+		copied = DX8Wrapper::Copy_DX8_Surface(src, dst) ? TRUE : FALSE;
+	}
+	if (dst != nullptr)
+		DX8Wrapper::Release_DX8_Surface_Resource(dst);
+	REF_PTR_RELEASE(back);
+
+	if (!copied)
+	{
+		static Bool s_reported = FALSE;
+		if (!s_reported)
+		{
+			s_reported = TRUE;
+			DEBUG_LOG(("GAMMA: the frame copy failed -- the gamma slider will do nothing\n"));
+		}
+		return;
+	}
+
+	VertexMaterialClass *vmat = VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
+	DX8Wrapper::Set_Material(vmat);
+	REF_PTR_RELEASE(vmat);
+	DX8Wrapper::Set_Shader(ShaderClass::_PresetOpaqueShader);
+	DX8Wrapper::Set_Texture(0, nullptr);
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_COLORWRITEENABLE,
+		D3DCOLORWRITEENABLE_RED|D3DCOLORWRITEENABLE_GREEN|D3DCOLORWRITEENABLE_BLUE|D3DCOLORWRITEENABLE_ALPHA);
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZENABLE, D3DZB_FALSE);
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_ZWRITEENABLE, FALSE);
+	DX8Wrapper::Set_DX8_Render_State(D3DRS_ALPHABLENDENABLE, FALSE);
+	DX8Wrapper::Apply_Render_State_Changes();
+
+	DX8Wrapper::Set_Pixel_Shader(m_gammaPS);
+	const D3DXVECTOR4 gammaCtl(1.0f / gamma, bright, contrast, 0.0f);
+	DX8Wrapper::Set_Pixel_Shader_Constant(0, gammaCtl, 1);
+	DX8Wrapper::Set_DX8_Texture(0, m_gammaCopyTexture);
+	// Point sampling: source and destination are the same size, so this is a lookup table
+	// applied in place and a bilinear tap would soften the whole frame for nothing.
+	DX8Wrapper::Set_Sampler(0, DX8Wrapper::Get_Sampler(0)
+		.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
+		.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+		.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
+
+	drawScreenQuad(0.0f, 0.0f, (float)bd.Width, (float)bd.Height,
+		0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+		0xffffffff, SCREEN_QUAD_PIXEL_CALLER, "displayGamma");
+
+	DX8Wrapper::Set_Pixel_Shader(0);
+	DX8Wrapper::Set_DX8_Texture(0, nullptr);
+	// z and blend were written past ShaderClass, so its cache has to be told.
+	DX8Wrapper::Invalidate_Cached_Shader();
+
+#ifdef RTS_DEBUG
+	{
+		static Bool s_said = FALSE;
+		if (!s_said)
+		{
+			s_said = TRUE;
+			DEBUG_LOG(("GAMMA: applying gamma %.3f brightness %.3f contrast %.3f to the "
+				"finished %dx%d frame (the device reports no gamma ramp of its own)\n",
+				gamma, bright, contrast, bd.Width, bd.Height));
+		}
+	}
+#endif
 }
 
 void W3DShaderManager::captureRefraction()

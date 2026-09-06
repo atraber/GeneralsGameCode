@@ -234,6 +234,14 @@ public:
 	///Draw the floating-point scene into m_renderTexture through the tone map. Called at the
 	///end of the render-to-texture bracket, so nothing downstream ever meets the wide range.
 	static void toneMapSceneToRenderTexture();
+	///Apply the display gamma/brightness/contrast curve to the finished frame.
+	///
+	///This is what SetDeviceGammaRamp used to do at scanout and what D3D11 has no windowed
+	///equivalent for. Called last in W3DDisplay::draw, after the interface, because the
+	///hardware ramp applied to the interface too. Does nothing at all when the curve is the
+	///identity, which is the default slider position -- so a default run costs neither the
+	///copy nor the pass and cannot move a pixel.
+	static void applyDisplayGamma();
 	static Bool isBloomFilterActive();	///< true when the bloom filter initialised (render-to-texture available)
 	static Bool isRenderingToTexture() {return m_renderingToTexture; }
 	static void drawViewport(Int color);	///<draws 2 triangles covering the current tactical viewport
@@ -281,6 +289,13 @@ protected:
 	static GfxSurface *m_hdrRenderSurface;	///<what the scene draws into: the texture's surface, or an MSAA surface
 	static GfxSurface *m_hdrResolveSurface;	///<when MSAA: the texture's surface, the resolve destination; null otherwise
 	static DWORD m_toneMapPS;						///<tonemap_ps: HDR scene -> the 8-bit scene texture
+	// The display gamma pass. A copy of the finished back buffer, because a pass cannot
+	// sample the surface it is drawing into, and the shader that evaluates the ramp.
+	static DWORD m_gammaPS;							///<gamma_ps: the display ramp, per pixel
+	static GfxTexture *m_gammaCopyTexture;	///<back-buffer-sized copy the pass samples
+	static unsigned m_gammaCopyWidth;
+	static unsigned m_gammaCopyHeight;
+	static WW3DFormat m_gammaCopyFormat;
 
 
 };

@@ -9233,6 +9233,12 @@ unsigned int DX8Wrapper::Get_Free_Texture_RAM()
 // Gamma - controls the curvature of the middle of the curve
 // Bright - controls the minimum value of the curve
 // Contrast - controls the difference between the maximum and the minimum of the curve
+// The three numbers the options screen last asked for. 1 / 0 / 1 is the identity, which
+// is the state a fresh install and the default slider position both produce.
+static float s_displayGamma = 1.0f;
+static float s_displayBright = 0.0f;
+static float s_displayContrast = 1.0f;
+
 void DX8Wrapper::Set_Gamma(float gamma,float bright,float contrast,bool calibrate,bool uselimit)
 {
 	gamma=Bound(gamma,0.6f,6.0f);
@@ -9286,12 +9292,36 @@ void DX8Wrapper::Set_Gamma(float gamma,float bright,float contrast,bool calibrat
 	// a machine where the call succeeds it would be the second thing, which is why it is
 	// gone rather than left alone.
 	//
-	// What that leaves: the in-game gamma, brightness and contrast sliders do nothing under
-	// D3D11. D3D11 has no equivalent of SetGammaRamp outside exclusive full-screen
-	// (IDXGIOutput::SetGammaControl), so the fix is to fold the curve into the tonemap pass
-	// that already runs at the end of every frame -- which changes the picture, and this
-	// phase's whole invariant is that nothing does. Phase 11's.
+	// Keep the three numbers as well as the ramp built from them. A device with no gamma
+	// ramp of its own -- which is D3D11, and is why this slider did nothing for five
+	// phases -- reads them back through Get_Display_Gamma and evaluates the same curve on
+	// the finished frame instead. See W3DShaderManager::applyDisplayGamma.
+	s_displayGamma = gamma;
+	s_displayBright = bright;
+	s_displayContrast = contrast;
+
 	Gfx->Set_Gamma_Ramp(&ramp,calibrate);
+}
+
+/*
+** The curve, for a backend that has no ramp to put it in.
+*/
+bool DX8Wrapper::Get_Display_Gamma(float * gamma, float * bright, float * contrast)
+{
+	// Exactly one of the two paths runs, decided by the same capability the deleted
+	// SetDeviceGammaRamp branch used to consult. A device that reports a ramp has already
+	// been given one by Set_Gamma above and must not have the curve applied twice.
+	const DX8Caps * caps = Get_Current_Caps();
+	if (caps != nullptr && caps->Support_Gamma()) return false;
+	if (gamma != nullptr)    *gamma = s_displayGamma;
+	if (bright != nullptr)   *bright = s_displayBright;
+	if (contrast != nullptr) *contrast = s_displayContrast;
+	return true;
+}
+
+bool DX8Wrapper::Is_Display_Gamma_Identity()
+{
+	return s_displayGamma == 1.0f && s_displayBright == 0.0f && s_displayContrast == 1.0f;
 }
 
 namespace wrapper

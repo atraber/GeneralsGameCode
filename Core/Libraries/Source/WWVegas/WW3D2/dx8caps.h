@@ -95,6 +95,10 @@ public:
 	bool Support_DXTC() const { return SupportDXTC; }
 	bool Support_NPatches() const { return SupportNPatches; }
 	bool Support_ZBias() const { return SupportZBias; }
+	// Whether the device has a gamma ramp of its own. False under D3D11, which has none
+	// outside exclusive full-screen -- and is why DX8Wrapper::Get_Display_Gamma hands the
+	// curve to the frame instead.
+	bool Support_Gamma() const { return supportGamma; }
 
 	int Get_Max_Textures_Per_Pass() const { return MaxTexturesPerPass; }
 
