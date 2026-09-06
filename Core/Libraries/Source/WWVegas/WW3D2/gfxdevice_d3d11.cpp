@@ -55,6 +55,143 @@ bool Gfx_Write_Png_RGB(const char * path, unsigned width, unsigned height,
 // precompiled header and pulls in d3d9_compat.h with it.
 void DX8Wrapper_Increment_Call_Count();
 
+#ifdef RTS_DEBUG
+struct D3D11ProfileStats {
+	LONGLONG t_draw_indexed;
+	LONGLONG t_draw;
+	LONGLONG t_draw_up;
+	LONGLONG t_prepare_draw;
+	LONGLONG t_input_layout;
+	LONGLONG t_apply_states;
+	LONGLONG t_upload_constants;
+	LONGLONG t_raw_draw_call;
+	LONGLONG t_present;
+	LONGLONG t_drain_debug;
+	LONGLONG t_swap_present;
+	LONGLONG t_set_rt;
+	LONGLONG t_clear;
+	LONGLONG t_set_texture;
+	LONGLONG t_set_vs_const;
+	LONGLONG t_set_ps_const;
+	LONGLONG t_map_buffer;
+	LONGLONG t_unmap_buffer;
+	LONGLONG t_begin_scene;
+	LONGLONG t_render_span;
+	LONGLONG t_post_span;
+	LONGLONG t_logic_span;
+
+	LONGLONG t_copy_surface;
+	LONGLONG t_copy_surface_rect;
+	LONGLONG t_map_surface;
+	LONGLONG t_unmap_surface;
+	LONGLONG t_map_texture;
+	LONGLONG t_unmap_texture;
+	LONGLONG t_readback_subresource;
+	LONGLONG t_set_vs;
+	LONGLONG t_set_ps;
+	LONGLONG t_set_stream;
+	LONGLONG t_set_ib;
+	LONGLONG t_set_vp;
+	LONGLONG t_set_rs;
+	LONGLONG t_set_tss;
+
+	LONGLONG t_pass_backbuffer;
+	LONGLONG t_pass_shadow;
+	LONGLONG t_pass_depthprepass;
+	LONGLONG t_pass_other;
+
+	unsigned n_draw_indexed;
+	unsigned n_draw;
+	unsigned n_draw_up;
+	unsigned n_upload_vs;
+	unsigned n_upload_ps;
+	unsigned n_set_rt;
+	unsigned n_clear;
+	unsigned n_set_texture;
+	unsigned n_set_vs_const;
+	unsigned n_set_ps_const;
+	unsigned n_map_buffer;
+	unsigned n_unmap_buffer;
+
+	unsigned n_copy_surface;
+	unsigned n_copy_surface_rect;
+	unsigned n_map_surface;
+	unsigned n_unmap_surface;
+	unsigned n_map_texture;
+	unsigned n_unmap_texture;
+	unsigned n_readback_subresource;
+	unsigned n_set_vs;
+	unsigned n_set_ps;
+	unsigned n_set_stream;
+	unsigned n_set_ib;
+	unsigned n_set_vp;
+	unsigned n_set_rs;
+	unsigned n_set_tss;
+	unsigned n_begin_scene;
+	unsigned n_end_scene;
+
+	unsigned n_draws_backbuffer;
+	unsigned n_draws_shadow;
+	unsigned n_draws_depthprepass;
+	unsigned n_draws_other;
+
+	void Reset() { memset(this, 0, sizeof(*this)); }
+};
+static D3D11ProfileStats s_d3d11_prof;
+static LARGE_INTEGER s_tick_begin;
+static LARGE_INTEGER s_tick_end;
+static LARGE_INTEGER s_tick_present;
+
+enum CurrentPassType { PASS_NONE, PASS_BACKBUFFER, PASS_SHADOW, PASS_DEPTHPREPASS, PASS_OTHER };
+static CurrentPassType s_current_pass = PASS_NONE;
+static LARGE_INTEGER s_tick_pass_start;
+static unsigned s_current_pass_draws = 0;
+
+static void Flush_Pass_Timing(LARGE_INTEGER now)
+{
+	if (s_tick_pass_start.QuadPart != 0) {
+		LONGLONG dt = now.QuadPart - s_tick_pass_start.QuadPart;
+		switch (s_current_pass) {
+		case PASS_BACKBUFFER:
+			s_d3d11_prof.t_pass_backbuffer += dt;
+			s_d3d11_prof.n_draws_backbuffer += s_current_pass_draws;
+			break;
+		case PASS_SHADOW:
+			s_d3d11_prof.t_pass_shadow += dt;
+			s_d3d11_prof.n_draws_shadow += s_current_pass_draws;
+			break;
+		case PASS_DEPTHPREPASS:
+			s_d3d11_prof.t_pass_depthprepass += dt;
+			s_d3d11_prof.n_draws_depthprepass += s_current_pass_draws;
+			break;
+		default:
+			s_d3d11_prof.t_pass_other += dt;
+			s_d3d11_prof.n_draws_other += s_current_pass_draws;
+			break;
+		}
+	}
+	s_tick_pass_start = now;
+	s_current_pass_draws = 0;
+}
+
+struct D3D11TimerScope {
+	LONGLONG & target;
+	LARGE_INTEGER start;
+	D3D11TimerScope(LONGLONG & t) : target(t) {
+		QueryPerformanceCounter(&start);
+	}
+	~D3D11TimerScope() {
+		LARGE_INTEGER end;
+		QueryPerformanceCounter(&end);
+		target += (end.QuadPart - start.QuadPart);
+	}
+};
+#define PROFILE_D3D11_SCOPE(field) D3D11TimerScope _scope_##field(s_d3d11_prof.field)
+#else
+#define PROFILE_D3D11_SCOPE(field)
+#endif
+
+
 // ---------------------------------------------------------------------------
 // D3D9 state words, spelled out.
 //
@@ -2007,6 +2144,19 @@ GfxDeviceD3D11::~GfxDeviceD3D11()
 void GfxDeviceD3D11::Begin_Scene()
 {
 	TRACE("Begin_Scene");
+#ifdef RTS_DEBUG
+	++s_d3d11_prof.n_begin_scene;
+	LARGE_INTEGER now_b;
+	QueryPerformanceCounter(&now_b);
+	if (s_tick_present.QuadPart != 0) {
+		s_d3d11_prof.t_logic_span += (now_b.QuadPart - s_tick_present.QuadPart);
+		s_tick_present.QuadPart = 0;
+	}
+	s_tick_begin = now_b;
+	s_tick_pass_start = now_b;
+	s_current_pass = (m_impl->current_rt == m_impl->back_buffer || m_impl->current_rt == nullptr) ? PASS_BACKBUFFER : PASS_OTHER;
+	s_current_pass_draws = 0;
+#endif
 	// D3D11 has no scene bracket. What D3D9 needed BeginScene for -- telling the runtime
 	// that draws are coming -- is implicit in the immediate context.
 	//
@@ -2024,6 +2174,18 @@ void GfxDeviceD3D11::Begin_Scene()
 void GfxDeviceD3D11::End_Scene()
 {
 	TRACE("End_Scene");
+#ifdef RTS_DEBUG
+	++s_d3d11_prof.n_end_scene;
+	LARGE_INTEGER now_e;
+	QueryPerformanceCounter(&now_e);
+	if (s_tick_begin.QuadPart != 0) {
+		s_d3d11_prof.t_render_span += (now_e.QuadPart - s_tick_begin.QuadPart);
+	}
+	s_tick_end = now_e;
+	Flush_Pass_Timing(now_e);
+	s_tick_pass_start.QuadPart = 0;
+	s_current_pass = PASS_NONE;
+#endif
 	DX8Wrapper_Increment_Call_Count();
 }
 
@@ -2035,6 +2197,9 @@ namespace
 	void Drain_Debug_Messages(GfxD3D11Impl * impl)
 	{
 		if (impl->info_queue == nullptr) return;
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_drain_debug);
+#endif
 		const UINT64 total = impl->info_queue->GetNumStoredMessages();
 		UINT64 printed = 0;
 		for (UINT64 i = 0; i < total && printed < 8; ++i) {
@@ -2063,14 +2228,32 @@ namespace
 GfxDeviceStatus GfxDeviceD3D11::Present()
 {
 	TRACE("Present");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_present);
+	LARGE_INTEGER now_p;
+	QueryPerformanceCounter(&now_p);
+	if (s_tick_end.QuadPart != 0) {
+		s_d3d11_prof.t_post_span += (now_p.QuadPart - s_tick_end.QuadPart);
+	}
+#endif
 	if (m_impl->swap_chain == nullptr) return GFX_DEVICE_ERROR;
 	Drain_Debug_Messages(m_impl);
 #ifdef RTS_DEBUG
 	if (Tracing()) { --s_trace_remaining; WWDEBUG_SAY(("D3D11 TRACE: ---- present, %d frames left ----", s_trace_remaining)); }
 #endif
 
-	const HRESULT hr = m_impl->swap_chain->Present(
-		m_impl->desc.SwapInterval > 0 ? (UINT)m_impl->desc.SwapInterval : 0, 0);
+	HRESULT hr;
+	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_swap_present);
+#endif
+		hr = m_impl->swap_chain->Present(
+			m_impl->desc.SwapInterval > 0 ? (UINT)m_impl->desc.SwapInterval : 0, 0);
+	}
+
+#ifdef RTS_DEBUG
+	QueryPerformanceCounter(&s_tick_present);
+#endif
 
 	// DXGI_STATUS_OCCLUDED is a success code and means the window is hidden -- alt-tabbed
 	// away, or covered. It is emphatically not a lost device, and treating it as one
@@ -2098,6 +2281,10 @@ void GfxDeviceD3D11::Clear(bool clear_color, bool clear_z, bool clear_stencil,
 	unsigned argb, float z, unsigned stencil)
 {
 	TRACE("Clear");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_clear);
+	++s_d3d11_prof.n_clear;
+#endif
 	if (clear_color) {
 		ID3D11RenderTargetView * rtv = Get_RTV(m_impl->device, m_impl->current_rt);
 		if (rtv != nullptr) {
@@ -2141,6 +2328,10 @@ bool GfxDeviceD3D11::Has_Stencil_Target()
 void GfxDeviceD3D11::Set_Render_State(unsigned state, unsigned value)
 {
 	TRACE("Set_Render_State");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_rs);
+	++s_d3d11_prof.n_set_rs;
+#endif
 	if (state >= RS_COUNT) return;
 	if (m_impl->rs[state] == value) {
 		// The wrapper already skips redundant writes; this catches the ones that reach
@@ -2196,6 +2387,10 @@ void GfxDeviceD3D11::Set_Render_State(unsigned state, unsigned value)
 void GfxDeviceD3D11::Set_Texture_Stage_State(unsigned stage, unsigned state, unsigned value)
 {
 	TRACE("Set_Texture_Stage_State");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_tss);
+	++s_d3d11_prof.n_set_tss;
+#endif
 	if (stage >= GFX_MAX_STAGES || state >= 32) return;
 	if (m_impl->tss[stage][state] == value) return;
 	m_impl->tss[stage][state] = value;
@@ -2354,6 +2549,10 @@ namespace
 void GfxDeviceD3D11::Set_Texture(unsigned stage, GfxTexture * texture)
 {
 	TRACE("Set_Texture");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_texture);
+	++s_d3d11_prof.n_set_texture;
+#endif
 	if (stage >= GFX_MAX_STAGES) return;
 	m_impl->textures[stage] = (D3D11Texture *)texture;
 	m_impl->srv_unbound_mask &= ~(1u << stage);
@@ -2383,6 +2582,10 @@ void GfxDeviceD3D11::Set_Texture(unsigned stage, GfxTexture * texture)
 void GfxDeviceD3D11::Set_Vertex_Shader(GfxShaderHandle shader)
 {
 	TRACE("Set_Vertex_Shader");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_vs);
+	++s_d3d11_prof.n_set_vs;
+#endif
 	// Below 0x10000 the handle is a vertex format code and not a shader. Under D3D9 that
 	// binds an FVF and clears the vertex shader; here there is nothing to bind it to, so
 	// it is recorded and the draw that follows is dropped with a count. That count is the
@@ -2405,6 +2608,10 @@ void GfxDeviceD3D11::Set_Vertex_Shader(GfxShaderHandle shader)
 void GfxDeviceD3D11::Set_Pixel_Shader(GfxShaderHandle shader)
 {
 	TRACE("Set_Pixel_Shader");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_ps);
+	++s_d3d11_prof.n_set_ps;
+#endif
 	D3D11PixelShader * ps = (D3D11PixelShader *)shader;
 	m_impl->pixel_shader = ps;
 	m_impl->context->PSSetShader(ps != nullptr ? ps->shader : nullptr, nullptr, 0);
@@ -2498,6 +2705,10 @@ void GfxDeviceD3D11::Set_Vertex_Shader_Constants(unsigned reg, const float * dat
 	unsigned vec4_count)
 {
 	TRACE("Set_Vertex_Shader_Constants");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_vs_const);
+	++s_d3d11_prof.n_set_vs_const;
+#endif
 	if (data == nullptr || reg >= GFX_VS_CONSTANTS) return;
 	if (reg + vec4_count > GFX_VS_CONSTANTS) vec4_count = GFX_VS_CONSTANTS - reg;
 	memcpy(&m_impl->vs_constants[reg * 4], data, vec4_count * 4 * sizeof(float));
@@ -2508,6 +2719,10 @@ void GfxDeviceD3D11::Set_Pixel_Shader_Constants(unsigned reg, const float * data
 	unsigned vec4_count)
 {
 	TRACE("Set_Pixel_Shader_Constants");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_ps_const);
+	++s_d3d11_prof.n_set_ps_const;
+#endif
 	if (data == nullptr || reg >= GFX_PS_CONSTANTS) return;
 	if (reg + vec4_count > GFX_PS_CONSTANTS) vec4_count = GFX_PS_CONSTANTS - reg;
 	memcpy(&m_impl->ps_constants[reg * 4], data, vec4_count * 4 * sizeof(float));
@@ -2518,6 +2733,10 @@ void GfxDeviceD3D11::Set_Vertex_Stream(unsigned stream, GfxVertexBuffer * buffer
 	unsigned stride)
 {
 	TRACE("Set_Vertex_Stream");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_stream);
+	++s_d3d11_prof.n_set_stream;
+#endif
 	// Recorded, not bound. Slot 1 carries the stream that fills in whatever a vertex
 	// shader declares and the vertex format does not, and one IASetVertexBuffers at the
 	// draw sets both.
@@ -2554,6 +2773,10 @@ bool GfxDeviceD3D11::Debug_Peek_Base_Vertex_Index(int & out)
 void GfxDeviceD3D11::Set_Index_Buffer(GfxIndexBuffer * buffer, int base_vertex_index)
 {
 	TRACE("Set_Index_Buffer");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_ib);
+	++s_d3d11_prof.n_set_ib;
+#endif
 	m_impl->index_buffer = (D3D11Buffer *)buffer;
 	m_impl->base_vertex_index = base_vertex_index;
 	ID3D11Buffer * ib = (m_impl->index_buffer != nullptr)
@@ -2974,7 +3197,13 @@ namespace
 
 	void Upload_Constants(GfxD3D11Impl * impl)
 	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_upload_constants);
+#endif
 		if (impl->vs_constants_dirty && impl->vs_constant_buffer != nullptr) {
+#ifdef RTS_DEBUG
+			++s_d3d11_prof.n_upload_vs;
+#endif
 			D3D11_MAPPED_SUBRESOURCE mapped;
 			if (SUCCEEDED(impl->context->Map(impl->vs_constant_buffer, 0,
 					D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -2984,6 +3213,9 @@ namespace
 			impl->vs_constants_dirty = false;
 		}
 		if (impl->ps_constants_dirty && impl->ps_constant_buffer != nullptr) {
+#ifdef RTS_DEBUG
+			++s_d3d11_prof.n_upload_ps;
+#endif
 			D3D11_MAPPED_SUBRESOURCE mapped;
 			if (SUCCEEDED(impl->context->Map(impl->ps_constant_buffer, 0,
 					D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -3030,6 +3262,7 @@ namespace
 	bool Prepare_Draw(GfxD3D11Impl * impl, unsigned primitive_type)
 	{
 #ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_prepare_draw);
 		++s_draws;
 		if (!Signatures_Link(impl)) ++s_dropped_signature_mismatch;
 #endif
@@ -3052,7 +3285,12 @@ namespace
 			ABSORB(s_dropped_no_input_layout);
 			return false;
 		}
-		impl->context->IASetInputLayout(layout);
+		{
+#ifdef RTS_DEBUG
+			PROFILE_D3D11_SCOPE(t_input_layout);
+#endif
+			impl->context->IASetInputLayout(layout);
+		}
 		impl->context->IASetPrimitiveTopology(topology);
 
 		ID3D11Buffer * buffers[2];
@@ -3065,13 +3303,18 @@ namespace
 		const UINT offsets[2] = { 0, 0 };
 		impl->context->IASetVertexBuffers(0, 2, buffers, strides, offsets);
 
-		if (impl->blend_dirty)  { Apply_Blend_State(impl);  impl->blend_dirty = false; }
-		if (impl->depth_dirty)  { Apply_Depth_State(impl);  impl->depth_dirty = false; }
-		if (impl->raster_dirty) { Apply_Raster_State(impl); impl->raster_dirty = false; }
-		for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
-			if (impl->sampler_dirty[s]) {
-				Apply_Sampler_State(impl, s);
-				impl->sampler_dirty[s] = false;
+		{
+#ifdef RTS_DEBUG
+			PROFILE_D3D11_SCOPE(t_apply_states);
+#endif
+			if (impl->blend_dirty)  { Apply_Blend_State(impl);  impl->blend_dirty = false; }
+			if (impl->depth_dirty)  { Apply_Depth_State(impl);  impl->depth_dirty = false; }
+			if (impl->raster_dirty) { Apply_Raster_State(impl); impl->raster_dirty = false; }
+			for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
+				if (impl->sampler_dirty[s]) {
+					Apply_Sampler_State(impl, s);
+					impl->sampler_dirty[s] = false;
+				}
 			}
 		}
 
@@ -3131,23 +3374,48 @@ void GfxDeviceD3D11::Draw_Indexed(unsigned primitive_type, int base_vertex_index
 	TRACE("Draw_Indexed");
 	(void)min_vertex_index;
 	(void)vertex_count;
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_draw_indexed);
+	++s_d3d11_prof.n_draw_indexed;
+	++s_current_pass_draws;
+#endif
 	if (!Prepare_Draw(m_impl, primitive_type)) return;
-	m_impl->context->DrawIndexed(Vertices_For(primitive_type, primitive_count),
-		start_index, base_vertex_index);
+	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_raw_draw_call);
+#endif
+		m_impl->context->DrawIndexed(Vertices_For(primitive_type, primitive_count),
+			start_index, base_vertex_index);
+	}
 }
 
 void GfxDeviceD3D11::Draw(unsigned primitive_type, unsigned start_vertex,
 	unsigned primitive_count)
 {
 	TRACE("Draw");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_draw);
+	++s_d3d11_prof.n_draw;
+	++s_current_pass_draws;
+#endif
 	if (!Prepare_Draw(m_impl, primitive_type)) return;
-	m_impl->context->Draw(Vertices_For(primitive_type, primitive_count), start_vertex);
+	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_raw_draw_call);
+#endif
+		m_impl->context->Draw(Vertices_For(primitive_type, primitive_count), start_vertex);
+	}
 }
 
 void GfxDeviceD3D11::Draw_Up(unsigned primitive_type, unsigned primitive_count,
 	const void * vertex_data, unsigned vertex_stride)
 {
 	TRACE("Draw_Up");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_draw_up);
+	++s_d3d11_prof.n_draw_up;
+	++s_current_pass_draws;
+#endif
 	// The twenty lines Phase 4.0 left one call site for: map a dynamic ring, copy, draw.
 	//
 	// Phase 5's prompt expected something free to come with them: under D3D9 this is
@@ -3232,6 +3500,13 @@ void GfxDeviceD3D11::Draw_Up(unsigned primitive_type, unsigned primitive_count,
 bool GfxDeviceD3D11::Set_Render_Target(GfxSurface * color, GfxSurface * depth)
 {
 	TRACE("Set_Render_Target");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_rt);
+	++s_d3d11_prof.n_set_rt;
+	LARGE_INTEGER now_rt;
+	QueryPerformanceCounter(&now_rt);
+	Flush_Pass_Timing(now_rt);
+#endif
 	D3D11Surface * rt = (D3D11Surface *)color;
 	D3D11Surface * ds = (D3D11Surface *)depth;
 	if (rt == nullptr) rt = m_impl->back_buffer;
@@ -3240,6 +3515,18 @@ bool GfxDeviceD3D11::Set_Render_Target(GfxSurface * color, GfxSurface * depth)
 	// shader-resource slots and tells only the debug layer, and the wrapper's redundancy
 	// check then never sends the texture again.
 	Unbind_Conflicting_Textures(m_impl, rt, ds);
+
+#ifdef RTS_DEBUG
+	if (rt == nullptr || rt == m_impl->back_buffer) {
+		s_current_pass = PASS_BACKBUFFER;
+	} else if (ds != nullptr && ds->width == ds->height && (ds->width == 1024 || ds->width == 2048 || ds->width == 4096)) {
+		s_current_pass = PASS_SHADOW;
+	} else if (m_impl->back_buffer != nullptr && rt->width == m_impl->back_buffer->width && rt->height == m_impl->back_buffer->height) {
+		s_current_pass = PASS_DEPTHPREPASS;
+	} else {
+		s_current_pass = PASS_OTHER;
+	}
+#endif
 
 	m_impl->current_rt = rt;
 	m_impl->current_ds = ds;
@@ -3296,6 +3583,10 @@ GfxSurface * GfxDeviceD3D11::Get_Back_Buffer(unsigned index)
 void GfxDeviceD3D11::Set_Viewport(const GfxViewport & viewport)
 {
 	TRACE("Set_Viewport");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_set_vp);
+	++s_d3d11_prof.n_set_vp;
+#endif
 	m_impl->viewport = viewport;
 	D3D11_VIEWPORT vp;
 	vp.TopLeftX = (float)viewport.X;
@@ -3380,6 +3671,10 @@ namespace
 
 	bool Map_Buffer(D3D11Buffer * b, unsigned offset, unsigned size, void ** data)
 	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_map_buffer);
+		++s_d3d11_prof.n_map_buffer;
+#endif
 		if (b == nullptr || data == nullptr || b->shadow == nullptr) return false;
 		if (offset > b->size) return false;
 		// A size of zero means "the rest of it", which is what D3D9's Lock means by it and
@@ -3394,6 +3689,10 @@ namespace
 
 	void Unmap_Buffer(GfxD3D11Impl * impl, D3D11Buffer * b)
 	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_unmap_buffer);
+		++s_d3d11_prof.n_unmap_buffer;
+#endif
 		if (b == nullptr || !b->mapped) return;
 		b->mapped = false;
 		if (b->map_size == 0) return;
@@ -3971,6 +4270,10 @@ namespace
 	bool Read_Back_Subresource(GfxD3D11Impl * impl, ID3D11Texture2D * tex2d,
 		unsigned subresource, unsigned char * dst, unsigned dst_pitch, unsigned rows)
 	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_readback_subresource);
+		++s_d3d11_prof.n_readback_subresource;
+#endif
 		if (tex2d == nullptr || dst == nullptr) return false;
 		D3D11_TEXTURE2D_DESC desc;
 		tex2d->GetDesc(&desc);
@@ -4007,6 +4310,10 @@ namespace
 	bool Map_Texture_Subresource(GfxD3D11Impl * impl, D3D11Texture * t, unsigned subresource,
 		const GfxRect * rect, GfxMapMode mode, GfxMappedRect & mapped)
 	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_map_texture);
+		++s_d3d11_prof.n_map_texture;
+#endif
 		mapped.Data = nullptr;
 		mapped.Pitch = 0;
 		if (t == nullptr || t->resource == nullptr) return false;
@@ -4103,6 +4410,10 @@ namespace
 
 	void Unmap_Texture_Subresource(GfxD3D11Impl * impl, D3D11Texture * t, unsigned subresource)
 	{
+#ifdef RTS_DEBUG
+		PROFILE_D3D11_SCOPE(t_unmap_texture);
+		++s_d3d11_prof.n_unmap_texture;
+#endif
 		if (t == nullptr || t->resource == nullptr) return;
 		if (subresource >= t->levels * t->faces) return;
 		if (t->mappable) {
@@ -4224,6 +4535,10 @@ bool GfxDeviceD3D11::Map_Surface(GfxSurface * surface, const GfxRect * rect,
 	GfxMapMode mode, GfxMappedRect & mapped)
 {
 	TRACE("Map_Surface");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_map_surface);
+	++s_d3d11_prof.n_map_surface;
+#endif
 	mapped.Data = nullptr;
 	mapped.Pitch = 0;
 
@@ -4334,6 +4649,10 @@ bool GfxDeviceD3D11::Map_Surface(GfxSurface * surface, const GfxRect * rect,
 void GfxDeviceD3D11::Unmap_Surface(GfxSurface * surface)
 {
 	TRACE("Unmap_Surface");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_unmap_surface);
+	++s_d3d11_prof.n_unmap_surface;
+#endif
 	D3D11Surface * s = (D3D11Surface *)surface;
 	if (s == nullptr || s->texture == nullptr) return;
 
@@ -4456,9 +4775,14 @@ namespace
 			sd.Usage = D3D11_USAGE_STAGING;
 			sd.BindFlags = 0;
 			sd.MiscFlags = 0;
-			sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
-			if (FAILED(impl->device->CreateTexture2D(&sd, nullptr, &view.temporary)))
+			sd.CPUAccessFlags = for_write
+				? (D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE)
+				: D3D11_CPU_ACCESS_READ;
+
+			if (FAILED(impl->device->CreateTexture2D(&sd, nullptr, &view.temporary))) {
+				view.temporary = nullptr;
 				return false;
+			}
 			if (desc.SampleDesc.Count > 1) {
 				// Resolve into a plain intermediate, then take the staging copy off that.
 				D3D11_TEXTURE2D_DESC rd = sd;
@@ -4484,12 +4808,16 @@ namespace
 			subresource = 0;
 		}
 
+		D3D11_MAP map = for_write ? D3D11_MAP_READ_WRITE : D3D11_MAP_READ;
 		D3D11_MAPPED_SUBRESOURCE m;
-		const D3D11_MAP map = for_write ? D3D11_MAP_READ_WRITE : D3D11_MAP_READ;
 		if (FAILED(impl->context->Map(target, subresource, map, 0, &m))) {
-			if (view.temporary != nullptr) { view.temporary->Release(); view.temporary = nullptr; }
+			if (view.temporary != nullptr) {
+				view.temporary->Release();
+				view.temporary = nullptr;
+			}
 			return false;
 		}
+
 		view.data = (unsigned char *)m.pData;
 		view.pitch = m.RowPitch;
 		view.width = s->width;
@@ -4505,20 +4833,26 @@ namespace
 	{
 		if (view.mapped_texture == nullptr) return;
 		impl->context->Unmap(view.mapped_texture, view.mapped_subresource);
-		if (write_back && view.temporary != nullptr && s != nullptr) {
-			impl->context->CopySubresourceRegion(s->texture, s->subresource, 0, 0, 0,
-				view.temporary, 0, nullptr);
+
+		if (view.temporary != nullptr) {
+			if (write_back && s != nullptr && s->texture != nullptr) {
+				impl->context->CopySubresourceRegion(s->texture, s->subresource, 0, 0, 0,
+					view.temporary, 0, nullptr);
+			}
+			view.temporary->Release();
+			view.temporary = nullptr;
 		}
-		if (view.temporary != nullptr) view.temporary->Release();
-		memset(&view, 0, sizeof(view));
+		view.mapped_texture = nullptr;
+		view.data = nullptr;
 	}
 
-	/// A rectangle copy on the CPU, in whichever of the two supported widths the surfaces
-	/// are. Point sampling unless the caller asked to resample, which is the one thing
-	/// SurfaceClass::Copy and SurfaceClass::Stretch_Copy genuinely differ on.
+	/// Cross-format blit in system memory. Replaces D3DXLoadSurfaceFromSurface for the
+	/// small set of pairs the engine asks for: mostly A8R8G8B8 to A8R8G8B8 with a scale
+	/// or a sub-rectangle, with R5G6B5 to A8R8G8B8 on the font-generation path.
 	bool CPU_Blit(const SurfaceView & src, const GfxRect * src_rect,
-		SurfaceView & dst, const GfxRect * dst_rect, bool resample)
+		const SurfaceView & dst, const GfxRect * dst_rect, bool resample)
 	{
+		if (src.data == nullptr || dst.data == nullptr) return false;
 		const unsigned bpp = Bytes_Per_Pixel(src.format);
 		if (bpp == 0 || bpp != Bytes_Per_Pixel(dst.format)) return false;
 		if (src.format != dst.format) return false;
@@ -4573,6 +4907,10 @@ bool GfxDeviceD3D11::Copy_Surface(GfxSurface * source, const GfxRect * source_re
 	GfxSurface * dest, const GfxRect * dest_rect)
 {
 	TRACE("Copy_Surface");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_copy_surface);
+	++s_d3d11_prof.n_copy_surface;
+#endif
 	D3D11Surface * src = (D3D11Surface *)source;
 	D3D11Surface * dst = (D3D11Surface *)dest;
 	if (src == nullptr || dst == nullptr) return false;
@@ -4641,6 +4979,10 @@ bool GfxDeviceD3D11::Copy_Surface_Rect(GfxSurface * source, const GfxRect * sour
 	GfxSurface * dest, const GfxRect * dest_rect, GfxCopyFilter filter)
 {
 	TRACE("Copy_Surface_Rect");
+#ifdef RTS_DEBUG
+	PROFILE_D3D11_SCOPE(t_copy_surface_rect);
+	++s_d3d11_prof.n_copy_surface_rect;
+#endif
 	D3D11Surface * src = (D3D11Surface *)source;
 	D3D11Surface * dst = (D3D11Surface *)dest;
 	if (src == nullptr || dst == nullptr) return false;
@@ -5271,7 +5613,8 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 	// compare it to. What is left is about this backend alone and every figure in it reads
 	// its own control -- DROPPED, SIGNATURE MISMATCH, RENDER TARGET HAZARD, SAMPLER CENSUS.
 	static unsigned frames = 0;
-	if (++frames < 600) return;
+	const unsigned REPORT_INTERVAL = 100;
+	if (++frames < REPORT_INTERVAL) return;
 	frames = 0;
 	WWDEBUG_SAY(("D3D11 SIGNATURE MISMATCH: %u of %u draws were submitted with a vertex "
 		"shader and a pixel shader D3D11 cannot link, and drew nothing. The pixel shader "
@@ -5332,6 +5675,83 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 	s_sampler_stage_mip_linear = 0;
 	s_sampler_stage_aniso = 0;
 	s_sampler_stage_no_sampler = 0;
+
+	LARGE_INTEGER freq;
+	if (QueryPerformanceFrequency(&freq) && freq.QuadPart > 0) {
+		const double to_ms = 1000.0 / (double)freq.QuadPart;
+		const double inv_frames = 1.0 / (double)REPORT_INTERVAL;
+		WWDEBUG_SAY(("D3D11 PROFILE (ms/frame over %u frames):", REPORT_INTERVAL));
+		WWDEBUG_SAY(("  DrawIndexed:  %6.2f ms (cnt=%u, raw=%6.2f ms, prepare=%6.2f ms)",
+			(double)s_d3d11_prof.t_draw_indexed * to_ms * inv_frames,
+			s_d3d11_prof.n_draw_indexed,
+			(double)s_d3d11_prof.t_raw_draw_call * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_prepare_draw * to_ms * inv_frames));
+		WWDEBUG_SAY(("    Prepare:    layout=%6.2f ms, states=%6.2f ms, const_upload=%6.2f ms (vs_up=%u, ps_up=%u)",
+			(double)s_d3d11_prof.t_input_layout * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_apply_states * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_upload_constants * to_ms * inv_frames,
+			s_d3d11_prof.n_upload_vs, s_d3d11_prof.n_upload_ps));
+		WWDEBUG_SAY(("  Draw / DrawUp: %6.2f ms / %6.2f ms (cnt=%u / %u)",
+			(double)s_d3d11_prof.t_draw * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_draw_up * to_ms * inv_frames,
+			s_d3d11_prof.n_draw, s_d3d11_prof.n_draw_up));
+		WWDEBUG_SAY(("  Present:      %6.2f ms (drain=%6.2f ms, swap=%6.2f ms)",
+			(double)s_d3d11_prof.t_present * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_drain_debug * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_swap_present * to_ms * inv_frames));
+		WWDEBUG_SAY(("  SetRT / Clear: %6.2f ms / %6.2f ms (cnt=%u / %u)",
+			(double)s_d3d11_prof.t_set_rt * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_clear * to_ms * inv_frames,
+			s_d3d11_prof.n_set_rt, s_d3d11_prof.n_clear));
+		WWDEBUG_SAY(("  SetTexture:   %6.2f ms (cnt=%u)",
+			(double)s_d3d11_prof.t_set_texture * to_ms * inv_frames,
+			s_d3d11_prof.n_set_texture));
+		WWDEBUG_SAY(("  SetConstants: %6.2f ms (vs_cnt=%u, ps_cnt=%u)",
+			((double)s_d3d11_prof.t_set_vs_const + (double)s_d3d11_prof.t_set_ps_const) * to_ms * inv_frames,
+			s_d3d11_prof.n_set_vs_const, s_d3d11_prof.n_set_ps_const));
+		WWDEBUG_SAY(("  SetShaders:   vs=%6.2f ms, ps=%6.2f ms (cnt=%u / %u)",
+			(double)s_d3d11_prof.t_set_vs * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_set_ps * to_ms * inv_frames,
+			s_d3d11_prof.n_set_vs, s_d3d11_prof.n_set_ps));
+		WWDEBUG_SAY(("  SetStream/IB: stream=%6.2f ms, ib=%6.2f ms (cnt=%u / %u)",
+			(double)s_d3d11_prof.t_set_stream * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_set_ib * to_ms * inv_frames,
+			s_d3d11_prof.n_set_stream, s_d3d11_prof.n_set_ib));
+		WWDEBUG_SAY(("  SetState/VP:  rs=%6.2f ms, tss=%6.2f ms, vp=%6.2f ms (cnt=%u / %u / %u)",
+			(double)s_d3d11_prof.t_set_rs * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_set_tss * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_set_vp * to_ms * inv_frames,
+			s_d3d11_prof.n_set_rs, s_d3d11_prof.n_set_tss, s_d3d11_prof.n_set_vp));
+		WWDEBUG_SAY(("  Map/UnmapBuf: %6.2f ms / %6.2f ms (cnt=%u / %u)",
+			(double)s_d3d11_prof.t_map_buffer * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_unmap_buffer * to_ms * inv_frames,
+			s_d3d11_prof.n_map_buffer, s_d3d11_prof.n_unmap_buffer));
+		WWDEBUG_SAY(("  MapTexture:   map=%6.2f ms, unmap=%6.2f ms, readback=%6.2f ms (cnt=%u / %u / %u)",
+			(double)s_d3d11_prof.t_map_texture * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_unmap_texture * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_readback_subresource * to_ms * inv_frames,
+			s_d3d11_prof.n_map_texture, s_d3d11_prof.n_unmap_texture, s_d3d11_prof.n_readback_subresource));
+		WWDEBUG_SAY(("  MapSurface:   map=%6.2f ms, unmap=%6.2f ms (cnt=%u / %u)",
+			(double)s_d3d11_prof.t_map_surface * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_unmap_surface * to_ms * inv_frames,
+			s_d3d11_prof.n_map_surface, s_d3d11_prof.n_unmap_surface));
+		WWDEBUG_SAY(("  CopySurface:  fast=%6.2f ms (cnt=%u), rect/cpu=%6.2f ms (cnt=%u)",
+			(double)s_d3d11_prof.t_copy_surface * to_ms * inv_frames,
+			s_d3d11_prof.n_copy_surface,
+			(double)s_d3d11_prof.t_copy_surface_rect * to_ms * inv_frames,
+			s_d3d11_prof.n_copy_surface_rect));
+		WWDEBUG_SAY(("  PASS TIMINGS: BackBuffer=%6.2f ms (draws=%u), Shadow=%6.2f ms (draws=%u), DepthPrepass=%6.2f ms (draws=%u), Other=%6.2f ms (draws=%u)",
+			(double)s_d3d11_prof.t_pass_backbuffer * to_ms * inv_frames, s_d3d11_prof.n_draws_backbuffer,
+			(double)s_d3d11_prof.t_pass_shadow * to_ms * inv_frames, s_d3d11_prof.n_draws_shadow,
+			(double)s_d3d11_prof.t_pass_depthprepass * to_ms * inv_frames, s_d3d11_prof.n_draws_depthprepass,
+			(double)s_d3d11_prof.t_pass_other * to_ms * inv_frames, s_d3d11_prof.n_draws_other));
+		WWDEBUG_SAY(("  FRAME SPANS:  Render(Begin->End)=%6.2f ms (begin_cnt=%u, end_cnt=%u), Post=%6.2f ms, Logic=%6.2f ms",
+			(double)s_d3d11_prof.t_render_span * to_ms * inv_frames,
+			s_d3d11_prof.n_begin_scene, s_d3d11_prof.n_end_scene,
+			(double)s_d3d11_prof.t_post_span * to_ms * inv_frames,
+			(double)s_d3d11_prof.t_logic_span * to_ms * inv_frames));
+	}
+	s_d3d11_prof.Reset();
 	s_dropped_no_vertex_shader = 0;
 	s_dropped_trianglefan = 0;
 	s_dropped_no_input_layout = 0;
