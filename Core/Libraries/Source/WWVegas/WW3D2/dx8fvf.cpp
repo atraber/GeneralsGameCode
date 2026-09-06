@@ -41,11 +41,54 @@
 
 #include "dx8fvf.h"
 #include "WWLib/wwstring.h"
-#include <d3dx9.h>
 
+// This was D3DXGetFVFVertexSize, which was the only thing this file wanted out of
+// <d3dx9.h> and which cost it the whole of <d3d9.h> to get. The rules are the flexible
+// vertex format's own and are written out below rather than looked up, because there is no
+// D3DX11 to defer them into. Verified element for element against D3DX over every legal
+// FVF the format can express -- see Gfx_Verify_Against_D3DX in d3dx_parity.cpp.
 static unsigned Get_FVF_Vertex_Size(unsigned FVF)
 {
-	return D3DXGetFVFVertexSize(FVF);
+	unsigned size = 0;
+
+	switch (FVF & D3DFVF_POSITION_MASK) {
+	case D3DFVF_XYZ:    size += 3 * sizeof(float); break;
+	case D3DFVF_XYZRHW: size += 4 * sizeof(float); break;
+	case D3DFVF_XYZW:   size += 4 * sizeof(float); break;
+	case D3DFVF_XYZB1:  size += 4 * sizeof(float); break;
+	case D3DFVF_XYZB2:  size += 5 * sizeof(float); break;
+	case D3DFVF_XYZB3:  size += 6 * sizeof(float); break;
+	case D3DFVF_XYZB4:  size += 7 * sizeof(float); break;
+	case D3DFVF_XYZB5:  size += 8 * sizeof(float); break;
+	default: break;
+	}
+	// The last blending weight can be a packed DWORD instead of a float. Same width, so
+	// this changes nothing about the size -- it is spelled out because the offsets below
+	// do care, and a reader comparing the two would otherwise wonder which is wrong.
+
+	if (FVF & D3DFVF_NORMAL)   size += 3 * sizeof(float);
+	if (FVF & D3DFVF_PSIZE)    size += sizeof(float);
+	if (FVF & D3DFVF_DIFFUSE)  size += sizeof(DWORD);
+	if (FVF & D3DFVF_SPECULAR) size += sizeof(DWORD);
+
+	const unsigned texcount = (FVF & D3DFVF_TEXCOUNT_MASK) >> D3DFVF_TEXCOUNT_SHIFT;
+	for (unsigned i = 0; i < texcount; ++i) {
+		// Two bits per texture coordinate set, from bit 16 up. The encoding is not in
+		// increasing order: 0 means two floats, which is why a default FVF with no size
+		// bits set gives 2-D texture coordinates.
+		switch ((FVF >> (16 + i * 2)) & 3) {
+		case 0: size += 2 * sizeof(float); break;   // D3DFVF_TEXTUREFORMAT2
+		case 1: size += 3 * sizeof(float); break;   // D3DFVF_TEXTUREFORMAT3
+		case 2: size += 4 * sizeof(float); break;   // D3DFVF_TEXTUREFORMAT4
+		case 3: size += 1 * sizeof(float); break;   // D3DFVF_TEXTUREFORMAT1
+		}
+	}
+	return size;
+}
+
+unsigned Gfx_FVF_Vertex_Size(unsigned FVF)
+{
+	return Get_FVF_Vertex_Size(FVF);
 }
 
 FVFInfoClass::FVFInfoClass(unsigned FVF_)
