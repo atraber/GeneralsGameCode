@@ -37,6 +37,7 @@
 
 #include "gfxmatrix4.h"
 #include "wwdebug.h"
+#include "dx8fvf.h"
 
 // dx8fvf.cpp, the replacement for D3DXGetFVFVertexSize.
 extern unsigned Gfx_FVF_Vertex_Size(unsigned FVF);
@@ -89,7 +90,8 @@ void Gfx_Verify_Against_D3DX()
 	float wMul = 0, wInv = 0, wTrn = 0, wIdn = 0, wTsl = 0, wScl = 0, wRot = 0;
 	float wLook = 0, wOrtho = 0, wV4T = 0, wV3T = 0, wCoord = 0, wNorm = 0;
 	float wCtlTranspose = 0, wCtlRotation = 0;
-	int singular = 0, invRan = 0;
+	int singular = 0, invRan = 0, invWell = 0;
+	float wInvWell = 0;
 
 	for (int n = 0; n < N; ++n) {
 		GfxMatrix4 a, b;
@@ -123,6 +125,14 @@ void Gfx_Verify_Against_D3DX()
 			for (int i = 0; i < 4; ++i)
 				for (int j = 0; j < 4; ++j) scale = Bigger(scale, fabsf(d.m[i][j]));
 			wInv = Bigger(wInv, Max_Diff(g, d) / scale);
+			// And again over the well-conditioned ones only. A random 4x4 can be nearly
+			// singular, where two cofactor orderings cancel differently in float and the
+			// disagreement says nothing about the formula. Every matrix this engine inverts
+			// is a view matrix.
+			if (fabsf(ddet) > 1.0f) {
+				++invWell;
+				wInvWell = Bigger(wInvWell, Max_Diff(g, d) / scale);
+			}
 		}
 
 		Gfx_Matrix_Identity(&g);
@@ -191,8 +201,9 @@ void Gfx_Verify_Against_D3DX()
 	}
 
 	WWDEBUG_SAY(("GFXMATH VERIFY: %d samples against D3DX, max |new-old| per operation", N));
-	WWDEBUG_SAY(("  multiply %.3e  transpose %.3e  inverse(rel) %.3e (%d ran, %d singular)",
-				 wMul, wTrn, wInv, invRan, singular));
+	WWDEBUG_SAY(("  multiply %.3e  transpose %.3e", wMul, wTrn));
+	WWDEBUG_SAY(("  inverse(rel) %.3e over all %d, %.3e over the %d with |det|>1 (%d singular)",
+				 wInv, invRan, wInvWell, invWell, singular));
 	WWDEBUG_SAY(("  identity %.3e  translation %.3e  scaling %.3e  rotationZ %.3e",
 				 wIdn, wTsl, wScl, wRot));
 	WWDEBUG_SAY(("  lookAtLH %.3e  orthoOffCenterLH %.3e", wLook, wOrtho));
@@ -211,6 +222,7 @@ void Gfx_Verify_Against_D3DX()
 										D3DFVF_XYZB2, D3DFVF_XYZB3, D3DFVF_XYZB4,
 										D3DFVF_XYZB5, D3DFVF_XYZW };
 		int cases = 0, bad = 0, firstBadFVF = 0, firstBadNew = 0, firstBadOld = 0;
+		int xyzwCases = 0, xyzwBad = 0;
 		for (int p = 0; p < 9; ++p) {
 			for (int bits = 0; bits < 16; ++bits) {
 				unsigned base = pos[p];
@@ -231,6 +243,16 @@ void Gfx_Verify_Against_D3DX()
 						}
 						const unsigned mine = Gfx_FVF_Vertex_Size(f);
 						const unsigned theirs = D3DXGetFVFVertexSize(f);
+						// D3DXGetFVFVertexSize answers 0 for every FVF carrying
+						// D3DFVF_XYZW: it is a vertex-declaration position type, not a
+						// fixed-function one. Held out and counted separately rather than
+						// smuggled into the total. Nothing in this engine builds one --
+						// D3DFVF_XYZW appears in no other source file in the tree.
+						if (pos[p] == D3DFVF_XYZW) {
+							++xyzwCases;
+							if (mine != theirs) ++xyzwBad;
+							continue;
+						}
 						++cases;
 						if (mine != theirs) {
 							if (!bad) { firstBadFVF = (int)f; firstBadNew = (int)mine; firstBadOld = (int)theirs; }
@@ -244,8 +266,21 @@ void Gfx_Verify_Against_D3DX()
 		// shown the comparison can also print something else.
 		const unsigned ctlNew = Gfx_FVF_Vertex_Size(D3DFVF_XYZ | D3DFVF_TEX1);
 		const unsigned ctlOld = D3DXGetFVFVertexSize(D3DFVF_XYZ | D3DFVF_TEX2);
+		// The formats this engine actually builds, named one at a time, because the sweep
+		// above proves the rules and this proves the thirteen values that reach a draw.
+		static const unsigned engineFVF[] = {
+			DX8_FVF_XYZ, DX8_FVF_XYZN, DX8_FVF_XYZNUV1, DX8_FVF_XYZNUV2, DX8_FVF_XYZNDUV1,
+			DX8_FVF_XYZNDUV2, DX8_FVF_XYZDUV1, DX8_FVF_XYZDUV2, DX8_FVF_XYZUV1,
+			DX8_FVF_XYZUV2, DX8_FVF_XYZNDUV1TG3, DX8_FVF_XYZNUV2DMAP, DX8_FVF_XYZNDCUBEMAP };
+		const int engineN = (int)(sizeof(engineFVF) / sizeof(engineFVF[0]));
+		int engineBad = 0;
+		for (int i = 0; i < engineN; ++i)
+			if (Gfx_FVF_Vertex_Size(engineFVF[i]) != D3DXGetFVFVertexSize(engineFVF[i])) ++engineBad;
+
 		WWDEBUG_SAY(("  FVF vertex size: %d legal formats swept, %d disagree (first 0x%x: new %d old %d)",
 					 cases, bad, firstBadFVF, firstBadNew, firstBadOld));
+		WWDEBUG_SAY(("  FVF: %d of this engine's own %d formats disagree; %d XYZW cases held out, %d of them differ (D3DX answers 0 for every one)",
+					 engineBad, engineN, xyzwCases, xyzwBad));
 		WWDEBUG_SAY(("  POSITIVE CONTROL (must differ): XYZ|TEX1 = %d against XYZ|TEX2 = %d",
 					 ctlNew, ctlOld));
 	}
