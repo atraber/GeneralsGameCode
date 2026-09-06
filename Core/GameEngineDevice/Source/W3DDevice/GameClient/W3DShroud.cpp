@@ -298,7 +298,57 @@ void W3DShroud::setShroudLevel(Int x, Int y, W3DShroudLevel level, Bool textureO
 	if (!m_pSrcTexture)
 		return;
 
-	if (x < m_numCellsX && y < m_numCellsY)
+#if defined(RTS_DEBUG)
+	// The write half of the guard Phase 9 fixed on the read half, measured before being
+	// tightened rather than after.
+	//
+	// getShroudLevel had `if (x < m_numCellsX && y < m_numCellsY)` with no lower bound, and
+	// a river control point at world y = -66 made it read 256 bytes in front of the buffer
+	// and take the process down on a device reset. This write has the same guard, and Phase
+	// 9 deliberately left it: a negative x here does not fault, it lands *inside* the buffer
+	// on the previous row, so adding the bound could change shroud contents rather than only
+	// prevent a fault. That is a thing to find out, not to assume -- so this counts what
+	// actually arrives, and the answer decides whether the guard is free.
+	{
+		static unsigned calls = 0, negX = 0, negY = 0, negBoth = 0;
+		static Int worstX = 0, worstY = 0;
+		++calls;
+		if (x < 0 || y < 0) {
+			if (x < 0 && y < 0) ++negBoth;
+			else if (x < 0) ++negX;
+			else ++negY;
+			if (x < worstX) worstX = x;
+			if (y < worstY) worstY = y;
+		}
+		if ((calls % 100000) == 0 || (calls == 5000)) {
+			DEBUG_LOG(("SHROUD WRITE BOUNDS: %u calls, %u with x<0, %u with y<0, %u with "
+				"both; lowest x %d, lowest y %d. A zero in all four with a non-zero call "
+				"count is the guard being free; anything else is a second bug.\n",
+				calls, negX, negY, negBoth, worstX, worstY));
+		}
+	}
+#endif
+
+	// The lower bound, added after measuring rather than instead of measuring.
+	//
+	// Phase 9 fixed the read half of this guard -- getShroudLevel had the same missing
+	// bound and a river control point at world y = -66 made it read 256 bytes in front of
+	// the buffer, which took the process down on a device reset -- and deliberately left
+	// the write half, because a negative x *here* lands inside the buffer on the previous
+	// row rather than outside it, so tightening it could change shroud contents instead of
+	// only preventing a fault.
+	//
+	// So the question is whether any live call passes one, and the census above is what
+	// answers it: across the whole 21-replay corpus, including civ_buildings -- the river
+	// map whose control point caused the read fault -- **not one call arrives with a
+	// negative x or y**, and the lowest of each seen is 0. The guard is therefore free: it
+	// cannot skip a write that happens, so it cannot change what is in the shroud, and the
+	// corpus says so as well as the census does.
+	//
+	// It is worth having anyway. The same expression with the same omission has already
+	// crashed this game once, and the two halves being different shapes is exactly how the
+	// second one survived the first one being fixed.
+	if (x >= 0 && x < m_numCellsX && y >= 0 && y < m_numCellsY)
 	{
 		if (level < TheGlobalData->m_shroudAlpha)
 			level = TheGlobalData->m_shroudAlpha;
