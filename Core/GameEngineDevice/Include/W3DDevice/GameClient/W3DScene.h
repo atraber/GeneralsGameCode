@@ -41,6 +41,7 @@
 #include "WW3D2/coltest.h"
 #include "WW3D2/lightenvironment.h"
 #include "W3DDevice/GameClient/W3DGpuLightList.h"
+#include "W3DDevice/GameClient/W3DClusterGrid.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 // PROTOTYPES /////////////////////////////////////////////////////////////////
@@ -107,6 +108,14 @@ public:
 	void updateGpuLightList(CameraClass & camera) {m_gpuLightList.Update(*this, camera);}
 	GpuLightListClass &getGpuLightList() {return m_gpuLightList;}
 
+	/// Bin this frame's lights into the screen-space cluster grid (C4). Must run AFTER
+	/// updateGpuLightList, whose packed array it reads and whose indices it stores; see
+	/// ClusterGridClass::Update(). Called once per frame from W3DView::draw() under
+	/// FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER).
+	void updateClusterGrid(CameraClass & camera)
+		{m_clusterGrid.Update(m_gpuLightList.Get_Lights(), m_gpuLightList.Get_Light_Count(), camera);}
+	ClusterGridClass &getClusterGrid() {return m_clusterGrid;}
+
 	virtual void init() override {}
 	virtual void update() override {}
 	virtual void draw() override;
@@ -154,6 +163,7 @@ protected:
 	CameraClass *m_camera;
 
 	GpuLightListClass	m_gpuLightList;	///< C3's clustered light list -- see W3DGpuLightList.h. A value member, not a pointer: its GPU buffer is created lazily on first Update() rather than here, since the device does not exist yet when this scene is constructed (see W3DDisplay::init()).
+	ClusterGridClass	m_clusterGrid;	///< C4's cluster grid -- see W3DClusterGrid.h. Lazily sized for the same reason, and additionally re-sized whenever the viewport changes.
 };
 
 //-----------------------------------------------------------------------------

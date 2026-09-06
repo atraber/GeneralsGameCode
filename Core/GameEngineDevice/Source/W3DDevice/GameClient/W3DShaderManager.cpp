@@ -68,6 +68,9 @@
 #include "W3DDevice/GameClient/HeightMap.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
 #include "W3DDevice/GameClient/W3DSmudge.h"
+#include "W3DDevice/GameClient/W3DClusterGrid.h"
+#include "W3DDevice/GameClient/W3DScene.h"
+#include "W3DDevice/GameClient/W3DDisplay.h"
 #include "GameClient/View.h"
 #include "GameClient/CommandXlat.h"
 #include "GameClient/Display.h"
@@ -121,6 +124,7 @@ DWORD W3DShaderManager::m_debugDepthPS = 0;
 DWORD W3DShaderManager::m_debugShadowPS = 0;
 DWORD W3DShaderManager::m_debugBloomPS = 0;
 DWORD W3DShaderManager::m_debugShroudPS = 0;
+DWORD W3DShaderManager::m_debugClusterPS = 0;
 GfxTexture *W3DShaderManager::m_debugBrightTexture = nullptr;
 GfxSurface *W3DShaderManager::m_debugBrightSurface = nullptr;
 GfxTexture *W3DShaderManager::m_renderTexture=nullptr;		///<texture into which rendering will be redirected.
@@ -2378,19 +2382,22 @@ void W3DShaderManager::initDebugVis()
 		LoadAndCreateD3DShader("shaders\\debugnormal_vs.vso", nullptr, 0, true, &DX8Wrapper::m_dwDebugNormalVS);
 	if (DX8Wrapper::m_dwDebugNormalPS == 0)
 		LoadAndCreateD3DShader("shaders\\debugnormal_ps.pso", nullptr, 0, false, &DX8Wrapper::m_dwDebugNormalPS);
+	if (m_debugClusterPS == 0)
+		LoadAndCreateD3DShader("shaders\\debugcluster_ps.pso", nullptr, 0, false, &m_debugClusterPS);
 	// Said either way, not only on failure. A missing shader makes its mode draw nothing,
 	// which is indistinguishable from the mode working and finding nothing -- and a line
 	// that appears only when something is wrong cannot be used to confirm that the setup
 	// ran at all. This one states the outcome, so a silent log means initDebugVis was
 	// never reached rather than "everything is fine".
-	DEBUG_LOG(("Debug vis: depth %s, shadow %s, bloom %s, shroud %s, tint %s, normals %s",
+	DEBUG_LOG(("Debug vis: depth %s, shadow %s, bloom %s, shroud %s, tint %s, normals %s, cluster %s",
 		(m_debugDepthPS != 0) ? "loaded" : "MISSING",
 		(m_debugShadowPS != 0) ? "loaded" : "MISSING",
 		(m_debugBloomPS != 0) ? "loaded" : "MISSING",
 		(m_debugShroudPS != 0) ? "loaded" : "MISSING",
 		(DX8Wrapper::m_dwDebugTintPS != 0) ? "loaded" : "MISSING",
 		(DX8Wrapper::m_dwDebugNormalVS != 0 && DX8Wrapper::m_dwDebugNormalPS != 0)
-			? "loaded" : "MISSING"));
+			? "loaded" : "MISSING",
+		(m_debugClusterPS != 0) ? "loaded" : "MISSING"));
 #endif
 }
 
@@ -2404,6 +2411,8 @@ void W3DShaderManager::shutdownDebugVis()
 	m_debugBloomPS = 0;
 	DX8Wrapper::Release_Pixel_Shader(m_debugShroudPS);
 	m_debugShroudPS = 0;
+	DX8Wrapper::Release_Pixel_Shader(m_debugClusterPS);
+	m_debugClusterPS = 0;
 	// Released here as well as at device reset: this is a GPU-resident render target,
 	// and one of those outliving a Reset() is exactly the leak that pinned the device
 	// shut on alt-tab once already.
@@ -2508,7 +2517,8 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 #ifdef RTS_DEBUG
 	const DebugVisMode mode = DX8Wrapper::Get_Debug_Vis_Mode();
 	if (mode != DEBUG_VIS_BLOOM && mode != DEBUG_VIS_SHROUD &&
-		mode != DEBUG_VIS_SHADOW_MAP && mode != DEBUG_VIS_DEPTH)
+		mode != DEBUG_VIS_SHADOW_MAP && mode != DEBUG_VIS_DEPTH &&
+		mode != DEBUG_VIS_CLUSTERS && mode != DEBUG_VIS_CLUSTER_OVERFLOW)
 		return;   // the remaining modes are per-draw and have already happened
 
 	if (!DX8Wrapper::Has_Device())
@@ -2516,6 +2526,17 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 
 	// What each mode wants to look at, resolved before any state is touched so that a
 	// mode with nothing to show costs nothing and leaves the pipeline alone.
+	// The clustered grid, if this is one of its two modes. Reached through the scene
+	// rather than through a static of its own: ClusterGridClass is a value member of
+	// RTS3DScene (see W3DScene.h) and there is exactly one, so a second handle to it here
+	// would be a second thing to keep in step across a device reset.
+	ClusterGridClass *clusterGrid = nullptr;
+	if (mode == DEBUG_VIS_CLUSTERS || mode == DEBUG_VIS_CLUSTER_OVERFLOW)
+	{
+		if (W3DDisplay::m_3DScene != nullptr)
+			clusterGrid = &W3DDisplay::m_3DScene->getClusterGrid();
+	}
+
 	GfxTexture *shroudTex = nullptr;
 	if (mode == DEBUG_VIS_SHROUD)
 	{
@@ -2569,6 +2590,32 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 		case DEBUG_VIS_SHROUD:
 			if (m_debugShroudPS == 0 || shroudTex == nullptr) return;
 			break;
+		case DEBUG_VIS_CLUSTERS:
+		case DEBUG_VIS_CLUSTER_OVERFLOW:
+			// Said once. An empty viewport here is otherwise indistinguishable from "the
+			// grid was built and nothing is in it", which is a completely different
+			// answer -- and the likeliest reason to be in this mode at all is that the
+			// grid is suspected of being empty.
+			if (m_debugClusterPS == 0 || clusterGrid == nullptr ||
+				clusterGrid->Get_Grid_Buffer() == nullptr ||
+				clusterGrid->Get_Index_Buffer() == nullptr)
+			{
+				static Bool s_reportedNoCluster = FALSE;
+				if (!s_reportedNoCluster)
+				{
+					DEBUG_LOG(("Debug vis: cluster inspector has nothing to draw -- "
+						"(shader=%u grid=%p gridBuffer=%p indexBuffer=%p). A null buffer "
+						"means ClusterGridClass never sized itself, which means either no "
+						"3D scene or a device that refused the allocation; the latter is "
+						"logged by ClusterGridClass.",
+						(unsigned)m_debugClusterPS, (void*)clusterGrid,
+						(clusterGrid != nullptr) ? (void*)clusterGrid->Get_Grid_Buffer() : nullptr,
+						(clusterGrid != nullptr) ? (void*)clusterGrid->Get_Index_Buffer() : nullptr));
+					s_reportedNoCluster = TRUE;
+				}
+				return;
+			}
+			break;
 		default:
 			return;
 	}
@@ -2589,9 +2636,14 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 	VertexMaterialClass *vmat = VertexMaterialClass::Get_Preset(VertexMaterialClass::PRELIT_DIFFUSE);
 	DX8Wrapper::Set_Material(vmat);
 	REF_PTR_RELEASE(vmat);
-	// The tile overwrites what is under it; the bloom overlay blends, because it is an
-	// annotation *of* the scene and hiding the scene would defeat it.
-	DX8Wrapper::Set_Shader((mode == DEBUG_VIS_BLOOM)
+	// The tile overwrites what is under it; the bloom and cluster overlays blend, because
+	// they are annotations *of* the scene and hiding the scene would defeat them. Note
+	// that this preset is also what writes D3DRS_ALPHABLENDENABLE and the two blend
+	// factors -- ShaderClass::Apply owns them, and any blend state set before this call is
+	// simply overwritten, which is how the bloom overlay first came out opaque black.
+	const Bool blendedOverlay = (mode == DEBUG_VIS_BLOOM) ||
+		(mode == DEBUG_VIS_CLUSTERS) || (mode == DEBUG_VIS_CLUSTER_OVERFLOW);
+	DX8Wrapper::Set_Shader(blendedOverlay
 		? ShaderClass::_PresetAlpha2DShader
 		: ShaderClass::_PresetOpaque2DShader);
 	DX8Wrapper::Set_Texture(0, nullptr);
@@ -2700,6 +2752,61 @@ void W3DShaderManager::drawDebugVisOverlay(Int screenWidth, Int screenHeight)
 				.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
 			hrA = drawScreenQuad(x, margin, side, side,
 				0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
+			break;
+		}
+
+		case DEBUG_VIS_CLUSTERS:
+		case DEBUG_VIS_CLUSTER_OVERFLOW:
+		{
+			// THE FIRST SHADER BUFFER READ IN A PIXEL SHADER IN THIS TREE. The three
+			// clustered buffers bind at absolute t8, t9 and t10 -- above the eight texture
+			// stages, through Set_Pixel_Buffer rather than Set_Texture, because a buffer
+			// bound inside the stage range would be replaced by the next Set_Texture for
+			// that stage with nothing to say so (see GFX_FIRST_PIXEL_BUFFER_SLOT in
+			// gfxdevice.h). C5 binds exactly these three, at exactly these slots, for
+			// every lit material shader; getting the path working here is most of the
+			// point of writing this inspector during C4 rather than after it.
+			//
+			// No sampler is set for any of them, and none is wanted: they are declared in
+			// debugcluster_ps.hlsl as StructuredBuffer/Buffer and read with Load, which
+			// needs the t slot and nothing else.
+			what = "cluster";
+			GfxDeviceClass * const gfx = DX8Wrapper::Gfx;
+			GpuLightListClass &lightList = W3DDisplay::m_3DScene->getGpuLightList();
+			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 0, lightList.Get_Buffer());
+			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 1, clusterGrid->Get_Grid_Buffer());
+			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 2, clusterGrid->Get_Index_Buffer());
+
+			DX8Wrapper::Set_Pixel_Shader(m_debugClusterPS);
+			const Vector4 ctl((mode == DEBUG_VIS_CLUSTER_OVERFLOW) ? 1.0f : 0.0f,
+				0.0f, 0.0f, 0.0f);
+			DX8Wrapper::Set_Pixel_Shader_Constant(0, &ctl, 1);
+
+			// Over the whole screen, not over the tactical viewport, and not over the grid
+			// rectangle either: the shader rejects any pixel outside the viewport it was
+			// built for, from ClusterScreen in b1. That is deliberate -- if the grid's
+			// idea of the viewport ever disagrees with the view's, the mismatch is visible
+			// as an overlay that does not line up with the 3D image, which is the whole
+			// bug this inspector would otherwise hide by being clipped to the right place
+			// by its own geometry.
+			//
+			// The rectangle handed to drawScreenQuad is in the CURRENT device viewport's
+			// pixel space (Build_Pixels_To_Clip maps [0,vp.Width] to clip space), so if the
+			// scene left the tactical viewport bound this quad is simply clipped to it
+			// rather than covering the control bar. Either way the shader is right, because
+			// SV_Position is in RENDER TARGET coordinates in D3D11 -- the viewport
+			// transform is already applied to it -- and that is what the tile arithmetic
+			// wants. Nothing here has to know which of the two viewports is current.
+			hrA = drawScreenQuad(0.0f, 0.0f, (float)screenWidth, (float)screenHeight,
+				0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
+
+			// Off again immediately. A buffer left bound on the pixel stage would still be
+			// there for the game UI's draws and for the first draw of the next frame --
+			// harmless while nothing declares t8..t10, and exactly the kind of leaked
+			// binding that stops being harmless the moment C5 does.
+			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 0, nullptr);
+			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 1, nullptr);
+			gfx->Set_Pixel_Buffer(GFX_FIRST_PIXEL_BUFFER_SLOT + 2, nullptr);
 			break;
 		}
 

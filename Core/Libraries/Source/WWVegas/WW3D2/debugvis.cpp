@@ -31,6 +31,8 @@ const char * Debug_Vis_Mode_Name(DebugVisMode mode)
 		case DEBUG_VIS_OVERDRAW:		return "Overdraw";
 		case DEBUG_VIS_WIREFRAME:		return "Wireframe";
 		case DEBUG_VIS_NORMALS:			return "Normals";
+		case DEBUG_VIS_CLUSTERS:		return "Cluster occupancy";
+		case DEBUG_VIS_CLUSTER_OVERFLOW:return "Cluster overflow";
 		default:						return "?";
 	}
 }
@@ -58,6 +60,17 @@ const char * Debug_Vis_Mode_Legend(DebugVisMode mode)
 		case DEBUG_VIS_NORMALS:
 			return "camera-space normal as RGB; "
 				   "grey = no normal or not on the mesh path (terrain, roads, water, pre-lit)";
+		case DEBUG_VIS_CLUSTERS:
+			// The scale is quoted because unlike the overdraw ramp this one is fixed: its
+			// ceiling is the index-list stride, not the frame's own maximum, so the same
+			// colour means the same count in every frame and between two runs.
+			return "lights in the busiest depth slice of each tile, log scale to the "
+				   "64-light stride; blue=1 cyan=3 green=7 yellow=20 white=64+  "
+				   "magenta = the index list disagrees with the count";
+		case DEBUG_VIS_CLUSTER_OVERFLOW:
+			return "red = a slice of this tile holds more than the 64-light stride  "
+				   "orange = exactly 64, one light from overflowing  "
+				   "magenta = the index list disagrees with the count";
 		default:
 			return nullptr;
 	}

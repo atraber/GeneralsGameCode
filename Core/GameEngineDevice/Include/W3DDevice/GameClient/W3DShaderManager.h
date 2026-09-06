@@ -132,6 +132,7 @@ public:
 	static DWORD m_debugShadowPS;					///<debugshadow_ps: unpacks the shadow map for the inspector tile
 	static DWORD m_debugBloomPS;					///<debugbloom_ps: false-colours the bright-pass copy
 	static DWORD m_debugShroudPS;					///<debugshroud_ps: draws the shroud field as a tile
+	static DWORD m_debugClusterPS;					///<debugcluster_ps: the clustered light grid's occupancy heat map and overflow mask (C4/C8)
 	static GfxTexture *m_debugBrightTexture;	///<copy of the bloom bright pass, made only while DEBUG_VIS_BLOOM is on
 	static GfxSurface *m_debugBrightSurface;	///<its surface, the StretchRect destination
 	static void shutdownUnitShaders();	///<release the unit shaders and vertex declaration.

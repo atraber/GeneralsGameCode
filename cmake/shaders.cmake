@@ -99,6 +99,9 @@ set(_rts_shaders
     debugshroud_ps
     debugnormal_vs
     debugnormal_ps
+    # ... and the clustered light grid's two modes (occupancy heat map, overflow mask),
+    # which are also the first pixel shader in the tree to read a shader buffer
+    debugcluster_ps
     # ... and its particle-sprite variant (vertex alpha + dithered coverage)
     shadowdepthparticle_vs
     shadowdepthparticle_ps

@@ -76,6 +76,19 @@ public:
 	// number Update() writes into b1's CameraForward.w.
 	unsigned Get_Light_Count() const { return m_lightCount; }
 
+	// The packed records themselves, for C4's cluster builder (W3DClusterGrid.h), which
+	// bins these into the screen grid immediately after this class has gathered them. The
+	// array and the GPU buffer hold the same bytes -- Upload() memcpys one into the other
+	// -- so an index into this array is also an index into LightBuffer, which is what the
+	// cluster grid's index list stores. Only the first Get_Light_Count() entries are
+	// meaningful; the rest are whatever a previous frame left there.
+	const GpuLight * Get_Lights() const { return m_cpuLights; }
+
+	// LightBuffer itself, for whoever binds it to a shader slot -- t8, per the plan. Null
+	// until the first successful Update(). C4's debug inspector is the first caller; C5
+	// makes every lit material shader one.
+	GfxBuffer * Get_Buffer() const { return m_buffer; }
+
 #ifdef RTS_DEBUG
 	// The verification gate: read the buffer Update() just uploaded back from the GPU and
 	// compare it, byte for byte, against the CPU array it was built from. Logs PASS/FAIL

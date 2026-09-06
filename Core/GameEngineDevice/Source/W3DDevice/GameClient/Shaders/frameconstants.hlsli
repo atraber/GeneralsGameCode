@@ -14,10 +14,16 @@
 // own the constant they declare rather than shadermodel.hlsli growing an unrelated
 // register per feature.
 //
-// **C2 defines the mechanism only.** ClusterParams, ClusterDepth and CameraForward are
+// **C2 defined the mechanism only.** ClusterParams, ClusterDepth and CameraForward were
 // declared here because C4-C6 need the layout settled now -- moving a field after shaders
-// reference it means finding every reader -- but nothing in this engine writes anything
-// meaningful into them yet. A shader that reads them before C4 lands reads zero.
+// reference it means finding every reader. C4 fills them; see W3DClusterGrid.cpp, and
+// clustergrid.hlsli for the named accessors every reader should use in preference to
+// spelling out a component here.
+//
+// ONE WRITER. GpuLightListClass::Write_Frame_Constants (W3DGpuLightList.cpp) is the only
+// place this block is written, and it writes all of it, from offset 0, once a frame. The
+// two stages that own fields here do not each call Set_Frame_Constants: whichever ran
+// last would silently win. If a later stage needs a field, it extends that function.
 
 #include "shadermodel.hlsli"
 
@@ -29,6 +35,16 @@ cbuffer FrameConstants : register(b1)
     float4 ClusterParams;   // xy = tile size px, z = slice count, w = grid X
     float4 ClusterDepth;    // x = scale, y = bias, z = near, w = far
     float4 CameraForward;   // xyz = view direction, w = light count
+    // C4. The grid is laid over the CAMERA'S VIEWPORT, not the render target: the
+    // tactical view does not cover the screen (the control bar is under it), so a tile
+    // index derived from SV_Position needs the viewport's own origin subtracted first.
+    // Without it every tile boundary sits a fraction of a tile away from where the CPU
+    // builder put it -- a uniform shift, which is the hardest kind of wrong to see.
+    float4 ClusterScreen;   // xy = viewport origin, render-target px; zw = viewport size px
+    // Grid Y is here rather than beside grid X because ClusterParams was full and
+    // recovering it as ceil(viewport height / tile height) in float is one rounding
+    // decision away from being off by one, which shifts every slice above the first.
+    float4 ClusterLimits;   // x = grid Y, y = light-index stride (CLUSTER_MAX_LIGHTS), zw = reserved
 };
 
 #endif  // RTS_SHADER_FRAMECONSTANTS_HLSLI

@@ -131,6 +131,33 @@ enum DebugVisMode CPP_11(: int)
 	// work is a thing you can point at on screen rather than a number in a census.
 	DEBUG_VIS_MESH_TECHNIQUE,
 
+	// The clustered light grid's per-cluster light count, as a heat map over the tactical
+	// viewport.
+	//
+	// This is the tool C4 of the clustered lighting plan is verified with, and it is
+	// the only way to see the grid at all: the grid changes no pixel of the finished frame
+	// until C5 reads it, so "is it being built, and over the right part of the screen" has
+	// no other symptom. Reduced over each tile's whole depth column rather than picked per
+	// fragment -- see debugcluster_ps.hlsl for why there is no per-pixel view distance to
+	// pick a slice with.
+	//
+	// Appended at the end of the cycle rather than filed with the other buffer inspectors,
+	// on purpose: W3D_DEBUG_VIS=<n> selects a mode by number for the replay harness, and
+	// inserting a mode in the middle would silently repoint every recipe and every stored
+	// capture that names one.
+	DEBUG_VIS_CLUSTERS,
+
+	// The same grid, asking one question instead: which clusters hold more lights than the
+	// fixed 64-entry index list can carry.
+	//
+	// A separate mode and not a colour in the one above, because the two are read at
+	// different times. The heat map answers "is the grid right"; this answers "is the
+	// stride big enough", which is a capacity decision the plan says to make on a
+	// measurement. The census counts the same thing numerically; this says *where*, which
+	// is what tells you whether an overflow is a dense firefight or a light with an absurd
+	// range binning half the screen.
+	DEBUG_VIS_CLUSTER_OVERFLOW,
+
 	DEBUG_VIS_COUNT
 };
 

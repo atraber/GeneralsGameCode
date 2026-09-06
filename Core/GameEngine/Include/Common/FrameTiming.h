@@ -59,6 +59,7 @@ namespace FrameTiming
 		PHASE_CLIENT,			///< TheGameClient->UPDATE(), less the display draw below
 		PHASE_DRAW,				///< the display draw, less the render phases below
 		PHASE_LIGHTLIST,		///< C3's clustered light list rebuild (the clustered lighting plan): enumerate, frustum-cull, pack, upload -- once a frame, before the shadow map
+		PHASE_LIGHTCLUSTER,		///< C4's cluster grid build: scatter those lights into the screen froxels and upload. Its own bucket and not folded into the one above, because C6 replaces the CPU builder with a compute dispatch and the before/after cost has to be comparable
 		PHASE_SHADOWMAP,		///< the sun's depth pass
 		PHASE_DEPTHPREPASS,		///< the camera depth pass SSR needs
 		PHASE_SCENE,			///< the main scene render

@@ -1888,10 +1888,26 @@ void W3DView::draw()
 	// immediately before the shadow-map pass, because C4-C6's cluster-grid dispatch reads
 	// this same light list and belongs right after it -- this is where that dispatch will
 	// go. Nothing downstream consumes LightBuffer yet, so this changes no pixel.
+	//
+	// ---- C4's cluster grid: bin those lights into the screen grid ---- see
+	// the clustered lighting plan, section "C4 -- The cluster grid, built on the CPU
+	// first". Second, and not merged into the block above, because the ordering is a real
+	// constraint and not a formality: the grid stores indices into the light list's packed
+	// array, so the array has to be packed first. Its own phase for the same reason C3 got
+	// one -- C6 replaces the CPU builder with a dispatch and the two costs have to be
+	// comparable in the F10 overlay across that change, which they are not if they share a
+	// bucket. Nothing consumes the grid outside the debug inspector yet, so this changes
+	// no pixel either.
 	if (W3DDisplay::m_3DScene != nullptr && m_3DCamera != nullptr)
 	{
-		FRAME_TIMING_SCOPE(PHASE_LIGHTLIST);
-		W3DDisplay::m_3DScene->updateGpuLightList(*m_3DCamera);
+		{
+			FRAME_TIMING_SCOPE(PHASE_LIGHTLIST);
+			W3DDisplay::m_3DScene->updateGpuLightList(*m_3DCamera);
+		}
+		{
+			FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER);
+			W3DDisplay::m_3DScene->updateClusterGrid(*m_3DCamera);
+		}
 	}
 
 	// ---- Directional shadow map: render scene depth from the sun's view first ----

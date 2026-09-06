@@ -37,6 +37,7 @@
 #include <string.h>
 
 #include "W3DDevice/GameClient/W3DGpuLightList.h"
+#include "W3DDevice/GameClient/W3DClusterGrid.h"
 #include "W3DDevice/GameClient/W3DScene.h"
 #include "W3DDevice/GameClient/W3DDynamicLight.h"
 #include "WW3D2/camera.h"
@@ -349,23 +350,58 @@ void GpuLightListClass::Upload()
 
 void GpuLightListClass::Write_Frame_Constants(CameraClass & camera)
 {
-	// THE SINGLE WRITER of the whole b1 block (frameconstants.hlsli). ClusterParams and
-	// ClusterDepth belong to C4/C6, not C3, and are zeroed here rather than left for
-	// those stages to write from a second call site: C2 established one
-	// Set_Frame_Constants call per frame, always from offset 0, and splitting the block
-	// across multiple call sites would mean whichever one runs last silently wins --
-	// exactly the "two shaders disagreeing about a shared value" failure mode this
-	// project keeps re-learning (see gpulight.h's file comment). When C4/C6 land, they
-	// extend this function to fill their two vec4s; they do not add a second
-	// Set_Frame_Constants call anywhere else.
-	Vector4 frameConstants[3];
-	frameConstants[0].Set(0.0f, 0.0f, 0.0f, 0.0f);	// ClusterParams -- C4/C6
-	frameConstants[1].Set(0.0f, 0.0f, 0.0f, 0.0f);	// ClusterDepth -- C4/C6
+	// THE SINGLE WRITER of the whole b1 block (frameconstants.hlsli). C2 established one
+	// Set_Frame_Constants call per frame, always from offset 0; splitting the block across
+	// several call sites would mean whichever one ran last silently won -- exactly the
+	// "two shaders disagreeing about a shared value" failure mode this project keeps
+	// re-learning (see gpulight.h's file comment). C4 extended this function, as that
+	// comment said it should, rather than adding a second call anywhere.
+	//
+	// The cluster fields come from ClusterGridClass::Compute_Params, which is static and
+	// derives everything from the camera alone. That is deliberate and is what removes an
+	// ordering hazard: the cluster grid itself is rebuilt AFTER this runs (W3DView::draw
+	// updates the light list first), so reading the live grid's parameters here would
+	// publish last frame's grid on any frame the viewport or the clip planes changed --
+	// and a b1 block describing a grid one frame stale is a uniform tile offset, which is
+	// the hardest kind of wrong to notice. Two callers of one pure function agree by
+	// construction instead.
+	ClusterGridClass::ClusterGridParams cluster;
+	ClusterGridClass::Compute_Params(camera, cluster);
+
+	Vector4 frameConstants[5];
+	if (cluster.valid)
+	{
+		frameConstants[0].Set((float)cluster.tileWidth, (float)cluster.tileHeight,
+			(float)cluster.sliceCount, (float)cluster.gridX);					// ClusterParams
+		frameConstants[1].Set(cluster.depthScale, cluster.depthBias,
+			cluster.zNear, cluster.zFar);										// ClusterDepth
+	}
+	else
+	{
+		// A degenerate camera (no viewport yet, or zNear >= zFar). Zeroed rather than
+		// left holding the last good grid: clustergrid.hlsli's ClusterGridValid() tests
+		// for exactly this and a stale-but-plausible block would defeat it.
+		frameConstants[0].Set(0.0f, 0.0f, 0.0f, 0.0f);
+		frameConstants[1].Set(0.0f, 0.0f, 0.0f, 0.0f);
+	}
 
 	const Vector3 forward = camera.Get_Forward_Dir();
 	frameConstants[2].Set(forward.X, forward.Y, forward.Z, (float)m_lightCount);	// CameraForward; .w is C3's own field
 
-	DX8Wrapper::Set_Frame_Constants(frameConstants, 3);
+	if (cluster.valid)
+	{
+		frameConstants[3].Set(cluster.viewportX, cluster.viewportY,
+			cluster.viewportWidth, cluster.viewportHeight);						// ClusterScreen
+		frameConstants[4].Set((float)cluster.gridY,
+			(float)ClusterGridClass::CLUSTER_MAX_LIGHTS, 0.0f, 0.0f);			// ClusterLimits
+	}
+	else
+	{
+		frameConstants[3].Set(0.0f, 0.0f, 0.0f, 0.0f);
+		frameConstants[4].Set(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+
+	DX8Wrapper::Set_Frame_Constants(frameConstants, 5);
 }
 
 #ifdef RTS_DEBUG
