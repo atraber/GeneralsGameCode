@@ -79,7 +79,13 @@
 #include "WWLib/thread.h"
 #include <d3dx9.h>
 #include <DxErr.h>
+#include "WWMath/gfxmatrix4.h"
 #include "WWMath/pot.h"
+
+#ifdef RTS_DEBUG
+// TEMPORARY -- goes with the last <d3dx9math.h>. See d3dx_parity.cpp.
+extern void Gfx_Verify_Against_D3DX();
+#endif
 #include "WWDebug/wwprofile.h"
 #include "WWLib/ffactory.h"
 #include "dx8caps.h"
@@ -3484,6 +3490,14 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 
 	WWDEBUG_SAY(("Reset DX8Wrapper statistics"));
 	Reset_Statistics();
+
+#ifdef RTS_DEBUG
+	// TEMPORARY -- goes with the last <d3dx9math.h>. Runs the new row-vector maths and the
+	// D3DX functions it replaces over the same 20000 inputs and prints the largest
+	// disagreement per operation, with two deliberately wrong variants beside them as the
+	// control. See d3dx_parity.cpp.
+	Gfx_Verify_Against_D3DX();
+#endif
 
 	// There is no device yet, so nothing the wrapper might remember about one can be
 	// true. This is the base case the sentinel exists for.

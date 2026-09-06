@@ -34,6 +34,8 @@ set(WWMATH_SRC
     euler.h
     frustum.cpp
     frustum.h
+    gfxmatrix4.cpp
+    gfxmatrix4.h
     gridcull.cpp
     gridcull.h
     hermitespline.cpp

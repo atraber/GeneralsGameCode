@@ -77,6 +77,7 @@ set(WW3D2_SRC
     gfxdevice_d3d11.cpp
     gfxdevice_d3d11.h
     gfxdevice_png.cpp
+    d3dx_parity.cpp
     gfxstatewords.h
     FramGrab.cpp
     framgrab.h
