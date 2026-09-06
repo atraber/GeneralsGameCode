@@ -1479,11 +1479,6 @@ static void Fill_D3D11_Caps(unsigned adapter_ordinal, GfxDeviceCaps & caps)
 	caps.VertexShaderVersion = (3 << 8) | 0;
 	caps.PixelShaderVersion = (3 << 8) | 0;
 
-	// No fixed-function combiner exists, so no combine operation is supported. Every one
-	// of ShaderClass::Apply's two dozen tests then falls to its already-written else
-	// branch, which is what gfxdevice.h says this field is for. It is also the first
-	// thing to try if the TECHNIQUE CHECK census disagrees with D3D9's.
-	caps.FixedFunctionCombineOps = 0;
 }
 
 bool GfxAdapterD3D11::Query_Capabilities(unsigned adapter_index, GfxDeviceCaps & caps)

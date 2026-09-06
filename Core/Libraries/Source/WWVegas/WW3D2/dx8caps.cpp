@@ -179,7 +179,6 @@ void DX8Caps::Log_Caps_Table(const char* source)
 		c.VertexShaderVersion >> 8, c.VertexShaderVersion & 0xff));
 	WWDEBUG_SAY(("  %-26s %u.%u", "PixelShaderVersion",
 		c.PixelShaderVersion >> 8, c.PixelShaderVersion & 0xff));
-	WWDEBUG_SAY(("  %-26s 0x%08x", "FixedFunctionCombineOps", c.FixedFunctionCombineOps));
 #undef CAPBOOL
 #undef CAPUINT
 }
@@ -232,7 +231,6 @@ void DX8Caps::Compute_Caps(WW3DFormat display_format)
 	MaxTextureHeight      = Private->Caps.MaxTextureHeight;
 	MaxVolumeExtent       = Private->Caps.MaxVolumeExtent;
 	MaxTextureAspectRatio = Private->Caps.MaxTextureAspectRatio;
-	TextureOpCaps         = Private->Caps.FixedFunctionCombineOps;
 	SupportLinearFilter      = Private->Caps.LinearFilter;
 	SupportMipLinearFilter   = Private->Caps.MipLinearFilter;
 	SupportColorWriteEnable  = Private->Caps.ColorWriteEnable;

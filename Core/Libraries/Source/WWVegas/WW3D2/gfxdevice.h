@@ -269,15 +269,18 @@ struct GfxDeviceCaps
 	unsigned	PixelShaderVersion;
 
 	/*
-	** The fixed-function texture-combine operations, as D3D9 D3DTEXOPCAPS_ bits.
+	** There was a FixedFunctionCombineOps field here, D3D9's D3DTEXOPCAPS_ bitmask, and
+	** it was the last thing in this struct spelled in the API's own vocabulary. It is
+	** gone with its only reader, ShaderClass::Apply's capability ladder.
 	**
-	** The one field here that is still spelled in the API's own vocabulary, because
-	** ShaderClass::Apply tests two dozen of these bits one at a time to pick a combiner
-	** setup -- and that whole path is the fixed-function D3DTSS state that is a phase of
-	** its own. A backend with no fixed-function pipeline reports zero, and every one of
-	** those tests then falls to its already-written else branch.
+	** Worth keeping the history in the header it used to be in, because the mistake it
+	** caused is instructive: a backend with no combiner answered 0, every test in that
+	** ladder fell to its else branch, and what those else branches did was DECLINE TO
+	** WRITE THE DESCRIPTION -- which is not the same thing as declining to use a
+	** combiner. The words ShaderClass::Apply writes are the shader routing's input
+	** language, and withholding them drew a black slab under every parked aircraft for
+	** four phases. See the Phase 11 investigation.
 	*/
-	unsigned	FixedFunctionCombineOps;
 };
 
 /*

@@ -61,12 +61,9 @@
 // worse by not including the API header.
 #include <windows.h>
 #include <d3d9types.h>
-// ...and the capability *bit* names, which are in the caps header rather than the types
-// one. ShaderClass::Apply -- the fixed-function combiner selection, which submits no draws
-// and is a phase of its own to remove -- tests two dozen D3DTEXOPCAPS_ bits one at a time
-// against the neutral GfxDeviceCaps::FixedFunctionCombineOps word. Types and constants
-// only; no interface is declared in either of these.
-#include <d3d9caps.h>
+// <d3d9caps.h> used to be included here too, for the D3DTEXOPCAPS_ bit names that
+// ShaderClass::Apply's fixed-function combiner ladder tested. Phase 12 deleted that ladder
+// and the last reader of a D3D9 capability bit went with it.
 
 // The ten texture-stage states that became sampler states in D3D9. The engine still writes
 // them as stage states, because TextureStageStates[stage][state] is what the whole sampler

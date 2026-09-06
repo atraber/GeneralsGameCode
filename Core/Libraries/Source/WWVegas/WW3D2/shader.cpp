@@ -486,13 +486,23 @@ void ShaderClass::Apply()
 	// second stage's texture.
 	//
 	// Describing unconditionally is exactly the set of words D3D9 wrote here: its answer
-	// on this adapter was 0x03feffff, and every bit these branches test is in it. The one
-	// bit it lacked, D3DTEXOPCAPS_PREMODULATE, is tested nowhere. Anything the routing
+	// on this adapter was 0x03feffff, and every bit those branches tested is in it. The one
+	// bit it lacked, D3DTEXOPCAPS_PREMODULATE, was tested nowhere. Anything the routing
 	// cannot express it still declines for itself -- Map_Texture_Stage_Arg and the op
-	// switch return false and the draw takes unit_ps instead of unit_detail_ps.
+	// switch return false and the draw takes unit_ps instead of unit_detail_ps. THAT is
+	// the gate, it is downstream of here, and it is already correct.
+	//
+	// Phase 11 neutralised the ladder by handing it an all-ones capability word; Phase 12
+	// deleted it. Fifteen tests collapsed to the arm every adapter that ever ran this took,
+	// and the description is byte-identical. The warning arms they guarded said
+	// "Using unsupported texture op" and had nothing to do afterwards -- the caller got
+	// D3DTOP_DISABLE either way, which is the state that drew the black quad.
+	//
+	// One of the fifteen was a category error worth recording rather than fixing quietly:
+	// the MODULATE2X arm tested a D3DTOP_ operation constant against a capability mask.
+	// It answered true on every adapter and the collapse keeps that answer.
 	//
 	// This was the only reader of DX8Caps::Get_Texture_Op_Caps.
-	const unsigned int TextureOpCaps = 0xffffffffu;
 
 	if (ShaderDirty)
 	{
@@ -661,10 +671,7 @@ void ShaderClass::Apply()
 				break;
 			case ShaderClass::GRADIENT_ADD:
 				//Modulate Alpha
-				if(!(TextureOpCaps & D3DTEXOPCAPS_ADD))
-					PricOp = D3DTOP_MODULATE;
-				else
-					PricOp = D3DTOP_ADD;
+				PricOp = D3DTOP_ADD;
 				PricArg1 = D3DTA_TEXTURE;
 				PricArg2 = D3DTA_DIFFUSE;
 				PriaOp = D3DTOP_MODULATE;
@@ -674,50 +681,30 @@ void ShaderClass::Apply()
 
 			// Bump map is a hack currently as we only have two stages in use!
 			case ShaderClass::GRADIENT_BUMPENVMAP:
-				if(TextureOpCaps & D3DTEXOPCAPS_BUMPENVMAP)
-				{
-					PricOp=D3DTOP_BUMPENVMAP;
-					PricArg1=D3DTA_TEXTURE;
-					PricArg2=D3DTA_DIFFUSE;
-					PriaOp = D3DTOP_DISABLE;
-					PriaArg1 = D3DTA_TEXTURE;
-					PriaArg2 = D3DTA_CURRENT;
-				} else {
-					PricOp = D3DTOP_SELECTARG1;
-					PricArg1 = D3DTA_DIFFUSE;
-					PricArg2 = D3DTA_DIFFUSE;
-					PriaOp = D3DTOP_SELECTARG1;
-					PriaArg1 = D3DTA_DIFFUSE;
-					PriaArg2 = D3DTA_DIFFUSE;
-				}
+				PricOp=D3DTOP_BUMPENVMAP;
+				PricArg1=D3DTA_TEXTURE;
+				PricArg2=D3DTA_DIFFUSE;
+				PriaOp = D3DTOP_DISABLE;
+				PriaArg1 = D3DTA_TEXTURE;
+				PriaArg2 = D3DTA_CURRENT;
 				break;
 
 			// Bump map is a hack currently as we only have two stages in use!
 			case ShaderClass::GRADIENT_BUMPENVMAPLUMINANCE:
-				if(TextureOpCaps & D3DTEXOPCAPS_BUMPENVMAPLUMINANCE)
-				{
-					PricOp=D3DTOP_BUMPENVMAPLUMINANCE;
-					PricArg1=D3DTA_TEXTURE;
-					PricArg2=D3DTA_DIFFUSE;
-					PriaOp = D3DTOP_DISABLE;
-					PriaArg1 = D3DTA_TEXTURE;
-					PriaArg2 = D3DTA_CURRENT;
-				} else {
-					PricOp = D3DTOP_SELECTARG1;
-					PricArg1 = D3DTA_DIFFUSE;
-					PricArg2 = D3DTA_DIFFUSE;
-					PriaOp = D3DTOP_SELECTARG1;
-					PriaArg1 = D3DTA_DIFFUSE;
-					PriaArg2 = D3DTA_DIFFUSE;
-				}
+				PricOp=D3DTOP_BUMPENVMAPLUMINANCE;
+				PricArg1=D3DTA_TEXTURE;
+				PricArg2=D3DTA_DIFFUSE;
+				PriaOp = D3DTOP_DISABLE;
+				PriaArg1 = D3DTA_TEXTURE;
+				PriaArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::GRADIENT_MODULATE2X:
 				//Modulate Alpha
-				if(!(TextureOpCaps & D3DTOP_MODULATE2X))
-					PricOp = D3DTOP_MODULATE;
-				else
-					PricOp = D3DTOP_MODULATE2X;
+				// NOTE: this tested a D3DTOP_ operation constant against a capability mask,
+				// which is a category error that happened to answer true on every adapter
+				// that ever ran it. It always took MODULATE2X and it still does.
+				PricOp = D3DTOP_MODULATE2X;
 				PricArg1 = D3DTA_TEXTURE;
 				PricArg2 = D3DTA_DIFFUSE;
 				PriaOp = D3DTOP_MODULATE;
@@ -771,163 +758,78 @@ void ShaderClass::Apply()
 				break;
 
 			case ShaderClass::DETAILCOLOR_DETAIL:
-				if(TextureOpCaps & D3DTEXOPCAPS_SELECTARG1)
-				{
-					SeccOp = D3DTOP_SELECTARG1;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: SELECTARG1"));
-				}
+				SeccOp = D3DTOP_SELECTARG1;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_SCALE:
-				if(TextureOpCaps & D3DTEXOPCAPS_MODULATE)
-				{
-					SeccOp = D3DTOP_MODULATE;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: MODULATE"));
-				}
+				SeccOp = D3DTOP_MODULATE;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_INVSCALE:
-				if(TextureOpCaps & D3DTEXOPCAPS_ADDSMOOTH)
-				{
-					SeccOp = D3DTOP_ADDSMOOTH;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				} else if(TextureOpCaps & D3DTEXOPCAPS_ADD) {
-					SeccOp = D3DTOP_ADD;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: ADDSMOOTH"));
-				}
+				SeccOp = D3DTOP_ADDSMOOTH;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_ADD:
-				if(TextureOpCaps & D3DTEXOPCAPS_ADD)
-				{
-					SeccOp = D3DTOP_ADD;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: ADD"));
-				}
+				SeccOp = D3DTOP_ADD;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_SUB:
-				if(TextureOpCaps & D3DTEXOPCAPS_SUBTRACT)
-				{
-					SeccOp = D3DTOP_SUBTRACT;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: SUBTRACT"));
-				}
+				SeccOp = D3DTOP_SUBTRACT;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_SUBR:
-				if(TextureOpCaps & D3DTEXOPCAPS_SUBTRACT)
-				{
-					SeccOp = D3DTOP_SUBTRACT;
-					SeccArg1 = D3DTA_CURRENT;
-					SeccArg2 = D3DTA_TEXTURE;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: SUBTRACT"));
-				}
+				SeccOp = D3DTOP_SUBTRACT;
+				SeccArg1 = D3DTA_CURRENT;
+				SeccArg2 = D3DTA_TEXTURE;
 				break;
 
 			case ShaderClass::DETAILCOLOR_BLEND:
-				if(TextureOpCaps & D3DTEXOPCAPS_BLENDTEXTUREALPHA)
-				{
-					SeccOp = D3DTOP_BLENDTEXTUREALPHA;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: BLENDTEXTUREALPHA"));
-				}
+				SeccOp = D3DTOP_BLENDTEXTUREALPHA;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_DETAILBLEND:
-				if(TextureOpCaps & D3DTEXOPCAPS_BLENDCURRENTALPHA)
-				{
-					SeccOp = D3DTOP_BLENDCURRENTALPHA;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: BLENDCURRENTALPHA"));
-				}
+				SeccOp = D3DTOP_BLENDCURRENTALPHA;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_ADDSIGNED:
-				if (TextureOpCaps & D3DTEXOPCAPS_ADDSIGNED) {
-					SeccOp = D3DTOP_ADDSIGNED;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}  else if (TextureOpCaps & D3DTEXOPCAPS_ADD) {
-					SeccOp = D3DTOP_ADD;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				} else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: ADDSIGNED"));
-				}
+				SeccOp = D3DTOP_ADDSIGNED;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_ADDSIGNED2X:
-				if (TextureOpCaps & D3DTEXOPCAPS_ADDSIGNED2X) {
-					SeccOp = D3DTOP_ADDSIGNED2X;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				} else if (TextureOpCaps & D3DTEXOPCAPS_ADDSIGNED) {
-					SeccOp = D3DTOP_ADDSIGNED;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}  else if (TextureOpCaps & D3DTEXOPCAPS_ADD) {
-					SeccOp = D3DTOP_ADD;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				} else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: ADDSIGNED2X"));
-				}
+				SeccOp = D3DTOP_ADDSIGNED2X;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_SCALE2X:
-				if(TextureOpCaps & D3DTEXOPCAPS_MODULATE2X) {
-					SeccOp = D3DTOP_MODULATE2X;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				} else if(TextureOpCaps & D3DTEXOPCAPS_MODULATE) {
-					SeccOp = D3DTOP_MODULATE;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: MODULATE2X"));
-				}
+				SeccOp = D3DTOP_MODULATE2X;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILCOLOR_MODALPHAADDCOLOR:
 				// D3DTOP_MODULATEALPHA_ADDCOLOR is a fixed-function combiner op and no
 				// backend after D3D9 has a combiner, so the capability that used to be
 				// asked here is false by construction and this always falls through.
-				if (TextureOpCaps & D3DTEXOPCAPS_ADD) {
-					SeccOp = D3DTOP_ADD;
-					SeccArg1 = D3DTA_TEXTURE;
-					SeccArg2 = D3DTA_CURRENT;
-				} else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: MODULATEALPHA_ADDCOLOR"));
-				}
+				SeccOp = D3DTOP_ADD;
+				SeccArg1 = D3DTA_TEXTURE;
+				SeccArg2 = D3DTA_CURRENT;
 				break;
 			}
 
@@ -938,39 +840,21 @@ void ShaderClass::Apply()
 				break;
 
 			case ShaderClass::DETAILALPHA_DETAIL:
-				if(TextureOpCaps & D3DTEXOPCAPS_SELECTARG1)
-				{
-					SecaOp = D3DTOP_SELECTARG1;
-					SecaArg1 = D3DTA_TEXTURE;
-					SecaArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: SELECTARG1"));
-				}
+				SecaOp = D3DTOP_SELECTARG1;
+				SecaArg1 = D3DTA_TEXTURE;
+				SecaArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILALPHA_SCALE:
-				if(TextureOpCaps & D3DTEXOPCAPS_MODULATE)
-				{
-					SecaOp = D3DTOP_MODULATE;
-					SecaArg1 = D3DTA_TEXTURE;
-					SecaArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: MODULATE"));
-				}
+				SecaOp = D3DTOP_MODULATE;
+				SecaArg1 = D3DTA_TEXTURE;
+				SecaArg2 = D3DTA_CURRENT;
 				break;
 
 			case ShaderClass::DETAILALPHA_INVSCALE:
-				if(TextureOpCaps & D3DTEXOPCAPS_ADDSMOOTH)
-				{
-					SecaOp = D3DTOP_ADDSMOOTH;
-					SecaArg1 = D3DTA_TEXTURE;
-					SecaArg2 = D3DTA_CURRENT;
-				}
-				else {
-					SNAPSHOT_SAY(("Warning: Using unsupported texture op: ADDSMOOTH"));
-				}
+				SecaOp = D3DTOP_ADDSMOOTH;
+				SecaArg1 = D3DTA_TEXTURE;
+				SecaArg2 = D3DTA_CURRENT;
 				break;
 			}
 

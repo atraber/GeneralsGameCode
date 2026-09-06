@@ -139,12 +139,6 @@ public:
 	bool Support_Mip_Linear_Filter() const { return SupportMipLinearFilter; }
 	bool Support_Color_Write_Enable() const { return SupportColorWriteEnable; }
 
-	/// The fixed-function texture-combine ops the adapter has, as D3DTEXOPCAPS_ bits.
-	/// Still a D3D bitmask because ShaderClass::Apply -- the fixed-function combine path,
-	/// which is a phase of its own -- tests two dozen of them one at a time. A number,
-	/// not a struct, so no header outside this one has to know the shape of anything.
-	unsigned Get_Texture_Op_Caps() const { return TextureOpCaps; }
-
 	const StringClass& Get_Log() const { return CapsLog; }
 	const StringClass& Get_Compact_Log() const { return CompactLog; }
 
@@ -174,7 +168,6 @@ private:
 	unsigned MaxTextureHeight;
 	unsigned MaxVolumeExtent;
 	unsigned MaxTextureAspectRatio;
-	unsigned TextureOpCaps;
 	bool SupportLinearFilter;
 	bool SupportMipLinearFilter;
 	bool SupportColorWriteEnable;
