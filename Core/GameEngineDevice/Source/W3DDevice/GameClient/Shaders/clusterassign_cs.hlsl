@@ -16,7 +16,7 @@
 //
 // The twin is
 //     Core/GameEngineDevice/Source/W3DDevice/GameClient/W3DClusterGrid.cpp
-// whose Scatter_Light, Sphere_Axis_Bounds, Sphere_Overlaps_Box and
+// whose Scatter_Light, Slab_Ratio_Bounds, Sphere_Overlaps_Box and
 // ClusterGridParams::Cluster_Bounds are this same algorithm on the CPU. It is kept behind
 // W3D_CLUSTER_CPU=1, and the acceptance test for this stage is that the two produce the
 // SAME GRID for one frame's light set, compared buffer to buffer (ClusterGridClass::Verify,
@@ -212,44 +212,40 @@ bool AssignSphereOverlapsBox(float3 center, float radius, float3 boxMin, float3 
 }
 
 // ---------------------------------------------------------------------------------------
-// The projected silhouette of a sphere on one lateral axis.
-// ClusterGridClass::Sphere_Axis_Bounds.
+// One lateral axis of the candidate rectangle, for one slice.
+// ClusterGridClass::Slab_Ratio_Bounds.
 //
-// THE ANALYTIC RECTANGLE, not the projected centre plus a projected radius. The cheap
-// version under-covers for exactly the lights this feature exists for: a light close to
-// the camera and well off-axis projects to an ellipse whose extent is nothing like
-// symmetric about its centre, and a rectangle that is too small drops clusters the light
-// really does reach -- which shows as an unlit rectangular patch of wall beside a lit one
-// and reads as a shader bug. See the derivation in the C++ twin.
+// THE INVERSE OF AssignClusterBounds's LATERAL HALF, and that is the only property it has
+// to have. A cluster box spans, for tile edge ratios rLo <= rHi,
+//     boxLo = rLo * (rLo < 0 ? zHi : zLo)
+//     boxHi = rHi * (rHi < 0 ? zLo : zHi)
+// Both are increasing in the ratio, so they invert directly. Given the sphere's slab on
+// this axis -- [centre - radius, centre + radius], the very interval
+// AssignSphereOverlapsBox compares against the box's -- this returns the range of tile edge
+// ratios whose boxes can reach it. Tiles outside that range cannot touch the sphere at all.
 //
-// Returns false for "unbounded on this axis": the eye is inside the sphere's slab, or a
-// tangent point falls at or behind the eye, and the projection runs to infinity. The
-// caller then takes the whole viewport -- refusing half a rectangle is the failure this
-// function is written to avoid.
+// It replaces the analytic projected silhouette this file used to carry, and the reason is
+// in the long note above ClusterGridClass::Scatter_Light in the C++ twin: the silhouette is
+// exact for the FROXEL, and the predicate tests the froxel's AXIS-ALIGNED BOUNDING BOX,
+// which is laterally wider by zHi / zLo. The silhouette therefore under-covered by up to a
+// tile all the way around every light -- measured, 13 clusters in 5760 -- which is the
+// unlit-rectangle failure the old comment here warned about, arriving by the other route.
 // ---------------------------------------------------------------------------------------
-bool AssignSphereAxisBounds(float c, float cz, float r, out precise float outLo,
-                            out precise float outHi)
+void AssignSlabRatioBounds(float slabLo, float slabHi, float zLo, float zHi,
+                           out precise float outLo, out precise float outHi)
 {
-    outLo = 0.0;
-    outHi = 0.0;
-
-    precise float d2 = c * c + cz * cz;
-    precise float t2 = d2 - r * r;
-    if (t2 <= 1.0e-6)
-        return false;
-
-    precise float t = sqrt(t2);
-    precise float zPlus = cz * t + c * r;
-    precise float zMinus = cz * t - c * r;
-    if (zPlus <= 1.0e-6 || zMinus <= 1.0e-6)
-        return false;
-
-    precise float a = (c * t - cz * r) / zPlus;
-    precise float b = (c * t + cz * r) / zMinus;
-    outLo = min(a, b);
-    outHi = max(a, b);
-    return true;
+    outLo = (slabLo >= 0.0) ? (slabLo / zHi) : (slabLo / zLo);
+    outHi = (slabHi >= 0.0) ? (slabHi / zLo) : (slabHi / zHi);
 }
+
+// A quarter of a pixel of slack on each edge of the candidate rectangle. NOT a fudge for a
+// wrong derivation: the ratio-to-pixel mapping below and AssignClusterBounds's
+// pixel-to-ratio one are algebraic inverses evaluated in float, and a sphere whose slab ends
+// exactly on a tile boundary can otherwise fall on the far side of it by a last-bit rounding
+// difference between the two directions. The per-cluster predicate throws away anything the
+// slack lets in, so it widens the CANDIDATE set only, never the answer. Same constant, same
+// spelling, as CLUSTER_TILE_SLACK_PX in the C++ twin.
+static const float CLUSTER_TILE_SLACK_PX = 0.25;
 
 // ---------------------------------------------------------------------------------------
 // One thread per light.
@@ -305,88 +301,112 @@ void main(uint3 id : SV_DispatchThreadID)
     const float radius = light.posRange.w;
     const float dist = viewPos.z;
 
-    // Entirely behind the near plane, or entirely past the far plane. Both are exact tests
-    // on the sphere, not on its centre.
-    if (dist + radius <= CLUSTER_Z_NEAR)
+    // Entirely in front of the grid's first slice face, or entirely past its last. Measured
+    // against AssignSliceNearDistance and not against zNear / zFar so that the test agrees
+    // with the boxes to the last bit -- exp(log(zNear)) is not obliged to be zNear -- and
+    // written as negated comparisons so a NaN rejects the light rather than sailing through.
+    precise float gridZLo = AssignSliceNearDistance(0);
+    precise float gridZHi = AssignSliceNearDistance((int)CLUSTER_SLICE_COUNT);
+    if (!(dist + radius >= gridZLo))
         return;
-    if (dist - radius >= CLUSTER_Z_FAR)
+    if (!(dist - radius <= gridZHi))
         return;
 
-    // Slice range. Clamped to the grid rather than rejected: a light straddling the near
-    // plane still lights slice 0.
-    precise float dLo = max(dist - radius, CLUSTER_Z_NEAR);
-    precise float dHi = min(dist + radius, CLUSTER_Z_FAR);
-    const int sliceLo = AssignSliceOf(dLo);
-    const int sliceHi = AssignSliceOf(dHi);
+    // Slice range. AssignSliceOf gives the answer for the sphere's two z extremes and it is
+    // then WIDENED until the boundaries actually bracket them: AssignSliceOf is the algebraic
+    // inverse of AssignSliceNearDistance but log and exp are not each other's exact inverses
+    // in float, and the boxes are built from AssignSliceNearDistance. Each loop runs at most
+    // once in practice and is bounded by the slice count regardless. The distances are NOT
+    // clamped to zNear/zFar first: AssignSliceOf already clamps its own result into the grid,
+    // and clamping the distances would compare a slice face against a value the sphere does
+    // not actually have.
+    precise float dLo = dist - radius;
+    precise float dHi = dist + radius;
+    int sliceLo = AssignSliceOf(dLo);
+    int sliceHi = AssignSliceOf(dHi);
+    while (sliceLo > 0 && AssignSliceNearDistance(sliceLo) > dLo)
+        --sliceLo;
+    while (sliceHi + 1 < (int)CLUSTER_SLICE_COUNT && AssignSliceNearDistance(sliceHi + 1) < dHi)
+        ++sliceHi;
+
+    // The sphere's slabs -- the very intervals AssignSphereOverlapsBox compares against the
+    // box's, which is what makes the candidate set below a superset of the answer.
+    precise float slabXLo = viewPos.x - radius;
+    precise float slabXHi = viewPos.x + radius;
+    precise float slabYLo = viewPos.y - radius;
+    precise float slabYHi = viewPos.y + radius;
 
     const int gridX = (int)CLUSTER_GRID_X;
     const int gridY = (int)CLUSTER_GRID_Y;
 
-    // Tile rectangle. An unbounded axis means the sphere wraps around the eye on that
-    // axis, in which case the whole viewport is the honest rectangle.
-    precise float ratioXLo, ratioXHi, ratioYLo, ratioYHi;
-    const bool boundedX = AssignSphereAxisBounds(viewPos.x, dist, radius, ratioXLo, ratioXHi);
-    const bool boundedY = AssignSphereAxisBounds(viewPos.y, dist, radius, ratioYLo, ratioYHi);
+    // The grid's own extent in viewport-local pixels, which is NOT the viewport when its
+    // size is not a whole number of tiles: AssignClusterBounds lets the right and bottom
+    // tiles run past it, and those tiles' boxes extend past it with them. Clamping to the
+    // viewport here would drop the last row for a light below the bottom of the screen but
+    // still inside the last row's box.
+    precise float gridRightPx = (float)gridX * CLUSTER_TILE_SIZE.x;
+    precise float gridBottomPx = (float)gridY * CLUSTER_TILE_SIZE.y;
 
-    int tileXLo = 0;
-    int tileXHi = gridX - 1;
-    if (boundedX)
-    {
-        // ratio -> ndc -> viewport-local pixel -> tile. The inverse of AssignClusterBounds's
-        // first half, and deliberately written as its inverse rather than as an independent
-        // derivation.
-        precise float pxLo = (CLUSTER_PROJ_X_SCALE * ratioXLo - CLUSTER_PROJ_X_OFFSET) * 0.5
-            * CLUSTER_VIEWPORT_SIZE.x + CLUSTER_VIEWPORT_SIZE.x * 0.5;
-        precise float pxHi = (CLUSTER_PROJ_X_SCALE * ratioXHi - CLUSTER_PROJ_X_OFFSET) * 0.5
-            * CLUSTER_VIEWPORT_SIZE.x + CLUSTER_VIEWPORT_SIZE.x * 0.5;
-        // Negated comparisons, exactly as the C++ has them, so that a NaN -- which compares
-        // false against everything and would otherwise sail through both tests -- rejects
-        // the light instead of reaching the cast below.
-        if (!(pxHi >= 0.0) || !(pxLo <= CLUSTER_VIEWPORT_SIZE.x))
-            return;
-        // Clamped to the viewport BEFORE the cast. A light far off to one side but still in
-        // front of the camera projects to a pixel coordinate in the millions, and the
-        // float-to-int conversion of a value outside int's range is not defined.
-        precise float clampedLo = max(pxLo, 0.0);
-        precise float clampedHi = min(pxHi, CLUSTER_VIEWPORT_SIZE.x);
-        const int lo = (int)floor(clampedLo / CLUSTER_TILE_SIZE.x);
-        const int hi = (int)floor(clampedHi / CLUSTER_TILE_SIZE.x);
-        tileXLo = (lo < 0) ? 0 : lo;
-        tileXHi = (hi >= gridX) ? gridX - 1 : hi;
-        if (tileXLo > tileXHi)
-            return;
-    }
-
-    int tileYLo = 0;
-    int tileYHi = gridY - 1;
-    if (boundedY)
-    {
-        // Screen y runs down, ndc y runs up: the larger ratio is the smaller pixel row, so
-        // the two come out swapped relative to x.
-        precise float pyForHi = CLUSTER_VIEWPORT_SIZE.y * 0.5
-            - (CLUSTER_PROJ_Y_SCALE * ratioYHi - CLUSTER_PROJ_Y_OFFSET) * 0.5 * CLUSTER_VIEWPORT_SIZE.y;
-        precise float pyForLo = CLUSTER_VIEWPORT_SIZE.y * 0.5
-            - (CLUSTER_PROJ_Y_SCALE * ratioYLo - CLUSTER_PROJ_Y_OFFSET) * 0.5 * CLUSTER_VIEWPORT_SIZE.y;
-        if (!(pyForLo >= 0.0) || !(pyForHi <= CLUSTER_VIEWPORT_SIZE.y))
-            return;
-        precise float clampedTop = max(pyForHi, 0.0);
-        precise float clampedBottom = min(pyForLo, CLUSTER_VIEWPORT_SIZE.y);
-        const int lo = (int)floor(clampedTop / CLUSTER_TILE_SIZE.y);
-        const int hi = (int)floor(clampedBottom / CLUSTER_TILE_SIZE.y);
-        tileYLo = (lo < 0) ? 0 : lo;
-        tileYHi = (hi >= gridY) ? gridY - 1 : hi;
-        if (tileYLo > tileYHi)
-            return;
-    }
-
-    // The append. Refined per cluster with the exact sphere/box test rather than filling
-    // the whole box: the box is the CANDIDATE SET, not the answer. Without this refinement
-    // the corners of every light's box would be over-binned, and the bit-exact comparison
-    // against the CPU builder -- which does refine -- could never pass. The plan's own
-    // wording is "the exact sphere-vs-cluster-AABB test per candidate cluster".
+    // The append. Refined per cluster with the exact sphere/box test rather than filling the
+    // whole rectangle: the rectangle is the CANDIDATE SET, not the answer. Without this
+    // refinement the corners of every light's rectangle would be over-binned, and the
+    // bit-exact comparison against the CPU builder -- which does refine -- could never pass.
     const uint stride = (uint)CLUSTER_STRIDE;
     for (int slice = sliceLo; slice <= sliceHi; ++slice)
     {
+        // The same two faces AssignClusterBounds will use for every tile in this slice.
+        precise float zLo = AssignSliceNearDistance(slice);
+        precise float zHi = AssignSliceNearDistance(slice + 1);
+
+        precise float ratioXLo, ratioXHi;
+        AssignSlabRatioBounds(slabXLo, slabXHi, zLo, zHi, ratioXLo, ratioXHi);
+        // ratio -> ndc -> viewport-local pixel, the inverse of AssignClusterBounds's first
+        // half and deliberately written as its inverse rather than as an independent
+        // derivation.
+        precise float pxLo = (CLUSTER_PROJ_X_SCALE * ratioXLo - CLUSTER_PROJ_X_OFFSET) * 0.5
+            * CLUSTER_VIEWPORT_SIZE.x + CLUSTER_VIEWPORT_SIZE.x * 0.5 - CLUSTER_TILE_SLACK_PX;
+        precise float pxHi = (CLUSTER_PROJ_X_SCALE * ratioXHi - CLUSTER_PROJ_X_OFFSET) * 0.5
+            * CLUSTER_VIEWPORT_SIZE.x + CLUSTER_VIEWPORT_SIZE.x * 0.5 + CLUSTER_TILE_SLACK_PX;
+        // Negated comparisons, exactly as the C++ has them, so that a NaN -- which compares
+        // false against everything and would otherwise sail through both tests -- skips the
+        // slice instead of reaching the cast below. `continue` and not `return`: a slice
+        // whose boxes the sphere misses laterally says nothing about the next slice, whose
+        // boxes are wider.
+        if (!(pxHi >= 0.0) || !(pxLo <= gridRightPx))
+            continue;
+        // Clamped BEFORE the cast. A light far off to one side but still in front of the
+        // camera projects to a pixel coordinate in the millions, and the float-to-int
+        // conversion of a value outside int's range is not defined.
+        precise float clampedXLo = max(pxLo, 0.0);
+        precise float clampedXHi = min(pxHi, gridRightPx);
+        const int xLoI = (int)floor(clampedXLo / CLUSTER_TILE_SIZE.x);
+        const int xHiI = (int)floor(clampedXHi / CLUSTER_TILE_SIZE.x);
+        const int tileXLo = (xLoI < 0) ? 0 : xLoI;
+        const int tileXHi = (xHiI >= gridX) ? gridX - 1 : xHiI;
+        if (tileXLo > tileXHi)
+            continue;
+
+        precise float ratioYLo, ratioYHi;
+        AssignSlabRatioBounds(slabYLo, slabYHi, zLo, zHi, ratioYLo, ratioYHi);
+        // Screen y runs down and ndc y runs up, so the smaller ratio is the larger pixel
+        // row: the two come out swapped relative to x.
+        precise float pyBottom = CLUSTER_VIEWPORT_SIZE.y * 0.5
+            - (CLUSTER_PROJ_Y_SCALE * ratioYLo - CLUSTER_PROJ_Y_OFFSET) * 0.5
+            * CLUSTER_VIEWPORT_SIZE.y + CLUSTER_TILE_SLACK_PX;
+        precise float pyTop = CLUSTER_VIEWPORT_SIZE.y * 0.5
+            - (CLUSTER_PROJ_Y_SCALE * ratioYHi - CLUSTER_PROJ_Y_OFFSET) * 0.5
+            * CLUSTER_VIEWPORT_SIZE.y - CLUSTER_TILE_SLACK_PX;
+        if (!(pyBottom >= 0.0) || !(pyTop <= gridBottomPx))
+            continue;
+        precise float clampedYTop = max(pyTop, 0.0);
+        precise float clampedYBottom = min(pyBottom, gridBottomPx);
+        const int yLoI = (int)floor(clampedYTop / CLUSTER_TILE_SIZE.y);
+        const int yHiI = (int)floor(clampedYBottom / CLUSTER_TILE_SIZE.y);
+        const int tileYLo = (yLoI < 0) ? 0 : yLoI;
+        const int tileYHi = (yHiI >= gridY) ? gridY - 1 : yHiI;
+        if (tileYLo > tileYHi)
+            continue;
+
         for (int ty = tileYLo; ty <= tileYHi; ++ty)
         {
             for (int tx = tileXLo; tx <= tileXHi; ++tx)

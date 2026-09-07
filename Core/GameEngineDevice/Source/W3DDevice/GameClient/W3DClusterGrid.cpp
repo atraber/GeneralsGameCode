@@ -520,44 +520,31 @@ void ClusterGridClass::Ensure_Compute_Shader()
 // The scatter.
 //-------------------------------------------------------------------------------------------------
 
-bool ClusterGridClass::Sphere_Axis_Bounds(float c, float cz, float r, float & outLo, float & outHi)
+// A quarter of a pixel of slack on each edge of the candidate rectangle. NOT a fudge for a
+// wrong derivation: the ratio-to-pixel mapping below and Cluster_Bounds's pixel-to-ratio one
+// are algebraic inverses evaluated in float, and a sphere whose slab ends exactly on a tile
+// boundary can otherwise fall on the far side of that boundary by a last-bit rounding
+// difference between the two directions. A quarter pixel is far smaller than any distance a
+// binning decision is entitled to care about and far larger than that rounding, and the
+// per-cluster predicate throws away anything the slack lets in -- so it widens the CANDIDATE
+// set only, never the answer, and the brute-force equality check is unaffected.
+static const float CLUSTER_TILE_SLACK_PX = 0.25f;
+
+void ClusterGridClass::Slab_Ratio_Bounds(float slabLo, float slabHi, float zLo, float zHi,
+	float & outLo, float & outHi)
 {
-	// The silhouette of a sphere, one lateral axis at a time, in the plane spanned by that
-	// axis and the view direction. The sphere's centre is at (c, cz) with cz the positive
-	// distance in front of the camera; the two tangent lines from the eye touch it at
-	//     T+- = (t/d^2) * R(+-A) * (c, cz),   d^2 = c^2 + cz^2,  t = sqrt(d^2 - r^2),
-	//     sin A = r/d,  cos A = t/d
-	// and the bound wanted is the ratio (axis / z) at each tangent point, where the common
-	// t/d^2 factor cancels:
-	//     ratio+ = (c*t - cz*r) / (cz*t + c*r)
-	//     ratio- = (c*t + cz*r) / (cz*t - c*r)
-	//
-	// This is the analytic rectangle, not the projected centre plus a projected radius.
-	// The cheap version is wrong for exactly the lights this feature is for: a light close
-	// to the camera and well off-axis projects to an ellipse whose extent is nothing like
-	// symmetric about its centre, and under-covering the rectangle drops clusters the
-	// light really does reach -- which shows up as a rectangular patch of a wall that is
-	// unlit while the wall beside it is lit, and reads as a shader bug.
-	const float d2 = c * c + cz * cz;
-	const float t2 = d2 - r * r;
-	if (t2 <= 1.0e-6f)
-		return false;	// the eye is inside the sphere on this axis: no finite bound
-
-	const float t = sqrtf(t2);
-	const float zPlus = cz * t + c * r;
-	const float zMinus = cz * t - c * r;
-	// A tangent point at or behind the eye means the silhouette wraps past the view
-	// direction on that side and the projection runs to infinity. Refuse the whole
-	// rectangle rather than return the half that is finite: half a rectangle silently
-	// dropped is the failure this function is written to avoid.
-	if (zPlus <= 1.0e-6f || zMinus <= 1.0e-6f)
-		return false;
-
-	const float a = (c * t - cz * r) / zPlus;
-	const float b = (c * t + cz * r) / zMinus;
-	outLo = WWMath::Min(a, b);
-	outHi = WWMath::Max(a, b);
-	return true;
+	// THE INVERSE OF Cluster_Bounds's LATERAL HALF, and that is the only property it has to
+	// have. Cluster_Bounds takes a tile's two edge ratios and returns the box spanned by the
+	// four corners at the two slice faces, which for edge ratios rLo <= rHi is
+	//     boxLo = rLo * (rLo < 0 ? zHi : zLo)
+	//     boxHi = rHi * (rHi < 0 ? zLo : zHi)
+	// Both are increasing in the ratio, so they invert directly: a box whose upper corner
+	// reaches out as far as slabLo has upper edge ratio slabLo / zHi when slabLo is
+	// positive and slabLo / zLo when it is negative, and a box whose lower corner starts at
+	// or before slabHi has lower edge ratio at most slabHi / zLo or slabHi / zHi. Tiles
+	// outside [outLo, outHi] have boxes that cannot touch the slab on this axis at all.
+	outLo = (slabLo >= 0.0f) ? (slabLo / zHi) : (slabLo / zLo);
+	outHi = (slabHi >= 0.0f) ? (slabHi / zLo) : (slabHi / zHi);
 }
 
 bool ClusterGridClass::Sphere_Overlaps_Box(const Vector3 & center, float radius,
@@ -585,6 +572,40 @@ bool ClusterGridClass::Sphere_Overlaps_Box(const Vector3 & center, float radius,
 	return d2 <= radius * radius;
 }
 
+// WHY THE CANDIDATE RECTANGLE IS DERIVED FROM THE SPHERE'S SLAB, AND NOT FROM ITS
+// PROJECTED SILHOUETTE. This is the fix for a real, measured defect, and the reasoning is
+// left here because the wrong answer is the intuitive one.
+//
+// The predicate this scatter refines with -- Sphere_Overlaps_Box, the same one Verify()'s
+// exhaustive gather uses -- tests the sphere against a cluster's AXIS-ALIGNED BOUNDING BOX,
+// not against the froxel. Cluster_Bounds says so plainly: the froxel is a truncated pyramid
+// and its AABB is spanned by the corners at BOTH slice faces, so the box is laterally wider
+// than the froxel by the factor zHi / zLo -- about 1.24 per slice at 24 exponential slices
+// over near 10 / far 1825.
+//
+// The candidate rectangle therefore has to be a superset of the tiles whose BOX the sphere
+// reaches. An analytic projected silhouette is not: it is exact for the froxel, which is
+// the smaller shape. The two disagree in a band one tile wide all the way around every
+// light, and the measured symptom was exactly that -- 13 clusters out of 5760 where the
+// scatter found no light and the exhaustive gather found one. One of them, decoded: tile
+// (4,6) slice 19, box x[-214.348 .. -143.788] z[616.711 .. 766.119], against a light at
+// view (-132.075, -37.027, 767.462) with radius 20.598. The light's slab reaches
+// x = -152.673, which is inside the box; but its silhouette ratio range is about
+// [-0.199, -0.145] and the tile's edge ratios are [-0.280, -0.233], which do not meet. The
+// silhouette was right about the froxel, and the froxel was not what was being tested.
+//
+// So the candidate set is built from the necessary condition the predicate itself implies:
+// the sphere's [centre - radius, centre + radius] slab must overlap the box's extent on
+// each axis independently. That is exact for the box, needs no tangent lines, has no
+// "unbounded on this axis" case to fall back from (a sphere wrapping around the eye simply
+// produces a slab that covers the grid), and is one divide per axis. It is evaluated PER
+// SLICE, because the box's lateral extent depends on that slice's two z faces.
+//
+// Conservative where it is not exact, and deliberately: the slice range is widened until
+// its ends are defined by the very Slice_Near_Distance values Cluster_Bounds will use, and
+// the tile rectangle carries CLUSTER_TILE_SLACK_PX of slack. The per-cluster predicate is
+// what turns the candidate set into the answer, so over-covering costs a few box tests and
+// under-covering is an unlit rectangle on a wall.
 void ClusterGridClass::Scatter_Light(const GpuLight & light, const Vector3 & viewPos,
 	unsigned lightIndex)
 {
@@ -592,95 +613,121 @@ void ClusterGridClass::Scatter_Light(const GpuLight & light, const Vector3 & vie
 	const float radius = light.posRange.W;
 	const float dist = viewPos.Z;
 
-	// Entirely behind the near plane, or entirely past the far plane. Both are exact tests
-	// on the sphere, not on its centre.
-	if (dist + radius <= m_params.zNear)
+	// Entirely in front of the grid's first slice face, or entirely past its last. Measured
+	// against Slice_Near_Distance and not against zNear / zFar so that the test agrees with
+	// the boxes to the last bit -- expf(logf(zNear)) is not obliged to be zNear -- and
+	// written as negated comparisons so a NaN rejects the light rather than sailing through.
+	const float gridZLo = m_params.Slice_Near_Distance(0);
+	const float gridZHi = m_params.Slice_Near_Distance(m_params.sliceCount);
+	if (!(dist + radius >= gridZLo))
 		return;
-	if (dist - radius >= m_params.zFar)
+	if (!(dist - radius <= gridZHi))
 		return;
 
-	// Slice range. Clamped to the grid rather than rejected: a light straddling the near
-	// plane still lights slice 0.
-	const float dLo = WWMath::Max(dist - radius, m_params.zNear);
-	const float dHi = WWMath::Min(dist + radius, m_params.zFar);
-	const unsigned sliceLo = (unsigned)m_params.Slice_Of(dLo);
-	const unsigned sliceHi = (unsigned)m_params.Slice_Of(dHi);
+	// Slice range. Slice_Of gives the answer for the sphere's two z extremes and it is then
+	// WIDENED until the boundaries actually bracket them: Slice_Of is the algebraic inverse
+	// of Slice_Near_Distance but logf and expf are not each other's exact inverses in float,
+	// and the boxes are built from Slice_Near_Distance. Each loop runs at most once in
+	// practice and is bounded by the slice count regardless. The distances are NOT clamped to
+	// zNear/zFar first: Slice_Of already clamps its own result into the grid, and clamping the
+	// distances would compare a slice face against a value the sphere does not actually have.
+	const float dLo = dist - radius;
+	const float dHi = dist + radius;
+	unsigned sliceLo = (unsigned)m_params.Slice_Of(dLo);
+	unsigned sliceHi = (unsigned)m_params.Slice_Of(dHi);
+	while (sliceLo > 0 && m_params.Slice_Near_Distance(sliceLo) > dLo)
+		--sliceLo;
+	while (sliceHi + 1 < m_params.sliceCount && m_params.Slice_Near_Distance(sliceHi + 1) < dHi)
+		++sliceHi;
 
-	// Tile rectangle. An unbounded axis means the sphere wraps around the eye on that
-	// axis, in which case the whole viewport is the honest rectangle -- and the exact
-	// per-cluster test below throws away the clusters it does not really touch, so the
-	// only cost is the loop.
-	float ratioXLo, ratioXHi, ratioYLo, ratioYHi;
-	const bool boundedX = Sphere_Axis_Bounds(viewPos.X, dist, radius, ratioXLo, ratioXHi);
-	const bool boundedY = Sphere_Axis_Bounds(viewPos.Y, dist, radius, ratioYLo, ratioYHi);
-#ifdef RTS_DEBUG
-	if (!boundedX || !boundedY)
-		++m_censusWholeScreen;
-#endif
+	// The sphere's slabs -- the very intervals Sphere_Overlaps_Box compares against the box's,
+	// which is what makes the candidate set below a superset of the answer.
+	const float slabXLo = viewPos.X - radius;
+	const float slabXHi = viewPos.X + radius;
+	const float slabYLo = viewPos.Y - radius;
+	const float slabYHi = viewPos.Y + radius;
 
-	unsigned tileXLo = 0, tileXHi = m_params.gridX - 1;
-	if (boundedX)
-	{
-		// ratio -> ndc -> viewport-local pixel -> tile. The inverse of Cluster_Bounds's
-		// first half, and deliberately written as its inverse rather than as an
-		// independent derivation.
-		const float pxLo = (m_params.projXScale * ratioXLo - m_params.projXOffset) * 0.5f
-			* m_params.viewportWidth + m_params.viewportWidth * 0.5f;
-		const float pxHi = (m_params.projXScale * ratioXHi - m_params.projXOffset) * 0.5f
-			* m_params.viewportWidth + m_params.viewportWidth * 0.5f;
-		// Written as negated comparisons so that a NaN -- which compares false against
-		// everything, and would otherwise sail through both tests -- rejects the light
-		// instead of reaching the cast below.
-		if (!(pxHi >= 0.0f) || !(pxLo <= m_params.viewportWidth))
-			return;	// entirely off the left or right of the viewport
-		// Clamped to the viewport BEFORE the cast, not after. A light a long way off to
-		// one side but still in front of the camera projects to a pixel coordinate in the
-		// millions, and float-to-int conversion of a value outside int's range is
-		// undefined -- on x86 it produces INT_MIN, which then passes a "is this past the
-		// right edge" test and lands as tile 0 rather than as the last tile.
-		const float clampedLo = WWMath::Max(pxLo, 0.0f);
-		const float clampedHi = WWMath::Min(pxHi, m_params.viewportWidth);
-		const int lo = (int)floorf(clampedLo / (float)m_params.tileWidth);
-		const int hi = (int)floorf(clampedHi / (float)m_params.tileWidth);
-		tileXLo = (lo < 0) ? 0u : (unsigned)lo;
-		tileXHi = (hi >= (int)m_params.gridX) ? m_params.gridX - 1 : (unsigned)hi;
-		if (tileXLo > tileXHi)
-			return;
-	}
-
-	unsigned tileYLo = 0, tileYHi = m_params.gridY - 1;
-	if (boundedY)
-	{
-		// Screen y runs down, ndc y runs up: the larger ratio is the smaller pixel row, so
-		// the two come out swapped relative to x.
-		const float pyForHi = m_params.viewportHeight * 0.5f
-			- (m_params.projYScale * ratioYHi - m_params.projYOffset) * 0.5f * m_params.viewportHeight;
-		const float pyForLo = m_params.viewportHeight * 0.5f
-			- (m_params.projYScale * ratioYLo - m_params.projYOffset) * 0.5f * m_params.viewportHeight;
-		// Same negated form and the same clamp-before-cast as the x axis above.
-		if (!(pyForLo >= 0.0f) || !(pyForHi <= m_params.viewportHeight))
-			return;	// entirely above or below the viewport
-		const float clampedTop = WWMath::Max(pyForHi, 0.0f);
-		const float clampedBottom = WWMath::Min(pyForLo, m_params.viewportHeight);
-		const int lo = (int)floorf(clampedTop / (float)m_params.tileHeight);
-		const int hi = (int)floorf(clampedBottom / (float)m_params.tileHeight);
-		tileYLo = (lo < 0) ? 0u : (unsigned)lo;
-		tileYHi = (hi >= (int)m_params.gridY) ? m_params.gridY - 1 : (unsigned)hi;
-		if (tileYLo > tileYHi)
-			return;
-	}
+	// The grid's own extent in viewport-local pixels, which is NOT the viewport when its size
+	// is not a whole number of tiles: Cluster_Bounds lets the right and bottom tiles run past
+	// it (720 rows over 64-pixel tiles gives 12 rows covering 768), and those tiles' boxes
+	// extend past it with them. Clamping to the viewport here would drop the last row for a
+	// light below the bottom of the screen but still inside the last row's box.
+	const float gridRightPx = (float)(m_params.gridX * m_params.tileWidth);
+	const float gridBottomPx = (float)(m_params.gridY * m_params.tileHeight);
 
 #ifdef RTS_DEBUG
 	bool binnedAnywhere = false;
+	bool wholeGrid = false;
 #endif
 
-	// The append. Refined per cluster with the exact sphere/box test rather than filling
-	// the whole box: the box is the candidate set, not the answer, and the refinement is
-	// what lets the brute-force control below compare for EQUALITY. It is also what C6's
-	// shader will do inside its own loop -- a compute thread that skipped the refinement
-	// would over-bin the corners and the two grids would never match.
 	for (unsigned slice = sliceLo; slice <= sliceHi; ++slice)
 	{
+		// The same two faces Cluster_Bounds will use for every tile in this slice.
+		const float zLo = m_params.Slice_Near_Distance(slice);
+		const float zHi = m_params.Slice_Near_Distance(slice + 1);
+
+		float ratioXLo, ratioXHi;
+		Slab_Ratio_Bounds(slabXLo, slabXHi, zLo, zHi, ratioXLo, ratioXHi);
+		// ratio -> ndc -> viewport-local pixel, the inverse of Cluster_Bounds's first half and
+		// deliberately written as its inverse rather than as an independent derivation.
+		const float pxLo = (m_params.projXScale * ratioXLo - m_params.projXOffset) * 0.5f
+			* m_params.viewportWidth + m_params.viewportWidth * 0.5f - CLUSTER_TILE_SLACK_PX;
+		const float pxHi = (m_params.projXScale * ratioXHi - m_params.projXOffset) * 0.5f
+			* m_params.viewportWidth + m_params.viewportWidth * 0.5f + CLUSTER_TILE_SLACK_PX;
+		// Negated comparisons so that a NaN -- which compares false against everything, and
+		// would otherwise sail through both tests -- skips the slice instead of reaching the
+		// cast below. `continue` and not `return`: a slice whose boxes the sphere misses
+		// laterally says nothing about the next slice, whose boxes are wider.
+		if (!(pxHi >= 0.0f) || !(pxLo <= gridRightPx))
+			continue;
+		// Clamped BEFORE the cast, not after. A light a long way off to one side but still in
+		// front of the camera projects to a pixel coordinate in the millions, and
+		// float-to-int conversion of a value outside int's range is undefined -- on x86 it
+		// produces INT_MIN, which then passes a "is this past the right edge" test and lands as
+		// tile 0 rather than as the last tile.
+		const float clampedXLo = WWMath::Max(pxLo, 0.0f);
+		const float clampedXHi = WWMath::Min(pxHi, gridRightPx);
+		const int xLoI = (int)floorf(clampedXLo / (float)m_params.tileWidth);
+		const int xHiI = (int)floorf(clampedXHi / (float)m_params.tileWidth);
+		const unsigned tileXLo = (xLoI < 0) ? 0u : (unsigned)xLoI;
+		const unsigned tileXHi = (xHiI >= (int)m_params.gridX)
+			? m_params.gridX - 1 : (unsigned)xHiI;
+		if (tileXLo > tileXHi)
+			continue;
+
+		float ratioYLo, ratioYHi;
+		Slab_Ratio_Bounds(slabYLo, slabYHi, zLo, zHi, ratioYLo, ratioYHi);
+		// Screen y runs down and ndc y runs up, so the smaller ratio is the larger pixel row:
+		// the two come out swapped relative to x.
+		const float pyBottom = m_params.viewportHeight * 0.5f
+			- (m_params.projYScale * ratioYLo - m_params.projYOffset) * 0.5f
+			* m_params.viewportHeight + CLUSTER_TILE_SLACK_PX;
+		const float pyTop = m_params.viewportHeight * 0.5f
+			- (m_params.projYScale * ratioYHi - m_params.projYOffset) * 0.5f
+			* m_params.viewportHeight - CLUSTER_TILE_SLACK_PX;
+		if (!(pyBottom >= 0.0f) || !(pyTop <= gridBottomPx))
+			continue;
+		const float clampedYTop = WWMath::Max(pyTop, 0.0f);
+		const float clampedYBottom = WWMath::Min(pyBottom, gridBottomPx);
+		const int yLoI = (int)floorf(clampedYTop / (float)m_params.tileHeight);
+		const int yHiI = (int)floorf(clampedYBottom / (float)m_params.tileHeight);
+		const unsigned tileYLo = (yLoI < 0) ? 0u : (unsigned)yLoI;
+		const unsigned tileYHi = (yHiI >= (int)m_params.gridY)
+			? m_params.gridY - 1 : (unsigned)yHiI;
+		if (tileYLo > tileYHi)
+			continue;
+
+#ifdef RTS_DEBUG
+		if (tileXLo == 0 && tileXHi == m_params.gridX - 1
+			&& tileYLo == 0 && tileYHi == m_params.gridY - 1)
+			wholeGrid = true;
+#endif
+
+		// The append. Refined per cluster with the exact sphere/box test rather than filling
+		// the whole rectangle: the rectangle is the candidate set, not the answer, and the
+		// refinement is what lets the brute-force control below compare for EQUALITY. It is
+		// also what C6's shader does inside its own loop -- a compute thread that skipped the
+		// refinement would over-bin the corners and the two grids would never match.
 		for (unsigned ty = tileYLo; ty <= tileYHi; ++ty)
 		{
 			for (unsigned tx = tileXLo; tx <= tileXHi; ++tx)
@@ -693,17 +740,16 @@ void ClusterGridClass::Scatter_Light(const GpuLight & light, const Vector3 & vie
 				const unsigned cluster = m_params.Cluster_Index(tx, ty, slice);
 				const unsigned slot = m_counts[cluster];
 #ifdef RTS_DEBUG
-				// Counted here and not inside the append below: a light that reached a
-				// cluster but lost the capacity contest still reached it, and calling that
-				// "not binned anywhere" would hide the very case the overflow census is
-				// there to expose.
+				// Counted here and not inside the append below: a light that reached a cluster
+				// but lost the capacity contest still reached it, and calling that "not binned
+				// anywhere" would hide the very case the overflow census is there to expose.
 				binnedAnywhere = true;
 #endif
-				// The count is incremented whether or not the index fits, so it records
-				// how many lights REACHED the cluster. Clamping it here would make an
-				// overflowing cluster indistinguishable from one holding exactly the
-				// stride, and the overflow census -- the number the plan says decides
-				// whether 64 is right -- would always read zero.
+				// The count is incremented whether or not the index fits, so it records how many
+				// lights REACHED the cluster. Clamping it here would make an overflowing cluster
+				// indistinguishable from one holding exactly the stride, and the overflow census
+				// -- the number the plan says decides whether 64 is right -- would always read
+				// zero.
 				++m_counts[cluster];
 				if (slot < (unsigned)CLUSTER_MAX_LIGHTS)
 				{
@@ -723,6 +769,8 @@ void ClusterGridClass::Scatter_Light(const GpuLight & light, const Vector3 & vie
 #ifdef RTS_DEBUG
 	if (binnedAnywhere)
 		++m_censusLightsBinned;
+	if (wholeGrid)
+		++m_censusWholeScreen;
 #endif
 }
 
@@ -1155,9 +1203,10 @@ bool ClusterGridClass::Verify()
 	// ---- 1. THE BRUTE FORCE ------------------------------------------------------------
 	//
 	// One loop over every cluster, one over every light, and the exact sphere/box test.
-	// No tile rectangle, no slice range, no projection algebra: if Sphere_Axis_Bounds is
-	// wrong -- if the analytic silhouette is derived incorrectly, or the ndc-to-pixel
-	// mapping is off by a flip -- nothing in this loop shares the mistake. That is the
+	// No tile rectangle, no slice range, no projection algebra: if the candidate rectangle
+	// is derived incorrectly -- as it was, against the froxel rather than against the box
+	// the predicate actually uses, until the note above Scatter_Light -- or if the
+	// ndc-to-pixel mapping is off by a flip, nothing in this loop shares the mistake. That is the
 	// whole reason it exists; the plan's own gate for this stage compares the grid against
 	// the CPU builder that produced it, which cannot fail.
 	//
@@ -1325,7 +1374,7 @@ bool ClusterGridClass::Verify()
 		WWDEBUG_SAY(("ClusterGridClass::Verify: (1) first disagreement at cluster %u -- the "
 			"CPU scatter says %u lights, the exhaustive gather says %u. %s Both use the "
 			"identical sphere/box predicate, so the difference is in the SET OF CLUSTERS "
-			"the scatter offered: Sphere_Axis_Bounds, the ndc-to-pixel mapping, or the "
+			"the scatter offered: Slab_Ratio_Bounds, the ndc-to-pixel mapping, or the "
 			"slice range. It is not the predicate. NOTE this check does not involve the GPU "
 			"at all -- it says the ORACLE is wrong, which makes checks (2) and (3) "
 			"meaningless until it is fixed.",
@@ -1336,6 +1385,55 @@ bool ClusterGridClass::Verify()
 				: "The scatter found MORE, which means it appended without the exact test "
 				  "or appended the same light twice."));
 	}
+	// ---- Decode the disagreeing clusters ----------------------------------------------
+	//
+	// Kept, not temporary. It runs only when the comparison has already failed, so it
+	// costs a pass nothing, and a bare "13 clusters disagree" is not actionable: what
+	// identified the one real defect this check has caught was a decoded line naming the
+	// tile, the slice, the box extents and the light that should have been in it. Without
+	// that the froxel-versus-its-AABB cause above would have been a guess.
+	if (mismatches != 0)
+	{
+		for (unsigned i = 0; i < m_verifyLightCount; ++i)
+		{
+			WWDEBUG_SAY(("ClusterGridClass::Verify DIAG: light %u view (%.3f %.3f %.3f) r %.3f",
+				i, viewPos[i].X, viewPos[i].Y, viewPos[i].Z, radius[i]));
+		}
+		unsigned shown = 0;
+		for (unsigned slice = 0; slice < m_params.sliceCount && shown < 14; ++slice)
+		{
+			for (unsigned ty = 0; ty < m_params.gridY && shown < 14; ++ty)
+			{
+				for (unsigned tx = 0; tx < m_params.gridX && shown < 14; ++tx)
+				{
+					Vector3 boxMin, boxMax;
+					m_params.Cluster_Bounds(tx, ty, slice, boxMin, boxMax);
+					unsigned brute = 0;
+					unsigned who = (unsigned)-1;
+					for (unsigned i = 0; i < m_verifyLightCount; ++i)
+					{
+						if (Sphere_Overlaps_Box(viewPos[i], radius[i], boxMin, boxMax))
+						{
+							++brute;
+							if (who == (unsigned)-1)
+								who = i;
+						}
+					}
+					const unsigned cluster = m_params.Cluster_Index(tx, ty, slice);
+					if (m_counts[cluster] == brute)
+						continue;
+					++shown;
+					WWDEBUG_SAY(("ClusterGridClass::Verify DIAG: cluster %u = tile (%u,%u) "
+						"slice %u, box x[%.3f..%.3f] y[%.3f..%.3f] z[%.3f..%.3f]; scatter %u "
+						"gather %u; first gathered light %u",
+						cluster, tx, ty, slice, boxMin.X, boxMax.X, boxMin.Y, boxMax.Y,
+						boxMin.Z, boxMax.Z, m_counts[cluster], brute, who));
+				}
+			}
+		}
+	}
+	// ---- end cluster decode ------------------------------------------------------------
+
 	if (countsRead && countMismatches != 0)
 	{
 		// The two shapes this takes are worth separating, because they have different

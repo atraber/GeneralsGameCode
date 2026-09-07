@@ -266,12 +266,21 @@ private:
 	// whatever the buffers already held -- which the cleared counts make harmless.
 	bool Dispatch_Build(GfxBuffer * lightBuffer, unsigned lightCount);
 
-	// The sphere's silhouette across one lateral axis, as the range of (axis / distance)
-	// it covers. False means "unbounded on this axis" -- the camera is inside the sphere's
-	// slab, or a tangent point falls behind the camera -- in which case the caller takes
-	// the whole viewport, because a projected sphere that wraps around the eye has no
-	// finite screen rectangle.
-	static bool Sphere_Axis_Bounds(float c, float cz, float r, float & outLo, float & outHi);
+	// One lateral axis of the candidate rectangle, for ONE SLICE. Given the sphere's slab
+	// on that axis -- [centre - radius, centre + radius], which is what the sphere/box
+	// predicate compares against -- and the slice's two z faces, this returns the range of
+	// TILE-EDGE RATIOS whose cluster boxes can reach that slab.
+	//
+	// It is the inverse of Cluster_Bounds's lateral half and it must stay that: a cluster's
+	// box spans x from ratioLo * (ratioLo < 0 ? zHi : zLo) to ratioHi * (ratioHi < 0 ? zLo
+	// : zHi), so a box reaches out to a value X at the ratio X / zHi when X is positive and
+	// X / zLo when it is negative, and starts at X at the ratio X / zLo or X / zHi
+	// respectively. Those two inversions are the whole of this function.
+	//
+	// See the long note above Scatter_Light for why the candidate rectangle is derived from
+	// the sphere's SLAB and not from its projected silhouette.
+	static void Slab_Ratio_Bounds(float slabLo, float slabHi, float zLo, float zHi,
+		float & outLo, float & outHi);
 
 	// The one predicate. Shared by the scatter's per-cluster refinement and by Verify()'s
 	// brute-force gather, deliberately: two copies of it would be free to disagree, and
@@ -336,7 +345,7 @@ private:
 	unsigned	m_censusTouched;		// clusters with a nonzero count
 	unsigned	m_censusMaxOccupancy;	// the largest count in the grid, unclamped
 	unsigned	m_censusOverflowed;		// clusters whose count exceeded CLUSTER_MAX_LIGHTS
-	unsigned	m_censusWholeScreen;	// lights whose projected rectangle had to be taken as the whole viewport
+	unsigned	m_censusWholeScreen;	// lights whose candidate rectangle covered the whole grid in at least one slice
 
 	// Whether the six occupancy figures above describe THIS frame's grid. Always true on
 	// the CPU path, where they fall out of the scatter for nothing. On the GPU path they
