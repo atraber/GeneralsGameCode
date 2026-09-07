@@ -520,6 +520,7 @@ private:
 		Real				intensity;
 		Real				innerAngle;
 		Real				outerAngle;
+		Real				spotExponent;	///< the light chunk's own Phong falloff; clustered.hlsli reads it, the CPU path never did
 		Real				nearAtten;
 		Real				farAtten;
 		UnsignedInt			flags;

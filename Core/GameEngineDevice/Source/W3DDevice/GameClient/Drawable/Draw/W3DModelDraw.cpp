@@ -58,11 +58,13 @@
 #include "W3DDevice/GameClient/W3DAssetManager.h"
 #include "W3DDevice/GameClient/W3DDisplay.h"
 #include "W3DDevice/GameClient/W3DDynamicLight.h"
+#include "W3DDevice/GameClient/W3DLightAuthoring.h"
 #include "W3DDevice/GameClient/W3DScene.h"
 #include "Common/FramePacer.h"
 #include "W3DDevice/GameClient/W3DShadow.h"
 #include "W3DDevice/GameClient/W3DTerrainTracks.h"
 #include "W3DDevice/GameClient/WorldHeightMap.h"
+#include "WWDebug/wwdebug.h"
 #include "WW3D2/hanim.h"
 #include "WW3D2/hlod.h"
 #include "WW3D2/rendobj.h"
@@ -2897,6 +2899,18 @@ void W3DModelDraw::initModelDynamicLights()
 
 	HLodClass* hlod = (HLodClass*)m_renderObject;
 	int lightCount = hlod->Get_Light_Count();
+#ifdef RTS_DEBUG
+	// Once per model that has any, capped. Nothing shipped with Zero Hour carries an HLOD
+	// light: there is no 0x707 chunk and no PL_ proxy bone anywhere in W3DZH.big, and the
+	// only assets that do are third-party (the HD dozer mods carry PL_S_HL01_..., a spot
+	// headlight). So on a stock install this path is unreachable and its lights cannot be
+	// judged from a frame at all. Saying so in the log is the difference between "the bone
+	// lights look wrong" and "there are no bone lights".
+	static Int s_hlodLightReports = 0;
+	if (lightCount > 0 && ++s_hlodLightReports <= 32)
+		WWDEBUG_SAY(("HLOD LIGHTS: %s carries %d bone-parented light(s).",
+			m_renderObject->Get_Name(), lightCount));
+#endif
 	if (lightCount <= 0)
 		return;
 
@@ -2917,6 +2931,12 @@ void W3DModelDraw::initModelDynamicLights()
 			info.intensity = lightDef.Intensity > 0.0f ? lightDef.Intensity : 1.0f;
 			info.innerAngle = lightDef.SpotAngle * 0.7f;
 			info.outerAngle = lightDef.SpotAngle;
+			// Was dropped on the floor here and replaced downstream by a hardcoded 2.0.
+			// Zero is what a memset'd chunk carries and pow(cosTheta, 0) is a hard-edged
+			// cone, which is a legitimate thing for a spot to be but not a legitimate thing
+			// for an unwritten field to mean -- so an absent exponent falls back to the 1.0
+			// the PL_ helper-bone parser writes (hlod.cpp), i.e. plain cosine falloff.
+			info.spotExponent = lightDef.SpotExponent > 0.0f ? lightDef.SpotExponent : 1.0f;
 			info.nearAtten = lightDef.AttenStart;
 			info.farAtten = lightDef.AttenEnd;
 			info.flags = lightDef.Flags;
@@ -3040,12 +3060,40 @@ void W3DModelDraw::updateModelDynamicLights()
 
 		li.light->Set_Position(worldPos);
 		li.light->Set_Transform(boneXform);
-		li.light->Set_Intensity(currentIntensity);
 
-		Vector3 diffuse = li.baseColor * currentIntensity;
-		Vector3 ambient = diffuse * 0.2f;
-		li.light->Set_Diffuse(diffuse);
-		li.light->Set_Ambient(ambient);
+		// THE REFERENCE DISTANCE for a bone-parented fixture is the asset's own AttenStart,
+		// and for once nothing has to be invented: the linear ramp this data was authored
+		// against is flat inside AttenStart (lightenvironment.cpp, and the terrain bake in
+		// HeightMap.cpp), so AttenStart is by construction the distance at which the
+		// authored colour is the delivered brightness -- exactly the r in I = B*r^2. A W3D
+		// light chunk that leaves it at zero says nothing about the fixture, and the PL_
+		// helper-bone defaults pair 5 with 25 (hlod.cpp), so a fifth of the range reproduces
+		// that pair rather than guessing at one.
+		const Real refDist = (li.nearAtten > 0.0f) ? li.nearAtten : (0.2f * li.farAtten);
+
+		// baseColor is the fixture, currentIntensity is the strobe/pulse envelope, and the
+		// envelope used to be applied TWICE: multiplied into the diffuse here and left in
+		// Set_Intensity, while both consumers multiply the pair together (Pack_Light, and
+		// Init_From_Point_Or_Spot_Light's `Diffuse *= light.Get_Intensity()`). A pulsing
+		// light's envelope was therefore squared -- 0.3 of full read as 0.09. One factor
+		// each now. Nothing shipped notices, because the only real content on this path is
+		// the PL_ headlight in the HD dozer mods and it neither strobes nor pulses.
+		li.light->Set_Intensity(currentIntensity);
+		li.light->Set_Diffuse(authoredLocalLightColor(li.baseColor, refDist));
+
+		// The 0.2 ambient was a fudge against the linear ramp, not a property of any
+		// fixture: the terrain's CPU bake adds factor*ambient with no N.L, and that was the
+		// only way a bone light put light on the ground at all. The clustered path never
+		// reads a light's ambient and does light the terrain properly (terrain_ps, C5.3), so
+		// there the fudge is a second flat unfalloffed copy of the same light. It does not
+		// earn its place any more and authoredLocalLightAmbient drops it; where the CPU bake
+		// is still the only ground light there is, it stays exactly as it was.
+		li.light->Set_Ambient(authoredLocalLightAmbient(li.baseColor * currentIntensity * 0.2f));
+
+		// The radii now mean only WHERE THE LIGHT IS CLIPPED -- brightness comes entirely
+		// from the colour above. They are passed through unchanged because a headlight that
+		// reached 26 units still reaches 26 units; what changed is that shrinking that
+		// number no longer dims the light, it only cuts it off sooner.
 		li.light->Set_Far_Attenuation_Range(li.nearAtten, li.farAtten);
 
 		if (li.lightType == W3D_HLOD_LIGHT_TYPE_SPOT)
@@ -3055,7 +3103,15 @@ void W3DModelDraw::updateModelDynamicLights()
 			Matrix3D::Rotate_Vector(boneXform, li.localDirection, &worldDir);
 			li.light->Set_Spot_Direction(worldDir);
 			li.light->Set_Spot_Angle(li.outerAngle);
-			li.light->Set_Spot_Exponent(2.0f);
+			// The asset's own falloff exponent, not the hardcoded 2.0 that used to sit here.
+			// That 2.0 predated anything reading it: LightEnvironmentClass ignores the
+			// exponent entirely and shades a spot with a linear edge ramp, so whatever was
+			// written here made no difference and a constant was as good as the data. The
+			// clustered path does read it -- clustered.hlsli applies pow(cosTheta, exponent)
+			// and says in as many words that this is the number reproducing the author's
+			// cone -- so overriding the asset is now a real loss. Carried through from the
+			// light chunk in initModelDynamicLights.
+			li.light->Set_Spot_Exponent(li.spotExponent);
 		}
 		else
 		{

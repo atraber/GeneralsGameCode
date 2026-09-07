@@ -81,6 +81,7 @@ static void drawFramerateBar();
 #include "W3DDevice/GameClient/W3DTerrainTracks.h"
 #include "W3DDevice/GameClient/W3DWater.h"
 #include "W3DDevice/GameClient/W3DVideoBuffer.h"
+#include "W3DDevice/GameClient/W3DLightAuthoring.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "W3DDevice/GameClient/W3DDebugDisplay.h"
 #include "W3DDevice/GameClient/W3DProjectedShadow.h"
@@ -2180,17 +2181,134 @@ void W3DDisplay::createLightPulse( const Coord3D *pos, const RGBColor *color,
 {
 	if (m_3DScene == nullptr)
 		return;
-	if (innerRadius+attenuationWidth<2.0*PATHFIND_CELL_SIZE_F + 1.0f) {
+
+	// THE SIZE FLOOR, and the reason this pass would otherwise have had nothing to look at.
+	//
+	// jba's original is two pathfind cells plus one -- with FXList.cpp's hardcoded
+	// innerRadius = 1 that is really "Radius < 20", and it throws away 26 of the 68 LightPulse
+	// blocks in INIZH.big outright. It is not a small quirk in practice: a 3000-frame combat
+	// replay (fallen_empire) fires over three thousand pulses and EVERY ONE of them is
+	// radius 11, so under the old path the whole of this game's flash lighting is created and
+	// discarded before it becomes a light. That is why a night map with a firefight on it
+	// showed a light-list census of zero.
+	//
+	// The comment is right about the model it was written for. A light of radius 11 reached
+	// terrain vertices spaced ten world units apart, was baked into their colours by
+	// doTheDynamicLight, and really did average away to nothing -- and on meshes it was one of
+	// only four light slots, so a negligible light could evict a real one. Neither is true of
+	// the clustered path: it shades per pixel out of the froxel the pixel is in, so an
+	// 11-unit pool is a round, visible, correctly-shaped pool; and the cost argument inverts
+	// as well, because a light's clustered cost is the number of froxels it touches and a
+	// small light touches almost none. This is exactly the kind of decision the plan means by
+	// "any radius that was being used as an intensity control has to be split into two" --
+	// here the radius was being used as a *visibility* control, and it no longer predicts it.
+	//
+	// What is left when clustered is the genuinely degenerate case: a pool smaller than the
+	// geometry that spawned it, which cannot cover a pixel of ground before the window closes.
+	// Two world units is under a fifth of a pathfind cell and well inside any explosion's own
+	// particle effect.
+	const Real minPulseRange = localLightsAreAuthoredAsIntensity()
+		? 2.0f
+		: (2.0f*PATHFIND_CELL_SIZE_F + 1.0f);
+	if (innerRadius+attenuationWidth < minPulseRange) {
+#ifdef RTS_DEBUG
+		static UnsignedInt s_rejectedPulses = 0;
+		if ((++s_rejectedPulses % 200) == 1)
+			WWDEBUG_SAY(("LIGHT PULSE rejected as too small (%u so far this run) at run frame %u: "
+				"radius %.1f, under the %.1f floor in createLightPulse.",
+				s_rejectedPulses, getUnattendedRunFrame(),
+				innerRadius + attenuationWidth, minPulseRange));
+#endif
 		return; // it basically won't make any visual difference.  jba.
 	}
 	W3DDynamicLight * theDynamicLight = m_3DScene->getADynamicLight();
 	// turn it on.
 	theDynamicLight->setEnabled(true);
 
-	theDynamicLight->Set_Ambient( Vector3( color->red, color->green, color->blue ) );
-	theDynamicLight->Set_Diffuse( Vector3( color->red, color->green, color->blue) );
-	theDynamicLight->Set_Position(Vector3(pos->x, pos->y, pos->z));
-	theDynamicLight->Set_Far_Attenuation_Range(innerRadius, innerRadius + attenuationWidth);
+	const Vector3 pulseColor( color->red, color->green, color->blue );
+	const Real pulseRange = innerRadius + attenuationWidth;
+
+	// THE REFERENCE DISTANCE for a flash, and the one place in this pass where taking
+	// attenStart as the reference would have been plainly wrong. Every caller in the game is
+	// LightPulseFXNugget (FXList.cpp) and every one of them passes innerRadius = 1, hardcoded
+	// at the call, for explosions whose authored Radius runs from 20 to 250. That 1 describes
+	// nothing about the fixture; squaring it would leave every flash in the game exactly as
+	// black under inverse square as it is today.
+	//
+	// What the authored Radius describes is the flash's SIZE, and size is the right thing to
+	// scale intensity by: under inverse square the distance at which a light stays above any
+	// fixed visible threshold goes as sqrt(I), so a fixture twice as far-reaching is four
+	// times as intense. The constant is fixed by matching the old linear ramp where it is
+	// least arguable -- its midpoint, where `1 - (d - start)/(end - start)` is exactly 1/2 by
+	// construction whatever the radii are. Solving I/(range/2)^2 = 1/2 gives I = range^2/8,
+	// i.e. a reference distance of range/sqrt(8) = 0.354 * range.
+	//
+	// So the two curves agree at half the flash's reach, the new one is dimmer beyond it and
+	// brighter inside it -- which is the whole point of the change, and is what the HDR
+	// tonemap is there to absorb at the few units where a flash is genuinely blinding.
+	const Real PULSE_REFERENCE_FRACTION = 0.354f;
+	const Real pulseRefDist = PULSE_REFERENCE_FRACTION * pulseRange;
+
+	// THE HEIGHT, which is the third thing the old model let this fixture get away with and
+	// the one that actually cost a whole afternoon to find.
+	//
+	// Every caller passes an object's own position, which is ON the ground. Under the old
+	// model that was harmless, because the flash's entire effect on the terrain came from the
+	// AMBIENT copy below and the terrain's CPU bake adds ambient with NO N.L at all
+	// (doTheDynamicLight) -- a light lying flat on the ground still produced a round pool.
+	// A real punctual light cannot: at ground level L is parallel to the surface, N.L is zero
+	// all the way round, and the flash lights nothing whatsoever. Measured, not reasoned:
+	// with the light left at pos->z, an explosion of intensity 10000 and a 300-unit range
+	// changed the frame by ZERO pixels, while the plan's own sun-equivalence control lit the
+	// same frame fine -- so the shading path was never the problem, the geometry was.
+	//
+	// An explosion emits from somewhere above the ground it scorches, so the honest fix is to
+	// put the emitter where it belongs. The reference distance is the height, and that is not
+	// a coincidence: the reference distance is where this light delivers its authored colour,
+	// so standing it that far above the ground makes the point directly underneath read at
+	// exactly the authored colour with N.L = 1, and the pool falls off from there.
+	const Vector3 pulsePos( pos->x, pos->y,
+		pos->z + (localLightsAreAuthoredAsIntensity() ? pulseRefDist : 0.0f) );
+
+	// The ambient copy is the flash's whole effect on the ground today, per the note above,
+	// and is exactly the flat unfalloffed second copy the clustered path must not also get
+	// now that terrain_ps lights the ground from the cluster grid properly. Dropped there,
+	// untouched here.
+	theDynamicLight->Set_Ambient( authoredLocalLightAmbient( pulseColor ) );
+	theDynamicLight->Set_Diffuse( authoredLocalLightColor( pulseColor, pulseColor, pulseRefDist ) );
+	theDynamicLight->Set_Position(pulsePos);
+	// Unchanged, and now meaning only where the flash is clipped: setDecayRange below shrinks
+	// FarAttenEnd toward FarAttenStart over the decay, which under the old ramp dimmed the
+	// light as it collapsed and under inverse square only closes the window in on it. The
+	// colour decay (setDecayColor) is what actually fades it now, and it always did most of
+	// the work.
+	theDynamicLight->Set_Far_Attenuation_Range(innerRadius, pulseRange);
+#ifdef RTS_DEBUG
+	// Once per run, and only the first flash. A light pulse lasts about half a second and
+	// there is no other way to see what this conversion did to one: the light-list census
+	// samples a frame every few hundred and will simply never be looking when a flash is
+	// alive. One line naming the fixture's before and after is what makes "the flashes look
+	// brighter" a number instead of an impression.
+	static UnsignedInt s_acceptedPulses = 0;
+	if (++s_acceptedPulses <= 24)
+	{
+		Vector3 authored;
+		theDynamicLight->Get_Diffuse(&authored);
+		// The RUN FRAME, on the same clock as -dumpFrames and -quitAtFrame, is the point of
+		// this line. A flash lives about half a second; the light-list census samples one
+		// frame in several hundred and will simply never be looking while one is alive, and
+		// hunting for one by dumping frames at random is luck. Logging the frame numbers on
+		// one run and feeding them straight back as -dumpFrames on the next is not.
+		WWDEBUG_SAY(("LIGHT PULSE #%u at run frame %u: authored colour %.2f %.2f %.2f over "
+			"radii %.1f..%.1f -> stored diffuse %.2f %.2f %.2f (reference distance %.1f, "
+			"convention %s). the clustered lighting plan, the light-intensity pass.",
+			s_acceptedPulses, getUnattendedRunFrame(),
+			pulseColor.X, pulseColor.Y, pulseColor.Z, innerRadius, pulseRange,
+			authored.X, authored.Y, authored.Z, pulseRefDist,
+			localLightsAreAuthoredAsIntensity() ? "intensity" : "brightness (legacy)"));
+	}
+#endif
+
 	theDynamicLight->setFrameFade(increaseFrameTime, decayFrameTime);
 	theDynamicLight->setDecayRange();
 	theDynamicLight->setDecayColor();

@@ -37,9 +37,11 @@
 #include "GameClient/Drawable.h"
 #include "W3DDevice/GameClient/Module/W3DPoliceCarDraw.h"
 #include "W3DDevice/GameClient/W3DDisplay.h"
+#include "W3DDevice/GameClient/W3DLightAuthoring.h"
 #include "Common/RandomValue.h"
 #include "WW3D2/hanim.h"
 #include "W3DDevice/GameClient/W3DScene.h"
+#include "WWDebug/wwdebug.h"
 
 // PRIVATE FUNCTIONS //////////////////////////////////////////////////////////////////////////////
 
@@ -151,10 +153,54 @@ void W3DPoliceCarDraw::doDrawModule(const Matrix3D* transformMtx)
 	if( m_light )
 	{
 		Coord3D pos = *getDrawable()->getPosition();
-		m_light->Set_Diffuse( Vector3( red, green, blue) );
-		m_light->Set_Ambient( Vector3( red/2, green/2, blue/2) );
+
+		// THE REFERENCE DISTANCE for the beacon is the one number on this fixture that had
+		// to be invented, so here is the argument for it. The radii below are 3 and 20, and
+		// 3 is not where this light is meant to read -- it is roughly where the lamp sits
+		// above the roof of the car it is bolted to. Taking it as the reference would give
+		// an intensity of 9 and a beacon worth four hundredths of its colour a pathfind cell
+		// away, i.e. nothing. What the fixture is FOR is the coloured pool it throws on the
+		// road around the vehicle, and at this engine's scale that is about eight world
+		// units out (a pathfind cell is ten, PATHFIND_CELL_SIZE_F, and the car is about one).
+		// Eight it is: full authored colour on the road beside the car, a quarter of it at
+		// the 20-unit clip.
+		//
+		// This is the split the plan asks for in as many words -- the radius used to be the
+		// dimmer and is now only the clip, so "how far does it reach" and "how bright is it"
+		// became two decisions and this line is the second one.
+		const Real BEACON_REFERENCE_DISTANCE = 8.0f;
+
+		// The ambient half of the beacon is folded in rather than dropped. createDynamicLight
+		// above set diffuse to zero and put the whole beacon in the ambient on purpose (jba's
+		// comment there: diffuse shows up ground unevenness, which looks funny on a
+		// searchlight) and this function then overrides both -- so what the fixture actually
+		// emits today is diffuse plus a half-strength ambient wash. Nothing in the clustered
+		// path reads ambient at all, so keeping the split there would silently throw a third
+		// of the beacon away; one punctual light emitting the sum is the same fixture. It
+		// will show ground unevenness. A lamp standing three units off the road does.
+		const Vector3 beacon( red * 1.5f, green * 1.5f, blue * 1.5f );
+
+		m_light->Set_Diffuse( authoredLocalLightColor( Vector3( red, green, blue ),
+			beacon, BEACON_REFERENCE_DISTANCE ) );
+		m_light->Set_Ambient( authoredLocalLightAmbient( Vector3( red/2, green/2, blue/2 ) ) );
 		m_light->Set_Far_Attenuation_Range( 3, 20 );
 		m_light->Set_Position( Vector3( pos.x,pos.y,pos.z+floatAmt ) );
+
+#ifdef RTS_DEBUG
+		// Once per run. W3DPoliceCarDraw is attached to a handful of civilian objects and
+		// whether any of them is on a given map is not something a screenshot answers -- an
+		// absent beacon and a broken one look identical.
+		static Bool s_loggedBeacon = FALSE;
+		if (!s_loggedBeacon)
+		{
+			s_loggedBeacon = TRUE;
+			Vector3 stored;
+			m_light->Get_Diffuse(&stored);
+			WWDEBUG_SAY(("POLICE BEACON, first of this run: cycle colour %.2f %.2f %.2f -> "
+				"stored diffuse %.2f %.2f %.2f over radii 3..20 (reference distance %.1f).",
+				red, green, blue, stored.X, stored.Y, stored.Z, BEACON_REFERENCE_DISTANCE));
+		}
+#endif
 	}
 	W3DTruckDraw::doDrawModule(transformMtx);
 }

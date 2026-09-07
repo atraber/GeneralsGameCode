@@ -46,6 +46,7 @@
 #include "GameLogic/Object.h"
 #include "GameLogic/GameLogic.h"
 
+#include "W3DDevice/GameClient/W3DLightAuthoring.h"
 #include "W3DDevice/GameClient/W3DScene.h"
 #include "W3DDevice/GameClient/W3DTerrainVisual.h"
 #include "W3DDevice/GameClient/WorldHeightMap.h"
@@ -569,6 +570,7 @@ Bool W3DTerrainVisual::load( AsciiString filename )
 #endif
 
 	// Add any lights loaded by map.
+	Int mapLightCount = 0;
 	MapObject *pMapObj = MapObject::getFirstMapObject();
 	while (pMapObj)
 	{
@@ -586,19 +588,64 @@ Bool W3DTerrainVisual::load( AsciiString filename )
 
 			RGBColor c;
 			c.setFromInt(d->getInt(TheKey_lightAmbientColor));
-			lightP->Set_Ambient( Vector3( c.red, c.green, c.blue ) );
+			const Vector3 mapAmbient( c.red, c.green, c.blue );
 
 			c.setFromInt(d->getInt(TheKey_lightDiffuseColor));
-			lightP->Set_Diffuse( Vector3(  c.red, c.green, c.blue) );
+			const Vector3 mapDiffuse( c.red, c.green, c.blue );
+
+			const Real innerRadius = d->getReal(TheKey_lightInnerRadius);
+			const Real outerRadius = d->getReal(TheKey_lightOuterRadius);
+
+			// THE ONE SITE WHERE THE MAP IS THE AUTHOR, and the only one in this pass where
+			// the data cannot be edited: these numbers come out of shipped .map files
+			// through WorldBuilder's light object, and the conversion into a LightClass
+			// happens here or nowhere. Nothing else in the engine scales them.
+			//
+			// The reference distance is lightInnerRadius, and unlike everywhere else in this
+			// pass that needs no argument at all: WorldBuilder's own light model is the
+			// linear ramp (wbview3d.cpp builds a LightClass exactly the way this does), so
+			// the map author placed a light knowing its diffuse colour is what lands anywhere
+			// inside the inner radius. That is the r in I = B*r^2, stated by the tool the
+			// number was typed into. A map that left it at zero says nothing, and half the
+			// outer radius is the fallback because that is what WorldBuilder itself writes --
+			// LightOptions.cpp's editor sets lightInnerRadius = lightOuterRadius/2 on every
+			// edit, and a new light starts at 15 and 25.
+			const Real refDist = (innerRadius > 0.0f) ? innerRadius : (0.5f * outerRadius);
+
+			// Diffuse and ambient are two authored channels of ONE fixture -- a lamp, a fire,
+			// a window -- split that way because the old model had no bounce term and an N.L
+			// alone left the shadowed side of everything black. The clustered path reads only
+			// the diffuse, so keeping the split would silently discard whatever the map author
+			// put in the ambient. That is not a small risk on this data: WorldBuilder's light
+			// editor writes lightDiffuseColor as BLACK on every edit (LightOptions.cpp sets
+			// the three components to 0 before storing) and leaves the whole fixture in the
+			// ambient, so a map light touched in the tool would pack to a colour of zero and
+			// Pack_Light would drop it as black -- the light would simply not exist. The sum
+			// is the same fixture emitting the same total, through one punctual light.
+			lightP->Set_Ambient( authoredLocalLightAmbient( mapAmbient ) );
+			lightP->Set_Diffuse( authoredLocalLightColor( mapDiffuse, mapDiffuse + mapAmbient, refDist ) );
 
 			lightP->Set_Position(Vector3(loc.x, loc.y, loc.z));
 
-			lightP->Set_Far_Attenuation_Range(d->getReal(TheKey_lightInnerRadius), d->getReal(TheKey_lightOuterRadius));
+			// Unchanged: still where the map author said the light stops, only now that is
+			// all it says. Under the old ramp pulling the outer radius in dimmed the light
+			// everywhere inside it too; under inverse square it moves the cutoff and nothing
+			// else, so a map tuned by shrinking radii will read brighter than its author
+			// intended until those maps are looked at. They cannot be edited from here.
+			lightP->Set_Far_Attenuation_Range(innerRadius, outerRadius);
  			W3DDisplay::m_3DScene->Add_Render_Object(lightP);
 			REF_PTR_RELEASE( lightP );
+			++mapLightCount;
 		}
 		pMapObj = pMapObj->getNext();
 	}
+
+	// Worth a line even when it is zero, and it usually is: "the map lights look wrong" and
+	// "this map has no lights" are indistinguishable from a screenshot, and the second is the
+	// commoner answer by a wide margin. Every stock Zero Hour map ships without one.
+	DEBUG_LOG(("MAP LIGHTS: %d placed point light(s) on %s, authored in %s units.",
+		mapLightCount, filename.str(),
+		localLightsAreAuthoredAsIntensity() ? "intensity" : "brightness (legacy)"));
 
 
 	RefRenderObjListIterator *it = W3DDisplay::m_3DScene ? W3DDisplay::m_3DScene->createLightsIterator() : nullptr;
