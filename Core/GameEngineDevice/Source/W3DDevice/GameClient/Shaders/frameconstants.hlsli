@@ -50,7 +50,8 @@ cbuffer FrameConstants : register(b1)
     // Named and read through clustered.hlsli (ClusteredLightingEnabled,
     // CLUSTER_SUPPRESS_DIRECTIONAL), never spelled out component-wise by a shader.
     float4 ClusterLimits;   // x = grid Y, y = light-index stride (CLUSTER_MAX_LIGHTS),
-                            // z = clustered lighting on (options.ini UseClusteredLighting),
+                            // z = clustered lighting on (the three buffers exist -- see
+                            //     W3DShaderManager::isClusteredLightingActive),
                             // w = suppress the shader's own directional term (the C5.1
                             //     sun-equivalence control; 0 in every ordinary frame)
     // C6. THE BUILDER'S FIELDS, and the only ones in this block no *reader* wants: every

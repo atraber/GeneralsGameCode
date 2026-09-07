@@ -3396,10 +3396,11 @@ Bool W3DShaderManager::isShadowMappingActive()
 
 Bool W3DShaderManager::isClusteredLightingActive()
 {
-	// The options.ini switch first -- off by default until C7 deletes the CPU path, see
-	// OptionPreferences::getClusteredLightingEnabled.
-	if (TheGlobalData == nullptr || !TheGlobalData->m_useClusteredLighting)
-		return FALSE;
+	// TheSuperHackers @feature andytraber 07/09/2026 The options.ini switch that used to gate
+	// this is gone: C7 deleted the CPU path it existed to fall back to, so there is nothing
+	// left for "off" to mean. What remains is the question this predicate always also asked --
+	// do the buffers exist -- and that is the one the shaders' own ClusteredLightingEnabled()
+	// (b1's ClusterLimits.z) reads. The two are still the same predicate, deliberately.
 	if (W3DDisplay::m_3DScene == nullptr)
 		return FALSE;
 

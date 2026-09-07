@@ -425,13 +425,6 @@ public:
 	UnsignedInt m_textureAnisotropyLevel;     ///< value related to TextureFilterClass::AnisotropicFilterMode
 	Bool m_useBloom;                          ///< enable the screen-space bloom post-process
 	Bool m_useHdr;                            ///< render the scene into a floating-point target and tone map it back
-	// TheSuperHackers @feature andytraber 06/09/2026 Clustered forward lighting (C5 of
-	// the clustered lighting plan). Off by default and NOT a quality setting: the CPU
-	// per-object light path is still live, so with this on a dynamic light is counted twice.
-	// C7 deletes that path and takes this toggle with it -- see the note on
-	// OptionPreferences::getClusteredLightingEnabled.
-	Bool m_useClusteredLighting;              ///< evaluate point/spot lights per pixel from the cluster grid
-
 	Bool m_languageFilterPref;        ///< Bool if user wants to filter language
 	Bool m_loadScreenDemo;						///< Bool if true, run the loadscreen demo movie
 	Bool m_disableRender;							///< if true, no rendering!

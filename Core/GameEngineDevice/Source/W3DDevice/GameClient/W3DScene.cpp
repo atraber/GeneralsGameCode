@@ -778,36 +778,22 @@ void RTS3DScene::renderOneObject(RenderInfoClass &rinfo, RenderObjClass *robj, I
 
 	if (!drawableHidden)
 	{
-		//standard scene lights
-		RefRenderObjListIterator it2(&LightList);
-		for (it2.First(); !it2.Is_Done(); it2.Next())
-		{
-			LightClass *pLight = (LightClass*)it2.Peek_Obj();
-			SphereClass lSph = pLight->Get_Bounding_Sphere();
-			Bool cull = (pLight->Get_Type() == LightClass::POINT && !Spheres_Intersect(sph, lSph));
-			if (!cull) {
-				lightEnv.Add_Light(*pLight);
-			}
-		}
-
-    if( draw && draw->getReceivesDynamicLights() )
-    {
-		  // dynamic lights
-		  RefRenderObjListIterator dynaLightIt(&m_dynamicLightList);
-		  for (dynaLightIt.First(); !dynaLightIt.Is_Done(); dynaLightIt.Next())
-		  {
-			  W3DDynamicLight* pDyna = (W3DDynamicLight*)dynaLightIt.Peek_Obj();
-			  if (!pDyna->isEnabled()) {
-				  continue;
-			  }
-			  SphereClass lSph = pDyna->Get_Bounding_Sphere();
-			  if (pDyna->Get_Type() == LightClass::POINT && !Spheres_Intersect(sph, lSph)) {
-				  continue;
-			  }
-			  lightEnv.Add_Light(*(LightClass*)dynaLightIt.Peek_Obj());
-		  }
-    }
-
+		// TheSuperHackers @feature andytraber 07/09/2026 C7 of the clustered lighting plan.
+		//
+		// Two per-drawable light walks used to stand here: the scene's placed lights
+		// (LightList) and the dynamic ones (m_dynamicLightList, gated on the drawable's
+		// ReceivesDynamicLights flag). Both flattened whatever overlapped the object's
+		// bounding sphere into LightEnvironmentClass's four directional slots.
+		//
+		// Both are now GpuLightListClass::Collect_Scene_Lights and Collect_Dynamic_Lights,
+		// walking the same two lists ONCE PER FRAME against the camera frustum instead of
+		// once per (light, drawable) pair, and the lights reach the pixel through the cluster
+		// grid with their real positions and falloff. What is left here is the sun and the
+		// ambient, which never went through the cluster path and are untouched by this.
+		//
+		// The per-drawable opt-out went with it: ReceivesDynamicLights had no equivalent in a
+		// per-pixel path, and the INI token is now parsed and ignored (see
+		// W3DModelDrawModuleData::m_receivesDynamicLights).
 		lightEnv.Pre_Render_Update(rinfo.Camera.Get_Transform());
 		rinfo.light_environment = &lightEnv;
 

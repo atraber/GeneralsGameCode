@@ -309,7 +309,14 @@ public:
 
   Bool                              m_particlesAttachedToAnimatedBones;
 
-  Bool                              m_receivesDynamicLights; ///< just like it sounds... it sets a property of Drawable, actually
+  // TheSuperHackers @feature andytraber 07/09/2026 PARSED AND NO LONGER CONSUMED. C7 of
+  // the clustered lighting plan deleted the CPU dynamic-light path this used to switch
+  // off per drawable (Render_Seg's per-drawable light walk, W3DScene.cpp); local lights are
+  // evaluated per pixel out of the cluster grid now and there is no per-drawable opt-out in
+  // that path to map this onto. The field and its INI token stay because ReceivesDynamicLights
+  // appears in shipped object data and must keep parsing -- the same reason the shadow-volume
+  // tokens survived their path's deletion in Phase 4.1.
+  Bool                              m_receivesDynamicLights;
 
 
 	W3DModelDrawModuleData();

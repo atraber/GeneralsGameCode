@@ -447,12 +447,14 @@ float4 main(PS_INPUT input) : PS_TARGET
 
     // Clustered local lights, added to Lo IN LINEAR and before anything encodes.
     //
-    // The whole block sits behind ClusteredLightingEnabled() -- b1's ClusterLimits.z, from
-    // options.ini UseClusteredLighting -- and when that reads zero not one instruction here
-    // touches Lo. That is what makes "with the toggle off, 0 differing pixels" a statement
-    // about this frame and not a hope: there is no multiply by 1.0 and no add of 0.0 left
-    // behind to be rounded differently, and an unwritten b1 block reads as zero, so every
-    // frame before the light list has ever run is also the old frame exactly.
+    // The whole block sits behind ClusteredLightingEnabled() -- b1's ClusterLimits.z, which
+    // since C7 says "the cluster buffers exist" -- and when that reads zero not one
+    // instruction here touches Lo. There is no multiply by 1.0 and no add of 0.0 left behind
+    // to be rounded differently, and an unwritten b1 block reads as zero, so a frame drawn
+    // before the light list has ever run is the pre-C5 frame exactly. That property is what
+    // made every stage before C7 measurable at 0 differing pixels; it still holds, and it is
+    // now also what makes a device that could not create the buffers degrade to sun-only
+    // rather than to something wrong.
     //
     // The view distance is SV_Position.w's reciprocal and nothing else. This engine's
     // projection is right-handed, so clip.w is the positive distance in front of the

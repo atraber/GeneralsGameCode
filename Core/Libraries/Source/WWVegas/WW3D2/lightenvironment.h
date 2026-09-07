@@ -49,21 +49,20 @@ class LightClass;
 
 /**
 ** LightEnvironmentClass
-** This class represents an approximation of the local lighting for a given point.  The idea
-** is to collect all of the point light sources affecting an object at any given time and
-** create temporary directional light sources representing them.  Any distance or directional
-** attenuation will be precalculated into the overall intensity of the light and a vector from
-** the light source to the center of the bounding sphere of the model will be used as the
-** directional component.
-** In addition, the engine will provide the ambient component which will be determined by
-** a combination of the ambient setting for the level and sampling the light maps in the area.
+** The scene's DIRECTIONAL lighting for a given object: the sun and moon (up to MAX_LIGHTS of
+** them) plus the ambient term, transformed into camera space for the shaders to read.
 **
-** Notes:
-** - will need fast collection of the lights affecting any one given object
-** - intensity of these lights should take into account attenuation of the original light
-** - intensity should also take into account spot attenuation (no-per vertex atten...)
-** - we need the direction of the lights in eye-space
-** - the ambient light from all lights should be added into the ambient light (not just scene)
+** It used to be more than that. Point and spot lights were collapsed into this same
+** four-slot array -- each one flattened into an equivalent directional light aimed at the
+** object's bounding-sphere centre, with its distance and cone attenuation folded into the
+** colour, and the four strongest of them kept. C7 of the clustered lighting plan
+** deleted that: local lights are now evaluated per pixel out of the cluster grid
+** (clustered.hlsli, GpuLightListClass), where they have real positions, real inverse-square
+** falloff and no per-object limit at all. Add_Light now *ignores* anything that is not
+** directional, so a caller that hands one in gets no CPU approximation rather than a second,
+** wrong copy of a light the shader is already drawing correctly.
+**
+** What that leaves is exactly what the name always should have meant: sun plus ambient.
 */
 class LightEnvironmentClass
 {
@@ -86,9 +85,6 @@ public:
 	void					Reset(const Vector3 & object_center,const Vector3 & scene_ambient);
 	void					Add_Light(const LightClass & light);
 	void					Pre_Render_Update(const Matrix3D & camera_tm);
-	void					Add_Fill_Light();
-	void					Calculate_Fill_Light();
-	void					Set_Fill_Intensity(float intensity)			{ FillIntensity = intensity; }
 
 	/*
 	** Accessors
@@ -99,23 +95,16 @@ public:
 	const Vector3 &	Get_Light_Direction(int i)	const				{ return InputLights[i].Direction; }
 	const Vector3 &	Get_Light_Diffuse(int i) const				{ return InputLights[i].Diffuse; }
 
-	bool isPointLight(int i) const {return InputLights[i].m_point;}
-	float getPointIrad(int i) const {return InputLights[i].m_innerRadius;}
-	float getPointOrad(int i) const {return InputLights[i].m_outerRadius;}
-	const Vector3 &	getPointDiffuse(int i) const				{ return InputLights[i].m_diffuse; }
-	const Vector3 &	getPointAmbient(int i) const				{ return InputLights[i].m_ambient; }
- 	const Vector3 &	getPointCenter(int i)	const				{ return InputLights[i].m_center; }
-
-	/*
-	** Lighting LOD.  This is a static setting that is used to convert weak diffuse lights
-	** into pure ambient lights.
-	*/
-	static void			Set_Lighting_LOD_Cutoff(float inten);
-	static float		Get_Lighting_LOD_Cutoff();
-
 	static int			Get_Max_Lights() { return MAX_LIGHTS; }
 	enum { MAX_LIGHTS = 4 };	//Made this public, so other code can tell how many lights are allowed. - MW
 
+	/* Equality over what a draw actually consumes -- the light count, the object centre and
+	** the camera-space output lights -- so it can serve as a batching/redundancy key. It has
+	** no caller today, and C7 checked that before deleting the point/spot fields: every field
+	** it reads is on the directional side and survived untouched, so the deletion cannot have
+	** changed the answer this returns for any pair of light environments a scene without local
+	** lights builds. (On a scene *with* them the count differs, because those lights no longer
+	** occupy slots here at all -- which is the intended change, not a batching accident.) */
 	bool operator== (const LightEnvironmentClass& that) const
 	{
 		if (LightCount!=that.LightCount) return false;
@@ -133,23 +122,11 @@ protected:
 
 	struct InputLightStruct
 	{
-		void				Init(const LightClass & light,const Vector3 & object_center);
-		void				Init_From_Point_Or_Spot_Light(const LightClass & light,const Vector3 & object_center);
 		void				Init_From_Directional_Light(const LightClass & light,const Vector3 & object_center);
-		float				Contribution();
 
 		Vector3			Direction;
 		Vector3			Ambient;
 		Vector3			Diffuse;
-		bool				DiffuseRejected;
-
-		bool				m_point;
-		Vector3			m_center;
-		float				m_innerRadius;
-		float				m_outerRadius;
-		Vector3			m_ambient;
-		Vector3			m_diffuse;
-
 	};
 
 	struct OutputLightStruct
@@ -169,7 +146,4 @@ protected:
 
 	Vector3				OutputAmbient;					// scene ambient + lights' ambients
 	OutputLightStruct	OutputLights[MAX_LIGHTS];	// output lights
-
-	InputLightStruct 	FillLight;						// Used to store the calculated fill light
-	float					FillIntensity;					// Used to determine how strong the fill light should be
 };

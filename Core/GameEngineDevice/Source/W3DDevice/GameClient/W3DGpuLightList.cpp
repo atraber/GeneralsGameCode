@@ -37,10 +37,11 @@
 // calls "the single most valuable control in the whole plan"). Full reasoning at
 // Collect_Sun_Check_Lights below; the recipe is:
 //
-//   1. Debug build. Options.ini: UseClusteredLighting = yes.
-//      (Without it the stand-in lights are uploaded and then consumed by nobody, and the
-//      directional term is NOT suppressed either -- deliberately, so a mis-run reads as
-//      "nothing happened" and not as "the control failed". It is logged, once.)
+//   1. Debug build. Clustered lighting must actually be running -- all three structured
+//      buffers created (W3DShaderManager::isClusteredLightingActive). If it is not, the
+//      stand-in lights are uploaded and then consumed by nobody, and the directional term
+//      is NOT suppressed either -- deliberately, so a mis-run reads as "nothing happened"
+//      and not as "the control failed". It is logged, once.
 //   2. Two runs of the SAME BINARY over the same replay frame, one variable apart:
 //        run A:  (nothing set)                         -- the directional path
 //        run B:  set W3D_CLUSTER_SUN_CHECK=1           -- the punctual path
@@ -785,15 +786,16 @@ void GpuLightListClass::Collect_Sun_Check_Lights(RTS3DScene & scene)
 				"game's normal output and no capture from it is a reference for anything "
 				"else."));
 			// Said here rather than left to be discovered from a frame that looks wrong.
-			// The check needs the clustered path switched on to have anything to compare
-			// against, and with it off the only visible result is unlit units -- which
-			// looks like the control failing rather than like it never running.
-			if (TheGlobalData == nullptr || !TheGlobalData->m_useClusteredLighting)
+			// The check needs the clustered path actually running to have anything to
+			// compare against, and if the buffers failed to create the only visible result
+			// is unlit units -- which looks like the control failing rather than like it
+			// never ran.
+			if (!W3DShaderManager::isClusteredLightingActive())
 			{
-				WWDEBUG_SAY(("GpuLightListClass: ...but UseClusteredLighting is off in "
-					"Options.ini, so nothing will consume the stand-in lights and the "
-					"directional term will NOT be suppressed either (see "
-					"Write_Frame_Constants). Set UseClusteredLighting = yes and run again."));
+				WWDEBUG_SAY(("GpuLightListClass: ...but clustered lighting is not active "
+					"(one of the three structured buffers is missing), so nothing will "
+					"consume the stand-in lights and the directional term will NOT be "
+					"suppressed either -- see Write_Frame_Constants."));
 			}
 		}
 	}

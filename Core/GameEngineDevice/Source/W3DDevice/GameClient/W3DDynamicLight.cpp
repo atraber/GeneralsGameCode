@@ -33,7 +33,6 @@ W3DDynamicLight::W3DDynamicLight():
 LightClass(LightClass::POINT)
 {
 
-	m_priorEnable = false;
 	m_enabled = true;
 
 }

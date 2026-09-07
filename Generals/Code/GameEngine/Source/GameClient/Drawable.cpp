@@ -400,7 +400,6 @@ Drawable::Drawable( const ThingTemplate *thingTemplate, DrawableStatusBits statu
 
 	m_ambientSoundEnabled = TRUE;
 
-  m_receivesDynamicLights = TRUE; // a good default... overridden by one of my draw modules if at all
 
 	// allocate any modules we need to, we should keep
 	// this at or near the end of the drawable construction so that we have

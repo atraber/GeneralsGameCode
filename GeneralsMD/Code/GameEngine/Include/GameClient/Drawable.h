@@ -573,8 +573,6 @@ public:
 	Bool hasIconInfo() const { return m_iconInfo != nullptr; }
 
 
-  Bool getReceivesDynamicLights() { return m_receivesDynamicLights; };
-  void setReceivesDynamicLights( Bool set ) { m_receivesDynamicLights = set; };
 
   //---------------------------------------------------------------------------------
   // Stuff for overriding ambient sound
@@ -733,7 +731,6 @@ private:
   Bool m_ambientSoundEnabled;
   Bool m_ambientSoundEnabledFromScript;
 
-  Bool m_receivesDynamicLights;
 
 #ifdef DIRTY_CONDITION_FLAGS
 	Bool m_isModelDirty;				///< if true, must call replaceModelConditionState() before drawing or accessing drawmodule info

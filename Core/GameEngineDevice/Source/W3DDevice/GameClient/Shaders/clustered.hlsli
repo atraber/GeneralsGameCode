@@ -56,7 +56,10 @@
 // ---------------------------------------------------------------------------------------
 
 // b1's ClusterLimits.z, published once a frame by GpuLightListClass::Write_Frame_Constants
-// from TheGlobalData->m_useClusteredLighting (options.ini UseClusteredLighting). The
+// from W3DShaderManager::isClusteredLightingActive(). That predicate asked two questions
+// until C7 -- the options.ini switch and whether the three structured buffers exist -- and
+// now asks only the second: the switch existed to fall back to the CPU lighting path, and
+// C7 deleted the path. The
 // polarity is deliberate and is the whole reason the feature is testable: ZERO IS OFF, and
 // an unwritten b1 block reads zero. Every path that could leave the block unwritten -- a
 // frame before the first Update(), a degenerate camera, a menu, a device that could not

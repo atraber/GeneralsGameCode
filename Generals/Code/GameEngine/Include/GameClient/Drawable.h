@@ -558,8 +558,6 @@ public:
 
   const AudioEventRTS * getAmbientSound() const { return m_ambientSound == nullptr ? nullptr : &m_ambientSound->m_event; }
 
-  Bool getReceivesDynamicLights() { return m_receivesDynamicLights; };
-  void setReceivesDynamicLights( Bool set ) { m_receivesDynamicLights = set; };
 
 protected:
 
@@ -697,7 +695,6 @@ private:
 	Bool m_instanceIsIdentity;	///< If true, instance matrix can be skipped
 	Bool m_drawableFullyObscuredByShroud;	///<drawable is hidden by shroud/fog
 
-  Bool m_receivesDynamicLights;
 
 #ifdef DIRTY_CONDITION_FLAGS
 	Bool m_isModelDirty;				///< if true, must call replaceModelConditionState() before drawing or accessing drawmodule info

@@ -2254,8 +2254,9 @@ void W3DDisplay::createLightPulse( const Coord3D *pos, const RGBColor *color,
 	//
 	// Every caller passes an object's own position, which is ON the ground. Under the old
 	// model that was harmless, because the flash's entire effect on the terrain came from the
-	// AMBIENT copy below and the terrain's CPU bake adds ambient with NO N.L at all
-	// (doTheDynamicLight) -- a light lying flat on the ground still produced a round pool.
+	// AMBIENT copy below and the terrain's CPU bake added ambient with NO N.L at all
+	// (doTheDynamicLight, deleted by C7) -- a light lying flat on the ground still produced a
+	// round pool.
 	// A real punctual light cannot: at ground level L is parallel to the surface, N.L is zero
 	// all the way round, and the flash lights nothing whatsoever. Measured, not reasoned:
 	// with the light left at pos->z, an explosion of intensity 10000 and a 300-unit range

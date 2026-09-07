@@ -8648,34 +8648,11 @@ void DX8Wrapper::Set_Light_Environment(LightEnvironmentClass* light_env)
 				light.Specular.r = light.Specular.g = light.Specular.b = 1.0f;
 			}
 
-			if (light_env->isPointLight(l)) {
-				light.Type = D3DLIGHT_POINT;
-				(Vector3&)light.Diffuse=light_env->getPointDiffuse(l);
-				(Vector3&)light.Ambient=light_env->getPointAmbient(l);
-				light.Position = (const D3DVECTOR&)light_env->getPointCenter(l);
-				light.Range = light_env->getPointOrad(l);
-
-				// Inverse linear light 1/(1+D)
-				double a,b;
-				b = light_env->getPointOrad(l);
-				a = light_env->getPointIrad(l);
-
-//(gth) CNC3 Generals code for the attenuation factors is causing the lights to over-brighten
-//I'm changing the Attenuation0 parameter to 1.0 to avoid this problem.
-#if 0
-				light.Attenuation0=0.01f;
-#else
-				light.Attenuation0=1.0f;
-#endif
-				if (fabs(a-b)<1e-5)
-					// if the attenuation range is too small assume uniform with cutoff
-					light.Attenuation1=0.0f;
-				else
-					// this will cause the light to drop to half intensity at the first far attenuation
-					light.Attenuation1=(float) 0.1/a;
-
-				light.Attenuation2=8.0f/(b*b);
-			}
+			// TheSuperHackers @feature andytraber 07/09/2026 A branch here used to re-emit
+			// slots that held a point light as a real D3DLIGHT_POINT, with position, range
+			// and the three attenuation coefficients. After C7 of
+			// the clustered lighting plan a LightEnvironmentClass slot can only ever be
+			// a directional light, so the branch was unreachable and went.
 
 			Set_Light(l,&light);
 		}

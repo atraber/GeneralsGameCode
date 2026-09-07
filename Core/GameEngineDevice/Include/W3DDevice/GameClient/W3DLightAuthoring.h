@@ -30,8 +30,9 @@
 // WHAT CHANGED, AND WHY THE NUMBERS HAD TO
 // -------------------------------------------------------------------------------------
 //
-// The old model's distance ramp is LINEAR. LightEnvironmentClass::Init_From_Point_Or_Spot_Light
-// and HeightMapRenderObjClass::doTheDynamicLight both compute
+// The old model's distance ramp was LINEAR. LightEnvironmentClass::Init_From_Point_Or_Spot_Light
+// and HeightMapRenderObjClass::doTheDynamicLight -- both deleted by C7, so this is now a
+// statement about the shipped data rather than about live code -- each computed
 //
 //     atten = 1 - (d - attenStart) / (attenEnd - attenStart)      clamped to [0,1]
 //
@@ -59,29 +60,24 @@
 // owns the squaring.
 //
 // -------------------------------------------------------------------------------------
-// WHY IT IS CONDITIONAL, AND WHEN THE CONDITION GOES AWAY
+// IT USED TO BE CONDITIONAL. C7 REMOVED THE CONDITION.
 // -------------------------------------------------------------------------------------
 //
-// There is ONE LightClass object per light and, until C7, TWO consumers reading it with
-// incompatible conventions: Pack_Light wants intensity, LightEnvironmentClass and the
-// terrain's vertex bake want brightness. A light authored in intensity and handed to the
-// old path reads tens of times too bright; a light authored in brightness and handed to the
-// clustered path reads black. Nothing can satisfy both, and the CPU path is deliberately
-// still live (it is C7 that deletes it).
+// There is ONE LightClass object per light, and for the length of the clustered bring-up
+// there were TWO consumers reading it with incompatible conventions: Pack_Light wanted
+// intensity, LightEnvironmentClass and the terrain's vertex bake wanted brightness. A light
+// authored in intensity and handed to the old path reads tens of times too bright; one
+// authored in brightness and handed to the clustered path reads black. Nothing satisfies
+// both, so these functions branched on the options.ini switch and gave each run a single
+// convention.
 //
-// So the convention follows the consumer that is actually running. That keeps two
-// properties which are worth more than tidiness:
-//
-//   * With UseClusteredLighting = no, every light carries exactly the number it carried
-//     before this pass, so the "0 differing pixels" gate the plan applies to every stage
-//     before C7 still means something.
-//   * With it on, the clustered path sees physical units and can be judged on its own
-//     terms -- while the old path, reading the same numbers as brightness, over-lights.
-//     That over-lighting is the double-counting the plan already expects from running both
-//     models at once, only louder; it is a C7 deletion, not a tuning error here.
-//
-// When C7 removes LightEnvironmentClass's point/spot handling and doTheDynamicLight, the
-// branch below has one consumer left and collapses to the multiply.
+// C7 deleted the CPU path -- LightEnvironmentClass's point/spot handling, Render_Seg's
+// per-drawable light walk, doTheDynamicLight, the local-light branch of the terrain's static
+// bake and W3DRoadBuffer's lit road copy -- and the UseClusteredLighting switch with it. One
+// consumer is left, so the branch is gone and the conversion is unconditional. The functions
+// stay: they are still the one place the convention is written down, and a call site that
+// reads authoredLocalLightColor(colour, refDist) still states its reference distance where
+// somebody can argue with it.
 //
 // -------------------------------------------------------------------------------------
 // AMBIENT
@@ -89,12 +85,10 @@
 //
 // Pack_Light never reads a light's ambient -- it packs Get_Diffuse() * Get_Intensity() and
 // nothing else -- so under the clustered path a local light's ambient contributes exactly
-// zero. Its only consumers are the terrain vertex bake (HeightMap.cpp, which adds
-// factor*ambient with no N.L at all) and W3DRoadBuffer, both of which C7 deletes. Callers
-// therefore fold whatever the ambient meant into the authored colour and zero the field,
-// rather than leaving a second, flat, unfalloffed copy of the same light on the ground.
-// Authoring_Local_Light_Ambient below is that decision, so it reads the same way at every
-// site.
+// zero, and since C7 nothing else reads it either. Callers therefore fold whatever the
+// ambient meant into the authored colour and zero the field, rather than leaving a second,
+// flat, unfalloffed copy of the same light on the ground. authoredLocalLightAmbient below is
+// that decision, so it reads the same way at every site.
 
 #pragma once
 
@@ -106,22 +100,20 @@
 #include "WWMath/vector3.h"
 
 //-------------------------------------------------------------------------------------------------
-/** True when local lights should carry luminous intensity rather than brightness.
+/** Always true since C7 deleted the other consumer. Kept as a named predicate because the
+	* handful of call sites that still ask read better for asking it by name than for a bare
+	* TRUE, and because it is where the answer would change again if a second consumer ever
+	* came back.
 	*
-	* THE OPTIONS.INI SWITCH ALONE, deliberately, and NOT W3DShaderManager::isClusteredLightingActive().
-	* That predicate is the right one for binding buffers and for gating a shader, because it also
-	* asks whether the three buffers exist -- but it is a per-frame answer, and one of the sites
-	* below authors a light ONCE, at map load (W3DTerrainVisual::load), before the light list has
-	* had an Update() to create its buffer in. A per-frame predicate read at load time would put
-	* every map light in the legacy convention for the whole run, and the symptom would be map
-	* lights that are merely too dim rather than anything that looks like a fault.
-	*
-	* A light's units have to be a property of the run, not of the frame it was created on. The
-	* option cannot change mid-run; the buffers can. */
+	* NOT W3DShaderManager::isClusteredLightingActive(), and that distinction survives the
+	* collapse: that predicate is a per-frame answer about whether the three buffers exist,
+	* and one site below authors a light ONCE, at map load (W3DTerrainVisual::load), before
+	* the light list has had an Update() to create its buffer in. A light's units have to be
+	* a property of the run, not of the frame it was created on. */
 //-------------------------------------------------------------------------------------------------
 inline Bool localLightsAreAuthoredAsIntensity()
 {
-	return (TheGlobalData != nullptr && TheGlobalData->m_useClusteredLighting) ? TRUE : FALSE;
+	return TRUE;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -131,15 +123,11 @@ inline Bool localLightsAreAuthoredAsIntensity()
 	* @param referenceDistance  where that brightness is true, in world units -- the caller's
 	*                           judgement, and the thing worth arguing about
 	*
-	* Returns colourAtReference * referenceDistance^2 under the clustered path (luminous
-	* intensity), and colourAtReference unchanged under the old linear ramp, which already
-	* means "this brightness, out to attenStart". */
+	* Returns colourAtReference * referenceDistance^2 -- the luminous intensity
+	* clustered.hlsli's inverse-square falloff expects. */
 //-------------------------------------------------------------------------------------------------
 inline Vector3 authoredLocalLightColor(const Vector3 &colourAtReference, Real referenceDistance)
 {
-	if (!localLightsAreAuthoredAsIntensity())
-		return colourAtReference;
-
 	// No lower bound on the reference distance and no clamp on the result. A caller that
 	// hands in zero gets a black light, which is a visible, findable failure; a silent floor
 	// would turn a bad reference distance into a light that is merely the wrong brightness,
@@ -154,25 +142,26 @@ inline Vector3 authoredLocalLightColor(const Vector3 &colourAtReference, Real re
 	*
 	* Two sites need this: the police beacon, whose fixture output is the old diffuse plus the
 	* old ambient wash, and any site whose legacy value folded in a factor that has moved
-	* elsewhere. Spelling the legacy value out at the call rather than deriving it is what keeps
-	* "UseClusteredLighting = no is byte-identical" checkable by reading the call site. */
+	* elsewhere. Nothing returns legacyDiffuse any more -- C7 removed the branch that could --
+	* but the argument stays, spelled out at the call, because it is the only remaining record
+	* of what the shipped content used to carry, and that is where any future argument about
+	* these numbers has to start. */
 //-------------------------------------------------------------------------------------------------
 inline Vector3 authoredLocalLightColor(const Vector3 &legacyDiffuse,
 	const Vector3 &colourAtReference, Real referenceDistance)
 {
-	if (!localLightsAreAuthoredAsIntensity())
-		return legacyDiffuse;
+	(void)legacyDiffuse;
 	return colourAtReference * (referenceDistance * referenceDistance);
 }
 
 //-------------------------------------------------------------------------------------------------
-/** What to store in a local light's ambient. Zero once the clustered path is live -- see the
-	* AMBIENT note at the top of this file -- and the caller's own legacy value until then. */
+/** What to store in a local light's ambient: nothing at all -- see the AMBIENT note at the top
+	* of this file. The caller's legacy value is passed in and discarded, for the same reason
+	* authoredLocalLightColor still takes one. */
 //-------------------------------------------------------------------------------------------------
 inline Vector3 authoredLocalLightAmbient(const Vector3 &legacyAmbient)
 {
-	if (!localLightsAreAuthoredAsIntensity())
-		return legacyAmbient;
+	(void)legacyAmbient;
 	return Vector3(0.0f, 0.0f, 0.0f);
 }
 

@@ -512,45 +512,26 @@ void BaseHeightMapRenderObjClass::doTheLight(VERTEX_FORMAT *vb, Vector3*light, V
 		for (pLightsIterator->First(); !pLightsIterator->Is_Done(); pLightsIterator->Next())
 		{
 			LightClass *pLight = (LightClass*)pLightsIterator->Peek_Obj();
-			Vector3 lightDirection(vb->x, vb->y, vb->z);
-			Real factor = 1.0f;
-			switch(pLight->Get_Type()) {
-			case LightClass::POINT:
-			case LightClass::SPOT: {
-					Vector3 lightLoc = pLight->Get_Position();
-					lightDirection -= lightLoc;
-					double range, midRange;
-					pLight->Get_Far_Attenuation_Range(midRange, range);
-					if (vb->x < lightLoc.X-range) continue;
-					if (vb->x > lightLoc.X+range) continue;
-					if (vb->y < lightLoc.Y-range) continue;
-					if (vb->y > lightLoc.Y+range) continue;
-					Real dist = lightDirection.Length();
-					if (dist >= range) continue;
-					if (midRange < 0.1) continue;
-#if 1
-					factor = 1.0f - (dist - midRange) / (range - midRange);
-#else
-					// f = 1.0 / (atten0 + d*atten1 + d*d/atten2);
-					if (fabs(range-midRange)<1e-5)	{
-						// if the attenuation range is too small assume uniform with cutoff
-						factor = 1.0;
-					}	else  {
-						factor = 1.0f/(0.1+dist/midRange + 5.0f*dist*dist/(range*range));
-					}
-#endif
-					factor = WWMath::Clamp(factor,0.0f,1.0f);
-				}
-				break;
-			case LightClass::DIRECTIONAL:
-				lightDirection = pLight->Get_Transform().Get_Z_Vector();
-				factor = 1.0;
-				break;
-			};
+
+			// TheSuperHackers @feature andytraber 07/09/2026 C7 of the clustered lighting plan.
+			// Point and spot lights are NOT baked into the terrain any more: a map light is a
+			// real punctual light in the cluster grid now (terrain_ps), so baking it here as
+			// well would light the ground twice. It would also be wrong twice over, because
+			// since the light re-authoring pass a local light's diffuse carries luminous
+			// intensity (colour * refDist^2, see W3DLightAuthoring.h) and the linear ramp
+			// below would read that raw number as a brightness -- tens of times too bright.
+			//
+			// The loop stays because this list is also the one that could hold a directional
+			// light, and that case is unchanged. (RTS3DScene's light list only ever receives
+			// the map's point lights today, so in practice this now skips the whole list.)
+			if (pLight->Get_Type() != LightClass::DIRECTIONAL) {
+				continue;
+			}
+
+			Vector3 lightDirection = pLight->Get_Transform().Get_Z_Vector();
 			lightDirection.Normalize();
 			Vector3 lightRay(-lightDirection.X, -lightDirection.Y, -lightDirection.Z);
 			shade = Vector3::Dot_Product(lightRay, *normal);
-			shade *= factor;
 			Vector3 diffuse;
 			pLight->Get_Diffuse(&diffuse);
 			Vector3 ambient;
@@ -560,9 +541,9 @@ void BaseHeightMapRenderObjClass::doTheLight(VERTEX_FORMAT *vb, Vector3*light, V
 			shadeR += shade*diffuse.X;
 			shadeG += shade*diffuse.Y;
 			shadeB += shade*diffuse.Z;
-			shadeR += factor*ambient.X;
-			shadeG += factor*ambient.Y;
-			shadeB += factor*ambient.Z;
+			shadeR += ambient.X;
+			shadeG += ambient.Y;
+			shadeB += ambient.Z;
 
 		}
 	}

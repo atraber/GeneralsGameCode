@@ -234,11 +234,12 @@ float4 main(PS_INPUT input) : PS_TARGET
     // TWO CONDITIONS, AND BOTH ARE PER-DRAW CONSTANTS, so the branch is coherent across
     // the whole draw call and predicts perfectly -- the same argument the cast-shadow
     // branch below is written on.
-    //   * ClusteredLightingEnabled() is b1's ClusterLimits.z (options.ini
-    //     UseClusteredLighting). With it zero -- which is also what an unwritten b1 block
+    //   * ClusteredLightingEnabled() is b1's ClusterLimits.z, which since C7 says "the
+    //     cluster buffers exist". With it zero -- which is also what an unwritten b1 block
     //     reads -- not one instruction here touches the colour: no multiply by 1, no add
-    //     of 0, nothing left behind to round differently. That is what makes "with the
-    //     toggle off, 0 differing pixels" a statement about this frame and not a hope.
+    //     of 0, nothing left behind to round differently. That is what made every stage
+    //     before C7 measurable at 0 differing pixels, and it is now what makes a device
+    //     that could not create the buffers degrade to sun-only rather than to garbage.
     //   * worldNrm.w is the vertex shaders' "this mesh is lit at all" flag. It is 1 only
     //     where the fixed-function lighting equation actually ran, so texture-only overlay
     //     passes (which composite over an already-lit base and would be lit twice) and

@@ -40,14 +40,13 @@ class W3DDynamicLight : public LightClass
 friend class BaseHeightMapRenderObjClass;
 friend class HeightMapRenderObjClass;
 protected:
-	/// Values used by HeightMapRenderObjClass to update the height map.
-	Bool		m_priorEnable;
-	Bool		m_processMe;
-
-
-	Int			m_prevMinX, m_prevMinY, m_prevMaxX, m_prevMaxY;
-	Int			m_minX, m_minY, m_maxX, m_maxY;
-
+	// TheSuperHackers @feature andytraber 07/09/2026 C7 of the clustered lighting plan.
+	// A block of heightmap bookkeeping used to sit here -- m_priorEnable, m_processMe and two
+	// integer bounding rectangles (this frame's and last frame's) in map-cell coordinates.
+	// Its only purpose was to tell HeightMapRenderObjClass::On_Frame_Update which terrain
+	// vertex-buffer tiles a light had entered or left since the previous frame, so the CPU
+	// could re-light exactly those. That whole path is gone and nothing else ever read the
+	// fields, so they went with it, along with cull(), which tested the same rectangle.
 	Bool		m_enabled;
 
 	Bool		m_decayRange;
@@ -76,6 +75,4 @@ public:
 	void setFrameFade(UnsignedInt frameIncreaseTime, UnsignedInt decayFrameTime);
 	void setDecayRange() {m_decayRange = true;};
 	void setDecayColor() {m_decayColor = true;};
-	// Cull returns true if the terrain vertex at x,y is outside of the light's influence.
-	Bool cull(Int x, Int y ) {return (x<m_minX||y<m_minY||x>m_maxX||y>m_maxY);}
 };

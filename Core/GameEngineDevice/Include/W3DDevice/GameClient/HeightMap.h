@@ -68,7 +68,6 @@ public:
 	// Render Object Interface (W3D methods)
 	/////////////////////////////////////////////////////////////////////////////
 	virtual void					Render(RenderInfoClass & rinfo) override;
-	virtual void					On_Frame_Update() override;
 
 	///allocate resources needed to render heightmap
 	virtual int initHeightData(Int width, Int height, WorldHeightMap *pMap, RefRenderObjListIterator *pLightsIterator, Bool updateExtraPassTiles=TRUE) override;
@@ -107,12 +106,13 @@ protected:
 
 	DX8VertexBufferClass *getVertexBufferTile(Int x, Int y);
 	VERTEX_FORMAT *getVertexBufferBackup(Int x, Int y);
-	UnsignedInt doTheDynamicLight(VERTEX_FORMAT *vb, VERTEX_FORMAT *vbMirror, Vector3*light, Vector3*normal, W3DDynamicLight *pLights[], Int numLights);
 	Int getXWithOrigin(Int x);
 	Int getYWithOrigin(Int x);
-	///update vertex diffuse color for dynamic lights inside given rectangle
-	Int updateVBForLight(DX8VertexBufferClass *pVB, VERTEX_FORMAT *data, Int x0, Int y0, Int x1, Int y1, Int originX, Int originY, W3DDynamicLight *pLights[], Int numLights);
-	Int updateVBForLightOptimized(DX8VertexBufferClass	*pVB, VERTEX_FORMAT *data, Int x0, Int y0, Int x1, Int y1, Int originX, Int originY, W3DDynamicLight *pLights[], Int numLights);
+	// TheSuperHackers @feature andytraber 07/09/2026 C7: doTheDynamicLight, updateVBForLight
+	// and updateVBForLightOptimized are gone -- dynamic lights are per-pixel in terrain_ps
+	// now (the clustered lighting plan). m_vertexBufferBackup outlives them: updateVB
+	// still needs the in-memory mirror to read a vertex's static diffuse back without
+	// reading out of the hardware buffer.
 	///update vertex buffer vertices inside given rectangle
 	Int updateVB(DX8VertexBufferClass	*pVB, VERTEX_FORMAT *data, Int x0, Int y0, Int x1, Int y1, Int originX, Int originY, WorldHeightMap *pMap, RefRenderObjListIterator *pLightsIterator);
 	///update vertex buffers associated with the given rectangle
