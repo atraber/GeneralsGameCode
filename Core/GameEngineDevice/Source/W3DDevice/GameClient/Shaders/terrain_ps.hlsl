@@ -9,10 +9,17 @@
 // map. That has to happen here rather than in the vertex data because the artwork
 // tiles seamlessly from cell to cell -- see the comment on stochasticSample.
 
+// Clustered local lights (C5.3 of the clustered lighting plan) are the one light this
+// shader computes for itself. Everything else it draws arrives pre-lit in COLOR0, baked on
+// the CPU per vertex; a point light on the ground cannot be, because the cell grid is 10
+// world units and a lamp's whole falloff fits inside one cell. Off by default, and with it
+// off not one instruction below touches the colour.
+
 #include "shadermodel.hlsli"
 
 #include "constants.hlsli"
 #include "shadow.hlsli"
+#include "clustered.hlsli"
 
 DECLARE_SAMPLER(BaseSampler, 0);
 DECLARE_SAMPLER(ClassMap, 1);   // per-slot class table (point sampled)
@@ -28,6 +35,17 @@ float4 TilingParams  : register(c3); // x = stochastic tiling on, y = lattice si
 float4 DetailParams  : register(c4); // x = detail on, y = albedo strength, z = relief strength, w = scale
 float4 SunDir        : register(c5); // xyz = direction toward the sun, world space
 float4 ColourParams  : register(c6); // x = macro colour variation strength
+
+// The clustered light path's three buffers (C5.3), at the absolute slots clustergrid.hlsli
+// assigns them -- above the eight texture stages, bound once per frame rather than per draw
+// by W3DShaderManager::bindClusteredLightBuffers. No sampler for any of them: they are read
+// with Load()/operator[], which wants the t slot and nothing else.
+//
+// t8 and up matters more here than anywhere: this shader already holds t0-t5, and the
+// terrain is the surface a ground light is most often standing on.
+StructuredBuffer<GpuLight> LightBuffer    : register(t8);
+Buffer<uint>               ClusterGrid    : register(t9);
+Buffer<uint>               LightIndexList : register(t10);
 
 // Two periods for the detail layer rather than one. A single projection would reintroduce
 // exactly the regular repeat the stochastic tiling just removed, only at a different
@@ -106,6 +124,34 @@ struct PS_INPUT
     float4 lightPos : TEXCOORD4;
     float3 worldPos : TEXCOORD5;
 };
+
+// The clustered local lights reaching this pixel, as a light colour to be multiplied by the
+// ground's albedo -- exactly what input.color.rgb already is.
+//
+// **NO PI, AND THAT IS THE WHOLE POINT OF THE SPLIT.** ClusteredLightingDiffuse is
+// deliberately in the engine's non-radiometric convention. The terrain's CPU bake
+// (doTheDynamicLight, HeightMap.cpp) computes colour * saturate(dot(N, L)) with no constants
+// in it, so "a white surface fully facing a light of colour C renders as C" -- and unit_vs
+// computes the same thing for meshes. A local light dropped in here has to land in that
+// convention or the ground under a lamp reads PI times brighter than the tank standing on
+// it. unit_pbr_ps reaches the same place by the other route: a Lambert BRDF is albedo/PI, so
+// it multiplies its light colour by PI first (LIGHT_IRRADIANCE) and the PI cancels. Two
+// conventions, one result; the bug is only ever mixing them, and this project has been
+// bitten by exactly that twice.
+//
+// **THE GATE IS THE CALLER'S.** Returning zero from here and adding it unconditionally would
+// leave an add of zero in every frame the feature is off, and "0 differing pixels with the
+// toggle off" has to mean there is no arithmetic left behind to be rounded differently.
+float3 clusteredLight(float4 clipPos, float3 worldPos, float3 N)
+{
+    // The view distance is SV_Position.w's reciprocal and nothing else. This engine's
+    // projection is right-handed, so clip.w is the positive distance in front of the camera
+    // and a pixel shader receives 1/w -- no interpolant, and no reconstruction out of the
+    // projection's _33/_43. max() only guards the division; ClusterSliceOf clamps the result
+    // to the grid at both ends anyway.
+    uint cluster = ClusterIndexAt(clipPos.xy, 1.0 / max(clipPos.w, 1e-8));
+    return ClusteredLightingDiffuse(CLUSTER_BUFFERS_ARG, cluster, worldPos, N);
+}
 
 // Macro colour variation: which part of the map this is, rather than what is underfoot.
 //
@@ -355,6 +401,24 @@ float4 main(PS_INPUT input) : PS_TARGET
     // for a slope test and as the reference the relief term subtracts off, and in the
     // latter the facet cancels. Sign-corrected rather than relying on a winding order
     // that the triangle flip for blending does not preserve.
+    //
+    // **THE SIGN CORRECTION IS THE HANDEDNESS ARGUMENT, AND IT IS WHY THE CROSS-PRODUCT
+    // ORDER DOES NOT HAVE TO BE GUESSED AT.** C5.3 makes this normal a lighting input as
+    // well as a slope test, so it now matters that it points out of the ground and not into
+    // it. Check it on paper for flat ground, which is the case with an exact answer: there
+    // worldPos.z is constant, so dpx and dpy both lie in the world XY plane and their cross
+    // product is exactly (0, 0, k) for some non-zero k -- +/-Z and nothing else, whatever the
+    // camera's yaw, whatever the triangle's winding, and whatever sign convention ddy
+    // carries in a top-left-origin render target. k's sign is the only unknown, and the
+    // line below removes it: after it, flat ground reconstructs to exactly (0, 0, 1). The
+    // cross-product ORDER is therefore not load-bearing at all -- swapping the operands
+    // negates k, which this line undoes -- which is a far better position to be in than
+    // having reasoned out one order and hoped.
+    //
+    // It generalises the only way it needs to: this game's terrain is a heightfield with
+    // one height per grid vertex, so no facet can overhang and every real facet normal has
+    // a positive Z. The flip is therefore not "make it face the camera", it is "the surface
+    // is a heightfield", which is true of every triangle that reaches this shader.
     float3 dpx  = ddx(input.worldPos);
     float3 dpy  = ddy(input.worldPos);
     float3 Ngeo = normalize(cross(dpx, dpy));
@@ -364,7 +428,55 @@ float4 main(PS_INPUT input) : PS_TARGET
     float4 tile0 = stochasticSample(input.uv0, input.worldPos.xy, dx0, dy0);
     float4 tile1 = stochasticSample(input.uv1, input.worldPos.xy, dx1, dy1);
     float  blend = tile1.a * input.color.a;
-    float3 col   = lerp(tile0.rgb, tile1.rgb, blend) * input.color.rgb;
+
+    // The baked vertex light, plus whatever clustered local lights reach this pixel (C5.3).
+    //
+    // **ADDED TO THE LIGHT, NOT TO THE PIXEL.** input.color.rgb is the light this patch of
+    // ground receives and the tile cross-blend is its albedo, so a term added here is
+    // multiplied by the ground texture exactly as the baked sun is. Adding it after the
+    // multiply would make a lamp wash tarmac and grass to the same colour.
+    //
+    // Ngeo, the derivative-reconstructed geometric face normal, is the N. It is what the
+    // CPU path used too -- doTheDynamicLight takes its normal off the heightfield, not off
+    // a smoothed vertex normal -- so this is not an approximation of the old behaviour, it
+    // is the same normal reached without a vertex format change.
+    //
+    // **THE DETAIL LAYER'S GRADIENT DELIBERATELY DOES NOT PERTURB IT, and that is not an
+    // omission.** applyTerrainDetail below already perturbs a normal by that gradient and
+    // applies the *difference* the perturbation makes as a multiplier on the whole colour
+    // -- and because the clustered term is folded into col before that call, the relief
+    // multiplier reaches the local lights too. Perturbing Ngeo here as well would apply the
+    // same bump twice, once through the multiplier and once through this N.L. It would also
+    // be wrong in its own right: that perturbation is only valid while the ground is near
+    // horizontal (the slope fade above the call is what guarantees it) and it is fitted
+    // against the SUN's direction, so re-using it for a lamp two metres away lights the
+    // bumps from the wrong place. One relief model, applied once, in the function that owns
+    // it.
+    //
+    // **THE DOUBLE-COUNT WITH THE CPU PATH IS EXPECTED AND IS C7'S.** input.color.rgb still
+    // contains the CPU-computed dynamic light that doTheDynamicLight bakes per vertex every
+    // frame, so with this toggle on a lamp is counted twice -- once per vertex, once per
+    // pixel. C7 deletes the CPU path; that is where the two stop coexisting, and until then
+    // the toggle is off by default.
+    //
+    // **CLUSTER_SUPPRESS_DIRECTIONAL IS NOT HONOURED HERE, AND CANNOT BE.** The
+    // sun-equivalence control (b1's ClusterLimits.w, W3D_CLUSTER_SUN_CHECK) turns off a
+    // shader's own directional term so a clustered stand-in for the sun can be compared
+    // against it. This shader has no directional term to turn off: the sun reaches the
+    // terrain already summed with the scene ambient and the CPU dynamic lights inside
+    // COLOR0, one D3DCOLOR per vertex, with no way to recover the three parts. Scaling
+    // input.color.rgb would take the ambient and the CPU lights down with the sun, which is
+    // not the comparison the control makes -- it would make the control's own reference
+    // frame wrong and read as a much larger disagreement than any real one. The control
+    // belongs to unit_pbr_ps, where the four directionals are still separate terms at the
+    // point it is read; it is deliberately left alone here rather than approximated.
+    float3 litColor = input.color.rgb;
+    [branch] if (ClusteredLightingEnabled())
+    {
+        litColor += clusteredLight(input.position, input.worldPos, Ngeo);
+    }
+
+    float3 col   = lerp(tile0.rgb, tile1.rgb, blend) * litColor;
 
     col = applyTerrainDetail(col, input.worldPos, Ngeo);
 

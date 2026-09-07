@@ -4,12 +4,20 @@
 // the vertex shader. This reproduces the fixed-function "texture * diffuse"
 // output. Multi-texture passes use unit_detail_ps instead, so this shader never
 // samples a stage it has no texture for.
+//
+// The one light this shader computes for itself is the clustered local-light term (C5.2 of
+// the clustered lighting plan), and it is here rather than in unit_vs for the reason
+// the feature exists: a point light beside a tank has to light the near side harder than
+// the far side, which a per-vertex sum cannot express. The sun stays in the vertex shader
+// and arrives in the interpolated colour exactly as before. Switched off by default, and
+// with it off not one instruction below touches the result.
 
 #include "shadermodel.hlsli"
 
 #include "constants.hlsli"
 #include "shadow.hlsli"
 #include "alphatest.hlsli"
+#include "clustered.hlsli"
 
 DECLARE_SAMPLER(BaseSampler, 0);
 
@@ -66,6 +74,19 @@ DECLARE_SAMPLER(SceneDepth, 7);    // camera-view packed depth from the SSR prep
 //     behind it, z/w = the two projection terms that turn a clip depth into a distance.
 float4 SoftCtl : register(c12);
 
+// The clustered light path's three buffers (C5.2), at the absolute slots clustergrid.hlsli
+// assigns them -- above the eight texture stages, bound once per frame rather than per
+// draw by W3DShaderManager::bindClusteredLightBuffers. No sampler for any of them: they
+// are read with Load()/operator[], which wants the t slot and nothing else.
+//
+// They cost no c register. Everything the lookup is parameterised by lives in b1, which is
+// what made this stage affordable at all -- this shader was already at c1, c8-c12 and c28
+// out of GFX_PS_CONSTANTS' 32, and unit_detail_ps, which shares the interpolant signature,
+// additionally holds c2-c7 for its stage-1 combine.
+StructuredBuffer<GpuLight> LightBuffer    : register(t8);
+Buffer<uint>               ClusterGrid    : register(t9);
+Buffer<uint>               LightIndexList : register(t10);
+
 // Unpack the RGB-packed depth the prepass writes. Weights are 255, matching
 // shadowdepth_ps's pack -- the same helper water_ps carries.
 float unpackSceneDepth(float4 rgba)
@@ -119,7 +140,53 @@ struct PS_INPUT
 // struct has always been, so the .pso does not move.
     float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
     float4 screenPos : TEXCOORD5;
+    // C5.2. Appended, in the vertex shaders' declaration order, because model 5 links the
+    // stages by register as well as by semantic -- inserting either of these anywhere
+    // earlier renumbers screenPos and stops this shader linking to any of the three unit
+    // vertex shaders, silently and without a compile error on either half.
+    float3 worldPos  : TEXCOORD6;
+    float4 worldNrm  : TEXCOORD7;  // xyz = world normal, w = takes clustered local light
 };
+
+// The clustered local lights reaching this pixel, as a light colour to be multiplied by
+// the surface's own -- exactly what input.color.rgb already is.
+//
+// **NO PI, AND THAT IS THE WHOLE POINT OF THE SPLIT.** ClusteredLightingDiffuse is
+// deliberately in the engine's non-radiometric convention: unit_vs computes
+// MatDiffuse * saturate(dot(N, L)) with no constants in it, so "a white surface fully
+// facing a light of colour C renders as C", and a local light dropped in here has to land
+// in the same convention or it reads PI times brighter than the sun next to it.
+// unit_pbr_ps reaches the same place by the other route -- a Lambert BRDF is albedo/PI, so
+// it multiplies its light colour by PI first (LIGHT_IRRADIANCE) and the PI cancels. Two
+// conventions, one result. This project has twice been bitten by a constant living in two
+// spaces at once; harmonising these two would be the third time.
+//
+// **THE GATE IS THE CALLER'S, NOT THIS FUNCTION'S, AND THAT IS DELIBERATE.** Returning
+// zero from here and letting the caller add it unconditionally would leave an add of zero
+// in every frame the feature is switched off, and "0 differing pixels with the toggle off"
+// has to mean there is no arithmetic left behind to be rounded differently -- not that the
+// arithmetic happens to be a no-op. unit_pbr_ps structures its own block the same way.
+//
+// Both halves of that gate are the caller's: the frame constant AND worldNrm.w, the
+// per-mesh "this geometry is lit at all" flag the vertex shaders write. Taking the normal
+// as a float3 here is what forces that -- a float4 parameter whose .w this function
+// ignored would read as though the flag were being honoured somewhere inside.
+float3 clusteredLight(float4 clipPos, float3 worldPos, float3 worldNrm)
+{
+    // rsqrt(max(...)) and not normalize(): a zero normal reaches here whenever the gate is
+    // ever loosened, and normalize() would answer NaN, which survives every operation after
+    // it and takes the pixel with it. Same guard as Safe_Normalize in unit_vs.
+    float3 n = worldNrm;
+    float3 N = n * rsqrt(max(dot(n, n), 1e-12));
+
+    // The view distance is SV_Position.w's reciprocal and nothing else. This engine's
+    // projection is right-handed, so clip.w is the positive distance in front of the
+    // camera and a pixel shader receives 1/w -- no interpolant, and no reconstruction out
+    // of the projection's _33/_43. max() only guards the division; ClusterSliceOf clamps
+    // the result to the grid at both ends anyway.
+    uint cluster = ClusterIndexAt(clipPos.xy, 1.0 / max(clipPos.w, 1e-8));
+    return ClusteredLightingDiffuse(CLUSTER_BUFFERS_ARG, cluster, worldPos, N);
+}
 
 // Cast-shadow term. The filter is the shared one in shadow.hlsli, so a unit and the ground
 // it stands on agree tap for tap about where a shadow falls and how far it softens -- the
@@ -153,11 +220,54 @@ float4 main(PS_INPUT input) : PS_TARGET
     float diffAlpha = lerp(input.color.a, TexCtl.y, TexCtl.z);
     float texAlpha  = lerp(1.0, baseColor.a, TexCtl.w);
 
+    // The lit colour arriving from the vertex shader, plus whatever local lights reach
+    // this pixel (C5.2).
+    //
+    // **THE LOCAL LIGHT IS ADDED TO THE LIGHT, NOT TO THE PIXEL.** input.color.rgb is the
+    // light this surface receives -- emissive + material ambient * scene ambient + the four
+    // directionals -- and baseColor is its albedo, so a term added here is multiplied by
+    // the texture exactly as the sun is. Adding it to the product instead would light a
+    // black tank tread as brightly as white paint, which is not a lighting model, it is a
+    // fog. This is the same place unit_pbr_ps adds it (into Lo, before anything encodes)
+    // reached through a shader that has no BRDF.
+    //
+    // TWO CONDITIONS, AND BOTH ARE PER-DRAW CONSTANTS, so the branch is coherent across
+    // the whole draw call and predicts perfectly -- the same argument the cast-shadow
+    // branch below is written on.
+    //   * ClusteredLightingEnabled() is b1's ClusterLimits.z (options.ini
+    //     UseClusteredLighting). With it zero -- which is also what an unwritten b1 block
+    //     reads -- not one instruction here touches the colour: no multiply by 1, no add
+    //     of 0, nothing left behind to round differently. That is what makes "with the
+    //     toggle off, 0 differing pixels" a statement about this frame and not a hope.
+    //   * worldNrm.w is the vertex shaders' "this mesh is lit at all" flag. It is 1 only
+    //     where the fixed-function lighting equation actually ran, so texture-only overlay
+    //     passes (which composite over an already-lit base and would be lit twice) and
+    //     effect geometry (which emits rather than reflects, and carries a zero normal
+    //     besides) are excluded -- and unit_prelit_vs writes 0 outright, having no normal
+    //     to take an N.L against. Testing it here rather than relying on the zero normal
+    //     multiplying the sum out is not fussiness: the zero normal makes the *result*
+    //     zero only after the loop has already run over every light in the cluster, and
+    //     effect geometry is the most overdrawn thing in the frame.
+    float3 litColor = input.color.rgb;
+    [branch] if (ClusteredLightingEnabled() && input.worldNrm.w > 0.5)
+    {
+        litColor += clusteredLight(input.position, input.worldPos, input.worldNrm.xyz);
+    }
+
     // Darken toward a floor rather than to black: the lit colour from the vertex shader
     // is ambient and direct light already summed, so there is no direct term left to
     // remove on its own. SHADOW_MIN comes from constants.hlsli, the same value the terrain
     // reads, so a unit and its own cast shadow on the ground sit at the same brightness.
-    float3 rgb = baseColor.rgb * input.color.rgb;
+    //
+    // The clustered term is inside that darkening, and inside the cloud shade below, which
+    // is deliberate and is a choice against physics: a muzzle flash is not switched off by
+    // the sun's shadow map. unit_pbr_ps carries the full argument for accepting it (the
+    // error is bounded -- SHADOW_MIN = 0.51, so 51% rather than 100% for a local light
+    // standing in a cast shadow -- and exempting one term means adding it in a second
+    // space, in the shader whose two known bugs were both a value used in the wrong one); the
+    // two shaders must reach the same answer or a tank half in shadow would be lit
+    // differently depending on whether it happened to have an ORM map.
+    float3 rgb = baseColor.rgb * litColor;
 
     // Skipped outright for geometry the sun does not light: effect geometry, and
     // texture-only overlay passes. Both already fed cloudPos.z = 0, so both terms

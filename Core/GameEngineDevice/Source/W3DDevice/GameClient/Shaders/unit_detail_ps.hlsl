@@ -15,12 +15,20 @@
 //
 // Bound only when a detail texture is present -- the single-texture shader (unit_ps)
 // never samples stage 1, since sampling a stage with no texture bound is undefined.
+//
+// It shares unit_vs's interpolant signature with unit_ps, so it also carries the clustered
+// local-light term (C5.2 of the clustered lighting plan) -- and it has to, or a mesh
+// would be lit by a nearby lamp on its single-texture passes and not on its two-texture
+// ones. Those are usually different passes of the SAME mesh: the routing decision is
+// per-pass (a detail texture is present or it is not), so a difference here is a difference
+// within one tank. See the long note in unit_ps; the arithmetic is deliberately identical.
 
 #include "shadermodel.hlsli"
 
 #include "constants.hlsli"
 #include "shadow.hlsli"
 #include "alphatest.hlsli"
+#include "clustered.hlsli"
 
 DECLARE_SAMPLER(BaseSampler, 0);
 DECLARE_SAMPLER(DetailSampler, 1);
@@ -93,6 +101,19 @@ DECLARE_SAMPLER(SceneDepth, 7);    // camera-view packed depth from the SSR prep
 //     behind it, z/w = the two projection terms that turn a clip depth into a distance.
 float4 SoftCtl : register(c12);
 
+// The clustered light path's three buffers (C5.2), at the absolute slots clustergrid.hlsli
+// assigns them -- above the eight texture stages, bound once per frame rather than per draw
+// by W3DShaderManager::bindClusteredLightBuffers. No sampler for any of them: they are read
+// with Load()/operator[], which wants the t slot and nothing else.
+//
+// They cost no c register, which is what makes this shader able to take the feature at all:
+// it holds c1 through c12 and c28 out of GFX_PS_CONSTANTS' 32, six of them (c2-c7) being
+// the stage-1 combine that unit_ps does not have. Everything the cluster lookup is
+// parameterised by lives in b1.
+StructuredBuffer<GpuLight> LightBuffer    : register(t8);
+Buffer<uint>               ClusterGrid    : register(t9);
+Buffer<uint>               LightIndexList : register(t10);
+
 // Unpack the RGB-packed depth the prepass writes. Weights are 255, matching
 // shadowdepth_ps's pack -- the same helper water_ps carries.
 float unpackSceneDepth(float4 rgba)
@@ -148,7 +169,52 @@ struct PS_INPUT
 // struct has always been, so the .pso does not move.
     float3 cloudPos  : TEXCOORD3;  // xy = ground-plane position, z = receives sun
     float4 screenPos : TEXCOORD5;
+    // C5.2. Appended, in the vertex shaders' declaration order, and character for character
+    // what unit_ps declares -- the two share all three unit vertex shaders, so a difference
+    // here is a difference in which register each interpolant lands in.
+    //
+    // MEASURED, not assumed. Model 5 links the two stages by semantic AND by register, and
+    // fxc numbers a signature by packing declarations in order (which is why TEXCOORD0 and
+    // TEXCOORD1 share register 2 as .xy and .zw). Before this shader declared them, its
+    // input signature stopped at register 5 while all three vertex shaders wrote through
+    // register 7: that links -- the engine's own Signatures_Link, and D3D11, require the
+    // pixel shader's inputs to be *found* in the vertex shader's outputs, not to exhaust
+    // them, and registers 0-5 matched exactly. So this was never the silent-black-frame
+    // case the SM4 migration hit; it was simply a shader not being given the lights.
+    float3 worldPos  : TEXCOORD6;
+    float4 worldNrm  : TEXCOORD7;  // xyz = world normal, w = takes clustered local light
 };
+
+// The clustered local lights reaching this pixel, as a light colour to be multiplied by the
+// surface's own. Character for character unit_ps's clusteredLight, and it has to be: two
+// passes of one mesh route to the two shaders by whether a detail texture is bound, so any
+// difference between these two functions is a seam down the middle of a tank.
+//
+// **NO PI, AND THAT IS THE WHOLE POINT OF THE SPLIT.** ClusteredLightingDiffuse is
+// deliberately in the engine's non-radiometric convention: unit_vs computes
+// MatDiffuse * saturate(dot(N, L)) with no constants in it, so "a white surface fully
+// facing a light of colour C renders as C", and a local light dropped in here has to land
+// in the same convention or it reads PI times brighter than the sun next to it. unit_pbr_ps
+// reaches the same place by the other route -- a Lambert BRDF is albedo/PI, so it
+// multiplies its light colour by PI first (LIGHT_IRRADIANCE) and the PI cancels. Two
+// conventions, one result. This project has twice been bitten by a constant living in two
+// spaces at once; harmonising these two would be the third time.
+float3 clusteredLight(float4 clipPos, float3 worldPos, float3 worldNrm)
+{
+    // rsqrt(max(...)) and not normalize(): a zero normal reaches here whenever the gate is
+    // ever loosened, and normalize() would answer NaN, which survives every operation after
+    // it and takes the pixel with it. Same guard as Safe_Normalize in unit_vs.
+    float3 n = worldNrm;
+    float3 N = n * rsqrt(max(dot(n, n), 1e-12));
+
+    // The view distance is SV_Position.w's reciprocal and nothing else. This engine's
+    // projection is right-handed, so clip.w is the positive distance in front of the camera
+    // and a pixel shader receives 1/w -- no interpolant, and no reconstruction out of the
+    // projection's _33/_43. max() only guards the division; ClusterSliceOf clamps the
+    // result to the grid at both ends anyway.
+    uint cluster = ClusterIndexAt(clipPos.xy, 1.0 / max(clipPos.w, 1e-8));
+    return ClusteredLightingDiffuse(CLUSTER_BUFFERS_ARG, cluster, worldPos, N);
+}
 
 float3 PickRGB(float4 sel, float3 tex, float3 cur, float3 dif)
 {
@@ -165,17 +231,36 @@ float4 main(PS_INPUT input) : PS_TARGET
     float4 baseColor = SAMPLE_2D(BaseSampler, input.texcoord);
     baseColor = lerp(float4(1.0, 1.0, 1.0, 1.0), baseColor, TexCtl.x);
 
+    // The lit colour arriving from the vertex shader, plus whatever local lights reach this
+    // pixel (C5.2). Identical in structure to unit_ps -- see the long note there for why
+    // the term is added to the *light* rather than to the finished pixel, why both halves
+    // of the gate are tested here, and why with the toggle off not one instruction below
+    // touches the result.
+    //
+    // **IT REPLACES input.color.rgb EVERYWHERE THE COLOUR IS A LIGHT, INCLUDING THE STAGE 1
+    // DIFFUSE SOURCE.** That third argument to PickRGB is the fixed-function DIFFUSE
+    // register, which is this same lit vertex colour: a stage that combines its texture
+    // against the diffuse is asking for the light on this surface, and a stage that has
+    // been handed the pre-clustered one would draw the lamp's light on the base pass and
+    // not on the detail pass laid over it. Feeding both from one variable is what makes
+    // that structural instead of a promise.
+    float3 litColor = input.color.rgb;
+    [branch] if (ClusteredLightingEnabled() && input.worldNrm.w > 0.5)
+    {
+        litColor += clusteredLight(input.position, input.worldPos, input.worldNrm.xyz);
+    }
+
     // Stage 0 result: texture * diffuse, matching the fixed-function combine. Its alpha
     // mirrors that stage's alpha combine -- lit meshes source the diffuse alpha from the
     // material (where stealth translucency lives), and either factor folds to 1 when the
     // stage does not use it.
     float diffAlpha = lerp(input.color.a, TexCtl.y, TexCtl.z);
     float texAlpha  = lerp(1.0, baseColor.a, TexCtl.w);
-    float4 current = float4(baseColor.rgb * input.color.rgb, texAlpha * diffAlpha);
+    float4 current = float4(baseColor.rgb * litColor, texAlpha * diffAlpha);
     float4 detail  = SAMPLE_2D(DetailSampler, input.texcoord1);
 
-    float3 c1 = PickRGB(Stage1CArg1, detail.rgb, current.rgb, input.color.rgb);
-    float3 c2 = PickRGB(Stage1CArg2, detail.rgb, current.rgb, input.color.rgb);
+    float3 c1 = PickRGB(Stage1CArg1, detail.rgb, current.rgb, litColor);
+    float3 c2 = PickRGB(Stage1CArg2, detail.rgb, current.rgb, litColor);
     float3 rgb = Stage1COp.x * (c1 * c2)
                + Stage1COp.y * (c1 + c2)
                + Stage1COp.z * c1

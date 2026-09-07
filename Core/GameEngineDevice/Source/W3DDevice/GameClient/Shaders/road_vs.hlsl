@@ -36,6 +36,17 @@ struct VS_OUTPUT
     float4 cloudUV  : TEXCOORD2;   // xy = layer A, zw = layer B
     float2 noiseUV  : TEXCOORD3;
     float4 lightPos : TEXCOORD4;   // position in the sun's clip space (for shadowing)
+    // C5.3. The raw world position, at the same semantic terrain_vs carries it on, so that
+    // the pixel shader can find its cluster and recover the ground's geometric normal from
+    // its own derivatives. This is the ONE new interpolant the clustered path costs the
+    // road, and it costs one and not two because a road, like the terrain, has no vertex
+    // normal to hand over -- the normal is reconstructed on the other side.
+    //
+    // Appended, not inserted: model 5 links the stages by register as well as by semantic
+    // and fxc numbers a signature by packing declarations in order, so putting this
+    // anywhere earlier renumbers every interpolant after it and stops the pair linking --
+    // silently, with both halves still compiling clean.
+    float3 worldPos : TEXCOORD5;
 };
 
 VS_OUTPUT main(VS_INPUT input)
@@ -54,5 +65,11 @@ VS_OUTPUT main(VS_INPUT input)
     // road without changing shape or position.
     output.cloudUV  = float4((input.position.xy + CloudOffset.xy) / CLOUD_PERIOD_A,
                              (input.position.xy + CloudOffset.zw) / CLOUD_PERIOD_B);
+
+    // Unscaled and untransformed, exactly as terrain_vs hands its own over. Road vertices
+    // are already in world space -- which is why lightPos above reprojects straight by
+    // SunVP with no world matrix -- so there is nothing to do to it, and no constant to
+    // add. The STRETCH_FACTOR copy above is for the overlay lattice and is not this.
+    output.worldPos = input.position;
     return output;
 }

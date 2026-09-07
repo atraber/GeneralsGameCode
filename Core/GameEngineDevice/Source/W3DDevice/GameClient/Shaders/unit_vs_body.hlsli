@@ -18,8 +18,24 @@
 //  * when fixed-function lighting is enabled, accumulate the scene ambient plus
 //    up to four directional lights (matching the engine's LightEnvironment),
 //  * when lighting is disabled, pass through the pre-lit vertex colour.
+//
+// What it deliberately does NOT do is the clustered local lights (C5.2 of
+// the clustered lighting plan). Clustered lighting is per pixel by construction --
+// a point light beside a tank has to reach the near side harder than the far side, which
+// is the entire capability the feature exists to add -- so a vertex shader summing it
+// here would throw away the thing being paid for. What this shader does instead is hand
+// the pixel shader the two things it cannot reconstruct: the world position and the world
+// normal. See the interpolants at the end of VS_OUTPUT.
 
 #include "shadermodel.hlsli"
+
+// For ClusteredLightingEnabled() and CLUSTER_SUPPRESS_DIRECTIONAL only -- b1 is bound on
+// the vertex stage as well as the pixel one (GfxDeviceD3D11::Init_Device binds it to VS,
+// PS and CS alike), and the sun-equivalence control has to reach the sun term, which for
+// this shader family is here rather than in the pixel shader. The lookup functions in that
+// header take their buffers as parameters and are never referenced from a vertex shader,
+// so nothing but the two frame constants survives into the compiled vs_5_0.
+#include "clustered.hlsli"
 
 row_major float4x4 WorldViewProj : register(c0);  // object -> clip space
 row_major float4x4 WorldView     : register(c4);  // object -> camera (view) space
@@ -68,6 +84,17 @@ row_major float4x4 TexMatrix1 : register(c28);
 // matrix -- this path otherwise never needs world space.
 float4 WorldAxisX : register(c22);   // object -> world X
 float4 WorldAxisY : register(c23);   // object -> world Y
+// The third column, added by C5.2. The cloud shadow never needed it -- it projects
+// straight down, so world Z is exactly the coordinate it throws away -- but a clustered
+// light does: "how far is this pixel from that light" is a 3-D question. Kept as a third
+// vector rather than promoted to a whole object->world matrix so that the two existing
+// dots keep working unchanged and this path still never carries a matrix it uses twice.
+//
+// Row-vector convention, so these three are COLUMNS of the object->world matrix: a world
+// coordinate is dot(float4(objectPos, 1), axis), and a world normal component is
+// dot(objectNormal, axis.xyz) -- the translation row drops out for a direction, which is
+// the whole reason the normal takes only .xyz.
+float4 WorldAxisZ : register(c37);   // object -> world Z
 
 row_major float4x4 WorldSunVP : register(c32);
 
@@ -105,6 +132,27 @@ struct VS_OUTPUT
     // The clip position again, so the pixel shader can find itself on screen and read the
     // depth prepass. POSITION is not readable in a pixel shader, hence the copy.
     float4 screenPos : TEXCOORD5;
+    // C5.2. The two things a clustered local light needs and this shader family had never
+    // carried: where the surface is in the world, and which way it faces there.
+    //
+    // TWO NEW INTERPOLANTS, AND THEY ARE THE COST OF THIS STAGE. One cheaper packing was
+    // available and rejected: cloudPos above is a float3 whose spare .w could have carried
+    // world Z (its .xy already IS the world XY, and its .z is a flag riding in a spare
+    // component exactly this way). That saves one register, and it does so by changing the
+    // meaning of an interpolant that two pixel shaders read in their sun-shadow and cloud
+    // gates -- lines with nothing to do with this stage. One register per mesh vertex on a
+    // feature that is off by default is not worth editing those.
+    //
+    // They are appended, not inserted, and that is load-bearing: Shader Model 5 links the
+    // two stages by register as well as by semantic and fxc numbers a signature in
+    // declaration order, so anything added before screenPos would silently renumber every
+    // interpolant after it and stop unit_ps and unit_detail_ps linking at all. See
+    // PS_INPUT_POSITION in shadermodel.hlsli.
+    float3 worldPos  : TEXCOORD6;  // world-space position
+    // xyz = world-space normal, NOT renormalized after interpolation (the pixel shader
+    // does that, as unit_pbr_ps does with its own). w = 1 when this mesh takes clustered
+    // local light at all -- see where it is written.
+    float4 worldNrm  : TEXCOORD7;
 };
 
 // Normalizing a zero-length vector yields NaN, and NaN survives everything downstream --
@@ -193,6 +241,30 @@ VS_OUTPUT main(VS_INPUT input)
         diffuseLight += LightDiffuse1.rgb * saturate(dot(N, LightDir1.xyz));
         diffuseLight += LightDiffuse2.rgb * saturate(dot(N, LightDir2.xyz));
         diffuseLight += LightDiffuse3.rgb * saturate(dot(N, LightDir3.xyz));
+
+        // The sun-equivalence control (b1's ClusterLimits.w, W3D_CLUSTER_SUN_CHECK), and
+        // the reason this shader reads b1 at all.
+        //
+        // unit_pbr_ps can scale its own directional term because that term is computed
+        // where the control is read. Here it is not: the directional term lives in this
+        // vertex shader and the clustered term is added in the pixel shader, so the
+        // control has to reach across the two. It reaches the correct half. Suppressing in
+        // the pixel shader instead would mean scaling output.color, which by then is
+        // emissive + material ambient * scene ambient + the sun -- and killing the ambient
+        // and the emissive along with the sun is not the comparison the control makes.
+        // Doing it here, on diffuseLight alone, removes exactly the four directional lights
+        // a clustered stand-in is standing in for and leaves everything else alone.
+        //
+        // Inside the enable test, not multiplied unconditionally: with clustered lighting
+        // off not one instruction here may touch the colour, which is what makes "0
+        // differing pixels with the toggle off" a statement about this frame rather than a
+        // hope. ClusterLimits.w is zero in every ordinary frame anyway, so the branch is
+        // uniform across the draw and predicts perfectly when it is taken at all.
+        if (ClusteredLightingEnabled())
+        {
+            diffuseLight *= (1.0 - CLUSTER_SUPPRESS_DIRECTIONAL);
+        }
+
         // Fixed-function lit equation with the engine's global colour sources
         // (ambient + diffuse both sourced from the material, matching the vertex
         // material defaults):
@@ -313,11 +385,44 @@ VS_OUTPUT main(VS_INPUT input)
     float4 sunClip = mul(float4(offsetPos, 1.0), WorldSunVP);
     output.lightPos = (shadowReceive > 0.5) ? sunClip : float4(2.0, 2.0, 2.0, 1.0);
 
+    // World space, once, for the two things that want it. The cloud projection has always
+    // taken the first two components; C5.2 added the third and the normal beside it.
+    float4 objectPos = float4(input.position, 1.0);
+    float3 worldPos  = float3(dot(objectPos, WorldAxisX),
+                              dot(objectPos, WorldAxisY),
+                              dot(objectPos, WorldAxisZ));
+
     // A cloud blocks the sun, so whatever receives the sun's shadow receives its clouds:
     // gate both on the same decision rather than letting them disagree about which
     // meshes the sun reaches.
-    output.cloudPos = float3(dot(float4(input.position, 1.0), WorldAxisX),
-                             dot(float4(input.position, 1.0), WorldAxisY),
+    output.cloudPos = float3(worldPos.xy, shadowReceive);
+
+    output.worldPos = worldPos;
+
+    // The world normal for the clustered lights, and the gate that decides whether they
+    // are evaluated at all.
+    //
+    // Rotated by the same three columns, which is the inverse transpose only for a
+    // transform without non-uniform scale -- the same assumption unit_pbr_vs makes with
+    // its plain World matrix and this shader already makes when it lights with WorldView.
+    // A mesh instance transform in this engine is rigid, so it holds.
+    //
+    // Safe_Normalize and not normalize: effect meshes carry zero normals (see the note on
+    // that function), and a NaN escaping into an interpolant would survive every operation
+    // downstream including the multiply by a zero gate.
+    //
+    // THE GATE IS shadowReceive, WHICH IS EXACTLY THE RIGHT CONDITION and not a
+    // coincidence. It is 1 only for meshes the fixed-function lighting equation actually
+    // ran for -- not the texture-only overlay passes, which composite over an already-lit
+    // base and would be lit a second time, and not effect geometry, which emits rather
+    // than reflects and is not lit by anything. That is the same set unit_pbr_ps gates on
+    // with AlphaCtl.y ("1 when lit"), reached from the other direction. It is carried in
+    // its own component rather than read back off cloudPos.z so that unit_prelit_vs can
+    // say "no" for a different reason (no normal to light with) without also claiming its
+    // ground decals do not receive the sun -- which they do.
+    output.worldNrm = float4(Safe_Normalize(float3(dot(input.normal, WorldAxisX.xyz),
+                                                   dot(input.normal, WorldAxisY.xyz),
+                                                   dot(input.normal, WorldAxisZ.xyz))),
                              shadowReceive);
     return output;
 }

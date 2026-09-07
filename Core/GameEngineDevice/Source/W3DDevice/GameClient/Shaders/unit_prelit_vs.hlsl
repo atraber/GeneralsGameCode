@@ -36,6 +36,11 @@ row_major float4x4 TexMatrix1 : register(c28);
 // matrix -- this path otherwise never needs world space.
 float4 WorldAxisX : register(c22);   // object -> world X
 float4 WorldAxisY : register(c23);   // object -> world Y
+// The third column, added by C5.2 alongside unit_vs's. This variant does not take
+// clustered local light -- see where worldNrm is written -- but it still has to hand the
+// pixel shader a real world position rather than a plausible-looking lie, because the
+// signature is shared and a later stage reading it would have no way to tell.
+float4 WorldAxisZ : register(c37);   // object -> world Z
 
 row_major float4x4 WorldSunVP : register(c32);  // object -> sun clip space
 // c36 (ShadowMeshParams in unit_vs) is deliberately not read here. Its normal offset
@@ -64,6 +69,12 @@ struct VS_OUTPUT
     // The clip position again, so the pixel shader can find itself on screen and read the
     // depth prepass. POSITION is not readable in a pixel shader, hence the copy.
     float4 screenPos : TEXCOORD5;
+    // C5.2, matching unit_vs member for member and in the same declaration order. Model 5
+    // links the stages by register as well as by semantic, so a variant that stopped one
+    // interpolant short of the pixel shader's input signature would not draw at all --
+    // and it would not fail to compile either, because each half is valid on its own.
+    float3 worldPos  : TEXCOORD6;
+    float4 worldNrm  : TEXCOORD7;   // xyz = world normal, w = takes clustered light
 };
 
 // Passthrough or camera-space position only -- the normal-based sources cannot be
@@ -116,10 +127,39 @@ VS_OUTPUT main(VS_INPUT input)
     float4 sunClip = mul(float4(input.position, 1.0), WorldSunVP);
     output.lightPos = (noSun > 0.5) ? float4(2.0, 2.0, 2.0, 1.0) : sunClip;
 
+    float4 objectPos = float4(input.position, 1.0);
+    float3 worldPos  = float3(dot(objectPos, WorldAxisX),
+                              dot(objectPos, WorldAxisY),
+                              dot(objectPos, WorldAxisZ));
+
     // Same gate as the cast shadow above: whatever the sun does not light, no cloud may
     // take the sun away from.
-    output.cloudPos = float3(dot(float4(input.position, 1.0), WorldAxisX),
-                             dot(float4(input.position, 1.0), WorldAxisY),
-                             (noSun > 0.5) ? 0.0 : 1.0);
+    output.cloudPos = float3(worldPos.xy, (noSun > 0.5) ? 0.0 : 1.0);
+
+    output.worldPos = worldPos;
+
+    // **PRE-LIT GEOMETRY TAKES NO CLUSTERED LOCAL LIGHT, AND THE ZEROES SAY SO TWICE.**
+    //
+    // The gate is 0 for two independent reasons, either of which alone would settle it.
+    // The first is the one this whole variant exists for: this geometry carries no NORMAL.
+    // Roads, tank tracks and scorch marks reach here on DX8_FVF_XYZDUV1, and a diffuse
+    // light term is N.L -- there is no N to take it against and nothing sensible to invent
+    // (a flat +Z would light a road on a slope as though it were level, and would light
+    // the *underside* of anything that is not a ground decal). The second is what "pre-lit"
+    // means: the colour is already decided and no lighting equation should touch it, which
+    // is the same reason these draws are kept off unit_pbr_ps.
+    //
+    // Note this is NOT the same decision as the cloud/shadow gate above. An ordinary
+    // ground decal does receive the sun's shadow -- that was the whole point of giving
+    // these draws a shader at all, since on fixed function a road ran across shadowed
+    // ground at full brightness -- so cloudPos.z stays 1 for it while this stays 0. That
+    // is why the clustered gate rides in its own component rather than being read back off
+    // cloudPos.z.
+    //
+    // The road under a street lamp is a real gap and it is C7's, not this stage's: C7
+    // deletes the CPU dynamic-light path that lights these decals today, and it is the
+    // stage that has to decide whether ground decals grow a normal or are lit from the
+    // terrain underneath them.
+    output.worldNrm = float4(0.0, 0.0, 0.0, 0.0);
     return output;
 }

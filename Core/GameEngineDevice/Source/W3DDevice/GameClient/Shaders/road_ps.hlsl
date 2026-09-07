@@ -8,10 +8,16 @@
 // road's soft edges) and the vertex alpha (segment fade) have to reach that blend, where
 // the terrain simply writes 1.
 
+// The clustered local lights (C5.3 of the clustered lighting plan) reach a road for the
+// same reason the cloud shade and the shadow filter do, and by exactly the same arithmetic:
+// a road is a decal on the terrain, so a lamp at the verge must not stop at the tarmac. Off
+// by default, and with it off not one instruction below touches the colour.
+
 #include "shadermodel.hlsli"
 
 #include "constants.hlsli"
 #include "shadow.hlsli"
+#include "clustered.hlsli"
 
 DECLARE_SAMPLER(BaseSampler, 0);
 DECLARE_SAMPLER(CloudSampler, 2);
@@ -20,6 +26,14 @@ DECLARE_SAMPLER_2D(ShadowMap, 5);   // directional shadow map (packed depth)
 
 float4 OverlayEnable : register(c0); // x = cloud on, y = noise on, z = cloud shade strength
 float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 = off), z = texel
+
+// The clustered light path's three buffers (C5.3), at the absolute slots clustergrid.hlsli
+// assigns them -- above the eight texture stages, bound once per frame rather than per draw
+// by W3DShaderManager::bindClusteredLightBuffers. No sampler for any of them: they are read
+// with Load()/operator[], which wants the t slot and nothing else.
+StructuredBuffer<GpuLight> LightBuffer    : register(t8);
+Buffer<uint>               ClusterGrid    : register(t9);
+Buffer<uint>               LightIndexList : register(t10);
 
 
 // Cloud shadow from the two drifting layers.
@@ -57,7 +71,31 @@ struct PS_INPUT
     float4 cloudUV  : TEXCOORD2;   // xy = cloud layer A, zw = layer B
     float2 noiseUV  : TEXCOORD3;
     float4 lightPos : TEXCOORD4;
+    float3 worldPos : TEXCOORD5;   // C5.3; see road_vs, and the note on the normal below
 };
+
+// The clustered local lights reaching this pixel, as a light colour to be multiplied by the
+// road's albedo -- exactly what input.color.rgb already is. Character for character
+// terrain_ps's clusteredLight, for the same reason road_ps's cloudShade is character for
+// character terrain_ps's: two surfaces that meet along a line have to be lit by one
+// expression, or the line shows.
+//
+// **NO PI, AND THAT IS THE WHOLE POINT OF THE SPLIT.** ClusteredLightingDiffuse is
+// deliberately in the engine's non-radiometric convention -- "a white surface fully facing a
+// light of colour C renders as C", which is what the CPU bake in COLOR0 and unit_vs both
+// compute. unit_pbr_ps reaches the same place by the other route (a Lambert BRDF is
+// albedo/PI, so it multiplies its light colour by PI first and the PI cancels). Two
+// conventions, one result; the bug is only ever mixing them, and this project has been
+// bitten by exactly that twice.
+float3 clusteredLight(float4 clipPos, float3 worldPos, float3 N)
+{
+    // The view distance is SV_Position.w's reciprocal and nothing else -- right-handed
+    // projection, so clip.w is the positive distance in front of the camera and a pixel
+    // shader receives 1/w. max() only guards the division; ClusterSliceOf clamps the result
+    // to the grid at both ends anyway.
+    uint cluster = ClusterIndexAt(clipPos.xy, 1.0 / max(clipPos.w, 1e-8));
+    return ClusteredLightingDiffuse(CLUSTER_BUFFERS_ARG, cluster, worldPos, N);
+}
 
 // Cast-shadow term. Deliberately identical to terrainShadow in terrain_ps: a road is a
 // decal on the terrain, so the two have to agree tap for tap, or the shadow edge breaks
@@ -82,7 +120,55 @@ float roadShadow(float4 lightPos)
 float4 main(PS_INPUT input) : PS_TARGET
 {
     float4 base = SAMPLE_2D(BaseSampler, input.uv0);
-    float3 col  = base.rgb * input.color.rgb;
+
+    // Geometric normal off the world position's derivatives, by the same three lines
+    // terrain_ps uses and for the same reason: a road carries no vertex normal either, and
+    // whatever the terrain does the road must do, or a lamp at the verge would light the
+    // grass and the tarmac at two different angles and draw its own edge along the kerb.
+    // That is the same rule CLOUD_PERIOD_A and STRETCH_FACTOR are shared constants for.
+    //
+    // The sign correction is the handedness argument -- see the long note in terrain_ps. For
+    // flat ground worldPos.z is constant, so dpx and dpy both lie in the world XY plane and
+    // their cross product is exactly (0, 0, k): +/-Z whatever the camera yaw and whatever the
+    // winding, and this line pins it to exactly (0, 0, 1). The cross-product order is
+    // therefore not load-bearing; swapping the operands negates k, which this undoes.
+    //
+    // The one thing it does NOT guarantee is that a road facet and the terrain facet beneath
+    // it reconstruct the SAME normal -- they are separate geometry with separate
+    // triangulations, so on a slope the two can differ by a degree or so and a local light
+    // will land fractionally differently either side of the kerb. That is a much smaller
+    // step than the two-expressions version would give, both surfaces are near horizontal
+    // where roads are laid, and closing it properly means sampling the terrain's normal
+    // rather than reconstructing a second one -- which is C7's question, alongside whether
+    // ground decals grow a normal at all.
+    float3 dpx  = ddx(input.worldPos);
+    float3 dpy  = ddy(input.worldPos);
+    float3 Ngeo = normalize(cross(dpx, dpy));
+    Ngeo *= (Ngeo.z < 0.0) ? -1.0 : 1.0;
+
+    // The baked vertex light, plus whatever clustered local lights reach this pixel (C5.3).
+    //
+    // **ADDED TO THE LIGHT, NOT TO THE PIXEL.** input.color.rgb is the light this stretch of
+    // road receives and base.rgb is its albedo, so a term added here is multiplied by the
+    // road texture exactly as the baked sun is. Adding it after the multiply would wash the
+    // white lane markings and the dark tarmac to the same colour under a lamp.
+    //
+    // **THE DOUBLE-COUNT WITH THE CPU PATH IS EXPECTED AND IS C7'S.** input.color.rgb still
+    // contains the CPU-computed dynamic light baked into the road's vertices, so with this
+    // toggle on a lamp is counted twice -- once per vertex, once per pixel. C7 deletes the
+    // CPU path; until then the toggle is off by default.
+    //
+    // **CLUSTER_SUPPRESS_DIRECTIONAL IS NOT HONOURED HERE, AND CANNOT BE** -- see the same
+    // note in terrain_ps. The sun arrives already summed with the ambient inside COLOR0,
+    // with no way to recover the parts, so there is no directional term to suppress and
+    // scaling the lot would take the ambient down with it.
+    float3 litColor = input.color.rgb;
+    [branch] if (ClusteredLightingEnabled())
+    {
+        litColor += clusteredLight(input.position, input.worldPos, Ngeo);
+    }
+
+    float3 col  = base.rgb * litColor;
 
     // Multiplicative overlays, as the fixed-function road pass applied them (stage 1 and
     // stage 2, both MODULATE against the running colour). Off layers lerp to white.

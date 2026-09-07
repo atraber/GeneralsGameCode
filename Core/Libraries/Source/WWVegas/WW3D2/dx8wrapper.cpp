@@ -7727,6 +7727,21 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				const Vector4 worldAxisY(world._12, world._22, world._32, world._42);
 				Set_Vertex_Shader_Constant(22, &worldAxisX, 1);
 				Set_Vertex_Shader_Constant(23, &worldAxisY, 1);
+				// The third column, for C5.2's clustered local lights. The cloud shadow
+				// projects straight down and so never wanted world Z; "how far is this
+				// pixel from that light" is a 3-D question and does.
+				//
+				// It is uploaded HERE, beside the other two, and not in the clustered
+				// path's own block, because there is no such block: the whole feature is
+				// two interpolants and a b1 gate, and a constant written only when the
+				// gate is on would make the shader's world position depend on a *frame*
+				// constant the vertex shader reads after the constant buffer has already
+				// been filled. c37 is one vec4 of a 96-register file that is uploaded
+				// whole; writing it unconditionally costs a memcpy that was happening
+				// anyway, and it means the interpolant carries a true world position in
+				// every frame, which is what unit_prelit_vs's comment promises.
+				const Vector4 worldAxisZ(world._13, world._23, world._33, world._43);
+				Set_Vertex_Shader_Constant(37, &worldAxisZ, 1);
 				Set_Pixel_Shader_Constant(10, &cloudScroll, 1);
 				Set_Pixel_Shader_Constant(11, &cloudCtl, 1);
 			}
