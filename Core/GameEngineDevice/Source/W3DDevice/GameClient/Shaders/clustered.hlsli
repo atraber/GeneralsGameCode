@@ -91,11 +91,40 @@ bool ClusteredLightingEnabled()
 //
 // viewDist is the POSITIVE distance in front of the camera. A vertex shader already has it
 // and does not know it: this engine's projection is right-handed (Init_Perspective sets
-// Row[3][2] = -1), so clip.w == -z_view == exactly the distance wanted, and in a pixel
-// shader SV_Position.w is its reciprocal. Nothing needs reconstructing out of the
+// Row[3][2] = -1), so clip.w == -z_view == exactly the distance wanted, and it survives
+// into the pixel shader unchanged -- see ClusterViewDist above, which is where that was
+// measured and where the reciprocal that used to be applied here is described.
+// Nothing needs reconstructing out of the
 // projection's _33/_43 the way unit_pbr_ps's viewDepth() has to for the depth *texture* --
 // those two numbers describe what is stored in a buffer, not where this fragment is -- and
 // a caller reaching for SsrParams here has taken a wrong turn.
+// THE VIEW DISTANCE, FROM SV_Position, MEASURED RATHER THAN ASSUMED.
+//
+// Every clustered material shader used to write `1.0 / position.w` here, on the reasoning
+// that a pixel shader's SV_Position.w holds the RECIPROCAL of the vertex shader's clip w.
+// On this target it does not: it holds clip w itself, i.e. the view distance, and taking
+// the reciprocal turned a distance of ~1000 into ~0.001. ClusterSliceOf then returned
+// slice 0 for EVERY pixel in the scene, so a fragment was only ever lit by lights binned
+// into the nearest slice of its tile column -- which in practice is none of them. The
+// whole clustered path drew nothing, on every shader at once, and nothing in any census
+// could see it: the lights were enumerated, culled, uploaded, binned and verified against
+// the CPU oracle correctly, because all of that happens before a pixel asks which cluster
+// it is in.
+//
+// How it was measured, because this is exactly the kind of claim that should not rest on
+// recollection: one frame of terrain_ps output R = position.w / far and G =
+// (1 / position.w) / far side by side. R came back a smooth ramp with distance and G came
+// back zero everywhere. B = position.x / viewport width in the same frame confirmed .xy
+// really is render-target pixels, which is the half of the convention that was right.
+//
+// It lives in a function so that the five material shaders cannot drift apart on it again,
+// and so that there is one place to correct if a future target really does hand over the
+// reciprocal.
+float ClusterViewDist(float4 svPosition)
+{
+    return svPosition.w;
+}
+
 uint ClusterIndexAt(float2 pixelPos, float viewDist)
 {
     // Tested on the pixel and not on the tile: the right and bottom tiles are partial

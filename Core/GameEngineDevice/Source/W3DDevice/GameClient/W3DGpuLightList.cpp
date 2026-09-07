@@ -90,6 +90,7 @@
 #include "WW3D2/ww3d.h"
 #include "WW3D2/colorspace.h"
 #include "W3DDevice/GameClient/BaseHeightMap.h"
+#include "W3DDevice/GameClient/W3DLightAuthoring.h"	// authoredLocalLightColor -- synthetic lights carry the same units as authored content
 #endif
 
 namespace
@@ -604,24 +605,57 @@ namespace
 		const float v = Hash01(seed, index, 2) * 2.0f - 1.0f;
 		const float baseX = footprint.Center.X + u * footprint.Extent.X;
 		const float baseY = footprint.Center.Y + v * footprint.Extent.Y;
-		const float baseZ = footprint.Center.Z + (Hash01(seed, index, 3) - 0.5f) * footprint.Extent.Z;
-
 		const float range = 20.0f + Hash01(seed, index, 4) * 20.0f;	// plan: "plausible ranges (20-40 world units)"
 
 		const float phase = Hash01(seed, index, 7) * 2.0f * WWMATH_PI;
 		const float timeSeconds = (float)frameCounter * (1.0f / 30.0f);	// nominal clock; only needs to move smoothly, not track real elapsed time
-		const float bob = WWMath::Fast_Sin(timeSeconds * 0.5f + phase) * 3.0f;
 		const float pulse = 0.85f + 0.15f * WWMath::Fast_Sin(timeSeconds * 0.8f + phase * 1.3f);
 
-		// Lifted clear of the ground plane so a point light does not sit inside the
-		// terrain it is meant to be lighting -- this is a test pattern, not placed
-		// content, so there is no attempt to sample the actual heightmap here.
-		const Vector3 pos(baseX, baseY, baseZ + 40.0f + bob);
+		// HEIGHT: measured off the terrain, and a FRACTION OF THE LIGHT'S OWN RANGE.
+		//
+		// Both halves of that were wrong when this generator was first written, and
+		// between them they made the whole synthetic population invisible -- which is a
+		// worse failure than a wrong-looking one, because nothing about it says "the test
+		// content is broken" rather than "the clustered path draws nothing".
+		//
+		// The height was a fixed 40 units above a Z picked from the terrain bounding
+		// box's vertical extent -- so a light sat ~40 units over the ground while
+		// carrying a range of 20-40. ClusterLightRadiance returns false at d >= range, so
+		// most of the population could not reach the ground at all, and the rest reached
+		// it exactly where the smooth window has already fallen to nothing. The lights
+		// were binned into clusters, uploaded and counted by every census the whole time;
+		// they simply had no receiver inside their own reach. Every count C3-C6 reported
+		// was still true -- which is exactly why counts alone could not catch this.
+		//
+		// Tying the lift to the range instead keeps a fixture at a sensible height for
+		// its size and guarantees the ground beneath it is well inside the falloff: at
+		// 0.35 of the range the window (1 - (d/range)^4)^2 is still 0.97.
+		const float lift = range * 0.35f;
+		const float bob  = WWMath::Fast_Sin(timeSeconds * 0.5f + phase) * (lift * 0.1f);
+		float groundZ = footprint.Center.Z;
+		if (TheTerrainRenderObject != nullptr)
+			groundZ = TheTerrainRenderObject->getHeightMapHeight(baseX, baseY, nullptr);
+		const Vector3 pos(baseX, baseY, groundZ + lift + bob);
 
+		// COLOUR: an intensity, through the same convention every authored light now uses.
+		//
+		// The other half of the invisibility, and the more instructive half. This was a
+		// raw HSV value of 1.6 -- a BRIGHTNESS -- written straight into colorType at a
+		// time when nothing downstream divided by distance. The re-authoring pass moved
+		// every real fixture to luminous intensity (I = B * r^2, W3DLightAuthoring.h) and
+		// this generator was not part of that pass, so it went on handing a brightness to
+		// a consumer that had started reading intensities. Under atten = win / d^2 a
+		// value of 1.6 arriving from ~10 units away is 0.016 -- a fraction of one 8-bit
+		// level, before the range problem above even applies.
+		//
+		// So it goes through authoredLocalLightColor like everything else, with the lift
+		// as the reference distance: "this bright on the ground directly underneath",
+		// which is the one distance about a test fixture anybody can judge by eye.
 		Vector3 color;
-		const Vector3 hsv(Hash01(seed, index, 5) * 360.0f, 0.85f, 1.6f);	// value > 1: reads clearly as a local light against ambient; not a claim about real intensity units
+		const Vector3 hsv(Hash01(seed, index, 5) * 360.0f, 0.85f, 1.6f);	// brightness AT `lift`; value > 1 keeps it reading clearly against ambient
 		HSV_To_RGB(color, hsv);
 		color *= pulse;
+		color = authoredLocalLightColor(color, lift);
 
 		const bool isSpot = Hash01(seed, index, 6) < 0.25f;
 

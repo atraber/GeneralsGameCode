@@ -93,7 +93,7 @@ float3 clusteredLight(float4 clipPos, float3 worldPos, float3 N)
     // projection, so clip.w is the positive distance in front of the camera and a pixel
     // shader receives 1/w. max() only guards the division; ClusterSliceOf clamps the result
     // to the grid at both ends anyway.
-    uint cluster = ClusterIndexAt(clipPos.xy, 1.0 / max(clipPos.w, 1e-8));
+    uint cluster = ClusterIndexAt(clipPos.xy, ClusterViewDist(clipPos));
     return ClusteredLightingDiffuse(CLUSTER_BUFFERS_ARG, cluster, worldPos, N);
 }
 

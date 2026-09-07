@@ -149,7 +149,7 @@ float3 clusteredLight(float4 clipPos, float3 worldPos, float3 N)
     // and a pixel shader receives 1/w -- no interpolant, and no reconstruction out of the
     // projection's _33/_43. max() only guards the division; ClusterSliceOf clamps the result
     // to the grid at both ends anyway.
-    uint cluster = ClusterIndexAt(clipPos.xy, 1.0 / max(clipPos.w, 1e-8));
+    uint cluster = ClusterIndexAt(clipPos.xy, ClusterViewDist(clipPos));
     return ClusteredLightingDiffuse(CLUSTER_BUFFERS_ARG, cluster, worldPos, N);
 }
 

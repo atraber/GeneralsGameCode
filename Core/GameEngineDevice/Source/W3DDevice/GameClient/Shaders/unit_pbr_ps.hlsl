@@ -470,7 +470,7 @@ float4 main(PS_INPUT input) : PS_TARGET
     // feature off does not pay for it at all.
     if (ClusteredLightingEnabled())
     {
-        uint cluster = ClusterIndexAt(input.position.xy, 1.0 / max(input.position.w, 1e-8));
+        uint cluster = ClusterIndexAt(input.position.xy, ClusterViewDist(input.position));
         Lo = Lo * (1.0 - CLUSTER_SUPPRESS_DIRECTIONAL)
            + ClusteredLightingPbr(CLUSTER_BUFFERS_ARG, cluster, input.worldPos,
                                   N, V, diffuseColor, F0, roughness);
