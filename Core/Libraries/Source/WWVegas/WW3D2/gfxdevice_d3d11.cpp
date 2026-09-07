@@ -4070,21 +4070,6 @@ void GfxDeviceD3D11::Set_Viewport(const GfxViewport & viewport)
 	vp.Height = (float)viewport.Height;
 	vp.MinDepth = viewport.MinZ;
 	vp.MaxDepth = viewport.MaxZ;
-#ifdef RTS_DEBUG
-	// Each distinct viewport once. D3D11's fields are floats where D3D9's were integers,
-	// which is the shape of seam a half unit goes missing at, and the viewport transform
-	// is upstream of every pixel: if the two backends disagree here they disagree about
-	// where all the geometry lands and no later measurement means anything.
-	{
-		static D3D11_VIEWPORT s_last = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f };
-		if (memcmp(&s_last, &vp, sizeof(vp)) != 0) {
-			s_last = vp;
-			WWDEBUG_SAY(("D3D11 VIEWPORT: x %g y %g w %g h %g minZ %g maxZ %g",
-				(double)vp.TopLeftX, (double)vp.TopLeftY, (double)vp.Width,
-				(double)vp.Height, (double)vp.MinDepth, (double)vp.MaxDepth));
-		}
-	}
-#endif
 	m_impl->context->RSSetViewports(1, &vp);
 	DX8Wrapper_Increment_Call_Count();
 }

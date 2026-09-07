@@ -1877,53 +1877,12 @@ void DX8Wrapper::Debug_Report_Lighting()
 				 "D3D: %u",
 		s_lightDraws, s_lightFFDraws, s_lightFFLit, s_lightFFLitByDefault,
 		deviceLighting, s_transformDeviceWrites));
-	if (s_lightDraws == 0) {
-		WWDEBUG_SAY(("  CONTROL FAILED: no draws reached this census at all, so the counts "
-					 "above are not a measurement of anything."));
-	}
-
-	// Who those fixed-function draws belonged to.
-	//
-	// This is the number a D3D11 estimate is made of, and it is not the one the
-	// burn-down reports. FIXED-FUNCTION DRAWS is taken inside the routing block and asks
-	// whether every mesh draw the block saw was handed a shader; it reads zero and its
-	// own header says direct-device drawers are not counted. This asks what is *bound*
-	// at the draw, which is what the hardware uses -- and D3D11 has nothing to run for a
-	// draw with an FVF and no shader.
-	if (s_ffDrawSiteCount > 0) {
-		WWDEBUG_SAY(("  the %u by the drawer that submitted them%s -- these are the draws a "
-					 "second backend would have to be given an input layout and a shader "
-					 "for, since it has no fixed-function pipeline to fall back on. This "
-					 "counts draws through DX8Wrapper::Draw only: a drawer that goes to "
-					 "the device itself never reaches here, so the volumetric shadows are "
-					 "NOT in this table even though they are the largest fixed-function "
-					 "draw left. The call-site census above is where those show up.",
-			s_lightFFDraws, s_ffDrawSiteDropped ? "  -- TABLE FULL" : ""));
-		for (int rank = 0; rank < s_ffDrawSiteCount; ++rank) {
-			int best = -1;
-			unsigned bestDraws = 0;
-			for (int i = 0; i < s_ffDrawSiteCount; ++i) {
-				if (s_ffDrawSites[i].draws > bestDraws) {
-					bestDraws = s_ffDrawSites[i].draws; best = i;
-				}
-			}
-			if (best < 0) break;
-			const FFDrawSite& d = s_ffDrawSites[best];
-			WWDEBUG_SAY(("    %-32s %8u draws  (vertex only %u, pixel only %u, both %u; "
-						 "%u lit; example FVF 0x%x; %u routed, %u inherited; "
-						 "%u write neither colour nor depth, %u of those with stencil off too)",
-				d.who, d.draws, d.vertexOnly, d.pixelOnly, d.both, d.lit, d.fvf,
-				d.routed, d.draws - d.routed, d.masked, d.inert));
-			s_ffDrawSites[best].draws = 0;
-		}
-	}
-	else if (s_lightFFDraws > 0) {
-		WWDEBUG_SAY(("  ATTRIBUTION FAILED: %u fixed-function draws were counted and none "
-					 "were attributed, so the table is not reading the same draws.",
-			s_lightFFDraws));
-	}
+	// Clear the per-draw-site sort table.
+	for (int i = 0; i < s_ffDrawSiteCount; ++i)
+		s_ffDrawSites[i].draws = 0;
 	s_ffDrawSiteCount = 0;
 	s_ffDrawSiteDropped = 0;
+
 
 	s_lightDraws = 0;
 	s_lightFFDraws = 0;
@@ -2105,22 +2064,10 @@ static const char* Stencil_Op_Name(unsigned op)
 
 void DX8Wrapper::Debug_Report_Depth_Pass_Stencil()
 {
-	if (s_depthStencilCount == 0 && s_depthStencilDropped == 0) return;
-	WWDEBUG_SAY(("  depth-pass draws the routing block declined that were still submitted, "
-				 "because stencil was enabled and so they are not provably inert:"));
-	for (int i = 0; i < s_depthStencilCount; ++i) {
-		const DepthStencilGroup& g = s_depthStencil[i];
-		WWDEBUG_SAY(("    x%-7u func=%u ref=%u writeMask=0x%02x  pass=%s fail=%s zfail=%s%s",
-			g.count, g.func, g.ref, g.writeMask,
-			Stencil_Op_Name(g.pass), Stencil_Op_Name(g.fail), Stencil_Op_Name(g.zfail),
-			(g.pass == D3DSTENCILOP_KEEP && g.fail == D3DSTENCILOP_KEEP &&
-			 g.zfail == D3DSTENCILOP_KEEP) ? "   -- keeps every way out, so it writes nothing" : ""));
-	}
-	if (s_depthStencilDropped)
-		WWDEBUG_SAY(("    (%u further draws did not fit the table)", s_depthStencilDropped));
 	s_depthStencilCount = 0;
 	s_depthStencilDropped = 0;
 }
+
 
 const char* DX8Wrapper::Debug_Current_Pass_Name()
 {
@@ -2207,50 +2154,12 @@ void DX8Wrapper::Debug_Note_FF_Draw(TextureBaseClass* tex0, unsigned fvf,
 
 void DX8Wrapper::Debug_Report_FF_Draws()
 {
-	// Same 600-frame window as the routing census, so the share and its attribution can
-	// be read as one thing.
 	if (++s_ffFrames < 600) return;
 	s_ffFrames = 0;
 
-	const unsigned all = s_ffTotal + s_ffRouted;
-	WWDEBUG_SAY(("FIXED-FUNCTION DRAWS (via DX8Wrapper::Draw; direct-device drawers not counted): "
-				 "%u of %u draws (%u%%) over 600 frames, "
-				 "%d groups (caller x vertex format)%s "
-				 "[+%u depth-pass draws declined by the routing block, %u draw calls not "
-				 "made -- the second is the larger because a run of draws whose state has "
-				 "not moved inherits the declined caster's write masks without re-entering "
-				 "the block. Their state still reaches the device; only the submission is "
-				 "skipped, and that distinction is worth 20485 pixels]",
-		s_ffTotal, all, all ? (unsigned)((unsigned __int64)s_ffTotal * 100 / all) : 0,
-		s_ffGroupCount,
-		s_ffDropped ? " -- TABLE FULL, some draws uncounted" : "",
-		s_ffSuppressed, s_ffUnsubmitted));
-	// reasons is a bitmask of which gate sent the draw here, one bit per code. Bit 0 is
-	// left over for a draw no gate claims, and should not appear.
-	WWDEBUG_SAY(("  reason bits: 2=effects-held-back 3=no-position/normal 4=foreign-vs "
-				 "5=untextured 6=blend 7=multitexture 8=texgen | 9=depth-pass "
-				 "10=terrain 11=road 12=water 13=2D 14=declared-fixed-fn 15=routing-off "
-				 "16=alpha-mask"));
-	// Descending by count: the top of this list is the order the conversion work goes in.
-	for (int rank = 0; rank < s_ffGroupCount; ++rank) {
-		int best = -1;
-		unsigned bestCount = 0;
-		for (int i = 0; i < s_ffGroupCount; ++i) {
-			if (s_ffGroups[i].count > bestCount) { bestCount = s_ffGroups[i].count; best = i; }
-		}
-		if (best < 0) break;
-		const FFGroup& g = s_ffGroups[best];
-		WWDEBUG_SAY(("  %-24s fvf=%08x x%-7u %s reasons=%04x  e.g. %s %s %s",
-			g.who, g.fvf, g.count,
-			g.identityView == g.count ? "2D " : (g.identityView ? "2D?" : "3D "),
-			g.reasons,
-			g.sampleCount > 0 ? g.samples[0] : "-",
-			g.sampleCount > 1 ? g.samples[1] : "",
-			g.sampleCount > 2 ? g.samples[2] : ""));
-		s_ffGroups[best].count = 0;   // consumed; the table is cleared below anyway
-	}
-	if (s_ffDropped)
-		WWDEBUG_SAY(("  (%u further draws did not fit the table)", s_ffDropped));
+	// Clear the per-group sort table.
+	for (int i = 0; i < s_ffGroupCount; ++i)
+		s_ffGroups[i].count = 0;
 
 	Debug_Report_Depth_Pass_Stencil();
 
@@ -5769,11 +5678,6 @@ void DX8Wrapper::Draw(
 						TextureStageStates[1][D3DTSS_ALPHAARG1], TextureStageStates[1][D3DTSS_ALPHAARG2],
 						TextureStageStates[1][D3DTSS_TEXCOORDINDEX],
 						TextureStageStates[1][D3DTSS_TEXTURETRANSFORMFLAGS]));
-					for (int c = 0; c < 8; ++c) {
-						WWDEBUG_SAY(("SMALL EFFECT QUAD ps c%d [%s] = (%.4f, %.4f, %.4f, %.4f)",
-							c, who, Pixel_Shader_Constants[c].X, Pixel_Shader_Constants[c].Y,
-							Pixel_Shader_Constants[c].Z, Pixel_Shader_Constants[c].W));
-					}
 					WWDEBUG_SAY(("SMALL EFFECT QUAD textures [%s]: 0='%s' 1='%s' 2='%s'", who,
 						render_state.Textures[0] != nullptr
 							? (const char *)render_state.Textures[0]->Get_Full_Path() : "(none)",

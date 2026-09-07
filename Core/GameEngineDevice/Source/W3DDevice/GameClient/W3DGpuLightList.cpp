@@ -562,13 +562,9 @@ void GpuLightListClass::Report_Census()
 		return;
 	frames = 0;
 
-	WWDEBUG_SAY(("GpuLightListClass CENSUS, most recent frame: %u lights enumerated, %u "
-		"failed the frustum test, %u uploaded, %u dropped for exceeding the %u-light "
-		"capacity. A nonzero drop count with today's content would be a bug -- nothing "
-		"ships anywhere near %u local lights yet; set W3D_SYNTHETIC_LIGHTS above that to "
-		"exercise the overflow path deliberately.",
+	WWDEBUG_SAY(("GpuLightListClass CENSUS: %u enumerated, %u frustum-culled, %u uploaded, %u dropped (capacity %u)",
 		m_censusEnumerated, m_censusCulled, m_lightCount, m_censusDropped,
-		(unsigned)GPU_LIGHT_CAPACITY, (unsigned)GPU_LIGHT_CAPACITY));
+		(unsigned)GPU_LIGHT_CAPACITY));
 }
 
 namespace

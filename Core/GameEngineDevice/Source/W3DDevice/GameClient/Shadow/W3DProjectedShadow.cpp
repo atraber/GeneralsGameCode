@@ -656,15 +656,6 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 						: (type == SHADOW_ADDITIVE_DECAL) ? 2 : 3;
 	if (reportThisFlush) {
 		++s_decalStateReports;
-		char buf[900];
-		if (DX8Wrapper::Debug_Describe_Draw_State(buf, sizeof(buf))) {
-			WWDEBUG_SAY(("DECAL STATE [%s] tex='%s' verts=%d polys=%d lastDiffuse=0x%08x "
-				":: %s", styleName[styleSlot], texture->Get_Name(),
-				nShadowDecalVertsInBatch, nShadowDecalPolysInBatch, s_lastDecalDiffuse, buf));
-		} else {
-			WWDEBUG_SAY(("DECAL STATE [%s]: the backend declined to describe its state",
-				styleName[styleSlot]));
-		}
 		// The texels themselves. A multiplicative decal goes black exactly when the colour
 		// it multiplies in goes to zero, and there are only two candidates for that -- the
 		// vertex diffuse above, and this. One of them has to be read rather than reasoned
@@ -716,16 +707,6 @@ void W3DProjectedShadowManager::flushDecals(W3DShadowTexture *texture, ShadowTyp
 		Debug_Statistics::Record_DX8_Polys_And_Vertices(nShadowDecalPolysInBatch,nShadowDecalVertsInBatch,ShaderClass::_PresetOpaqueShader);
 		DX8Wrapper::Prepare_Direct_Draw("shadowDecalFlush");
 		DX8Wrapper::Draw_DX8_Indexed_Primitive(D3DPT_TRIANGLELIST,nShadowDecalStartBatchVertex,0,nShadowDecalVertsInBatch,nShadowDecalStartBatchIndex,nShadowDecalPolysInBatch);
-#ifdef RTS_DEBUG
-		// Again, after the draw. The state objects are materialised at the draw, so the
-		// report above is what the words say and this one is what the device was handed --
-		// and a disagreement between the two is the whole failure mode being hunted.
-		if (reportThisFlush) {
-			char after[900];
-			if (DX8Wrapper::Debug_Describe_Draw_State(after, sizeof(after)))
-				WWDEBUG_SAY(("DECAL AFTER [%s] :: %s", styleName[styleSlot], after));
-		}
-#endif
 	}
 
 //	m_pDev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);	//should reject background pixels
