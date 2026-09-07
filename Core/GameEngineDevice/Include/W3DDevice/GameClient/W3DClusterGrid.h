@@ -34,19 +34,23 @@ struct GfxBuffer;
 // its own cluster from its screen position and its view distance and iterates only that
 // cluster's lights -- which is the whole point of the exercise, and is C5's job.
 //
-// **THIS STAGE DELIBERATELY DOES NOT WRITE THE COMPUTE SHADER.** The grid is built here,
-// on the CPU, and uploaded through GFX_BUFFER_DYNAMIC buffers. C6 replaces the *producer*
-// with clusterassign_cs and keeps this one behind a flag as its oracle; the acceptance
-// test there is that both produce bit-identical grids. C5 (the shader that reads the
-// grid) and C6 (the shader that fills it) can each be wrong on their own, and the only
-// way to tell which is to have written them at different times against a reference that
-// was already known good. See "How C6 swaps the producer" below for what it has to touch.
+// C6 HAS LANDED AND THE PRODUCER IS NOW THE GPU. `clusterassign_cs.hlsl` fills both
+// buffers with one thread per light; this class clears the count buffer, dispatches, and
+// keeps the CPU builder behind **W3D_CLUSTER_CPU=1** as the oracle. The acceptance test is
+// that the two produce the same grid for one frame's light set, compared buffer to buffer
+// on the CPU -- see Verify() below and the recipe at the top of the .cpp.
 //
-// The algorithm is SCATTER, not gather, even on the CPU -- iterate lights, work out each
+// Why the CPU builder was written first, and why it stays: C5 (the shader that reads the
+// grid) and C6 (the shader that fills it) can each be wrong on their own, and the only way
+// to tell which is to have written them at different times against a reference that was
+// already known good. Deleting the oracle now would throw that reference away the moment
+// it first became useful.
+//
+// The algorithm is SCATTER, not gather, on both sides -- iterate lights, work out each
 // one's tile rectangle and slice range, append into every cluster in that box -- because
 // keeping the CPU builder the same algorithmic shape as the compute shader is what makes
-// C6's bit-exact comparison mean something. A gather here would agree with a scatter
-// there only by coincidence.
+// the comparison mean something. A gather here would agree with a scatter there only by
+// coincidence.
 class ClusterGridClass
 {
 public:
@@ -145,65 +149,103 @@ public:
 
 	static void Compute_Params(CameraClass & camera, ClusterGridParams & out);
 
-	// The once-a-frame entry point. Sizes the grid, scatters `lightCount` GpuLight records
-	// into it and uploads both buffers. `lights` is C3's packed array -- see
-	// GpuLightListClass::Get_Lights() -- and the indices this stores are indices into it,
-	// which is the same thing as indices into LightBuffer because Upload() copies it
-	// verbatim.
+	// The once-a-frame entry point. Sizes the grid, bins `lightCount` lights into it, and
+	// leaves both buffers holding this frame's answer.
 	//
-	// Called from W3DView::draw() under FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER),
-	// immediately after the light list and before the shadow-map pass.
-	void Update(const GpuLight * lights, unsigned lightCount, CameraClass & camera);
+	// THE SAME LIGHT SET ARRIVES TWICE, in the two forms the two producers need.
+	// `lightBuffer` is C3's uploaded LightBuffer and is what the compute shader reads;
+	// `lights` is the CPU-side packed array behind it (GpuLightListClass::Get_Lights()) and
+	// is what the CPU oracle reads. They are the same records in the same order, which is
+	// the property the whole comparison rests on -- Upload() there copies the array
+	// verbatim -- so an index stored here means the same light whichever producer stored
+	// it.
+	//
+	// Called from W3DView::draw() under FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER), immediately
+	// after the light list and before the shadow-map pass. **The clustered pixel-stage
+	// bindings must be (re-)established AFTER this call**, not before: binding these two
+	// buffers as unordered-access views nulls any pixel-stage SRV binding of them, which is
+	// C1's hazard rule doing its job. W3DView::draw calls bindClusteredLightBuffers()
+	// immediately afterwards for exactly that reason.
+	void Update(const GpuLight * lights, unsigned lightCount, GfxBuffer * lightBuffer,
+		CameraClass & camera);
 
 	const ClusterGridParams & Get_Params() const { return m_params; }
 
 	// The two buffers, for whoever binds them. Null until the first successful Update().
 	//
-	// HOW C6 SWAPS THE PRODUCER. These accessors, the b1 block and the .hlsli addressing
-	// are the *consumer* contract and none of them change. What changes is one thing:
-	// Ensure_Buffers_Created() asks for GFX_BUFFER_DYNAMIC because the CPU writes these,
-	// and C1 established that GFX_BUFFER_DYNAMIC and GFX_BUFFER_UAV are mutually exclusive
-	// (D3D11 has no usage that is both CPU-written every frame and GPU-written). So C6
-	// creates the same two buffers with GFX_BUFFER_UAV | GFX_BUFFER_UINT instead, clears
-	// the grid with Clear_RW_Buffer_UInt, dispatches, and leaves Get_Grid_Buffer() and
-	// Get_Index_Buffer() returning the same kind of handle to the same slots. Both are
-	// GFX_BUFFER_UINT already, precisely so that C6's clear is available without changing
-	// the view: C1 found ClearUnorderedAccessViewUint is undefined against a structured
-	// buffer, and a clear a driver quietly ignores would leave last frame's grid in place.
+	// HOW C6 SWAPPED THE PRODUCER, since the answer is short and the question recurs. These
+	// accessors, the b1 block and the .hlsli addressing are the *consumer* contract and
+	// none of them changed. One thing did: Ensure_Buffers_Created() asks for
+	// GFX_BUFFER_UAV where it used to ask for GFX_BUFFER_DYNAMIC, because C1 established
+	// that the two are mutually exclusive -- D3D11 has no usage that is both CPU-written
+	// every frame and GPU-written -- so this is a swap and not an addition. Both were
+	// GFX_BUFFER_UINT from the start, precisely so that the per-frame clear was available
+	// without changing the view as well: C1 found ClearUnorderedAccessViewUint undefined
+	// against a *structured* buffer, and a clear a driver quietly ignores would leave last
+	// frame's grid in place, which draws lights that are no longer there.
+	//
+	// Under W3D_CLUSTER_CPU=1 they go back to GFX_BUFFER_DYNAMIC and the CPU fills them.
+	// The choice is made once, at the first allocation, and does not change for the run.
 	GfxBuffer * Get_Grid_Buffer() const { return m_gridBuffer; }
 	GfxBuffer * Get_Index_Buffer() const { return m_indexBuffer; }
 
+	// Which producer this run is using. FALSE is the GPU dispatch, which is the default and
+	// the point of C6; TRUE is C4's CPU scatter, selected with W3D_CLUSTER_CPU=1.
+	bool Is_Cpu_Builder() const { return m_useCpuBuilder; }
+
 #ifdef RTS_DEBUG
-	// THE POSITIVE CONTROL FOR C4, and the thing that makes C6's later bit-exact
-	// comparison worth anything.
+	// THE POSITIVE CONTROL, and after C6 it carries three checks rather than two.
 	//
-	// The plan's stated gate for this stage is circular -- the CPU builder is the
-	// reference the debug view is checked against -- so this is the independent second
-	// opinion: an O(clusters x lights) brute-force gather that tests every light against
-	// every cluster's exact AABB, with no tile rectangle and no slice range anywhere in
-	// it, and compares the resulting per-cluster counts against what the scatter produced.
-	// The two use the identical sphere/AABB predicate, so they must agree EXACTLY; a
-	// scatter box that is too small shows up as a cluster the gather found lights in and
-	// the scatter did not.
+	// (1) THE BRUTE FORCE. The plan's stated gate for C4 was circular -- the CPU builder is
+	//     the reference the debug view is checked against -- so this is the independent
+	//     second opinion: an O(clusters x lights) gather that tests every light against
+	//     every cluster's exact AABB, with no tile rectangle and no slice range anywhere in
+	//     it, compared cluster for cluster against the CPU scatter. The two use the
+	//     identical sphere/AABB predicate, so they must agree EXACTLY; a scatter box that
+	//     is too small shows up as a cluster the gather found lights in and the scatter did
+	//     not.
 	//
-	// It also reads the grid buffer back off the GPU and compares that to the CPU array,
-	// which closes the other half of the question ("was what we built what we uploaded").
+	// (2) THE COUNTS. Every cluster's count, read back off the GPU and compared against the
+	//     CPU array. On the CPU path that asks "was what we built what we uploaded"; on the
+	//     GPU path it is **C6's acceptance test**, and it is exact -- a count is an integer
+	//     and InterlockedAdd is order-independent.
+	//
+	// (3) THE LIGHT INDICES. Each cluster's LIVE PREFIX (min(count, stride) entries; the
+	//     tails past it are stale by design on both sides and are never compared), as a
+	//     SORTED MULTISET. The GPU appends in whatever order its threads arrive in and the
+	//     CPU appends in light-index order, so an ordered comparison would fail on a
+	//     correct shader -- see the .cpp for the choice and what it costs. Clusters that
+	//     overflowed the stride are excluded from this check and counted separately,
+	//     because *which* 64 of them survive is genuinely order-dependent.
+	//
 	// GFX_MAP_READ stalls the pipeline -- see gfxdevice.h's Map_Buffer comment -- so this
-	// is a run-once-on-demand call and nothing on the render path may invoke it.
+	// is a run-once-on-demand call and nothing on the render path may invoke it. It is not
+	// const: on the GPU path it has to run the CPU oracle itself, which is what fills the
+	// arrays everything above compares against.
 	//
 	// Triggered either from a debugger, or unattended with W3D_CLUSTER_VERIFY=1, which
 	// runs it on the first frame that has lights to bin. See the .cpp's recipe.
-	bool Verify() const;
+	bool Verify();
 
 	// Census figures for the most recent Update(), logged every REPORT_INTERVAL frames the
 	// way the backend's own Report_Absorbed_State does. These are what answer "is a stride
 	// of 64 right" with a number.
+	//
+	// ON THE GPU PATH MOST OF THEM COST A READ-BACK, so they are not free and are not
+	// invented: occupancy, overflow and the accepted/dropped pair are only reported when
+	// W3D_CLUSTER_CENSUS=1 has armed the read-back, and the line says so when they are not.
+	// See Collect_Census_From_Gpu.
 	void Report_Census() const;
 #endif
 
 private:
 #ifdef RTS_DEBUG
 	void Collect_Census();
+	// The same figures, recovered from the GPU's own count buffer. Everything derivable
+	// from a per-cluster count is; the two that are not (how many lights landed somewhere,
+	// and how many had to take the whole viewport) live inside the scatter and are reported
+	// as unavailable rather than guessed at.
+	void Collect_Census_From_Gpu();
 	// Runs Verify() once, unattended, when W3D_CLUSTER_VERIFY is set -- see the .cpp. A
 	// control somebody has to remember to attach a debugger for is a control that does not
 	// run in the replay harness, which is the only place this project measures anything.
@@ -211,9 +253,18 @@ private:
 #endif
 
 	void Ensure_Buffers_Created();
+	// The compute shader, loaded on first use rather than at startup: the buffers are made
+	// lazily too (the device and the camera are not ready when W3DShaderManager::init
+	// runs), and a producer that loads its two halves in two different places has two
+	// failure frames instead of one.
+	void Ensure_Compute_Shader();
 	void Build(const GpuLight * lights, unsigned lightCount);
 	void Scatter_Light(const GpuLight & light, const Vector3 & viewPos, unsigned lightIndex);
 	void Upload();
+	// C6's producer: clear the count buffer on the GPU, bind, dispatch one thread per
+	// light, unbind. Returns false if anything was missing, in which case the frame keeps
+	// whatever the buffers already held -- which the cleared counts make harmless.
+	bool Dispatch_Build(GfxBuffer * lightBuffer, unsigned lightCount);
 
 	// The sphere's silhouette across one lateral axis, as the range of (axis / distance)
 	// it covers. False means "unbounded on this axis" -- the camera is inside the sphere's
@@ -237,10 +288,25 @@ private:
 	bool				m_bufferCreateFailed;	// latches so a device that cannot make these is reported once, not every frame
 	unsigned			m_allocatedClusters;	// what the live buffers and CPU arrays were sized for; a resize is what a viewport change costs
 
+	// Which producer fills the buffers. Read once from W3D_CLUSTER_CPU in the constructor
+	// and never again: the buffers' usage flags are chosen from it at allocation and
+	// GFX_BUFFER_DYNAMIC cannot become GFX_BUFFER_UAV without recreating them, so a switch
+	// mid-run would have to tear the grid down. It is a build-and-run decision, not a
+	// runtime one, which is all an oracle needs to be.
+	bool				m_useCpuBuilder;
+	unsigned			m_computeShader;		// clusterassign_cs; 0 until loaded, and 0 forever if it will not load
+	bool				m_computeLoadFailed;	// latches, same as m_bufferCreateFailed: reported once, not every frame
+
 	GfxBuffer *			m_gridBuffer;	// t9: one unclamped count per cluster
 	GfxBuffer *			m_indexBuffer;	// t10: CLUSTER_MAX_LIGHTS light indices per cluster
 
-	// The CPU side, and what Upload() copies from. m_counts holds the UNCLAMPED count --
+	// The CPU side. On the CPU path this is what Upload() copies from; on the GPU path it
+	// is the ORACLE's workspace and holds nothing until Verify() runs the CPU builder into
+	// it, off the render path. Allocated either way, because that is the only thing that
+	// makes the comparison possible on a moment's notice, and it is 88 KB + 3 MB of host
+	// memory against a feature that already spends 3 MB of device memory on the same data.
+	//
+	// m_counts holds the UNCLAMPED count --
 	// how many lights reached the cluster, which may exceed CLUSTER_MAX_LIGHTS -- because
 	// a count clamped at the stride is indistinguishable from a cluster that legitimately
 	// holds exactly the stride, and then an overflow can never be seen. Every reader
@@ -271,5 +337,18 @@ private:
 	unsigned	m_censusMaxOccupancy;	// the largest count in the grid, unclamped
 	unsigned	m_censusOverflowed;		// clusters whose count exceeded CLUSTER_MAX_LIGHTS
 	unsigned	m_censusWholeScreen;	// lights whose projected rectangle had to be taken as the whole viewport
+
+	// Whether the six occupancy figures above describe THIS frame's grid. Always true on
+	// the CPU path, where they fall out of the scatter for nothing. On the GPU path they
+	// exist only in device memory and reading them costs a full pipeline stall, so they are
+	// true only when W3D_CLUSTER_CENSUS=1 armed the read-back -- and the census line says
+	// "unavailable" rather than printing a stale or a zeroed number when it did not.
+	bool		m_censusOccupancyValid;
+	// ...and that read-back's own arming flag, parsed once. Separate from
+	// W3D_CLUSTER_VERIFY because they answer different questions and cost differently: the
+	// verify is one stall for one frame, this is a stall every REPORT_INTERVAL frames for
+	// the whole run, and it POISONS THE PHASE_LIGHTCLUSTER TIMING in that run. Never quote
+	// a dispatch cost from a run with this set.
+	bool		m_censusReadbackArmed;
 #endif
 };

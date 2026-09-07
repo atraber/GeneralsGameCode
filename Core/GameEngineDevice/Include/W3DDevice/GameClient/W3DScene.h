@@ -119,12 +119,18 @@ public:
 	void updateGpuLightList(CameraClass & camera) {m_gpuLightList.Update(*this, camera);}
 	GpuLightListClass &getGpuLightList() {return m_gpuLightList;}
 
-	/// Bin this frame's lights into the screen-space cluster grid (C4). Must run AFTER
-	/// updateGpuLightList, whose packed array it reads and whose indices it stores; see
-	/// ClusterGridClass::Update(). Called once per frame from W3DView::draw() under
-	/// FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER).
+	/// Bin this frame's lights into the screen-space cluster grid (C4's grid, C6's
+	/// producer). Must run AFTER updateGpuLightList, whose lights it reads and whose
+	/// indices it stores; see ClusterGridClass::Update(). Called once per frame from
+	/// W3DView::draw() under FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER), and the clustered
+	/// pixel-stage bindings must be re-established after it -- the dispatch binds these
+	/// buffers for writing, which nulls any pixel-stage binding of them.
+	///
+	/// The light set goes in twice, in the two forms the two producers need: the uploaded
+	/// buffer for the compute shader, and the CPU array behind it for the oracle.
 	void updateClusterGrid(CameraClass & camera)
-		{m_clusterGrid.Update(m_gpuLightList.Get_Lights(), m_gpuLightList.Get_Light_Count(), camera);}
+		{m_clusterGrid.Update(m_gpuLightList.Get_Lights(), m_gpuLightList.Get_Light_Count(),
+			m_gpuLightList.Get_Buffer(), camera);}
 	ClusterGridClass &getClusterGrid() {return m_clusterGrid;}
 
 	virtual void init() override {}

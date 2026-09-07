@@ -109,6 +109,10 @@ set(_rts_shaders
     # dispatch and the CPU can read the result back" is a number rather than a belief, and
     # it goes when C4 of the clustered-lighting plan has a control of its own.
     selftest_cs
+    # C6's cluster-grid builder: one thread per light, scattering light indices into the
+    # screen froxels it reaches. Replaces C4's CPU loop as the producer; the CPU loop stays
+    # behind W3D_CLUSTER_CPU=1 as the oracle the two are compared against.
+    clusterassign_cs
 )
 
 file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")

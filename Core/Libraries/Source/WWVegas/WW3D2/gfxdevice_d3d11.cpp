@@ -4416,6 +4416,20 @@ void GfxDeviceD3D11::Dispatch(unsigned x, unsigned y, unsigned z)
 	// Prepare_Draw materialises -- blend, depth, raster, samplers, the input layout -- is
 	// state for a rasteriser this has none of. A dispatch's whole state is the shader, its
 	// buffers and its constants, and all three are set by their own calls.
+	//
+	// ...except that Set_Frame_Constants only STAGES b1; the copy into the constant buffer
+	// happens in Upload_Constants, which until C6 was reached from Prepare_Draw and from
+	// one debug helper and from nowhere else. A dispatch issued before the frame's first
+	// draw therefore read whatever b1 held at the end of the previous frame -- and the
+	// cluster builder is issued before the shadow-map pass, so "before the first draw" is
+	// where it lives. It happened to work only because the shadow pass draws first, which
+	// is incidental and not a property anything guarantees.
+	//
+	// Flushed here rather than in the caller, because it is not the caller's business: the
+	// contract "the constants you set are the constants the shader sees" is the same one
+	// Prepare_Draw honours for a draw, and every future compute caller wants it too. It
+	// costs one memcmp-guarded flag test on a dispatch that changed nothing.
+	Upload_Constants(m_impl);
 	if (m_impl->compute_shader == nullptr) return;
 	if (x == 0 || y == 0 || z == 0) return;
 	m_impl->context->Dispatch(x, y, z);

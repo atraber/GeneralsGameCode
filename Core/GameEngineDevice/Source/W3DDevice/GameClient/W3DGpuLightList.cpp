@@ -406,7 +406,7 @@ void GpuLightListClass::Write_Frame_Constants(CameraClass & camera)
 	ClusterGridClass::ClusterGridParams cluster;
 	ClusterGridClass::Compute_Params(camera, cluster);
 
-	Vector4 frameConstants[5];
+	Vector4 frameConstants[9];
 	if (cluster.valid)
 	{
 		frameConstants[0].Set((float)cluster.tileWidth, (float)cluster.tileHeight,
@@ -470,7 +470,48 @@ void GpuLightListClass::Write_Frame_Constants(CameraClass & camera)
 		frameConstants[4].Set(0.0f, 0.0f, 0.0f, 0.0f);
 	}
 
-	DX8Wrapper::Set_Frame_Constants(frameConstants, 5);
+	// C6's four: the projection's lateral terms and the camera's view matrix.
+	//
+	// THESE ARE THE BUILDER'S FIELDS AND NO READER WANTS THEM -- every consumer goes from a
+	// pixel position to a cluster, which needs nothing here. clusterassign_cs.hlsl goes the
+	// other way, from a world-space light sphere to a set of clusters, and b1 is the only
+	// constant buffer a compute shader can see (Dispatch has no per-draw setup step to bind
+	// anything else from). Nine of the sixteen vec4 holds are now in use.
+	//
+	// Written from the SAME camera, in the same call, as the fields above -- which is what
+	// makes them agree with the CPU oracle bit for bit. ClusterGridClass::Update takes its
+	// own copy of Get_View_Matrix() a moment later in the same frame and nothing moves the
+	// camera in between; if that ever stops being true, the oracle and the shader start
+	// binning against two different cameras and every disagreement they report is that,
+	// not a binning bug.
+	if (cluster.valid)
+	{
+		frameConstants[5].Set(cluster.projXScale, cluster.projXOffset,
+			cluster.projYScale, cluster.projYOffset);							// ClusterProj
+
+		// Three rows of a Matrix3D; the implicit fourth is (0,0,0,1) and is not sent. The
+		// sign of view-space z is NOT corrected here -- the shader negates the third row's
+		// result itself, exactly as ClusterGridClass::Build does, because the forward-
+		// positive frame is the builders' private convention and not something to bake into
+		// a matrix other readers might later want.
+		const Matrix3D & view = camera.Get_View_Matrix();
+		frameConstants[6].Set(view[0][0], view[0][1], view[0][2], view[0][3]);	// ClusterView0
+		frameConstants[7].Set(view[1][0], view[1][1], view[1][2], view[1][3]);	// ClusterView1
+		frameConstants[8].Set(view[2][0], view[2][1], view[2][2], view[2][3]);	// ClusterView2
+	}
+	else
+	{
+		// A degenerate camera, same as above: zeroed rather than stale. The compute shader
+		// refuses the frame on ClusterGridValid() before it reads any of these, so what
+		// they hold only has to be harmless, and zero is the value every other gate in this
+		// block already means "off" by.
+		frameConstants[5].Set(0.0f, 0.0f, 0.0f, 0.0f);
+		frameConstants[6].Set(0.0f, 0.0f, 0.0f, 0.0f);
+		frameConstants[7].Set(0.0f, 0.0f, 0.0f, 0.0f);
+		frameConstants[8].Set(0.0f, 0.0f, 0.0f, 0.0f);
+	}
+
+	DX8Wrapper::Set_Frame_Constants(frameConstants, 9);
 }
 
 #ifdef RTS_DEBUG

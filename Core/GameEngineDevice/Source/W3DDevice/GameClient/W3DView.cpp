@@ -1889,15 +1889,16 @@ void W3DView::draw()
 	// this same light list and belongs right after it -- this is where that dispatch will
 	// go. Nothing downstream consumes LightBuffer yet, so this changes no pixel.
 	//
-	// ---- C4's cluster grid: bin those lights into the screen grid ---- see
-	// the clustered lighting plan, section "C4 -- The cluster grid, built on the CPU
-	// first". Second, and not merged into the block above, because the ordering is a real
-	// constraint and not a formality: the grid stores indices into the light list's packed
-	// array, so the array has to be packed first. Its own phase for the same reason C3 got
-	// one -- C6 replaces the CPU builder with a dispatch and the two costs have to be
-	// comparable in the F10 overlay across that change, which they are not if they share a
-	// bucket. Nothing consumes the grid outside the debug inspector yet, so this changes
-	// no pixel either.
+	// ---- The cluster grid: bin those lights into the screen grid ---- see
+	// the clustered lighting plan, sections C4 (the grid) and C6 (the compute shader
+	// that now fills it). Second, and not merged into the block above, because the ordering
+	// is a real constraint and not a formality: the grid stores indices into the light
+	// list's packed array, so the array has to be packed first -- and the dispatch reads
+	// the buffer that array was uploaded to, which happens in the block above. Its own
+	// phase for the same reason C3 got one: C6 replaced the CPU builder with a dispatch and
+	// the two costs have to be comparable in the F10 overlay across that change, which they
+	// are not if they share a bucket. (W3D_CLUSTER_CPU=1 puts the CPU builder back, and the
+	// same bucket then measures it.)
 	if (W3DDisplay::m_3DScene != nullptr && m_3DCamera != nullptr)
 	{
 		{
@@ -1910,9 +1911,16 @@ void W3DView::draw()
 		}
 
 		// ---- C5's consumption: hand the three buffers to the pixel stage, ONCE ----
-		// After the grid, because a resize releases and recreates its two buffers inside
-		// the call above and binding the old handles would leave two slots pointing at
-		// freed views. Once per frame and not per draw: they cannot change within a frame,
+		// AFTER THE GRID, AND THAT IS NOT A PREFERENCE. Two reasons, either of which alone
+		// would fix the order:
+		//  - a resize releases and recreates the grid's two buffers inside the call above,
+		//    and binding the old handles would leave two slots pointing at freed views;
+		//  - the dispatch inside that call binds those same two buffers for WRITING, and
+		//    C1's hazard rule nulls any pixel-stage binding of a buffer bound for writing
+		//    (D3D11 does it silently otherwise, and a dropped SRV reads as zero -- which
+		//    for a cluster grid is indistinguishable from "no lights near this pixel").
+		//    Binding before the dispatch would therefore bind nothing at all.
+		// Once per frame and not per draw: they cannot change within a frame,
 		// so a per-draw bind would be pure noise in the device census. Bound here rather
 		// than at the top of the scene pass because the shadow-map and depth-prepass passes
 		// come between, and neither runs a shader that declares t8..t10 -- a binding they

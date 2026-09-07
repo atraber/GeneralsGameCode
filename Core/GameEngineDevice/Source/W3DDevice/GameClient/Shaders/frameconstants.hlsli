@@ -53,6 +53,29 @@ cbuffer FrameConstants : register(b1)
                             // z = clustered lighting on (options.ini UseClusteredLighting),
                             // w = suppress the shader's own directional term (the C5.1
                             //     sun-equivalence control; 0 in every ordinary frame)
+    // C6. THE BUILDER'S FIELDS, and the only ones in this block no *reader* wants: every
+    // consumer turns a pixel position and a view distance into a cluster, which needs
+    // nothing below. clusterassign_cs.hlsl goes the other way -- a world-space light
+    // sphere to a set of clusters -- and that needs the camera's view transform and the
+    // projection's lateral terms, neither of which any of the five fields above carries.
+    //
+    // They are here rather than in a constant buffer of the compute shader's own because
+    // there isn't one: Dispatch has no per-draw setup step, and b1 is the single buffer a
+    // backend binds on the compute stage (see GfxDeviceClass::Set_Frame_Constants). Four
+    // vec4 of the sixteen GFX_FRAME_CONSTANTS holds; nine are now in use and seven remain.
+    float4 ClusterProj;     // x = projXScale, y = projXOffset, z = projYScale, w = projYOffset
+                            // -- Row[0][0], Row[0][2], Row[1][1], Row[1][2] of the camera's
+                            // projection. Read off the matrix and not rebuilt from a stored
+                            // FOV and aspect: that matrix is the only place the two have
+                            // actually been combined. See ClusterGridClass::Compute_Params.
+    // The camera's view matrix (world -> view), as the three rows of a Matrix3D. Its
+    // fourth row is implicitly (0,0,0,1) and is not sent. WORLD-SPACE Z IS NOT NEGATED
+    // HERE: the engine's view space is right-handed with forward along -Z, and the shader
+    // negates the third row's result itself, exactly as the CPU builder does -- see the
+    // handedness derivation at the top of W3DClusterGrid.cpp.
+    float4 ClusterView0;
+    float4 ClusterView1;
+    float4 ClusterView2;
 };
 
 #endif  // RTS_SHADER_FRAMECONSTANTS_HLSLI
