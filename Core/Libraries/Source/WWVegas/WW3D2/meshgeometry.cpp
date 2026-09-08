@@ -1800,6 +1800,11 @@ WW3DErrorType MeshGeometryClass::read_chunks(ChunkLoadClass & cload)
  *=============================================================================================*/
 WW3DErrorType MeshGeometryClass::read_vertices(ChunkLoadClass & cload)
 {
+	if (!Vertex || VertexCount == 0) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s' has vertex chunk but vertex buffer was not allocated (VertexCount=%d)",
+			Get_Name(), Get_Vertex_Count()));
+		return WW3D_ERROR_LOAD_FAILED;
+	}
 	W3dVectorStruct vert;
 	Vector3 * loc = Vertex->Get_Array();
 	assert(loc);
@@ -1833,9 +1838,13 @@ WW3DErrorType MeshGeometryClass::read_vertices(ChunkLoadClass & cload)
  *=============================================================================================*/
 WW3DErrorType MeshGeometryClass::read_vertex_normals(ChunkLoadClass & cload)
 {
-	W3dVectorStruct norm;
 	Vector3 * mdlnorms = get_vert_normals();
-	WWASSERT(mdlnorms);
+	if (!mdlnorms) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s' has vertex normal chunk but normal buffer was not allocated (VertexCount=%d)",
+			Get_Name(), VertexCount));
+		return WW3D_ERROR_LOAD_FAILED;
+	}
+	W3dVectorStruct norm;
 
 	for (int i=0; i<VertexCount; i++) {
 		if (cload.Read(&norm,sizeof(W3dVectorStruct)) != sizeof(W3dVectorStruct)) {
@@ -1870,17 +1879,35 @@ WW3DErrorType MeshGeometryClass::read_triangles(ChunkLoadClass & cload)
 {
 	W3dTriStruct tri;
 
+	if (!Poly || VertexCount == 0) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s' has triangles chunk but geometry was not allocated (PolyCount=%d, VertexCount=%d)",
+			Get_Name(), Get_Polygon_Count(), VertexCount));
+		return WW3D_ERROR_LOAD_FAILED;
+	}
+
 	// cache pointers to various arrays in the surrender mesh
 	TriIndex * vi = get_polys();
 	Set_Flag(DIRTY_PLANES,false);
 	Vector4 * peq = get_planes();
 	uint8 * surface_types = Get_Poly_Surface_Type_Array();
 
+	int bad_vert_idx_count = 0;
+
 	// read in each polygon one by one
 	for (int i=0; i<Get_Polygon_Count(); i++) {
 
 		if (cload.Read(&tri,sizeof(W3dTriStruct)) != sizeof(W3dTriStruct)) {
 			return WW3D_ERROR_LOAD_FAILED;
+		}
+
+		for (int v = 0; v < 3; v++) {
+			if (tri.Vindex[v] >= (uint32)VertexCount) {
+				if (bad_vert_idx_count++ < 3) {
+					WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s' triangle %d references out-of-range vertex index %u (vertex count is %d)",
+						Get_Name(), i, tri.Vindex[v], VertexCount));
+				}
+				tri.Vindex[v] = 0;
+			}
 		}
 
 		// set the vertex indices
@@ -1956,9 +1983,13 @@ WW3DErrorType MeshGeometryClass::read_user_text(ChunkLoadClass & cload)
  *=============================================================================================*/
 WW3DErrorType MeshGeometryClass::read_vertex_influences(ChunkLoadClass & cload)
 {
-	W3dVertInfStruct vinf;
 	uint16 * links = get_bone_links(true);
-	WWASSERT(links);
+	if (!links) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s' failed to allocate bone links for %d vertices",
+			Get_Name(), Get_Vertex_Count()));
+		return WW3D_ERROR_LOAD_FAILED;
+	}
+	W3dVertInfStruct vinf;
 
 	for (int i=0; i<Get_Vertex_Count(); i++) {
 

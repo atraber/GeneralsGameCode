@@ -123,9 +123,9 @@ private:
 	int							Add_Vertex_Material(VertexMaterialClass * vmat);
 	int							Add_Texture(TextureClass* tex);
 
-	ShaderClass					Peek_Shader(int index)											{ return (index >= 0 && index < Shaders.Count()) ? Shaders[index] : MeshMatDescClass::NullShader; }
-	VertexMaterialClass *	Peek_Vertex_Material(int index)								{ return (index >= 0 && index < VertexMaterials.Count()) ? VertexMaterials[index] : nullptr; }
-	TextureClass *				Peek_Texture(int index)											{ return (index >= 0 && index < Textures.Count()) ? Textures[index] : nullptr; }
+	ShaderClass					Peek_Shader(int index);
+	VertexMaterialClass *	Peek_Vertex_Material(int index);
+	TextureClass *				Peek_Texture(int index);
 
 	int							Shader_Count()												{ return Shaders.Count(); }
 	int							Vertex_Material_Count()									{ return VertexMaterials.Count(); }
@@ -202,6 +202,11 @@ private:
 	*/
 	bool															LoadedDIG;
 
+	int															BadShaderCount;
+	int															BadVertexMaterialCount;
+	int															BadTextureCount;
+	int															BadLegacyMaterialCount;
+
 	friend class MeshClass;
 	friend class MeshModelClass;
 };
@@ -263,6 +268,15 @@ WW3DErrorType MeshModelClass::Load_W3D(ChunkLoadClass & cload)
 	int		namelen;
 
 	Reset(context->Header.NumTris,context->Header.NumVertices,1);
+
+	if (context->Header.NumVertices > 65535) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' has %u vertices which exceeds the 16-bit index limit (65535).",
+			context->Header.ContainerName, context->Header.MeshName, context->Header.NumVertices));
+	}
+	if (context->Header.NumTris > 0 && context->Header.NumVertices == 0) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' has %u triangles but 0 vertices.",
+			context->Header.ContainerName, context->Header.MeshName, context->Header.NumTris));
+	}
 
 	namelen = strlen(context->Header.ContainerName);
 	namelen += strlen(context->Header.MeshName);
@@ -398,6 +412,11 @@ WW3DErrorType MeshModelClass::Load_W3D(ChunkLoadClass & cload)
 		for (int bi = 0; bi < Get_Vertex_Count(); bi++) {
 			links[bi] += 1;
 		}
+	}
+
+	if (Get_Flag(SKIN) && get_bone_links(false) == nullptr) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' is marked as skin but has no vertex bone influences.",
+			context->Header.ContainerName, context->Header.MeshName));
 	}
 
 	/*
@@ -932,6 +951,8 @@ WW3DErrorType MeshModelClass::read_material_info(ChunkLoadClass & cload,MeshLoad
 	}
 	int passes = context->MatInfo.PassCount;
 	if (passes > MeshMatDescClass::MAX_PASSES) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' has %d material passes (max supported is %d). Extra passes will be ignored.",
+			context->Header.ContainerName, context->Header.MeshName, passes, (int)MeshMatDescClass::MAX_PASSES));
 		passes = MeshMatDescClass::MAX_PASSES;
 	}
 	Set_Pass_Count(passes);
@@ -1042,6 +1063,8 @@ WW3DErrorType MeshModelClass::read_textures(ChunkLoadClass & cload,MeshLoadConte
 WW3DErrorType MeshModelClass::read_material_pass(ChunkLoadClass & cload,MeshLoadContextClass * context)
 {
 	if (context->CurPass >= MeshMatDescClass::MAX_PASSES) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' material pass %d exceeds MAX_PASSES (%d) - ignoring pass.",
+			context->Header.ContainerName, context->Header.MeshName, context->CurPass, (int)MeshMatDescClass::MAX_PASSES));
 		context->CurPass++;
 		return WW3D_ERROR_OK;
 	}
@@ -1397,6 +1420,13 @@ WW3DErrorType MeshModelClass::read_scg(ChunkLoadClass & cload,MeshLoadContextCla
  *=============================================================================================*/
 WW3DErrorType MeshModelClass::read_texture_stage(ChunkLoadClass & cload,MeshLoadContextClass * context)
 {
+	if (context->CurTexStage >= MeshMatDescClass::MAX_TEX_STAGES) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' pass %d texture stage %d exceeds MAX_TEX_STAGES (%d) - ignoring stage.",
+			context->Header.ContainerName, context->Header.MeshName, context->CurPass, context->CurTexStage, (int)MeshMatDescClass::MAX_TEX_STAGES));
+		context->CurTexStage++;
+		return WW3D_ERROR_OK;
+	}
+
 	while (cload.Open_Chunk()) {
 
 		WW3DErrorType error = WW3D_ERROR_OK;
@@ -1462,7 +1492,9 @@ WW3DErrorType MeshModelClass::read_texture_ids(ChunkLoadClass & cload,MeshLoadCo
 #if (!MESH_SINGLE_MATERIAL_HACK)
 	if (cload.Cur_Chunk_Length() == 1*sizeof(uint32)) {
 		cload.Read(&texid,sizeof(texid));
-		matdesc->Set_Single_Texture(context->Peek_Texture(texid),pass,stage);
+		if (texid != 0xffffffff) {
+			matdesc->Set_Single_Texture(context->Peek_Texture(texid),pass,stage);
+		}
 
 	} else {
 
@@ -1960,6 +1992,10 @@ MeshLoadContextClass::MeshLoadContextClass()
 	CurTexStage = 0;
 	TexCoords = nullptr;
 	LoadedDIG = false;
+	BadShaderCount = 0;
+	BadVertexMaterialCount = 0;
+	BadTextureCount = 0;
+	BadLegacyMaterialCount = 0;
 }
 
 
@@ -2150,6 +2186,45 @@ void MeshLoadContextClass::Add_Legacy_Material(ShaderClass shader,VertexMaterial
 }
 
 
+ShaderClass MeshLoadContextClass::Peek_Shader(int index)
+{
+	if (index >= 0 && index < Shaders.Count()) {
+		return Shaders[index];
+	}
+	if (BadShaderCount++ < 3) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' references invalid shader index %d (count: %d)",
+			Header.ContainerName, Header.MeshName, index, Shaders.Count()));
+	}
+	return MeshMatDescClass::NullShader;
+}
+
+
+VertexMaterialClass * MeshLoadContextClass::Peek_Vertex_Material(int index)
+{
+	if (index >= 0 && index < VertexMaterials.Count()) {
+		return VertexMaterials[index];
+	}
+	if (BadVertexMaterialCount++ < 3) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' references invalid vertex material index %d (count: %d)",
+			Header.ContainerName, Header.MeshName, index, VertexMaterials.Count()));
+	}
+	return nullptr;
+}
+
+
+TextureClass * MeshLoadContextClass::Peek_Texture(int index)
+{
+	if (index >= 0 && index < Textures.Count()) {
+		return Textures[index];
+	}
+	if (BadTextureCount++ < 3) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' references invalid texture index %d (count: %d)",
+			Header.ContainerName, Header.MeshName, index, Textures.Count()));
+	}
+	return nullptr;
+}
+
+
 /***********************************************************************************************
  * MeshLoadContextClass::Peek_Legacy_Shader -- returns a legacy shader								  *
  *                                                                                             *
@@ -2170,6 +2245,10 @@ ShaderClass MeshLoadContextClass::Peek_Legacy_Shader(int legacy_material_index)
 	if (legacy_material_index >= 0 && legacy_material_index < LegacyMaterials.Count() && LegacyMaterials[legacy_material_index]) {
 		int si = LegacyMaterials[legacy_material_index]->ShaderIdx;
 		return Peek_Shader(si);
+	}
+	if (BadLegacyMaterialCount++ < 3) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' references invalid legacy material index %d (count: %d)",
+			Header.ContainerName, Header.MeshName, legacy_material_index, LegacyMaterials.Count()));
 	}
 	return MeshMatDescClass::NullShader;
 }
@@ -2194,6 +2273,11 @@ VertexMaterialClass * MeshLoadContextClass::Peek_Legacy_Vertex_Material(int lega
 		if (vi != -1) {
 			return Peek_Vertex_Material(vi);
 		}
+		return nullptr;
+	}
+	if (BadLegacyMaterialCount++ < 3) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' references invalid legacy material index %d (count: %d)",
+			Header.ContainerName, Header.MeshName, legacy_material_index, LegacyMaterials.Count()));
 	}
 	return nullptr;
 }
@@ -2218,6 +2302,11 @@ TextureClass * MeshLoadContextClass::Peek_Legacy_Texture(int legacy_material_ind
 		if (ti != -1) {
 			return Peek_Texture(ti);
 		}
+		return nullptr;
+	}
+	if (BadLegacyMaterialCount++ < 3) {
+		WWDEBUG_SAY(("*** ASSET ERROR: Mesh '%s.%s' references invalid legacy material index %d (count: %d)",
+			Header.ContainerName, Header.MeshName, legacy_material_index, LegacyMaterials.Count()));
 	}
 	return nullptr;
 }
