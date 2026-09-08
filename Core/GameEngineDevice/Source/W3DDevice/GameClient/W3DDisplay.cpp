@@ -73,6 +73,7 @@ static void drawFramerateBar();
 #include "W3DDevice/GameClient/W3DAssetManager.h"
 #include "W3DDevice/GameClient/W3DGameClient.h"
 #include "W3DDevice/GameClient/W3DFileSystem.h"
+#include "W3DDevice/GameClient/W3DShadow.h"
 #include "W3DDevice/GameClient/W3DDynamicLight.h"
 #include "W3DDevice/GameClient/W3DProfilerFrameCapture.h"
 #include "W3DDevice/GameClient/HeightMap.h"
@@ -2390,6 +2391,49 @@ void W3DDisplay::setTimeOfDay( TimeOfDay tod )
 	}
 	if(TheTerrainRenderObject) {
 		TheTerrainRenderObject->setTimeOfDay(tod);
+		TheTacticalView->forceRedraw();
+	}
+}
+
+// W3DDisplay::updateSceneLighting ============================================
+/** Dynamically updates scene ambient and directional lights during day/night cycle. */
+//=============================================================================
+void W3DDisplay::updateSceneLighting( const GlobalData::TerrainLighting *objectsLighting, Bool updateTerrainMesh )
+{
+	if( m_3DScene && objectsLighting )
+	{
+		m_3DScene->Set_Ambient_Light( Vector3(objectsLighting[0].ambient.red, objectsLighting[0].ambient.green, objectsLighting[0].ambient.blue) );
+	}
+
+	for (Int i=0; i<LightEnvironmentClass::MAX_LIGHTS; i++)
+	{
+		if( m_myLight[i] && objectsLighting )
+		{
+			const GlobalData::TerrainLighting *ol = &objectsLighting[i];
+
+			m_myLight[i]->Set_Ambient( Vector3( 0.0f, 0.0f, 0.0f ) );
+			m_myLight[i]->Set_Diffuse( Vector3(ol->diffuse.red, ol->diffuse.green, ol->diffuse.blue ) );
+			m_myLight[i]->Set_Specular( Vector3(0,0,0) );
+			Matrix3D mtx;
+			mtx.Set(Vector3(1,0,0), Vector3(0,1,0), Vector3(ol->lightPos.x, ol->lightPos.y, ol->lightPos.z), Vector3(0,0,0));
+			m_myLight[i]->Set_Transform(mtx);
+		}
+	}
+
+	if( TheW3DShadowManager && objectsLighting )
+	{
+		Vector3 lightRay(-objectsLighting[0].lightPos.x, -objectsLighting[0].lightPos.y, -objectsLighting[0].lightPos.z);
+		if (lightRay.Length2() > 1e-4f)
+		{
+			lightRay.Normalize();
+			lightRay *= 10000.0f; // SUN_DISTANCE_FROM_GROUND
+			TheW3DShadowManager->setLightPosition(0, lightRay.X, lightRay.Y, lightRay.Z);
+		}
+	}
+
+	if( TheTerrainRenderObject && updateTerrainMesh )
+	{
+		TheTerrainRenderObject->staticLightingChanged();
 		TheTacticalView->forceRedraw();
 	}
 }

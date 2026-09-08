@@ -88,6 +88,7 @@ public:
 																 UnsignedInt increaseFrameTime, UnsignedInt decayFrameTime//, Bool donut = FALSE
 																 ) override;
 	virtual void setTimeOfDay ( TimeOfDay tod ) override;
+	virtual void updateSceneLighting( const GlobalData::TerrainLighting *objectsLighting, Bool updateTerrainMesh = FALSE ) override;
 
 	/// draw a line on the display in screen coordinates
 	virtual void drawLine( Int startX, Int startY, Int endX, Int endY,

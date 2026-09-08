@@ -138,4 +138,6 @@ public:
 	Bool getShowMoneyPerMinute() const;
 
 	Real getGameWindowTransitionSpeedMultiplier() const;
+
+	Int getDayNightCycleDuration() const;
 };

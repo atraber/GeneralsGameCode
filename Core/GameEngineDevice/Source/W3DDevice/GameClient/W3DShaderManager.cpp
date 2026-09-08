@@ -4339,7 +4339,10 @@ void W3DShaderManager::updateEnvMap()
 		drift += fabsf(sky[i]      - s_envBakedSky[i]);
 		drift += fabsf(ground[i]   - s_envBakedGround[i]);
 	}
-	if (s_envBaked && drift < 0.03f)
+	// TheSuperHackers @perf andytraber 08/09/2026 With continuous day-night cycle,
+	// gradual sun drift should not trigger the heavy CPU procedural cubemap bake every few seconds.
+	// Only re-bake on major lighting changes (e.g. phase shifts or TOD toggles).
+	if (s_envBaked && drift < 0.60f)
 		return;
 
 	bakeEnvMapFaces(cube, sunDir, sunColor, sky, ground);

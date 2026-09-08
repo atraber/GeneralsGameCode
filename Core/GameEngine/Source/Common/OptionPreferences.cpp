@@ -996,3 +996,17 @@ Real OptionPreferences::getGameWindowTransitionSpeedMultiplier() const
 	Real speed = (Real) atof(it->second.str());
 	return clamp(1.0f, speed, 1000.0f);
 }
+
+Int OptionPreferences::getDayNightCycleDuration() const
+{
+	OptionPreferences::const_iterator it = find("DayNightCycleDuration");
+	if (it == end())
+		it = find("DayNightCycle");
+	if (it == end())
+		it = find("DayNightCycleMinutes");
+	if (it == end())
+		return 20; // Default: 20 minutes
+
+	Int minutes = atoi(it->second.str());
+	return (minutes < 0) ? 0 : minutes;
+}

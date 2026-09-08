@@ -54,6 +54,7 @@
 
 #include "GameClient/InGameUI.h"
 #include "GameClient/CommandXlat.h"
+#include "GameClient/DayNightCycle.h"
 #include "GameClient/DebugDisplay.h"
 #include "GameClient/FrameTimingDisplay.h"
 #include "GameClient/Drawable.h"
@@ -4724,6 +4725,7 @@ GameMessageDisposition CommandTranslator::translateGameMessage(const GameMessage
 			if (TheWritableGlobalData->setTimeOfDay(tod))
 			{
 				TheGameClient->setTimeOfDay(TheGlobalData->m_timeOfDay);
+				DayNightCycle_SetTimeOfDay(tod);
 				if (TheGlobalData->m_forceModelsToFollowTimeOfDay)
 				{
 					for (Object *obj = TheGameLogic->getFirstObject(); obj; obj = obj->getNextObject())

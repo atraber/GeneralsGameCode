@@ -156,6 +156,7 @@ set(GAMEENGINE_SRC
     Include/GameClient/ControlBarResizer.h
     Include/GameClient/ControlBarScheme.h
     Include/GameClient/Credits.h
+    Include/GameClient/DayNightCycle.h
     Include/GameClient/DebugDisplay.h
 #    Include/GameClient/Diplomacy.h
 #    Include/GameClient/DisconnectMenu.h
@@ -703,6 +704,7 @@ set(GAMEENGINE_SRC
     Source/GameClient/ClientInstance.cpp
     Source/GameClient/Color.cpp
     Source/GameClient/Credits.cpp
+    Source/GameClient/DayNightCycle.cpp
     Source/GameClient/Display.cpp
     Source/GameClient/DisplayString.cpp
     Source/GameClient/DisplayStringManager.cpp

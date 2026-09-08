@@ -29,6 +29,7 @@
 #pragma once
 
 #include "Common/SubsystemInterface.h"
+#include "Common/GlobalData.h"
 #include "GameClient/Color.h"
 #include "GameClient/GameFont.h"
 #include "GameClient/View.h"
@@ -132,6 +133,7 @@ public:
 	virtual void step() {}; ///< Do one fixed time step
 	virtual void draw() override;																		///< Redraw the entire display
 	virtual void setTimeOfDay( TimeOfDay tod ) = 0;								///< Set the time of day for this display
+	virtual void updateSceneLighting( const GlobalData::TerrainLighting *objectsLighting, Bool updateTerrainMesh = FALSE ) {}
 	virtual void createLightPulse( const Coord3D *pos, const RGBColor *color, Real innerRadius,Real attenuationWidth,
 																 UnsignedInt increaseFrameTime, UnsignedInt decayFrameTime//, Bool donut = FALSE
 																 ) = 0;

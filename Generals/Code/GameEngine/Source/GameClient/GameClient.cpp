@@ -50,6 +50,7 @@
 #include "GameClient/CommandXlat.h"
 #include "GameClient/ControlBar.h"
 #include "GameClient/Diplomacy.h"
+#include "GameClient/DayNightCycle.h"
 #include "GameClient/Display.h"
 #include "GameClient/DisplayStringManager.h"
 #include "GameClient/Drawable.h"
@@ -457,6 +458,7 @@ void GameClient::reset()
 	TheRayEffects->reset();
 	TheVideoPlayer->reset();
 	TheEva->reset();
+	DayNightCycle_Reset();
 
 	// clear any drawable TOC we might have
 	m_drawableTOC.clear();
@@ -545,6 +547,9 @@ void GameClient::update()
 	// TheSuperHackers @feature andytraber 19/08/2026 The camera timeline of an unattended run,
 	// stepped before the view is updated so a cue takes effect on the frame it was written for.
 	CameraScript_Update(getUnattendedRunFrame());
+
+	// TheSuperHackers @feature andytraber 08/09/2026 Dynamic day-night cycle with creeping shadows.
+	DayNightCycle_Update(TheGameLogic ? TheGameLogic->getFrame() : 0);
 
 	if (m_intro != nullptr)
 	{

@@ -36,6 +36,7 @@
 #include "Common/GlobalData.h"
 #include "Common/Xfer.h"
 #include "GameClient/GameClient.h"
+#include "GameClient/DayNightCycle.h"
 
 #include "GameClient/MapUtil.h"
 #include "GameLogic/AI.h"
@@ -167,6 +168,9 @@ Bool W3DTerrainLogic::loadMap( AsciiString filename , Bool query )
 	// Map file now contains lighting & time of day info.
 	if( TheWritableGlobalData->setTimeOfDay( TheGlobalData->m_timeOfDay ) )
 		TheGameClient->setTimeOfDay( TheGlobalData->m_timeOfDay );
+
+	// TheSuperHackers @feature andytraber 08/09/2026 Initialize day-night cycle for loaded map
+	DayNightCycle_Init();
 
 	return TRUE;  // success
 
