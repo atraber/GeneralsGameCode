@@ -299,6 +299,7 @@ MeshMatDescClass::~MeshMatDescClass()
 
 TextureClass * MeshMatDescClass::Get_Single_Texture(int pass,int stage) const
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return nullptr;
 	if (Texture[pass][stage]) {
 		Texture[pass][stage]->Add_Ref();
 	}
@@ -309,6 +310,8 @@ void MeshMatDescClass::Reset(int polycount,int vertcount,int passcount)
 {
 	PolyCount = polycount;
 	VertexCount = vertcount;
+	if (passcount > MAX_PASSES) passcount = MAX_PASSES;
+	if (passcount < 0) passcount = 0;
 	PassCount = passcount;
 
 	for (int array=0; array<MAX_COLOR_ARRAYS; array++) {
@@ -341,6 +344,8 @@ void MeshMatDescClass::Init_Alternate(MeshMatDescClass & default_materials,MeshM
 {
 	// just copy the counts
 	PassCount = default_materials.PassCount;
+	if (PassCount > MAX_PASSES) PassCount = MAX_PASSES;
+	if (PassCount < 1) PassCount = 1;
 	VertexCount = default_materials.VertexCount;
 	PolyCount = default_materials.PolyCount;
 
@@ -355,7 +360,7 @@ void MeshMatDescClass::Init_Alternate(MeshMatDescClass & default_materials,MeshM
 
 	// Copy the uv-arrays from the alternate materials to start.  Needed uv arrays from
 	// the default material set will be brought over as encountered below
-	for (int i=0; i<alternate_materials.Get_UV_Array_Count(); i++) {
+	for (int i=0; i<alternate_materials.Get_UV_Array_Count() && i<MAX_UV_ARRAYS; i++) {
 		REF_PTR_SET(UV[i],alternate_materials.UV[i]);
 	}
 
@@ -371,25 +376,29 @@ void MeshMatDescClass::Init_Alternate(MeshMatDescClass & default_materials,MeshM
 
 					// Look up the uv array in default_materials that we need to bring over.
 					int default_uv_source = default_materials.UVSource[pass][stage];
-					UVBufferClass * uvarray = default_materials.UV[default_uv_source];
-					int found_index = -1;
+					if (default_uv_source >= 0 && default_uv_source < MAX_UV_ARRAYS && default_materials.UV[default_uv_source] != nullptr) {
+						UVBufferClass * uvarray = default_materials.UV[default_uv_source];
+						int found_index = -1;
 
-					// Check if we already have it.
-					for (int i=0; i<Get_UV_Array_Count(); i++) {
-						if (uvarray->Get_CRC() == UV[i]->Get_CRC()) {
-							found_index = i;
-							break;
+						// Check if we already have it.
+						for (int i=0; i<Get_UV_Array_Count(); i++) {
+							if (uvarray->Get_CRC() == UV[i]->Get_CRC()) {
+								found_index = i;
+								break;
+							}
 						}
-					}
 
-					// If we already have it, just set the source index.  Otherwise add-ref it
-					// into a new slot in our uv array and set that index.
-					if (found_index != -1) {
-						UVSource[pass][stage] = found_index;
-					} else {
-						int new_index = Get_UV_Array_Count();
-						REF_PTR_SET(UV[new_index],default_materials.UV[default_uv_source]);
-						UVSource[pass][stage] = new_index;
+						// If we already have it, just set the source index.  Otherwise add-ref it
+						// into a new slot in our uv array and set that index.
+						if (found_index != -1) {
+							UVSource[pass][stage] = found_index;
+						} else {
+							int new_index = Get_UV_Array_Count();
+							if (new_index < MAX_UV_ARRAYS) {
+								REF_PTR_SET(UV[new_index],default_materials.UV[default_uv_source]);
+								UVSource[pass][stage] = new_index;
+							}
+						}
 					}
 				}
 			} else {
@@ -463,39 +472,46 @@ bool MeshMatDescClass::Is_Empty()
 
 void MeshMatDescClass::Set_Single_Material(VertexMaterialClass * vmat,int pass)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return;
 	REF_PTR_SET(Material[pass],vmat);
 }
 
 void MeshMatDescClass::Set_Single_Texture(TextureClass * tex,int pass,int stage)
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return;
 	REF_PTR_SET(Texture[pass][stage],tex);
 }
 
 void MeshMatDescClass::Set_Single_Shader(ShaderClass shader,int pass)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return;
 	Shader[pass] = shader;
 }
 
 void MeshMatDescClass::Set_Material(int vidx,VertexMaterialClass * vmat,int pass)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return;
 	MatBufferClass * mats = Get_Material_Array(pass,true);
-	mats->Set_Element(vidx,vmat);
+	if (mats) mats->Set_Element(vidx,vmat);
 }
 
 void MeshMatDescClass::Set_Shader(int pidx,ShaderClass shader,int pass)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return;
 	ShaderClass * shaders = Get_Shader_Array(pass,true);
-	shaders[pidx] = shader;
+	if (shaders) shaders[pidx] = shader;
 }
 
 void MeshMatDescClass::Set_Texture(int pidx,TextureClass * tex,int pass,int stage)
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return;
 	TexBufferClass * textures = Get_Texture_Array(pass,stage,true);
-	textures->Set_Element(pidx,tex);
+	if (textures) textures->Set_Element(pidx,tex);
 }
 
 VertexMaterialClass * MeshMatDescClass::Get_Material(int vidx,int pass) const
 {
+	if (pass < 0 || pass >= MAX_PASSES) return nullptr;
 	if (MaterialArray[pass]) {
 
 		return MaterialArray[pass]->Get_Element(vidx);
@@ -511,6 +527,7 @@ VertexMaterialClass * MeshMatDescClass::Get_Material(int vidx,int pass) const
 
 ShaderClass	MeshMatDescClass::Get_Shader(int pidx,int pass) const
 {
+	if (pass < 0 || pass >= MAX_PASSES) return NullShader;
 	if (ShaderArray[pass]) {
 		return ShaderArray[pass]->Get_Element(pidx);
 	}
@@ -519,6 +536,7 @@ ShaderClass	MeshMatDescClass::Get_Shader(int pidx,int pass) const
 
 TextureClass * MeshMatDescClass::Get_Texture(int pidx,int pass,int stage) const
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return nullptr;
 	if (TextureArray[pass][stage]) {
 
 		return TextureArray[pass][stage]->Get_Element(pidx);
@@ -534,6 +552,7 @@ TextureClass * MeshMatDescClass::Get_Texture(int pidx,int pass,int stage) const
 
 VertexMaterialClass * MeshMatDescClass::Peek_Material(int vidx,int pass) const
 {
+	if (pass < 0 || pass >= MAX_PASSES) return nullptr;
 	if (MaterialArray[pass]) {
 		return MaterialArray[pass]->Peek_Element(vidx);
 	}
@@ -542,6 +561,7 @@ VertexMaterialClass * MeshMatDescClass::Peek_Material(int vidx,int pass) const
 
 TextureClass * MeshMatDescClass::Peek_Texture(int pidx,int pass,int stage) const
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return nullptr;
 	if (TextureArray[pass][stage]) {
 		return TextureArray[pass][stage]->Peek_Element(pidx);
 	}
@@ -550,6 +570,7 @@ TextureClass * MeshMatDescClass::Peek_Texture(int pidx,int pass,int stage) const
 
 TexBufferClass * MeshMatDescClass::Get_Texture_Array(int pass,int stage,bool create)
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return nullptr;
 	if (create && TextureArray[pass][stage] == nullptr) {
 		TextureArray[pass][stage] = NEW_REF(TexBufferClass,(PolyCount, "MeshMatDescClass::TextureArray"));
 	}
@@ -558,6 +579,7 @@ TexBufferClass * MeshMatDescClass::Get_Texture_Array(int pass,int stage,bool cre
 
 MatBufferClass * MeshMatDescClass::Get_Material_Array(int pass,bool create)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return nullptr;
 	if (create && MaterialArray[pass] == nullptr) {
 		MaterialArray[pass] = NEW_REF(MatBufferClass,(VertexCount, "MeshMatDescClass::MaterialArray"));
 	}
@@ -566,6 +588,7 @@ MatBufferClass * MeshMatDescClass::Get_Material_Array(int pass,bool create)
 
 ShaderClass * MeshMatDescClass::Get_Shader_Array(int pass,bool create)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return nullptr;
 	if (create && ShaderArray[pass] == nullptr) {
 		ShaderArray[pass] = NEW_REF(ShareBufferClass<ShaderClass>,(PolyCount, "MeshMatDescClass::ShaderArray"));
 		ShaderArray[pass]->Clear();
@@ -578,7 +601,9 @@ ShaderClass * MeshMatDescClass::Get_Shader_Array(int pass,bool create)
 
 void MeshMatDescClass::Make_UV_Array_Unique(int pass,int stage)
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return;
 	int uvindex = UVSource[pass][stage];
+	if (uvindex < 0 || uvindex >= MAX_UV_ARRAYS || !UV[uvindex]) return;
 	if (UV[uvindex]->Num_Refs() > 1) {
 		UVBufferClass * unique_uv = NEW_REF(UVBufferClass,(*UV[uvindex]));
 		UV[uvindex]->Release_Ref();
@@ -588,6 +613,7 @@ void MeshMatDescClass::Make_UV_Array_Unique(int pass,int stage)
 
 void MeshMatDescClass::Make_Color_Array_Unique(int array)
 {
+	if (array < 0 || array >= MAX_COLOR_ARRAYS) return;
 	if ((ColorArray[array] != nullptr) && (ColorArray[array]->Num_Refs() > 1)) {
 		ShareBufferClass<unsigned> * unique_color_array = NEW_REF(ShareBufferClass<unsigned>,(*ColorArray[array]));
 		ColorArray[array]->Release_Ref();
@@ -597,6 +623,7 @@ void MeshMatDescClass::Make_Color_Array_Unique(int array)
 
 void MeshMatDescClass::Install_UV_Array(int pass,int stage,Vector2 * uvs,int count)
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return;
 	/*
 	** Compute the crc of this uv array
 	*/
@@ -624,7 +651,7 @@ void MeshMatDescClass::Install_UV_Array(int pass,int stage,Vector2 * uvs,int cou
 		** Find the first empty UV-array slot
 		*/
 		int new_index = 0;
-		while ((UV[new_index] != nullptr) && (new_index < MAX_UV_ARRAYS)) {
+		while ((new_index < MAX_UV_ARRAYS) && (UV[new_index] != nullptr)) {
 			new_index++;
 		}
 

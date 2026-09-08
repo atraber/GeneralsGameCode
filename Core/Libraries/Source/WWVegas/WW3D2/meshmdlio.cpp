@@ -123,9 +123,9 @@ private:
 	int							Add_Vertex_Material(VertexMaterialClass * vmat);
 	int							Add_Texture(TextureClass* tex);
 
-	ShaderClass					Peek_Shader(int index)											{ return Shaders[index]; }
-	VertexMaterialClass *	Peek_Vertex_Material(int index)								{ return VertexMaterials[index]; }
-	TextureClass *				Peek_Texture(int index)											{ return Textures[index]; }
+	ShaderClass					Peek_Shader(int index)											{ return (index >= 0 && index < Shaders.Count()) ? Shaders[index] : MeshMatDescClass::NullShader; }
+	VertexMaterialClass *	Peek_Vertex_Material(int index)								{ return (index >= 0 && index < VertexMaterials.Count()) ? VertexMaterials[index] : nullptr; }
+	TextureClass *				Peek_Texture(int index)											{ return (index >= 0 && index < Textures.Count()) ? Textures[index] : nullptr; }
 
 	int							Shader_Count()												{ return Shaders.Count(); }
 	int							Vertex_Material_Count()									{ return VertexMaterials.Count(); }
@@ -930,7 +930,11 @@ WW3DErrorType MeshModelClass::read_material_info(ChunkLoadClass & cload,MeshLoad
 	if (cload.Read(&(context->MatInfo),sizeof(W3dMaterialInfoStruct)) != sizeof(W3dMaterialInfoStruct)) {
 		return WW3D_ERROR_LOAD_FAILED;
 	}
-	Set_Pass_Count(context->MatInfo.PassCount);
+	int passes = context->MatInfo.PassCount;
+	if (passes > MeshMatDescClass::MAX_PASSES) {
+		passes = MeshMatDescClass::MAX_PASSES;
+	}
+	Set_Pass_Count(passes);
 	return WW3D_ERROR_OK;
 }
 
@@ -1037,6 +1041,11 @@ WW3DErrorType MeshModelClass::read_textures(ChunkLoadClass & cload,MeshLoadConte
  *=============================================================================================*/
 WW3DErrorType MeshModelClass::read_material_pass(ChunkLoadClass & cload,MeshLoadContextClass * context)
 {
+	if (context->CurPass >= MeshMatDescClass::MAX_PASSES) {
+		context->CurPass++;
+		return WW3D_ERROR_OK;
+	}
+
 	context->CurTexStage = 0;
 
 	while (cload.Open_Chunk()) {
@@ -2158,10 +2167,11 @@ void MeshLoadContextClass::Add_Legacy_Material(ShaderClass shader,VertexMaterial
  *=============================================================================================*/
 ShaderClass MeshLoadContextClass::Peek_Legacy_Shader(int legacy_material_index)
 {
-	WWASSERT(legacy_material_index >= 0);
-	WWASSERT(legacy_material_index < LegacyMaterials.Count());
-	int si = LegacyMaterials[legacy_material_index]->ShaderIdx;
-	return Peek_Shader(si);
+	if (legacy_material_index >= 0 && legacy_material_index < LegacyMaterials.Count() && LegacyMaterials[legacy_material_index]) {
+		int si = LegacyMaterials[legacy_material_index]->ShaderIdx;
+		return Peek_Shader(si);
+	}
+	return MeshMatDescClass::NullShader;
 }
 
 
@@ -2179,14 +2189,13 @@ ShaderClass MeshLoadContextClass::Peek_Legacy_Shader(int legacy_material_index)
  *=============================================================================================*/
 VertexMaterialClass * MeshLoadContextClass::Peek_Legacy_Vertex_Material(int legacy_material_index)
 {
-	WWASSERT(legacy_material_index >= 0);
-	WWASSERT(legacy_material_index < LegacyMaterials.Count());
-	int vi = LegacyMaterials[legacy_material_index]->VertexMaterialIdx;
-	if (vi != -1) {
-		return Peek_Vertex_Material(vi);
-	} else {
-		return nullptr;
+	if (legacy_material_index >= 0 && legacy_material_index < LegacyMaterials.Count() && LegacyMaterials[legacy_material_index]) {
+		int vi = LegacyMaterials[legacy_material_index]->VertexMaterialIdx;
+		if (vi != -1) {
+			return Peek_Vertex_Material(vi);
+		}
 	}
+	return nullptr;
 }
 
 
@@ -2204,14 +2213,13 @@ VertexMaterialClass * MeshLoadContextClass::Peek_Legacy_Vertex_Material(int lega
  *=============================================================================================*/
 TextureClass * MeshLoadContextClass::Peek_Legacy_Texture(int legacy_material_index)
 {
-	WWASSERT(legacy_material_index >= 0);
-	WWASSERT(legacy_material_index < LegacyMaterials.Count());
-	int ti = LegacyMaterials[legacy_material_index]->TextureIdx;
-	if (ti != -1) {
-		return Peek_Texture(ti);
-	} else {
-		return nullptr;
+	if (legacy_material_index >= 0 && legacy_material_index < LegacyMaterials.Count() && LegacyMaterials[legacy_material_index]) {
+		int ti = LegacyMaterials[legacy_material_index]->TextureIdx;
+		if (ti != -1) {
+			return Peek_Texture(ti);
+		}
 	}
+	return nullptr;
 }
 
 

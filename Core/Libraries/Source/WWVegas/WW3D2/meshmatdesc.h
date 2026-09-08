@@ -86,7 +86,12 @@ public:
 	/*
 	** Counts, make sure the vertex and polygon counts match the parent mesh.
 	*/
-	void							Set_Pass_Count(int passes)			{ PassCount = passes; }
+	void							Set_Pass_Count(int passes)
+	{
+		if (passes > MAX_PASSES) passes = MAX_PASSES;
+		if (passes < 1) passes = 1;
+		PassCount = passes;
+	}
 	int							Get_Pass_Count() const			{ return PassCount; }
 	void							Set_Vertex_Count(int vertcount)	{ VertexCount = vertcount; }
 	int							Get_Vertex_Count() const		{ return VertexCount; }
@@ -144,12 +149,12 @@ public:
 	/*
 	** Determine whether this material description contains data for the specified category
 	*/
-	bool							Has_UV(int pass,int stage)					{ return UVSource[pass][stage] != -1; }
-	bool							Has_Color_Array(int array)					{ return ColorArray[array] != nullptr; }
+	bool							Has_UV(int pass,int stage)					{ if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return false; return UVSource[pass][stage] != -1; }
+	bool							Has_Color_Array(int array)					{ if (array < 0 || array >= MAX_COLOR_ARRAYS) return false; return ColorArray[array] != nullptr; }
 
-	bool							Has_Texture_Data(int pass,int stage)	{ return (Texture[pass][stage] != nullptr) || (TextureArray[pass][stage] != nullptr); }
-	bool							Has_Shader_Data(int pass)					{ return (Shader[pass] != NullShader) || (ShaderArray[pass] != nullptr); }
-	bool							Has_Material_Data(int pass)				{ return (Material[pass] != nullptr) || (MaterialArray[pass] != nullptr); }
+	bool							Has_Texture_Data(int pass,int stage)	{ if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return false; return (Texture[pass][stage] != nullptr) || (TextureArray[pass][stage] != nullptr); }
+	bool							Has_Shader_Data(int pass)					{ if (pass < 0 || pass >= MAX_PASSES) return false; return (Shader[pass] != NullShader) || (ShaderArray[pass] != nullptr); }
+	bool							Has_Material_Data(int pass)				{ if (pass < 0 || pass >= MAX_PASSES) return false; return (Material[pass] != nullptr) || (MaterialArray[pass] != nullptr); }
 
 	/*
 	** "Get" functions for Materials, Textures, and Shaders when there are more than one (per-polygon or per-vertex)
@@ -302,37 +307,35 @@ private:
 
 inline Vector2 * MeshMatDescClass::Get_UV_Array(int pass,int stage)
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) {
+		return nullptr;
+	}
 	if (UVSource[pass][stage] == -1) {
 		return nullptr;
 	}
-	if (UV[UVSource[pass][stage]] != nullptr) {
-		return UV[UVSource[pass][stage]]->Get_Array();
+	int src = UVSource[pass][stage];
+	if (src >= 0 && src < MAX_UV_ARRAYS && UV[src] != nullptr) {
+		return UV[src]->Get_Array();
 	}
 	return nullptr;
 }
 
 inline void MeshMatDescClass::Set_UV_Source(int pass,int stage,int sourceindex)
 {
-	WWASSERT(pass >= 0);
-	WWASSERT(pass < MAX_PASSES);
-	WWASSERT(stage >= 0);
-	WWASSERT(stage < MAX_TEX_STAGES);
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return;
 	UVSource[pass][stage] = sourceindex;
 }
 
 inline int MeshMatDescClass::Get_UV_Source(int pass,int stage)
 {
-	WWASSERT(pass >= 0);
-	WWASSERT(pass < MAX_PASSES);
-	WWASSERT(stage >= 0);
-	WWASSERT(stage < MAX_TEX_STAGES);
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return -1;
 	return UVSource[pass][stage];
 }
 
 inline int MeshMatDescClass::Get_UV_Array_Count()
 {
 	int count = 0;
-	while ((UV[count] != nullptr) && (count < MAX_UV_ARRAYS)) {
+	while ((count < MAX_UV_ARRAYS) && (UV[count] != nullptr)) {
 		count++;
 	}
 	return count;
@@ -340,7 +343,7 @@ inline int MeshMatDescClass::Get_UV_Array_Count()
 
 inline Vector2 * MeshMatDescClass::Get_UV_Array_By_Index(int index, bool create)
 {
-	WWASSERT((index >= 0)&&(index < MAX_UV_ARRAYS));
+	if (index < 0 || index >= MAX_UV_ARRAYS) return nullptr;
 
 	if (create && !UV[index]) {
 		UV[index] = NEW_REF(UVBufferClass,(VertexCount, "MeshMatDescClass::UV"));
@@ -353,8 +356,7 @@ inline Vector2 * MeshMatDescClass::Get_UV_Array_By_Index(int index, bool create)
 
 inline unsigned* MeshMatDescClass::Get_DCG_Array(int pass)
 {
-	WWASSERT(pass >= 0);
-	WWASSERT(pass < MAX_PASSES);
+	if (pass < 0 || pass >= MAX_PASSES) return nullptr;
 	switch (DCGSource[pass]) {
 		case VertexMaterialClass::MATERIAL:
 			return nullptr;
@@ -382,8 +384,7 @@ inline unsigned* MeshMatDescClass::Get_DCG_Array(int pass)
 
 inline unsigned * MeshMatDescClass::Get_DIG_Array(int pass)
 {
-	WWASSERT(pass >= 0);
-	WWASSERT(pass < MAX_PASSES);
+	if (pass < 0 || pass >= MAX_PASSES) return nullptr;
 	switch (DIGSource[pass]) {
 		case VertexMaterialClass::MATERIAL:
 			return nullptr;
@@ -411,26 +412,31 @@ inline unsigned * MeshMatDescClass::Get_DIG_Array(int pass)
 
 inline void MeshMatDescClass::Set_DCG_Source(int pass,VertexMaterialClass::ColorSourceType source)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return;
 	DCGSource[pass] = source;
 }
 
 inline void MeshMatDescClass::Set_DIG_Source(int pass,VertexMaterialClass::ColorSourceType source)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return;
 	DIGSource[pass] = source;
 }
 
 inline VertexMaterialClass::ColorSourceType MeshMatDescClass::Get_DCG_Source(int pass)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return VertexMaterialClass::MATERIAL;
 	return DCGSource[pass];
 }
 
 inline VertexMaterialClass::ColorSourceType MeshMatDescClass::Get_DIG_Source(int pass)
 {
+	if (pass < 0 || pass >= MAX_PASSES) return VertexMaterialClass::MATERIAL;
 	return DIGSource[pass];
 }
 
 inline unsigned * MeshMatDescClass::Get_Color_Array(int index,bool create)
 {
+	if (index < 0 || index >= MAX_COLOR_ARRAYS) return nullptr;
 	if (create && !ColorArray[index]) {
 		ColorArray[index] = NEW_REF(ShareBufferClass<unsigned>,(VertexCount, "MeshMatDescClass::ColorArray"));
 	}
@@ -442,6 +448,7 @@ inline unsigned * MeshMatDescClass::Get_Color_Array(int index,bool create)
 
 inline VertexMaterialClass * MeshMatDescClass::Get_Single_Material(int pass) const
 {
+	if (pass < 0 || pass >= MAX_PASSES) return nullptr;
 	if (Material[pass]) {
 		Material[pass]->Add_Ref();
 	}
@@ -450,31 +457,37 @@ inline VertexMaterialClass * MeshMatDescClass::Get_Single_Material(int pass) con
 
 inline VertexMaterialClass * MeshMatDescClass::Peek_Single_Material(int pass) const
 {
+	if (pass < 0 || pass >= MAX_PASSES) return nullptr;
 	return Material[pass];
 }
 
 inline TextureClass * MeshMatDescClass::Peek_Single_Texture(int pass,int stage) const
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return nullptr;
 	return Texture[pass][stage];
 }
 
 inline ShaderClass MeshMatDescClass::Get_Single_Shader(int pass) const
 {
+	if (pass < 0 || pass >= MAX_PASSES) return NullShader;
 	return Shader[pass];
 }
 
 inline bool MeshMatDescClass::Has_Material_Array(int pass) const
 {
+	if (pass < 0 || pass >= MAX_PASSES) return false;
 	return (MaterialArray[pass] != nullptr);
 }
 
 inline bool MeshMatDescClass::Has_Shader_Array(int pass) const
 {
+	if (pass < 0 || pass >= MAX_PASSES) return false;
 	return (ShaderArray[pass] != nullptr);
 }
 
 inline bool MeshMatDescClass::Has_Texture_Array(int pass,int stage) const
 {
+	if (pass < 0 || pass >= MAX_PASSES || stage < 0 || stage >= MAX_TEX_STAGES) return false;
 	return (TextureArray[pass][stage] != nullptr);
 }
 
