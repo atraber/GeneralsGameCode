@@ -640,6 +640,7 @@ static PoolSizeRec PoolSizes[] =
 	{ "TextureLoadTaskClass", 256, 32 },
 	{ "SortingNodeStruct", 256, 32 },
 	{ "ProxyArrayClass", 32, 32 },
+	{ "HLodLightArrayClass", 32, 32 },
 	{ "Line3DClass", 128, 32 },
 	{ "Render2DClass", 64, 32 },
 	{ "SurfaceClass", 128, 32 },

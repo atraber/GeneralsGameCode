@@ -691,6 +691,9 @@ WW3DErrorType HLodDefClass::Load_W3D(ChunkLoadClass & cload)
 					// Check for spot: PL_S_...
 					if (name[3] == 'S' || name[3] == 's') {
 						plDef.LightType = W3D_HLOD_LIGHT_TYPE_SPOT;
+						plDef.Intensity = 4.5f;
+					} else {
+						plDef.Intensity = 3.0f;
 					}
 					// Parse RGB if present: _R<rr>G<gg>B<bb>
 					const char * rPos = strstr(name, "_R");
@@ -700,14 +703,30 @@ WW3DErrorType HLodDefClass::Load_W3D(ChunkLoadClass & cload)
 							plDef.Color.Set(r / 100.0f, g / 100.0f, b / 100.0f);
 						}
 					}
-					// Parse Angle and Distance: _A<aa>D<dd>
+					// Parse Angle, Distance and Intensity: _A<aa>D<dd>[I<ii>]
 					const char * aPos = strstr(name, "_A");
 					if (aPos) {
-						int ang = 35, dist = 25;
-						if (sscanf(aPos, "_A%2dD%2d", &ang, &dist) >= 1) {
+						int ang = 35, dist = 25, inten = 0;
+						if (sscanf(aPos, "_A%2dD%2dI%2d", &ang, &dist, &inten) == 3) {
+							plDef.SpotAngle = DEG_TO_RADF((float)ang);
+							plDef.AttenEnd = (float)dist;
+							plDef.Intensity = inten / 10.0f;
+						} else if (sscanf(aPos, "_A%2dD%2d", &ang, &dist) >= 1) {
 							plDef.SpotAngle = DEG_TO_RADF((float)ang);
 							plDef.AttenEnd = (float)dist;
 						}
+					}
+					// Also parse standalone _I<ii> if present
+					const char * iPos = strstr(name, "_I");
+					if (iPos) {
+						int inten = 45;
+						if (sscanf(iPos, "_I%2d", &inten) == 1) {
+							plDef.Intensity = inten / 10.0f;
+						}
+					}
+					// Check for always-on flag: _AL, _ALWAYS, _ON
+					if (strstr(name, "_AL") || strstr(name, "_ALWAYS") || strstr(name, "_ON")) {
+						plDef.Flags |= W3D_HLOD_LIGHT_FLAG_ALWAYS_ON;
 					}
 					(*LightArray)[lidx++].Init(plDef);
 				}

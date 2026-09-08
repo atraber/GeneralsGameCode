@@ -2990,7 +2990,17 @@ void W3DModelDraw::updateModelDynamicLights()
 		// Check day/night flags
 		if (shouldBeOn)
 		{
-			if (li.flags & W3D_HLOD_LIGHT_FLAG_ALWAYS_ON)
+			static int s_forceLights = -1;
+			if (s_forceLights == -1)
+			{
+				const char * env = ::getenv("W3D_FORCE_HEADLIGHTS");
+				s_forceLights = (env && ::atoi(env) > 0) ? 1 : 0;
+			}
+			if (s_forceLights == 1)
+			{
+				shouldBeOn = true;
+			}
+			else if (li.flags & W3D_HLOD_LIGHT_FLAG_ALWAYS_ON)
 			{
 				shouldBeOn = true;
 			}
@@ -3092,9 +3102,10 @@ void W3DModelDraw::updateModelDynamicLights()
 		if (li.lightType == W3D_HLOD_LIGHT_TYPE_SPOT)
 		{
 			li.light->Set_Type(LightClass::SPOT);
-			Vector3 worldDir;
-			Matrix3D::Rotate_Vector(boneXform, li.localDirection, &worldDir);
-			li.light->Set_Spot_Direction(worldDir);
+			// Pass localDirection directly: Pack_Light in W3DGpuLightList.cpp rotates
+			// Get_Spot_Direction() through light.Get_Transform() (boneXform set above).
+			// Rotating here would rotate the spot twice!
+			li.light->Set_Spot_Direction(li.localDirection);
 			li.light->Set_Spot_Angle(li.outerAngle);
 			// The asset's own falloff exponent, not the hardcoded 2.0 that used to sit here.
 			// That 2.0 predated anything reading it: LightEnvironmentClass ignores the
