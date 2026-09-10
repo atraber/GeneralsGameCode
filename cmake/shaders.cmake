@@ -113,6 +113,10 @@ set(_rts_shaders
     # screen froxels it reaches. Replaces C4's CPU loop as the producer; the CPU loop stays
     # behind W3D_CLUSTER_CPU=1 as the oracle the two are compared against.
     clusterassign_cs
+    # Volumetric fog: froxel in-scattering compute, ray integration compute, and scene composite pixel shader
+    volumetric_scatter_cs
+    volumetric_integrate_cs
+    volumetric_composite_ps
 )
 
 file(MAKE_DIRECTORY "${RTS_SHADER_OUT_DIR}")

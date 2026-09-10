@@ -88,6 +88,7 @@
 #include "W3DDevice/GameClient/W3DView.h"
 #include "WWMath/gfxmatrix4.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
+#include "W3DDevice/GameClient/W3DVolumetricFog.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
 #include "W3DDevice/GameClient/Module/W3DModelDraw.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
@@ -1909,6 +1910,10 @@ void W3DView::draw()
 			FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER);
 			W3DDisplay::m_3DScene->updateClusterGrid(*m_3DCamera);
 		}
+		if (VolumetricFogClass::Is_Active())
+		{
+			W3DDisplay::m_3DScene->updateVolumetricFogConstants(*m_3DCamera);
+		}
 
 		// ---- C5's consumption: hand the three buffers to the pixel stage, ONCE ----
 		// AFTER THE GRID, AND THAT IS NOT A PREFERENCE. Two reasons, either of which alone
@@ -2271,11 +2276,11 @@ void W3DView::draw()
 										   0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 	}
 
-	// Camera-view depth for screen-space reflections. Independent of the shadow map --
+	// Camera-view depth for screen-space reflections and volumetric fog. Independent of the shadow map --
 	// the two share the depth shaders but not the feature, so this runs either way.
 	// It is a second full pass over the scene's geometry, which is the price of D3D9
 	// not handing back its depth buffer as something samplable.
-	if (W3DShaderManager::isSsrActive())
+	if (W3DShaderManager::isSsrActive() || VolumetricFogClass::Is_Active())
 	{
 		FRAME_TIMING_SCOPE(PHASE_DEPTHPREPASS);
 		W3DShaderManager::startCameraDepthRendering();
@@ -2331,6 +2336,12 @@ void W3DView::draw()
 		W3DDisplay::m_3DScene->doRender( m_3DCamera );
 		W3DDisplay::m_3DScene->Set_Extra_Pass_Polygon_Mode(SceneClass::EXTRA_PASS_DISABLE);
 		m_isWireFrameEnabled = m_nextWireFrameEnabled;
+
+		if (VolumetricFogClass::Is_Active())
+		{
+			FRAME_TIMING_SCOPE(PHASE_VOLUMETRICFOG);
+			W3DDisplay::m_3DScene->renderVolumetricFog(*m_3DCamera);
+		}
 	}
 
 	if (m_viewFilterMode &&

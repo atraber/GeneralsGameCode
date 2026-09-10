@@ -101,7 +101,7 @@ const unsigned ALPHA_TEST_PS_CONSTANT=28;
 // for the buffer this backs and the clustered lighting plan for what fills it.
 // Sixteen is generous for the three vec4 the plan names (ClusterParams, ClusterDepth,
 // CameraForward) with room for frame-global data that migrates here later.
-const unsigned MAX_FRAME_CONSTANTS=16;
+const unsigned MAX_FRAME_CONSTANTS=32;
 
 const unsigned MAX_SHADOW_MAPS=1;
 
@@ -834,6 +834,10 @@ public:
 	// Always from offset 0: this buffer has one writer per frame, not the many callers
 	// the per-draw registers share, so there is no reg argument to go with count.
 	static void Set_Frame_Constants(const void* data, int count);
+	static void Set_Frame_Constants_At(unsigned offset, const void* data, int count);
+
+	static void Set_Compute_Texture(unsigned slot, GfxTexture * tex) { if (Gfx) Gfx->Set_Compute_Texture(slot, tex); }
+	static void Set_Compute_RW_Texture(unsigned slot, GfxTexture * tex) { if (Gfx) Gfx->Set_Compute_RW_Texture(slot, tex); }
 
 
 	// Needed by scene lighting class
@@ -2109,6 +2113,16 @@ WWINLINE void DX8Wrapper::Set_Frame_Constants(const void* data, int count)
 
 	memcpy(&Frame_Constants[0],data,memsize);
 	GFXCALL(Set_Frame_Constants((const float*)data,(unsigned)count));
+}
+
+WWINLINE void DX8Wrapper::Set_Frame_Constants_At(unsigned offset, const void* data, int count)
+{
+	if (count <= 0 || offset >= MAX_FRAME_CONSTANTS) return;
+	if (offset + (unsigned)count > MAX_FRAME_CONSTANTS) count = (int)(MAX_FRAME_CONSTANTS - offset);
+	int memsize = sizeof(Vector4) * count;
+	if (memcmp(data, &Frame_Constants[offset], memsize) == 0) return;
+	memcpy(&Frame_Constants[offset], data, memsize);
+	GFXCALL(Set_Frame_Constants_At(offset, (const float*)data, (unsigned)count));
 }
 // shader system updates KJM ^
 

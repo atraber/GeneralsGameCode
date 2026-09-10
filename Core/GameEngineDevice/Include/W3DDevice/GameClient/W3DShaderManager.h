@@ -194,6 +194,7 @@ public:
 	///blend is about to read out of the frame buffer.
 	static void captureRefraction();
 	static Bool isSsrActive();	///<true when SSR is enabled and its resources exist.
+	static GfxTexture * getCameraDepthTexture() { return m_ssrDepthTexture; }	///<camera-view depth texture
 	static void startCameraDepthRendering();	///<redirect rendering into the camera-view depth target.
 	static void endCameraDepthRendering();	///<restore the back buffer after the camera depth pass.
 	static void captureSceneHistory();	///<copy the resolved scene into the history texture for next frame.

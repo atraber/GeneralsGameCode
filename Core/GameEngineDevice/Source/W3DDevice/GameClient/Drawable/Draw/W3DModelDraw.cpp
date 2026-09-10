@@ -2932,6 +2932,15 @@ void W3DModelDraw::initModelDynamicLights()
 			info.spotExponent = lightDef.SpotExponent > 0.0f ? lightDef.SpotExponent : 1.0f;
 			info.nearAtten = lightDef.AttenStart;
 			info.farAtten = lightDef.AttenEnd;
+			if (info.lightType == W3D_HLOD_LIGHT_TYPE_SPOT)
+			{
+				const char * envRange = ::getenv("W3D_HEADLIGHT_RANGE");
+				float minRange = envRange ? (float)::atof(envRange) : 120.0f;
+				if (info.farAtten < minRange)
+				{
+					info.farAtten = minRange;
+				}
+			}
 			info.flags = lightDef.Flags;
 			info.pulseRate = lightDef.PulseRate > 0.0f ? lightDef.PulseRate : 2.0f;
 			info.strobeTimer = GameClientRandomValueReal(0.0f, 1.0f);

@@ -63,6 +63,7 @@ namespace FrameTiming
 		PHASE_SHADOWMAP,		///< the sun's depth pass
 		PHASE_DEPTHPREPASS,		///< the camera depth pass SSR needs
 		PHASE_SCENE,			///< the main scene render
+		PHASE_VOLUMETRICFOG,	///< volumetric fog froxel scatter, ray integration and composite
 		PHASE_POSTFX,			///< the screen filter chain
 		PHASE_UI,				///< in-game UI, control bar, mouse
 		PHASE_PRESENT,			///< End_Render; in practice mostly waiting on the GPU

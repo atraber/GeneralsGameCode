@@ -1394,6 +1394,13 @@ void renderStenciledPlayerColor( UnsignedInt color, UnsignedInt stencilRef, Bool
 
 }
 
+void RTS3DScene::renderVolumetricFog(CameraClass & camera)
+{
+	m_volumetricFog.Render(camera, m_gpuLightList.Get_Buffer(),
+		m_clusterGrid.Get_Grid_Buffer(), m_clusterGrid.Get_Index_Buffer(),
+		W3DShaderManager::getCameraDepthTexture());
+}
+
 #define MAX_VISIBLE_OCCLUDED_PLAYER_OBJECTS	512 //maximum number of occluded objects permitted per player
 void RTS3DScene::flushOccludedObjectsIntoStencil(RenderInfoClass & rinfo)
 {

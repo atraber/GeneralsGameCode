@@ -287,7 +287,7 @@ enum {
 // three the plan names today (ClusterParams, ClusterDepth, CameraForward) with room for
 // frame-global data that migrates here later -- see the comment on
 // GfxDeviceClass::Set_Frame_Constants for why anything migrates here at all.
-#define GFX_FRAME_CONSTANTS 16
+#define GFX_FRAME_CONSTANTS 32
 
 // The two halves of the pixel stage's t register file have to meet exactly: the texture
 // stages own 0..GFX_MAX_STAGES-1 and the shader buffers own the rest. A gap wastes a
@@ -567,6 +567,7 @@ struct D3D11Texture
 	long					refs;
 	ID3D11Resource *		resource;
 	ID3D11ShaderResourceView * srv;
+	ID3D11UnorderedAccessView * uav;
 	unsigned				width, height, depth, levels, faces;
 	DXGI_FORMAT				dxgi;			// what the resource actually is
 	WW3DFormat				ww;				// UNKNOWN for a depth texture
@@ -926,10 +927,12 @@ struct GfxD3D11Impl
 	// will not be asked -- there is no cheap Get for a shader-resource slot. So the
 	// bindings are mirrored here. See Unbind_Buffer_From_Read_Slots and its opposite
 	// number, and the section comment above them for what happens without them.
-	D3D11ComputeShader *		compute_shader;
-	D3D11Buffer *				cs_buffers[GFX_COMPUTE_BUFFER_SLOTS];
-	D3D11Buffer *				cs_rw_buffers[GFX_COMPUTE_RW_SLOTS];
-	D3D11Buffer *				ps_buffers[GFX_PIXEL_BUFFER_SLOTS];
+	D3D11ComputeShader *		compute_shader = nullptr;
+	D3D11Buffer *				cs_buffers[GFX_COMPUTE_BUFFER_SLOTS] = {};
+	D3D11Buffer *				cs_rw_buffers[GFX_COMPUTE_RW_SLOTS] = {};
+	D3D11Buffer *				ps_buffers[GFX_PIXEL_BUFFER_SLOTS] = {};
+	D3D11Texture *				cs_textures[GFX_COMPUTE_BUFFER_SLOTS] = {};
+	D3D11Texture *				cs_rw_textures[GFX_COMPUTE_RW_SLOTS] = {};
 
 	// Constants. One buffer per stage at the register offsets the shaders already declare;
 	// Phase 3.8 established that register(cN) survives to Shader Model 4 unchanged, so
@@ -1950,6 +1953,9 @@ namespace
 	static const char * s_surfaceSite = "?";
 #endif
 
+	void Unbind_Texture_From_Write_Slots(GfxD3D11Impl * impl, D3D11Texture * t);
+	void Unbind_Texture_Everywhere(GfxD3D11Impl * impl, D3D11Texture * t);
+
 	D3D11Surface * New_Surface()
 	{
 		D3D11Surface * s = new D3D11Surface;
@@ -2086,6 +2092,7 @@ namespace
 #endif
 		if (t == nullptr) return;
 		if (t->srv != nullptr) t->srv->Release();
+		if (t->uav != nullptr) t->uav->Release();
 		if (t->resource != nullptr) t->resource->Release();
 		if (t->scratch != nullptr) {
 			const unsigned n = t->levels * t->faces;
@@ -2769,6 +2776,8 @@ void GfxDeviceD3D11::Set_Texture(unsigned stage, GfxTexture * texture)
 	// slot would have been right with or without the fix.
 	m_impl->srv_rescued_mask &= ~(1u << stage);
 
+	Unbind_Texture_From_Write_Slots(m_impl, t);
+
 	// The same hazard from the other side. Binding a texture that is the current target
 	// would make D3D11 unbind the *target* instead, which is the worse half of the trade.
 	// Null the slot and remember, exactly as Set_Render_Target does; the next draw after
@@ -2951,18 +2960,21 @@ void GfxDeviceD3D11::Set_Pixel_Shader_Constants(unsigned reg, const float * data
 
 void GfxDeviceD3D11::Set_Frame_Constants(const float * data, unsigned vec4_count)
 {
-	TRACE("Set_Frame_Constants");
+	Set_Frame_Constants_At(0, data, vec4_count);
+}
+
+void GfxDeviceD3D11::Set_Frame_Constants_At(unsigned offset, const float * data, unsigned vec4_count)
+{
+	TRACE("Set_Frame_Constants_At");
 #ifdef RTS_DEBUG
 	PROFILE_D3D11_SCOPE(t_set_frame_const);
 	++s_d3d11_prof.n_set_frame_const;
 #endif
-	// Always from offset 0 -- see the interface comment on why this one call has no reg
-	// argument, unlike its per-draw neighbours above.
-	if (data == nullptr) return;
-	if (vec4_count > GFX_FRAME_CONSTANTS) vec4_count = GFX_FRAME_CONSTANTS;
+	if (data == nullptr || vec4_count == 0 || offset >= GFX_FRAME_CONSTANTS) return;
+	if (offset + vec4_count > GFX_FRAME_CONSTANTS) vec4_count = GFX_FRAME_CONSTANTS - offset;
 	const size_t bytes = vec4_count * 4 * sizeof(float);
-	if (memcmp(m_impl->frame_constants, data, bytes) != 0) {
-		memcpy(m_impl->frame_constants, data, bytes);
+	if (memcmp(&m_impl->frame_constants[offset * 4], data, bytes) != 0) {
+		memcpy(&m_impl->frame_constants[offset * 4], data, bytes);
 		m_impl->frame_constants_dirty = true;
 	}
 }
@@ -4343,6 +4355,43 @@ namespace
 		Unbind_Buffer_From_Read_Slots(impl, b);
 		Unbind_Buffer_From_Write_Slots(impl, b);
 	}
+
+	void Unbind_Texture_From_Read_Slots(GfxD3D11Impl * impl, D3D11Texture * t)
+	{
+		if (t == nullptr) return;
+		ID3D11ShaderResourceView * none = nullptr;
+		for (unsigned i = 0; i < GFX_COMPUTE_BUFFER_SLOTS; ++i) {
+			if (impl->cs_textures[i] != t) continue;
+			impl->context->CSSetShaderResources(i, 1, &none);
+			impl->cs_textures[i] = nullptr;
+		}
+		for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
+			if (impl->textures[s] != t) continue;
+			impl->textures[s] = nullptr;
+			impl->srv_unbound_mask &= ~(1u << s);
+			impl->srv_rescued_mask &= ~(1u << s);
+			impl->context->PSSetShaderResources(s, 1, &none);
+			impl->context->VSSetShaderResources(s, 1, &none);
+		}
+	}
+
+	void Unbind_Texture_From_Write_Slots(GfxD3D11Impl * impl, D3D11Texture * t)
+	{
+		if (t == nullptr) return;
+		ID3D11UnorderedAccessView * none = nullptr;
+		const UINT keep_counter = (UINT)-1;
+		for (unsigned i = 0; i < GFX_COMPUTE_RW_SLOTS; ++i) {
+			if (impl->cs_rw_textures[i] != t) continue;
+			impl->context->CSSetUnorderedAccessViews(i, 1, &none, &keep_counter);
+			impl->cs_rw_textures[i] = nullptr;
+		}
+	}
+
+	void Unbind_Texture_Everywhere(GfxD3D11Impl * impl, D3D11Texture * t)
+	{
+		Unbind_Texture_From_Read_Slots(impl, t);
+		Unbind_Texture_From_Write_Slots(impl, t);
+	}
 }
 
 GfxShaderHandle GfxDeviceD3D11::Create_Compute_Shader(const void * bytecode, unsigned size)
@@ -4605,10 +4654,11 @@ void GfxDeviceD3D11::Set_Compute_Buffer(unsigned slot, GfxBuffer * buffer)
 	TRACE("Set_Compute_Buffer");
 	if (slot >= GFX_COMPUTE_BUFFER_SLOTS) return;
 	D3D11Buffer * b = (D3D11Buffer *)buffer;
-	if (m_impl->cs_buffers[slot] == b) return;
+	if (m_impl->cs_buffers[slot] == b && m_impl->cs_textures[slot] == nullptr) return;
 	// Reading it and writing it cannot both stand. See the hazard note above this section.
 	Unbind_Buffer_From_Write_Slots(m_impl, b);
 	m_impl->cs_buffers[slot] = b;
+	m_impl->cs_textures[slot] = nullptr;
 	ID3D11ShaderResourceView * srv = (b != nullptr) ? b->srv : nullptr;
 	m_impl->context->CSSetShaderResources(slot, 1, &srv);
 	DX8Wrapper_Increment_Call_Count();
@@ -4626,9 +4676,10 @@ void GfxDeviceD3D11::Set_Compute_RW_Buffer(unsigned slot, GfxBuffer * buffer)
 			"GFX_BUFFER_UAV (usage 0x%x). Nothing is bound at u%u.", b->usage, slot));
 		return;
 	}
-	if (m_impl->cs_rw_buffers[slot] == b) return;
+	if (m_impl->cs_rw_buffers[slot] == b && m_impl->cs_rw_textures[slot] == nullptr) return;
 	Unbind_Buffer_From_Read_Slots(m_impl, b);
 	m_impl->cs_rw_buffers[slot] = b;
+	m_impl->cs_rw_textures[slot] = nullptr;
 	ID3D11UnorderedAccessView * uav = (b != nullptr) ? b->uav : nullptr;
 	const UINT keep_counter = (UINT)-1;
 	m_impl->context->CSSetUnorderedAccessViews(slot, 1, &uav, &keep_counter);
@@ -4665,6 +4716,40 @@ void GfxDeviceD3D11::Set_Pixel_Buffer(unsigned slot, GfxBuffer * buffer)
 	m_impl->ps_buffers[index] = b;
 	ID3D11ShaderResourceView * srv = (b != nullptr) ? b->srv : nullptr;
 	m_impl->context->PSSetShaderResources(slot, 1, &srv);
+	DX8Wrapper_Increment_Call_Count();
+}
+
+void GfxDeviceD3D11::Set_Compute_Texture(unsigned slot, GfxTexture * texture)
+{
+	TRACE("Set_Compute_Texture");
+	if (slot >= GFX_COMPUTE_BUFFER_SLOTS) return;
+	D3D11Texture * t = (D3D11Texture *)texture;
+	if (m_impl->cs_textures[slot] == t && m_impl->cs_buffers[slot] == nullptr) return;
+	Unbind_Texture_From_Write_Slots(m_impl, t);
+	m_impl->cs_textures[slot] = t;
+	m_impl->cs_buffers[slot] = nullptr;
+	ID3D11ShaderResourceView * srv = (t != nullptr) ? t->srv : nullptr;
+	m_impl->context->CSSetShaderResources(slot, 1, &srv);
+	DX8Wrapper_Increment_Call_Count();
+}
+
+void GfxDeviceD3D11::Set_Compute_RW_Texture(unsigned slot, GfxTexture * texture)
+{
+	TRACE("Set_Compute_RW_Texture");
+	if (slot >= GFX_COMPUTE_RW_SLOTS) return;
+	D3D11Texture * t = (D3D11Texture *)texture;
+	if (t != nullptr && t->uav == nullptr) {
+		WWDEBUG_SAY(("D3D11: Set_Compute_RW_Texture on a texture created without "
+			"GFX_USAGE_UAV (usage 0x%x). Nothing is bound at u%u.", t->usage, slot));
+		return;
+	}
+	if (m_impl->cs_rw_textures[slot] == t && m_impl->cs_rw_buffers[slot] == nullptr) return;
+	Unbind_Texture_From_Read_Slots(m_impl, t);
+	m_impl->cs_rw_textures[slot] = t;
+	m_impl->cs_rw_buffers[slot] = nullptr;
+	ID3D11UnorderedAccessView * uav = (t != nullptr) ? t->uav : nullptr;
+	const UINT keep_counter = (UINT)-1;
+	m_impl->context->CSSetUnorderedAccessViews(slot, 1, &uav, &keep_counter);
 	DX8Wrapper_Increment_Call_Count();
 }
 
@@ -4908,6 +4993,7 @@ GfxTexture * GfxDeviceD3D11::Create_Volume_Texture(unsigned width, unsigned heig
 	} else {
 		desc.Usage = D3D11_USAGE_DEFAULT;
 		desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+		if (usage & GFX_USAGE_UAV) desc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
 	}
 
 	ID3D11Texture3D * texture = nullptr;
@@ -4932,6 +5018,18 @@ GfxTexture * GfxDeviceD3D11::Create_Volume_Texture(unsigned width, unsigned heig
 		srv.Texture3D.MipLevels = levels;
 		if (FAILED(m_impl->device->CreateShaderResourceView(texture, &srv, &t->srv))) {
 			t->srv = nullptr;
+		}
+		if (usage & GFX_USAGE_UAV) {
+			D3D11_UNORDERED_ACCESS_VIEW_DESC uav;
+			memset(&uav, 0, sizeof(uav));
+			uav.Format = dxgi;
+			uav.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
+			uav.Texture3D.MipSlice = 0;
+			uav.Texture3D.FirstWSlice = 0;
+			uav.Texture3D.WSize = depth;
+			if (FAILED(m_impl->device->CreateUnorderedAccessView(texture, &uav, &t->uav))) {
+				t->uav = nullptr;
+			}
 		}
 	}
 	return (GfxTexture *)t;
@@ -4989,16 +5087,7 @@ void GfxDeviceD3D11::Release_Texture(GfxTexture * texture)
 	TRACE("Release_Texture");
 	D3D11Texture * t = (D3D11Texture *)texture;
 	if (t == nullptr) return;
-	for (unsigned s = 0; s < GFX_MAX_STAGES; ++s) {
-		if (m_impl->textures[s] == t) {
-			m_impl->textures[s] = nullptr;
-			m_impl->srv_unbound_mask &= ~(1u << s);
-			m_impl->srv_rescued_mask &= ~(1u << s);
-			ID3D11ShaderResourceView * null_srv = nullptr;
-			m_impl->context->PSSetShaderResources(s, 1, &null_srv);
-			m_impl->context->VSSetShaderResources(s, 1, &null_srv);
-		}
-	}
+	Unbind_Texture_Everywhere(m_impl, t);
 	if (--t->refs <= 0) Free_Texture(t);
 }
 

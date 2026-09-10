@@ -140,7 +140,8 @@ enum GfxResourceUsage
 	// exist under D3D11, where it and GPU_RESIDENT are the same D3D11_USAGE_DEFAULT and
 	// the engine's own restore path is the one that runs.
 	GFX_USAGE_STAGING = 64,				// CPU-side; nothing draws from it (D3D9 SYSTEMMEM)
-	GFX_USAGE_GPU_RESIDENT = 128		// device memory the API will not restore (D3D9 DEFAULT)
+	GFX_USAGE_GPU_RESIDENT = 128,		// device memory the API will not restore (D3D9 DEFAULT)
+	GFX_USAGE_UAV = 256					// compute shader may write via UAV
 };
 
 /*
@@ -659,6 +660,7 @@ public:
 	// Prepare_Draw to fall back on, so a compute shader that wants a frame constant has
 	// nowhere else to read it from.
 	virtual void			Set_Frame_Constants(const float * data, unsigned vec4_count) = 0;
+	virtual void			Set_Frame_Constants_At(unsigned offset, const float * data, unsigned vec4_count) = 0;
 
 	virtual void			Set_Vertex_Stream(unsigned stream, GfxVertexBuffer * buffer, unsigned stride) = 0;
 	// Hands back a reference the caller must give to Release_Vertex_Buffer -- the same
@@ -775,6 +777,8 @@ public:
 	virtual void			Set_Compute_Buffer(unsigned slot, GfxBuffer * buffer) = 0;
 	virtual void			Set_Compute_RW_Buffer(unsigned slot, GfxBuffer * buffer) = 0;
 	virtual void			Set_Pixel_Buffer(unsigned slot, GfxBuffer * buffer) = 0;
+	virtual void			Set_Compute_Texture(unsigned slot, GfxTexture * texture) = 0;
+	virtual void			Set_Compute_RW_Texture(unsigned slot, GfxTexture * texture) = 0;
 
 	// Fill every word of a GFX_BUFFER_UINT | GFX_BUFFER_UAV buffer with one value, on the
 	// GPU. This is how the cluster grid is reset each frame; doing it from the CPU would

@@ -203,8 +203,9 @@ void drawFrameTimingOverlay( Int topY )
 			snap.phaseMs[FrameTiming::PHASE_DEPTHPREPASS]);
 		s_lines[1]->setText(phases);
 
-		phases.format(L"scene %.2f  postfx %.2f  ui %.2f  gpuwait %.2f   (cpu time; gpuwait = stalled on GPU)",
+		phases.format(L"scene %.2f  fog %.2f  postfx %.2f  ui %.2f  gpuwait %.2f   (cpu time; gpuwait = stalled on GPU)",
 			snap.phaseMs[FrameTiming::PHASE_SCENE],
+			snap.phaseMs[FrameTiming::PHASE_VOLUMETRICFOG],
 			snap.phaseMs[FrameTiming::PHASE_POSTFX],
 			snap.phaseMs[FrameTiming::PHASE_UI],
 			snap.phaseMs[FrameTiming::PHASE_PRESENT]);

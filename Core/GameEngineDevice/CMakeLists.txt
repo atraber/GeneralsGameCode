@@ -172,6 +172,7 @@ set(GAMEENGINEDEVICE_SRC
     Source/W3DDevice/GameClient/W3DTreeBuffer.cpp
     Source/W3DDevice/GameClient/W3DVideoBuffer.cpp
     Source/W3DDevice/GameClient/W3DView.cpp
+    Source/W3DDevice/GameClient/W3DVolumetricFog.cpp
     Source/W3DDevice/GameClient/W3DScreenshot.cpp
     Source/W3DDevice/GameClient/W3DFrameDump.cpp
     Source/W3DDevice/GameClient/stb_image_write_impl.cpp

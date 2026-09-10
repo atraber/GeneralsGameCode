@@ -141,9 +141,10 @@ static void ensureValidLighting(TimeOfDay tod)
 			break;
 		case TIME_OF_DAY_NIGHT:
 		default:
-			s_mapTerrainLighting[tod][0].ambient.red = 0.12f; s_mapTerrainLighting[tod][0].ambient.green = 0.14f; s_mapTerrainLighting[tod][0].ambient.blue = 0.20f;
-			s_mapTerrainLighting[tod][0].diffuse.red = 0.25f; s_mapTerrainLighting[tod][0].diffuse.green = 0.30f; s_mapTerrainLighting[tod][0].diffuse.blue = 0.45f;
-			s_mapTerrainLighting[tod][0].lightPos.x = -0.40f; s_mapTerrainLighting[tod][0].lightPos.y = 0.50f;  s_mapTerrainLighting[tod][0].lightPos.z = -0.77f;
+			// TheSuperHackers @feature andytraber 09/09/2026 Calibrate nocturnal ambient and diffuse for realistic darkness.
+			s_mapTerrainLighting[tod][0].ambient.red = 0.030f; s_mapTerrainLighting[tod][0].ambient.green = 0.035f; s_mapTerrainLighting[tod][0].ambient.blue = 0.055f;
+			s_mapTerrainLighting[tod][0].diffuse.red = 0.150f; s_mapTerrainLighting[tod][0].diffuse.green = 0.180f; s_mapTerrainLighting[tod][0].diffuse.blue = 0.260f;
+			s_mapTerrainLighting[tod][0].lightPos.x = -0.40f;  s_mapTerrainLighting[tod][0].lightPos.y = 0.50f;   s_mapTerrainLighting[tod][0].lightPos.z = -0.77f;
 			break;
 		}
 		s_mapObjectsLighting[tod][0] = s_mapTerrainLighting[tod][0];

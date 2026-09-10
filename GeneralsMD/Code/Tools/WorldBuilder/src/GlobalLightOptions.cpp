@@ -410,21 +410,21 @@ void GlobalLightOptions::OnResetLights()
 	TheWritableGlobalData->m_terrainObjectsLighting[3][2].lightPos.z = -1.00f;
 
 
-	TheWritableGlobalData->m_terrainLighting[4][0].ambient.red = 0.10f;
-	TheWritableGlobalData->m_terrainLighting[4][0].ambient.green = 0.10f;
-	TheWritableGlobalData->m_terrainLighting[4][0].ambient.blue = 0.15f;
-	TheWritableGlobalData->m_terrainLighting[4][0].diffuse.red = 0.20f;
-	TheWritableGlobalData->m_terrainLighting[4][0].diffuse.green = 0.20f;
-	TheWritableGlobalData->m_terrainLighting[4][0].diffuse.blue = 0.30f;
+	TheWritableGlobalData->m_terrainLighting[4][0].ambient.red = 0.030f;
+	TheWritableGlobalData->m_terrainLighting[4][0].ambient.green = 0.035f;
+	TheWritableGlobalData->m_terrainLighting[4][0].ambient.blue = 0.055f;
+	TheWritableGlobalData->m_terrainLighting[4][0].diffuse.red = 0.150f;
+	TheWritableGlobalData->m_terrainLighting[4][0].diffuse.green = 0.180f;
+	TheWritableGlobalData->m_terrainLighting[4][0].diffuse.blue = 0.260f;
 	TheWritableGlobalData->m_terrainLighting[4][0].lightPos.x = -1.00f;
 	TheWritableGlobalData->m_terrainLighting[4][0].lightPos.y = 1.00f;
 	TheWritableGlobalData->m_terrainLighting[4][0].lightPos.z = -2.00f;
-	TheWritableGlobalData->m_terrainObjectsLighting[4][0].ambient.red = 0.10f;
-	TheWritableGlobalData->m_terrainObjectsLighting[4][0].ambient.green = 0.10f;
-	TheWritableGlobalData->m_terrainObjectsLighting[4][0].ambient.blue = 0.15f;
-	TheWritableGlobalData->m_terrainObjectsLighting[4][0].diffuse.red = 0.20f;
-	TheWritableGlobalData->m_terrainObjectsLighting[4][0].diffuse.green = 0.20f;
-	TheWritableGlobalData->m_terrainObjectsLighting[4][0].diffuse.blue = 0.30f;
+	TheWritableGlobalData->m_terrainObjectsLighting[4][0].ambient.red = 0.030f;
+	TheWritableGlobalData->m_terrainObjectsLighting[4][0].ambient.green = 0.035f;
+	TheWritableGlobalData->m_terrainObjectsLighting[4][0].ambient.blue = 0.055f;
+	TheWritableGlobalData->m_terrainObjectsLighting[4][0].diffuse.red = 0.150f;
+	TheWritableGlobalData->m_terrainObjectsLighting[4][0].diffuse.green = 0.180f;
+	TheWritableGlobalData->m_terrainObjectsLighting[4][0].diffuse.blue = 0.260f;
 	TheWritableGlobalData->m_terrainObjectsLighting[4][0].lightPos.x = -1.00f;
 	TheWritableGlobalData->m_terrainObjectsLighting[4][0].lightPos.y = 1.00f;
 	TheWritableGlobalData->m_terrainObjectsLighting[4][0].lightPos.z = -2.00f;

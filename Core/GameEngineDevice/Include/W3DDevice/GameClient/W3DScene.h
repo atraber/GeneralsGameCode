@@ -42,6 +42,7 @@
 #include "WW3D2/lightenvironment.h"
 #include "W3DDevice/GameClient/W3DGpuLightList.h"
 #include "W3DDevice/GameClient/W3DClusterGrid.h"
+#include "W3DDevice/GameClient/W3DVolumetricFog.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 // PROTOTYPES /////////////////////////////////////////////////////////////////
@@ -133,6 +134,11 @@ public:
 			m_gpuLightList.Get_Buffer(), camera);}
 	ClusterGridClass &getClusterGrid() {return m_clusterGrid;}
 
+	void updateVolumetricFogConstants(CameraClass & camera)
+		{ m_volumetricFog.Update_Constants(camera); }
+	void renderVolumetricFog(CameraClass & camera);
+	VolumetricFogClass &getVolumetricFog() { return m_volumetricFog; }
+
 	virtual void init() override {}
 	virtual void update() override {}
 	virtual void draw() override;
@@ -181,6 +187,7 @@ protected:
 
 	GpuLightListClass	m_gpuLightList;	///< C3's clustered light list -- see W3DGpuLightList.h. A value member, not a pointer: its GPU buffer is created lazily on first Update() rather than here, since the device does not exist yet when this scene is constructed (see W3DDisplay::init()).
 	ClusterGridClass	m_clusterGrid;	///< C4's cluster grid -- see W3DClusterGrid.h. Lazily sized for the same reason, and additionally re-sized whenever the viewport changes.
+	VolumetricFogClass	m_volumetricFog;	///< Volumetric fog and headlight scattering pipeline -- see W3DVolumetricFog.h.
 };
 
 //-----------------------------------------------------------------------------
