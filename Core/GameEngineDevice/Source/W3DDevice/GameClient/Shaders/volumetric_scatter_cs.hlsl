@@ -92,7 +92,8 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float mieG = FogParams0.w; // Forward scattering anisotropy (typically 0.6)
+    float mieG = FogParams0.w; // Forward scattering anisotropy (typically 0.55-0.65)
+    static const float isotropic = 1.0 / (4.0 * 3.14159265);
     float3 inscatterRadiance = float3(0.0, 0.0, 0.0);
 
     // 1. Ambient atmospheric in-scattering:
@@ -102,27 +103,39 @@ void main(uint3 id : SV_DispatchThreadID)
 #if VOLUMETRIC_SUN_SHAFTS
     if (FogSunDir.w > 0.0)
     {
-        // Reconstruct SunVP row-major matrix:
-        float4x4 sunVP = float4x4(FogSunVP0, FogSunVP1, FogSunVP2, FogSunVP3);
-        float4 sunClip = mul(float4(worldPos, 1.0), sunVP);
-        float3 sunNdc = sunClip.xyz / sunClip.w;
-        float2 sunUv = sunNdc.xy * float2(0.5, -0.5) + 0.5;
+        bool inSunLight = true;
 
-        // Shadow frustum bounds check:
-        if (all(sunUv >= 0.0) && all(sunUv <= 1.0) && sunNdc.z >= 0.0 && sunNdc.z <= 1.0)
+        // Evaluate shadows if shadow map is active and shadow strength > 0:
+        if (FogShadowParams.y > 0.0 && FogShadowParams.w > 0.0)
         {
-            int2 shadowTexel = (int2)(sunUv * FogShadowParams.w);
-            // The shadow map is R32F: the sun-clip depth is the red channel, whole.
-            // This used to unpack a three-channel RGB8 split; the map moved to a
-            // single float and this read had to move with it.
-            float shadowZ = ShadowMap.Load(int3(shadowTexel, 0)).r;
+            // Reconstruct SunVP row-major matrix:
+            float4x4 sunVP = float4x4(FogSunVP0, FogSunVP1, FogSunVP2, FogSunVP3);
+            float4 sunClip = mul(float4(worldPos, 1.0), sunVP);
+            float3 sunNdc = sunClip.xyz / sunClip.w;
+            float2 sunUv = sunNdc.xy * float2(0.5, -0.5) + 0.5;
 
-            if (sunNdc.z <= shadowZ + FogShadowParams.x)
+            // Only test shadow map when within the shadow frustum:
+            // Outside the frustum (e.g. higher in the sky), light travels freely (unshadowed)
+            if (all(sunUv >= 0.0) && all(sunUv <= 1.0) && sunNdc.z >= 0.0 && sunNdc.z <= 1.0)
             {
-                float cosThetaSun = dot(FogSunDir.xyz, V);
-                float phaseSun = HenyeyGreenstein(cosThetaSun, mieG);
-                inscatterRadiance += FogSunColor.rgb * (FogSunDir.w * phaseSun);
+                int2 shadowTexel = (int2)(sunUv * FogShadowParams.w);
+                // The shadow map is R32F: the sun-clip depth is the red channel, whole.
+                // This used to unpack a three-channel RGB8 split; the map moved to a
+                // single float and this read had to move with it.
+                float shadowZ = ShadowMap.Load(int3(shadowTexel, 0)).r;
+
+                inSunLight = (sunNdc.z <= shadowZ + FogShadowParams.x);
             }
+        }
+
+        if (inSunLight)
+        {
+            float cosThetaSun = dot(FogSunDir.xyz, V);
+            // Blend forward Mie scattering with isotropic baseline (60%) so sunlight illuminates
+            // the atmospheric volume when looking down at terrain, while keeping forward God-ray shafts:
+            float hgSun = HenyeyGreenstein(cosThetaSun, mieG);
+            float phaseSun = lerp(hgSun, isotropic, 0.60);
+            inscatterRadiance += FogSunColor.rgb * (FogSunDir.w * phaseSun);
         }
     }
 #endif
@@ -138,7 +151,6 @@ void main(uint3 id : SV_DispatchThreadID)
         uint count = ClusterLightCount(ClusterGrid, cluster);
 
         float lightBoost = max(FogParams1.w, 1.0);
-        float isotropic = 1.0 / (4.0 * 3.14159265);
 
         // Sub-slice integration: 4 sample points along the ray across slice depth
         // prevents small spot lights from being skipped when slice thickness > light range:
@@ -171,10 +183,10 @@ void main(uint3 id : SV_DispatchThreadID)
                 {
                     float cosTheta = dot(L, subV);
                     // Artistic phase function: blend Henyey-Greenstein forward Mie lobe with
-                    // an isotropic baseline (40%) so that headlight beams are clearly visible
+                    // an isotropic baseline (65%) so that headlight beams are clearly visible
                     // cutting through the air from any viewing angle (behind, above, side-on):
                     float hg = HenyeyGreenstein(cosTheta, mieG);
-                    float phase = lerp(hg, isotropic, 0.40);
+                    float phase = lerp(hg, isotropic, 0.65);
                     lightAccum += radiance * phase;
                 }
             }

@@ -33,13 +33,13 @@
 
 // Static configuration defaults
 Bool  VolumetricFogClass::s_active             = TRUE;
-float VolumetricFogClass::s_density            = 0.00025f;
+float VolumetricFogClass::s_density            = 0.0006f;
 float VolumetricFogClass::s_heightFalloff      = 0.005f;
 float VolumetricFogClass::s_groundHeight       = 0.0f;
-float VolumetricFogClass::s_anisotropy         = 0.65f;
-float VolumetricFogClass::s_sunShaftIntensity  = 0.2f;
-float VolumetricFogClass::s_ambientIntensity   = 0.02f;
-float VolumetricFogClass::s_lightBoost         = 8.0f;
+float VolumetricFogClass::s_anisotropy         = 0.55f;
+float VolumetricFogClass::s_sunShaftIntensity  = 0.35f;
+float VolumetricFogClass::s_ambientIntensity   = 0.15f;
+float VolumetricFogClass::s_lightBoost         = 25.0f;
 
 static bool Env_Flag(const char * name, bool defaultVal)
 {
@@ -266,7 +266,7 @@ void VolumetricFogClass::Update_Constants(CameraClass & camera)
 
 	// Slot 20: FogShadowParams
 	fogConstants[11].Set(DX8Wrapper::m_shadowParams[0], DX8Wrapper::m_shadowParams[1],
-		DX8Wrapper::m_shadowParams[2], DX8Wrapper::m_shadowParams[3]);
+		DX8Wrapper::m_shadowParams[2], (float)DX8Wrapper::SHADOW_MAP_SIZE);
 
 	DX8Wrapper::Set_Frame_Constants_At(9, fogConstants, 12);
 }

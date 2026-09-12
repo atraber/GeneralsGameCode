@@ -40,7 +40,10 @@ float4 main(PS_INPUT input) : SV_Target
         return float4(0.0, 0.0, 0.0, 1.0);
 
     // Read camera-view packed depth from the prepass:
-    float4 depthSample = SceneDepth.Sample(DepthSampler, input.texcoord0);
+    // SV_Position contains the exact render-target pixel coordinate (x, y)
+    // matching m_ssrDepthTexture (SceneDepth), avoiding viewport vertical scaling issues:
+    int2 depthTexel = (int2)input.position.xy;
+    float4 depthSample = SceneDepth.Load(int3(depthTexel, 0));
     float ndcZ = unpackDepth(depthSample);
 
     float viewDist;
