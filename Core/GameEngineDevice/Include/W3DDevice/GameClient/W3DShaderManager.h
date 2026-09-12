@@ -299,7 +299,7 @@ protected:
 	static GfxSurface *m_resolveSurface;		///<when MSAA: m_renderTexture's surface, the StretchRect resolve destination; null otherwise
 	static GfxSurface *m_oldDepthSurface;	///<previous depth buffer surface
 	// Directional shadow map (sun-view depth) render target + its own depth buffer.
-	static GfxTexture *m_pShadowMapTexture;	///<depth-packed shadow map (A8R8G8B8)
+	static GfxTexture *m_pShadowMapTexture;	///< shadow map as a single-channel R32F float depth target
 	static GfxSurface *m_pShadowMapSurface;	///<colour surface of the shadow map
 	static GfxSurface *m_pShadowMapDepthSurface;	///<the shadow map's own depth buffer
 	static GfxSurface *m_shadowSavedRT;		///<render target saved across the shadow depth pass

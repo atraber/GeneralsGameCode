@@ -1,14 +1,11 @@
 // Shadow-map inspector (pixel, Shader Model 3).
 //
-// Unpacks the sun depth map that shadowdepth_ps wrote and draws it as a legible grey
-// ramp, for the DEBUG_VIS_SHADOW_MAP corner tile. Drawn as a screen-space quad through
+// Reads the sun depth map and draws it as a legible grey ramp with iso-depth contours,
+// for the DEBUG_VIS_SHADOW_MAP corner tile. Drawn as a screen-space quad through
 // screenquad_vs.
 //
-// Why this needs a shader rather than just blitting the texture: the map holds depth
-// split across three 8-bit channels, coarse to fine. Displayed raw it is a red-green
-// mess whose brightness has nothing to do with distance -- the green channel wraps
-// 255 times across the frustum -- so the one thing you would want to read off it, how
-// depth is distributed, is the one thing it does not show.
+// The map is R32F -- a single 32-bit float in the red channel -- so the depth is read
+// directly with no unpacking arithmetic.
 
 #include "shadermodel.hlsli"
 
@@ -18,30 +15,30 @@ DECLARE_SAMPLER_2D(ShadowSampler, 0);
 // in a fitted sun frustum occupies a narrow band, and stretched over the full [0,1] it
 // is a flat mid-grey in which nothing can be told from anything. The engine passes the
 // window so the ramp can be spent where the geometry actually is.
-// z = 1 when the alpha channel (the caster's texture alpha) should be shown instead.
+// z = 1 when the coverage view is requested: which texels the depth pass wrote at all,
+// as opposed to how deep they are.
 float4 DebugShadowCtl : register(c0);
-
-// Exact inverse of shadowdepth_ps's packDepth. The weights are the reciprocals of the
-// ones used to split, and they are 255-based there for a reason that matters here too:
-// an 8-bit channel stores k/255, so unpacking against 256 would reintroduce the very
-// rounding error that split was built to avoid.
-float unpackDepth(float4 packed)
-{
-    return dot(packed.rgb, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
-}
 
 float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET
 {
-    float4 packed = SAMPLE_2D(ShadowSampler, uv);
+    float depth = SAMPLE_2D(ShadowSampler, uv).r;
 
     if (DebugShadowCtl.z > 0.5)
     {
-        // Coverage view: what the depth pass let through. A cut-out billboard casting
-        // its whole quad rather than its silhouette shows up here and nowhere else.
-        return float4(packed.aaa, 1.0);
+        // Coverage view: what the depth pass let through. This used to read the
+        // caster's texture alpha out of the map's alpha channel; R32F has no alpha,
+        // and a sample from it returns a constant 1.0 there, so reading .a would
+        // show a flat white tile that looks like total coverage.
+        //
+        // The same question is still answerable from the depth alone: the pass
+        // clears to 1.0 and clamps everything it writes to 0.9999, so a texel below
+        // 1.0 is one a caster wrote. That is the diagnostic this view existed for --
+        // a cut-out billboard casting its whole quad rather than its silhouette
+        // shows up as a solid white rectangle here and nowhere else.
+        float coverage = (depth < 1.0) ? 1.0 : 0.0;
+        return float4(coverage, coverage, coverage, 1.0);
     }
 
-    float depth  = unpackDepth(packed);
     float scaled = saturate((depth - DebugShadowCtl.x) * DebugShadowCtl.y);
 
     // Near is bright, far is dark: the reverse of the stored convention, and chosen so
@@ -83,3 +80,4 @@ float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXC
 
     return float4(grey, 1.0);
 }
+

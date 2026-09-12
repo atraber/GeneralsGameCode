@@ -1656,7 +1656,7 @@ public:
 	// so this pair dithers the coverage instead. See shadowdepthparticle_ps.hlsl.
 	static DWORD						m_dwShadowDepthParticleVS;
 	static DWORD						m_dwShadowDepthParticlePS;
-	static GfxTexture*		m_pShadowMap;       // depth-packed shadow map (bound for sampling)
+	static GfxTexture*		m_pShadowMap;       // R32F sun-depth shadow map (bound for sampling)
 	// The cloud shadow field, so meshes can be shaded by the same clouds the ground is.
 	// Republished by the terrain each frame rather than cached at creation, because a
 	// device reset rebuilds the texture and would leave a stale pointer here.

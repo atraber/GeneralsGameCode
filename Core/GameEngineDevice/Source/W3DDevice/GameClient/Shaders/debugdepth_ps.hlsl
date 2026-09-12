@@ -29,11 +29,14 @@ DECLARE_SAMPLER_2D(DepthSampler, 0);
 // camera is actually at rather than against a far plane nothing reaches.
 float4 DebugDepthCtl : register(c0);
 
-// Exact inverse of shadowdepth_ps's packDepth -- see debugshadow_ps for why the weights
-// are 255-based rather than 256-based.
+// The camera-view depth target (m_ssrDepthTexture) is R32F: the depth prepass writes
+// z/w straight into the red channel, so reading it back is a swizzle. It used to be an
+// RGB8 split with 255-based weights, unpacked here; the prepass shares its pixel shader
+// with the shadow map, so when that map moved to R32F the packing went and this target
+// had to follow.
 float unpackDepth(float4 packed)
 {
-    return dot(packed.rgb, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+    return packed.r;
 }
 
 float4 main(PS_INPUT_POSITION_PARAM PS_INPUT_UNUSED_COLOR_PARAM float2 uv : TEXCOORD0) : PS_TARGET

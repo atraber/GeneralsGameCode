@@ -31,7 +31,7 @@ DECLARE_SAMPLER(BaseSampler, 0);
 // w = 1 when stage 0's alpha combine uses the texture alpha, 0 when it does not.
 float4 TexCtl : register(c1);
 
-DECLARE_SAMPLER_2D(ShadowMap, 5);      // directional shadow map (packed depth)
+DECLARE_SAMPLER_2D(ShadowMap, 5);      // directional shadow map (R32F depth)
 float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow strength (0 = off)
 // y = the depth bias for this mesh. The vertex shader has already lifted the lookup off
 // the surface along its normal (see unit_vs), so what is left here is numerical slack
@@ -67,7 +67,7 @@ float3 cloudShade(float3 cloudPos)
 }
 
 
-DECLARE_SAMPLER(SceneDepth, 7);    // camera-view packed depth from the SSR prepass
+DECLARE_SAMPLER(SceneDepth, 7);    // camera-view depth from the SSR prepass (R32F)
 // x = 1 when this draw is an airborne sprite that may fade against the scene (see
 //     DX8Wrapper::m_softParticles -- ground decals reach this shader too and must not),
 // y = the view-space distance over which a sprite fades out as it approaches what is
@@ -87,11 +87,13 @@ StructuredBuffer<GpuLight> LightBuffer    : register(t8);
 Buffer<uint>               ClusterGrid    : register(t9);
 Buffer<uint>               LightIndexList : register(t10);
 
-// Unpack the RGB-packed depth the prepass writes. Weights are 255, matching
-// shadowdepth_ps's pack -- the same helper water_ps carries.
+// The prepass writes camera-view z/w straight into the red channel of an R32F target, so
+// this is a swizzle rather than arithmetic. It used to unpack a 255-weighted RGB8 split;
+// the depth pass stopped packing when the shadow map moved to R32F and this target
+// followed it there -- the same helper water_ps carries.
 float unpackSceneDepth(float4 rgba)
 {
-    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+    return rgba.r;
 }
 
 // Clip depth back to a view distance. Right-handed projection here, so clip.w = -viewZ;

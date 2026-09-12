@@ -1,9 +1,9 @@
 // Shadow-map depth pass (pixel).
 //
-// Packs the sun-clip-space depth (z/w, in [0,1] for D3D) into RGBA8 so it can live in
-// a plain colour render target -- D3D9 depth-stencil textures are not universally
-// sampleable, so the lit shaders unpack this instead. Matching unpack lives in the
-// unit / terrain pixel shaders.
+// Writes the sun-clip-space depth (z/w, in [0,1] for D3D) directly into the R32F
+// render target as a plain 32-bit float. The D3D9-era RGBA8 depth-packing scheme
+// (spreading depth across three 8-bit channels) has been retired now that we use
+// an R32F colour render target, which carries a full 32 bits in the red channel.
 
 #include "shadermodel.hlsli"
 
@@ -29,24 +29,6 @@ float4 ShadowCastParams : register(c0);
 struct PS_INPUT { PIXEL_POSITION_TYPE vpos : PS_PIXEL_POSITION;
                   float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1; };
 
-// Split the depth across three 8-bit channels, coarse to fine.
-//
-// The channel weights are 255, not 256. An 8-bit channel stores k/255, so building the
-// split around 256 leaves the coarse channel holding a value it cannot represent
-// exactly, and the finer channels are no help -- they carry the true low-order bits,
-// not the rounding error the coarse one just made. That cost ~1/510 of depth on every
-// texel (measured: a true 0.5000038 came back as 0.501965), which is several times any
-// sensible compare bias, so the terrain shadowed itself wherever it was in the map.
-//
-// Subtracting the next channel down leaves each one an exact multiple of 1/255, so all
-// three survive the 8-bit write and the round trip is good to about 1/16M.
-float4 packDepth(float depth, float alpha)
-{
-    float3 enc = frac(depth * float3(1.0, 255.0, 255.0 * 255.0));
-    enc.xy -= enc.yz * (1.0 / 255.0);
-    return float4(enc, alpha);
-}
-
 // Ordered 4x4 dither threshold in (0,1). Character for character the same function
 // shadowdepthparticle_ps carries, and it has to stay that way: two translucent casters
 // that overlap must share one pattern, or each accepts texels the other rejected and
@@ -65,8 +47,8 @@ float bayer4x4(float2 vpos)
 
 float4 main(PS_INPUT input) : PS_TARGET
 {
-    // Clamp below 1.0: packDepth(1.0) wraps to (0,0,0) which unpacks to 0 (near),
-    // which would make far geometry cast false shadows.
+    // Clamp below 1.0: a depth of exactly 1.0 would be indistinguishable from the
+    // clear value (1.0), making geometry at the far plane appear unwritten.
     float depth = min(input.lightPos.z / input.lightPos.w, 0.9999);
     float texAlpha = SAMPLE_2D(BaseSampler, input.texcoord).a;
 
@@ -105,11 +87,7 @@ float4 main(PS_INPUT input) : PS_TARGET
         // model 3 the macro is the bare argument, so this costs nothing and moves no bytecode.
         clip(coverage - bayer4x4(PIXEL_POSITION(input.vpos)));
 
-        // Alpha out is 1.0, not the coverage: the scene's alpha test is left as the mesh
-        // set it, and letting it cut a second time -- against a reference chosen for
-        // compositing, on a fragment the pattern has already accepted -- would take texels
-        // back out at random. The receivers read only RGB.
-        return packDepth(depth, 1.0);
+        return depth;
     }
 
     // clip() discards only on a negative argument, so a cutoff of 0 discards nothing.
@@ -128,10 +106,6 @@ float4 main(PS_INPUT input) : PS_TARGET
     // the hardware stage tests what the shader wrote. The dithered branch above returns
     // 1.0 and deliberately does not take part -- see its own note.
     AlphaTest(texAlpha);
-    // Alpha out is the caster's texture alpha, and the depth pass leaves the scene's
-    // alpha test alone, so the hardware discards the transparent texels of a cut-out
-    // exactly as it does in the visible pass. Writing 1.0 here made a tree billboard
-    // cast its whole rectangle -- a wall of shadow instead of a canopy. Meshes with no
-    // alpha test ignore alpha entirely, so opaque casters are unaffected.
-    return packDepth(depth, texAlpha);
+    return depth;
 }
+

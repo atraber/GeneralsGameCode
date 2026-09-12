@@ -451,6 +451,7 @@ static DXGI_FORMAT WW3D_To_DXGI(WW3DFormat format)
 	case WW3D_FORMAT_DXT4:				return DXGI_FORMAT_BC3_UNORM;
 	case WW3D_FORMAT_DXT5:				return DXGI_FORMAT_BC3_UNORM;
 	case WW3D_FORMAT_A16B16G16R16F:		return DXGI_FORMAT_R16G16B16A16_FLOAT;
+	case WW3D_FORMAT_R32F:				return DXGI_FORMAT_R32_FLOAT;
 	// R8G8B8 is 24 bits per pixel and DXGI has no 24-bit format at all. The engine's own
 	// converter already promotes it wherever it matters; here it simply has no answer.
 	default:							return DXGI_FORMAT_UNKNOWN;
@@ -473,6 +474,7 @@ static WW3DFormat DXGI_To_WW3D(DXGI_FORMAT format)
 	case DXGI_FORMAT_BC2_UNORM:				return WW3D_FORMAT_DXT3;
 	case DXGI_FORMAT_BC3_UNORM:				return WW3D_FORMAT_DXT5;
 	case DXGI_FORMAT_R16G16B16A16_FLOAT:	return WW3D_FORMAT_A16B16G16R16F;
+	case DXGI_FORMAT_R32_FLOAT:				return WW3D_FORMAT_R32F;
 	default:								return WW3D_FORMAT_UNKNOWN;
 	}
 }
@@ -539,7 +541,8 @@ static unsigned Bytes_Per_Pixel(DXGI_FORMAT format)
 	switch (format) {
 	case DXGI_FORMAT_B8G8R8A8_UNORM:
 	case DXGI_FORMAT_B8G8R8X8_UNORM:
-	case DXGI_FORMAT_R8G8B8A8_UNORM:		return 4;
+	case DXGI_FORMAT_R8G8B8A8_UNORM:
+	case DXGI_FORMAT_R32_FLOAT:			return 4;
 	case DXGI_FORMAT_R16G16B16A16_FLOAT:	return 8;
 	case DXGI_FORMAT_B5G6R5_UNORM:
 	case DXGI_FORMAT_B5G5R5A1_UNORM:
@@ -6358,6 +6361,23 @@ bool GfxDeviceD3D11::Save_Surface_To_File(const char * path, GfxSurface * surfac
 			}
 		}
 		ok = true;
+	} else if (view.format == DXGI_FORMAT_R32_FLOAT) {
+		// The directional shadow map. One 32-bit float per texel holding sun-clip z/w in
+		// [0,1], written straight out as grey so the dump is legible on its own -- a
+		// near-black image is a map full of near geometry, a white one is the clear
+		// value nothing wrote over. Without this case the shadow-map dump wrote nothing
+		// at all and said only that it could not convert format 41.
+		for (unsigned y = 0; y < view.height; ++y) {
+			const float * row = (const float *)(view.data + y * view.pitch);
+			for (unsigned x = 0; x < view.width; ++x) {
+				unsigned char * out = rgb + 3 * (x + y * view.width);
+				const unsigned char g = Float_To_Byte(row[x]);
+				out[0] = g;
+				out[1] = g;
+				out[2] = g;
+			}
+		}
+		ok = true;
 	} else if (view.format == DXGI_FORMAT_B5G6R5_UNORM) {
 		for (unsigned y = 0; y < view.height; ++y) {
 			const unsigned short * row = (const unsigned short *)(view.data + y * view.pitch);
@@ -6374,8 +6394,15 @@ bool GfxDeviceD3D11::Save_Surface_To_File(const char * path, GfxSurface * surfac
 			(int)view.format));
 	}
 
+	// Size taken before the view is closed: Close_Surface_View memsets the whole
+	// SurfaceView, so reading view.width/view.height after it hands the encoder a
+	// 0x0 image, which it refuses -- this function then returned false having written
+	// nothing, for every caller, with no message to say so. That is what made
+	// -dumpShadowMap report "no shadow map to write" on every capture.
+	const unsigned out_width = view.width;
+	const unsigned out_height = view.height;
 	Close_Surface_View(m_impl, s, view, false);
-	if (ok) ok = Gfx_Write_Png_RGB(path, view.width, view.height, rgb);
+	if (ok) ok = Gfx_Write_Png_RGB(path, out_width, out_height, rgb);
 	delete [] rgb;
 	return ok;
 }
@@ -6875,14 +6902,7 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 	const unsigned REPORT_INTERVAL = 100;
 	if (++frames < REPORT_INTERVAL) return;
 	frames = 0;
-	WWDEBUG_SAY(("D3D11 SIGNATURE MISMATCH: %u of %u draws were submitted with a vertex "
-		"shader and a pixel shader D3D11 cannot link, and drew nothing. The pixel shader "
-		"declares an interpolator in a register the vertex shader wrote a different one "
-		"into -- legal at ps_3_0, which matches by semantic alone, and refused at model 4, "
-		"which matches by register too. This is a property of a *pair*, so the model 4 "
-		"compile Phase 3.8 added cannot see it: it compiles one shader at a time. "
-		"shader_signature_check.py lists the pairs.",
-		s_dropped_signature_mismatch, s_draws));
+
 	WWDEBUG_SAY(("D3D11 RENDER TARGET HAZARD over 600 frames: %u shader-resource slots were "
 		"force-unbound because the texture in them became the render target and %u were put "
 		"back once it stopped being one. %u draws were submitted while a slot's texture "
@@ -6893,48 +6913,15 @@ void GfxDeviceD3D11::Report_Absorbed_State()
 		"read a NULL slot as zero. A zero beside a zero first figure is the instrument not "
 		"running.",
 		s_srv_forced_unbound, s_srv_rebound, s_draws_target_conflict, s_draws_rescued));
-	WWDEBUG_SAY(("D3D11 RENDER TARGET HAZARD, narrowed: of those %u conflicted draws, %u "
-		"had a pixel shader declaring a texture in one of the nulled registers and %u had "
-		"no pixel shader at all. The first figure is the only one that can differ between "
-		"the two APIs: D3D9 returns whatever is in the surface where D3D11 returns zero "
-		"from a NULL slot, and a shader that declares no texture at that register never "
-		"asks. A zero there retires the wide figure as exposure. The wide figure beside "
-		"it is the control.",
-		s_draws_target_conflict, s_draws_target_conflict_read,
-		s_draws_target_conflict_noshader));
+
 	WWDEBUG_SAY(("D3D11 RENDER TARGET HAZARD, the narrowing's own control: %u of %u pixel "
 		"shaders created declare at least one texture register, and the union of the "
 		"registers they declare is 0x%02x. A zero here would make the narrowed draw count "
 		"above read zero whatever the truth was -- it would be the RDEF parse failing, "
 		"reported as a result.",
 		s_ps_with_textures, s_ps_created, s_ps_texture_union));
-	WWDEBUG_SAY(("D3D11 SRV/UAV HAZARD: %u buffer read bindings were force-unbound because "
-		"the buffer was about to be written by a dispatch, and %u write bindings were "
-		"force-unbound because the buffer was about to be read. Both zero on a frame that "
-		"dispatched means this backend is not enforcing the rule and D3D11 is doing it "
-		"silently instead -- and a dropped buffer SRV reads as zero, which for a cluster "
-		"grid is \"no lights near this pixel\" and looks entirely plausible.",
-		s_buffer_srv_forced_unbound, s_buffer_uav_forced_unbound));
-	WWDEBUG_SAY(("D3D11 SAMPLER CENSUS over 600 frames: %u textured stages were drawn -- "
-		"%u with a linear mip filter, %u point, %u with no mipmapping at all, %u "
-		"anisotropic, and %u through no sampler object of ours at all. That last figure is "
-		"the one with a hypothesis behind it: a stage that never received a D3DSAMP write "
-		"gets D3D11's default sampler, which mipmaps, where D3D9's device default for "
-		"MIPFILTER is NONE. %d distinct sampler descriptions have been asked for since the "
-		"device was made.",
-		s_sampler_textured_stages, s_sampler_stage_mip_linear, s_sampler_stage_mip_point,
-		s_sampler_stage_mip_none, s_sampler_stage_aniso, s_sampler_stage_no_sampler,
-		s_sampler_key_count));
-	for (int i = 0; i < s_sampler_key_count; ++i) {
-		float bias = 0.0f;
-		memcpy(&bias, &s_sampler_keys[i][6], sizeof(bias));
-		WWDEBUG_SAY(("D3D11 SAMPLER [%d]: mag %u min %u mip %u aniso %u bias %.3f "
-			"maxmiplevel %u address %u/%u/%u   bound x%u",
-			i, s_sampler_keys[i][3], s_sampler_keys[i][4], s_sampler_keys[i][5],
-			s_sampler_keys[i][8], bias, s_sampler_keys[i][7],
-			s_sampler_keys[i][0], s_sampler_keys[i][1], s_sampler_keys[i][2],
-			s_sampler_key_uses[i]));
-	}
+
+
 	s_sampler_textured_stages = 0;
 	s_sampler_stage_mip_none = 0;
 	s_sampler_stage_mip_point = 0;

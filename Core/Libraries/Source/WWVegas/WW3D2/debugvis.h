@@ -101,7 +101,7 @@ enum DebugVisMode CPP_11(: int)
 	// shows what is actually in the field, so "the shroud looks fine" can be separated
 	// from "the shroud is flat here and would look fine either way".
 	DEBUG_VIS_SHROUD,
-	// The sun's depth map, unpacked and drawn as a corner tile.
+	// The sun's depth map, drawn as a corner tile.
 	//
 	// The map is the input to every cast shadow, and almost every shadow bug is
 	// visible in it before it is visible on the ground: a caster missing from the

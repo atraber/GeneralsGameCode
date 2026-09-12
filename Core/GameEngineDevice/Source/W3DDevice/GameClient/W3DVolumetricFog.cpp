@@ -296,9 +296,12 @@ void VolumetricFogClass::Render(CameraClass & camera, GfxBuffer * lightBuffer,
 	gfx->Set_Compute_Buffer(1, clusterGrid);
 	gfx->Set_Compute_Buffer(2, lightIndexList);
 
-	GfxTexture * shadowTex = nullptr;
-	if (DX8Wrapper::Get_Shadow_Map(0) != nullptr)
-		shadowTex = DX8Wrapper::Get_Shadow_Map(0)->Peek_D3D_Texture();
+	// The directional shadow map the depth pass writes -- the same texture every lit
+	// shader samples through shadow.hlsli. This used to read DX8Wrapper::Get_Shadow_Map(0),
+	// which is the legacy ZTextureClass array nothing in the engine ever writes: it was
+	// always null, so t3 was never bound and the sun-shaft term read zeros -- which the
+	// shader below cannot tell apart from "every froxel is in shadow".
+	GfxTexture * shadowTex = DX8Wrapper::Has_Shadow_Map() ? DX8Wrapper::m_pShadowMap : nullptr;
 	if (shadowTex != nullptr)
 		gfx->Set_Compute_Texture(3, shadowTex);
 

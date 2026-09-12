@@ -23,10 +23,14 @@ struct PS_INPUT
     float2 texcoord1 : TEXCOORD1;
 };
 
-// Unpack the 24-bit depth stored in RGB channels
+// The camera-view depth target (m_ssrDepthTexture) is R32F: the depth prepass writes
+// z/w straight into the red channel, so reading it back is a swizzle. It used to be an
+// RGB8 split with 255-based weights, unpacked here; the prepass shares its pixel shader
+// with the shadow map, so when that map moved to R32F the packing went and this target
+// had to follow.
 float unpackDepth(float4 rgba)
 {
-    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+    return rgba.r;
 }
 
 float4 main(PS_INPUT input) : SV_Target

@@ -35,9 +35,9 @@
 DECLARE_SAMPLER_2D(AlbedoSampler, 0);
 DECLARE_SAMPLER_2D(OrmSampler, 1);
 DECLARE_SAMPLER_CUBE(EnvSampler, 4);   // shared environment cubemap (reflections)
-DECLARE_SAMPLER_2D(ShadowMap, 5);   // directional shadow map (packed depth)
+DECLARE_SAMPLER_2D(ShadowMap, 5);   // directional shadow map (R32F depth)
 DECLARE_SAMPLER_2D(SceneColor, 6);   // previous frame's resolved scene
-DECLARE_SAMPLER_2D(SceneDepth, 7);   // this frame's camera-view packed depth
+DECLARE_SAMPLER_2D(SceneDepth, 7);   // this frame's camera-view depth (R32F)
 
 float4 LightDir0     : register(c0);   // xyz = direction toward the light
 float4 LightDir1     : register(c1);
@@ -144,12 +144,14 @@ float3 F_Schlick(float VdotH, float3 F0)
     return F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
 }
 
-// Directional shadow map. Projects this pixel into sun clip space and runs the shared
-// wide Poisson PCF over it -- see shadow.hlsli. Returns 1 = lit, 0 = fully shadowed.
+// The camera-view depth target (m_ssrDepthTexture) is R32F: the depth prepass writes
+// z/w straight into the red channel, so reading it back is a swizzle. It used to be an
+// RGB8 split with 255-based weights, unpacked here; the prepass shares its pixel shader
+// with the shadow map, so when that map moved to R32F the packing went and this target
+// had to follow.
 float unpackDepth(float4 rgba)
 {
-    // Weights are 255, matching shadowdepth_ps's pack -- see the note there.
-    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+    return rgba.r;
 }
 
 float computeShadow(float3 worldPos, float3 worldNormal)
@@ -729,15 +731,19 @@ float4 main(PS_INPUT input) : PS_TARGET
         // every hit test wrong without ever looking obviously broken.
         float4 selfClip = mul(float4(input.worldPos, 1.0), CameraVP);
         float2 selfUv   = (selfClip.xy / selfClip.w) * float2(0.5, -0.5) + 0.5;
-        // The raw texel, not a derived depth. Anything computed from it collapses three
-        // very different failures into the same grey mush; the bytes themselves tell
-        // them apart, because the target is cleared to pure red (depth = far) and the
-        // pack puts coarse depth in R, finer in G, finest in B:
-        //   flat pure red        -- bound, but the prepass drew nothing into it
-        //   red darkening with distance, G/B banding finely across surfaces -- working
+        // The stored value, not a derived depth. Anything computed from it collapses
+        // three very different failures into the same grey mush. The target is R32F and
+        // cleared to 1.0, so the red channel is the whole of it:
+        //   flat white           -- bound, but the prepass drew nothing into it
+        //   grey shading smoothly with distance -- working
         //   flickering noise     -- not bound at all, and every reading so far has been
         //                           whatever happened to be in that sampler
-        return float4(SAMPLE_2D_LOD(SceneDepth, selfUv, 0).rgb, 1.0);
+        //
+        // Green marks the ceiling, because an 8-bit-quantised depth and a correct one
+        // both read as a plausible grey ramp: it is the failure this mode missed when
+        // the prepass was left writing an unpacked float into a packed target.
+        float rawDepth = SAMPLE_2D_LOD(SceneDepth, selfUv, 0).r;
+        return float4(rawDepth, frac(rawDepth * 255.0), rawDepth, 1.0);
     }
 #elif PBR_DEBUG_MODE == 9
     {
@@ -770,7 +776,7 @@ float4 main(PS_INPUT input) : PS_TARGET
         float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
             return float4(1.0, 0.0, 0.0, 1.0);
-        float stored = unpackDepth(SAMPLE_2D(ShadowMap, uv));
+        float stored = SAMPLE_2D(ShadowMap, uv).r;   // R32F: depth is the red channel
         return float4(0.0, saturate(ndc.z), saturate(stored), 1.0);
     }
 #elif PBR_DEBUG_MODE == 15

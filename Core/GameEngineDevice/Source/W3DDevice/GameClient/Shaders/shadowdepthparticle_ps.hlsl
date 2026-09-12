@@ -1,8 +1,7 @@
 // Shadow-map depth pass for particle sprites (pixel, Shader Model 3).
 //
-// Packs sun-clip depth exactly as shadowdepth_ps does -- same three-channel split, same
-// unpack in the receivers -- and differs only in how it decides whether a texel casts at
-// all.
+// Writes sun-clip depth exactly as shadowdepth_ps does -- a plain R32F scalar -- and
+// differs only in how it decides whether a texel casts at all.
 //
 // The shadow map holds one depth per texel and the receivers compare against it, so a
 // texel is either lit or not. That is the right representation for a wall and the wrong
@@ -38,16 +37,6 @@ struct PS_INPUT { PIXEL_POSITION_TYPE vpos : PS_PIXEL_POSITION;
                   float4 lightPos : TEXCOORD0; float2 texcoord : TEXCOORD1;
                   float  alpha    : TEXCOORD2; };
 
-// Split the depth across three 8-bit channels, coarse to fine. Identical to
-// shadowdepth_ps's -- the receivers unpack both with one function, so the two must agree
-// exactly. See the note there for why the weights are 255 and not 256.
-float4 packDepth(float depth, float alpha)
-{
-    float3 enc = frac(depth * float3(1.0, 255.0, 255.0 * 255.0));
-    enc.xy -= enc.yz * (1.0 / 255.0);
-    return float4(enc, alpha);
-}
-
 // Ordered 4x4 dither threshold in (0,1), evaluated arithmetically.
 //
 // Built the way the Bayer matrix itself is, by recursion: the 2x2 pattern
@@ -71,8 +60,8 @@ float bayer4x4(float2 vpos)
 
 float4 main(PS_INPUT input) : PS_TARGET
 {
-    // Clamp below 1.0: packDepth(1.0) wraps to (0,0,0), which unpacks to the near plane
-    // and would shadow everything under it.
+    // Clamp below 1.0: a depth of exactly 1.0 would be indistinguishable from the
+    // clear value (1.0), making geometry at the far plane appear unwritten.
     float depth = min(input.lightPos.z / input.lightPos.w, 0.9999);
 
     // Both halves of the sprite's opacity, and the ceiling on the pair.
@@ -89,10 +78,6 @@ float4 main(PS_INPUT input) : PS_TARGET
     // model 3 the macro is the bare argument, so this costs nothing and moves no bytecode.
     clip(coverage - bayer4x4(PIXEL_POSITION(input.vpos)));
 
-    // Alpha out is 1.0, not the coverage. The scene's alpha test is left as the particle
-    // shader set it, and for an alpha-tested system it would test whatever went here --
-    // cutting a second time, against a reference chosen for compositing, a fragment the
-    // pattern has already accepted. The receivers read only RGB, so nothing else is
-    // reading this.
-    return packDepth(depth, 1.0);
+    return depth;
 }
+

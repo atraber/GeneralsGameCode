@@ -99,6 +99,9 @@ enum WW3DFormat {
 	// the other way is a table capped at 62; it is converted by name instead, the way the
 	// DXT codes already are.
 	WW3D_FORMAT_A16B16G16R16F,
+	// Single-channel 32-bit float -- the shadow map render target. D3DFMT_R32F is 114,
+	// also above the table cap, so it too is converted by name.
+	WW3D_FORMAT_R32F,
 	WW3D_FORMAT_COUNT	// Used only to determine number of surface formats
 };
 

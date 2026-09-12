@@ -24,9 +24,8 @@
 // Storage format
 // ---------------------------------------------------------------------------
 
-// Depth is packed coarse-to-fine across RGB8 (see shadowdepth_ps.hlsl for why the channel
-// weights are 255 and not 256). Everything that knows this lives in this one function, so
-// moving the map to R32F or a moments format later is a change here and nowhere else.
+// Depth is stored as a single 32-bit float in the R channel (R32F render target).
+// Direct read: no packing or channel-weight arithmetic needed.
 //
 // tex2Dlod, not tex2D, and deliberately so for every caller rather than only the ones that
 // need it. unit_ps and unit_detail_ps call the filter inside dynamic flow control, where
@@ -37,8 +36,7 @@
 // one form and any receiver may branch around it without the filter caring.
 float shadowSampleDepth(SAMPLER_2D_PARAM(shadowMap), float2 uv)
 {
-    float4 rgba = SAMPLE_2D_LOD(shadowMap, uv, 0.0);
-    return dot(rgba.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+    return SAMPLE_2D_LOD(shadowMap, uv, 0.0).r;
 }
 
 // ---------------------------------------------------------------------------

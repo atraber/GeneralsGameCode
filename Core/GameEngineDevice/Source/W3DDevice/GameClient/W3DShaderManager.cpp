@@ -3319,7 +3319,7 @@ void W3DShaderManager::initShadowMap()
 	}
 
 	m_pShadowMapTexture = DX8Wrapper::Create_DX8_Texture_Resource(SHADOW_MAP_SIZE,
-		SHADOW_MAP_SIZE, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET);
+		SHADOW_MAP_SIZE, 1, WW3D_FORMAT_R32F, GFX_USAGE_RENDER_TARGET);
 	if (m_pShadowMapTexture == nullptr)
 	{
 		return;
@@ -3555,7 +3555,13 @@ void W3DShaderManager::initSsr()
 	// else knows about, the history one because it is a copy of the frame. The depth
 	// buffer is deliberately non-multisampled -- this target is never resolved and
 	// nothing samples its edges, so MSAA would only cost fill rate.
-	if (nullptr == (m_ssrDepthTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET)) ||
+	// R32F, for the same reason the shadow map is: the depth pass writes a single float.
+	// It used to be A8R8G8B8 with the depth split across three 8-bit channels, and the
+	// two targets share one pixel shader -- so when the shadow map moved to R32F and the
+	// packing came out of shadowdepth_ps, this target kept the packed format and started
+	// receiving an unpacked float, leaving it quantised to 8 bits. Over a ground plane
+	// that is one or two distinct depths and it reads as horizontal banding.
+	if (nullptr == (m_ssrDepthTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_R32F, GFX_USAGE_RENDER_TARGET)) ||
 		nullptr == (m_ssrDepthSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_ssrDepthTexture, 0)) ||
 		nullptr == (m_sceneHistoryTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET)) ||
 		nullptr == (m_sceneHistorySurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_sceneHistoryTexture, 0)) ||
@@ -4148,9 +4154,9 @@ void W3DShaderManager::startCameraDepthRendering()
 
 	DX8Wrapper::Set_Shadow_Depth_Pass(true);
 	DX8Wrapper::Set_Depth_Prepass(true);
-	// Red is depth 1.0 exactly -- the pack weights the channels 1, 1/255, 1/255^2, so R
-	// alone is the far plane. Anywhere the pass rasterises nothing then reads as empty
-	// sky, and a ray crossing it finds no hit rather than one at the near plane.
+	// Red is depth 1.0 exactly: the target is R32F and the receivers read the red channel
+	// alone. Anywhere the pass rasterises nothing then reads as empty sky, and a ray
+	// crossing it finds no hit rather than one at the near plane.
 	DX8Wrapper::Clear(true, true, Vector3(1.0f, 0.0f, 0.0f), 1.0f, 1.0f);
 }
 
@@ -4243,10 +4249,11 @@ void W3DShaderManager::startShadowMapRendering()
 		DX8Wrapper::Get_DX8_Render_State(s_shadowSavedStateIds[i], m_shadowSavedStates[i]);
 
 	DX8Wrapper::Set_Shadow_Depth_Pass(true);
-	// Clear colour so untouched texels read as far (unpack -> depth 1.0 -> lit). R is the
-	// most significant channel, so red, not blue: the pack weights the channels 1, 1/255,
-	// 1/255^2 coarse-to-fine. Clearing to blue here would unpack to ~0 -- the near plane --
-	// and every receiver outside the rasterised area would come out fully shadowed.
+	// Clear colour so untouched texels read as far (depth 1.0 -> lit). The map is R32F
+	// and the receivers read the red channel alone, so red is the only component that
+	// means anything; green and blue are written by the clear and never looked at.
+	// Clearing red to 0 here would read as the near plane and every receiver outside the
+	// rasterised area would come out fully shadowed.
 	DX8Wrapper::Clear(true, true, Vector3(1.0f, 0.0f, 0.0f), 1.0f, 1.0f);
 }
 

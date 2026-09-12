@@ -64,7 +64,8 @@ D3DFORMAT WW3DFormatToD3DFormatConversionArray[WW3D_FORMAT_COUNT] = {
 	D3DFMT_DXT3,
 	D3DFMT_DXT4,
 	D3DFMT_DXT5,
-	D3DFMT_A16B16G16R16F
+	D3DFMT_A16B16G16R16F,
+	D3DFMT_R32F
 };
 
 // adding depth stencil format conversion
@@ -138,6 +139,7 @@ WW3DFormat D3DFormat_To_WW3DFormat(D3DFORMAT d3d_format)
 	case D3DFMT_DXT5: return WW3D_FORMAT_DXT5;
 	// Past the end of the conversion table, so it is named here for the same reason.
 	case D3DFMT_A16B16G16R16F: return WW3D_FORMAT_A16B16G16R16F;
+	case D3DFMT_R32F:          return WW3D_FORMAT_R32F;
 	default:
 		if (d3d_format > HIGHEST_SUPPORTED_D3DFORMAT) {
 			return WW3D_FORMAT_UNKNOWN;

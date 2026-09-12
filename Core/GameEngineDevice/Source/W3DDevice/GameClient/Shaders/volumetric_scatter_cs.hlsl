@@ -18,7 +18,7 @@ Buffer<uint>               ClusterGrid       : register(t1);
 Buffer<uint>               LightIndexList    : register(t2);
 
 #if VOLUMETRIC_SUN_SHAFTS
-Texture2D<float4>          ShadowMap         : register(t3);
+Texture2D<float4>          ShadowMap         : register(t3);   // R32F: sun depth in .r
 #endif
 
 RWTexture3D<float4>        VolumeScatterRW   : register(u0);
@@ -112,8 +112,10 @@ void main(uint3 id : SV_DispatchThreadID)
         if (all(sunUv >= 0.0) && all(sunUv <= 1.0) && sunNdc.z >= 0.0 && sunNdc.z <= 1.0)
         {
             int2 shadowTexel = (int2)(sunUv * FogShadowParams.w);
-            float4 shadowSample = ShadowMap.Load(int3(shadowTexel, 0));
-            float shadowZ = dot(shadowSample.xyz, float3(1.0, 1.0 / 255.0, 1.0 / (255.0 * 255.0)));
+            // The shadow map is R32F: the sun-clip depth is the red channel, whole.
+            // This used to unpack a three-channel RGB8 split; the map moved to a
+            // single float and this read had to move with it.
+            float shadowZ = ShadowMap.Load(int3(shadowTexel, 0)).r;
 
             if (sunNdc.z <= shadowZ + FogShadowParams.x)
             {

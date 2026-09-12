@@ -95,6 +95,7 @@ void Get_WW3D_Format_Name(WW3DFormat format, StringClass& name)
 	case WW3D_FORMAT_DXT4: name="DXT4"; break;
 	case WW3D_FORMAT_DXT5: name="DXT5"; break;
 	case WW3D_FORMAT_A16B16G16R16F: name="A16B16G16R16F"; break;
+	case WW3D_FORMAT_R32F: name="R32F"; break;
 	}
 }
 
@@ -403,6 +404,7 @@ unsigned Get_Bytes_Per_Pixel(WW3DFormat format)
 	case WW3D_FORMAT_A8R8G8B8:
 	case WW3D_FORMAT_X8R8G8B8:
 	case WW3D_FORMAT_X8L8V8U8:
+	case WW3D_FORMAT_R32F:
 		return 4;
 	case WW3D_FORMAT_R8G8B8:
 		return 3;
