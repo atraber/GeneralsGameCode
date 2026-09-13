@@ -53,8 +53,14 @@ if(MINGW)
         )
     endif()
     
+    # MinGW-w64 compatibility library for wide character formatting (MSVC CRT format behavior)
+    add_library(mingw_compat STATIC
+        "${CMAKE_SOURCE_DIR}/Dependencies/Utility/Utility/mingw_compat.c"
+    )
+
     # Required Windows libraries for DX8 + COM
     link_libraries(
+        mingw_compat
         uuid        # COM GUIDs
         ole32       # COM runtime
         oleaut32    # COM automation

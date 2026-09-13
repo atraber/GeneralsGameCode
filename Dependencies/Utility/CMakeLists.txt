@@ -16,6 +16,7 @@ set(UTILITY_SRC
     Utility/thread_compat.h
     Utility/time_compat.h
     Utility/wchar_compat.h
+    Utility/mingw_compat.c
 )
 
 ## core_utility
