@@ -29,10 +29,11 @@ struct GfxBuffer;
 // Volumetric fog manager: froxel-based Eulerian fog and light scattering pipeline.
 //
 // 120 x 68 x 32 froxels in camera frustum.
-// Punctual lights (headlights, spotlights, point lights) from the clustered lighting grid
-// scatter through the participating medium with Henyey-Greenstein Mie forward phase function,
-// making headlight beams visible in the air as volumetric cones.
-// Occlusion by scene geometry (terrain, buildings, vehicles) is evaluated during composite.
+// The froxels carry the low-frequency terms: ambient haze and sun shafts. Punctual lights
+// (headlights, spotlights, point lights) from the clustered grid are integrated per pixel in
+// the composite instead, clipped to each light's sphere, cone and the scene depth -- a 26 unit
+// headlight cone is far thinner than one ~70 unit froxel slice. W3D_FOG_LIGHTS=froxel puts
+// them back in the volume for A/B; W3D_FOG_DEBUG=1|2 are the probes (volumetric_composite_ps).
 class VolumetricFogClass
 {
 public:
@@ -88,6 +89,11 @@ public:
 	static float Get_Light_Boost() { return s_lightBoost; }
 	static void  Set_Light_Boost(float b) { s_lightBoost = b; }
 
+	// Scattering coefficient for punctual lights on the per-pixel path, per world unit. Not the
+	// height fog's density: a beam has to read at night without the haze greying the map.
+	static float Get_Light_Scatter() { return s_lightScatter; }
+	static void  Set_Light_Scatter(float s) { s_lightScatter = s; }
+
 private:
 	void Ensure_Textures();
 	void Ensure_Shaders();
@@ -111,4 +117,8 @@ private:
 	static float s_sunShaftIntensity;
 	static float s_ambientIntensity;
 	static float s_lightBoost;
+	static float s_lightScatter;
+	static float s_pointLightWeight;
+	static Bool  s_lightsPerPixel;
+	static Int   s_debugMode;
 };

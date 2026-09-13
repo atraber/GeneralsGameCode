@@ -40,6 +40,10 @@ float VolumetricFogClass::s_anisotropy         = 0.55f;
 float VolumetricFogClass::s_sunShaftIntensity  = 0.35f;
 float VolumetricFogClass::s_ambientIntensity   = 0.15f;
 float VolumetricFogClass::s_lightBoost         = 25.0f;
+float VolumetricFogClass::s_lightScatter       = 0.3f;	// usa_lightsout at night: 0.05 invisible on moonlit snow, 0.15 faint, 0.3 a clear beam
+float VolumetricFogClass::s_pointLightWeight   = 0.25f;
+Bool  VolumetricFogClass::s_lightsPerPixel     = TRUE;
+Int   VolumetricFogClass::s_debugMode          = 0;
 
 static bool Env_Flag(const char * name, bool defaultVal)
 {
@@ -75,6 +79,16 @@ VolumetricFogClass::VolumetricFogClass()
 	s_sunShaftIntensity = Env_Float("W3D_FOG_SUN_SHAFTS", s_sunShaftIntensity);
 	s_ambientIntensity = Env_Float("W3D_FOG_AMBIENT", s_ambientIntensity);
 	s_lightBoost = Env_Float("W3D_FOG_LIGHT_BOOST", s_lightBoost);
+	s_lightScatter = Env_Float("W3D_FOG_LIGHT_SCATTER", s_lightScatter);
+	s_pointLightWeight = Env_Float("W3D_FOG_POINT_WEIGHT", s_pointLightWeight);
+	const char * lightsMode = ::getenv("W3D_FOG_LIGHTS");
+	s_lightsPerPixel = !(lightsMode != nullptr && ::_stricmp(lightsMode, "froxel") == 0);
+	s_debugMode = (Int)Env_Float("W3D_FOG_DEBUG", 0.0f);
+
+	WWDEBUG_SAY(("VOLUMETRIC FOG: active %d, lights %s, light scatter %g, point weight %g, "
+		"density %g, ambient %g, sun shafts %g, debug %d\n",
+		(int)s_active, s_lightsPerPixel ? "per-pixel" : "froxel", s_lightScatter, s_pointLightWeight,
+		s_density, s_ambientIntensity, s_sunShaftIntensity, (int)s_debugMode));
 }
 
 VolumetricFogClass::~VolumetricFogClass()
@@ -259,7 +273,7 @@ void VolumetricFogClass::Update_Constants(CameraClass & camera)
 		             TheGlobalData->m_terrainDiffuse[0].blue);
 	}
 
-	Vector4 fogConstants[12];
+	Vector4 fogConstants[13];
 
 	// Slot 9: FogParams0
 	fogConstants[0].Set(s_density, s_heightFalloff, s_groundHeight, s_anisotropy);
@@ -295,7 +309,10 @@ void VolumetricFogClass::Update_Constants(CameraClass & camera)
 	fogConstants[11].Set(DX8Wrapper::m_shadowParams[0], DX8Wrapper::m_shadowParams[1] > 0.0f ? 1.0f : 0.0f,
 		DX8Wrapper::m_shadowParams[2], (float)DX8Wrapper::SHADOW_MAP_SIZE);
 
-	DX8Wrapper::Set_Frame_Constants_At(9, fogConstants, 12);
+	// Slot 21: FogLightParams
+	fogConstants[12].Set(s_lightScatter, s_lightsPerPixel ? 1.0f : 0.0f, (float)s_debugMode, s_pointLightWeight);
+
+	DX8Wrapper::Set_Frame_Constants_At(9, fogConstants, 13);
 }
 
 void VolumetricFogClass::Render(CameraClass & camera, GfxBuffer * lightBuffer,

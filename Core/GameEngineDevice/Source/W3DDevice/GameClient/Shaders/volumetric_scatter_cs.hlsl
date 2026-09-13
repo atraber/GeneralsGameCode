@@ -140,8 +140,10 @@ void main(uint3 id : SV_DispatchThreadID)
     }
 #endif
 
-    // 3. Punctual lights (headlights, spot lights, point lights) from cluster grid:
-    if (ClusteredLightingEnabled())
+    // 3. Punctual lights (headlights, spot lights, point lights) from cluster grid.
+    // Only on the legacy froxel path (W3D_FOG_LIGHTS=froxel): by default the composite
+    // integrates them per pixel instead, and doing both would count every light twice.
+    if (FogLightParams.y < 0.5 && ClusteredLightingEnabled())
     {
         float2 pixelPos = CLUSTER_VIEWPORT_MIN + float2(u, v) * CLUSTER_VIEWPORT_SIZE;
         int2 tile = ClusterTileOf(pixelPos);
