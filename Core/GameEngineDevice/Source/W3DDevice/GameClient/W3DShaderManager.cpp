@@ -4876,8 +4876,36 @@ void W3DShaderManager::shutdown()
 }
 
 //=============================================================================
+// TheSuperHackers @fix andytraber 13/09/2026 Advance the weather once a frame, which is what
+// this function has always said it does.
+//
+// It is called from the terrain's Render, and the terrain renders up to *three* times a
+// frame -- the shadow map, the camera depth prepass, the picture. So the cloud field was
+// integrating a frame's worth of wind once per pass, and its wind speed was really a
+// function of which rendering features happened to be switched on: three times the nominal
+// speed with shadows and the prepass, twice without one of them, once with neither. The
+// identical trap was found in updateEnvMap, whose guard this copies and whose comment names
+// the same three passes.
+//
+// It surfaced because deleting the prepass took the field from three steps a frame to two,
+// which reads as the clouds slowing by a third -- a broad, low-amplitude change over the
+// whole terrain that grows with elapsed time. Measured on civ_buildings that was 1.3% of the
+// frame differing at render frame 540 and 18.7% at 880, at a worst channel delta of 38: not
+// the depth change at all, and it would have been attributed to it.
+//
+// Two consequences worth stating rather than discovering. The field now drifts at the rate
+// CLOUD_WIND_* actually names, which in the shipped configuration is a third of what it was
+// -- so if the wind reads as too calm, those constants are what to retune, and they will now
+// mean something settings-independent. And m_xOffset, the legacy fixed-function path's own
+// scroll, was drifting three times over too.
+//=============================================================================
 void W3DShaderManager::updateCloud()
 {
+	static unsigned s_lastCloudFrame = 0xFFFFFFFFu;
+	const unsigned renderFrame = WW3D::Get_Frame_Count();
+	if (renderFrame == s_lastCloudFrame)
+		return;
+	s_lastCloudFrame = renderFrame;
 	terrainShader2Stage.updateCloud();
 }
 
