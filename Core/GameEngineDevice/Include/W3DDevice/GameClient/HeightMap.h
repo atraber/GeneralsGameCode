@@ -104,6 +104,12 @@ protected:
 	Int	m_numBlockColumnsInLastVB;///<a VB tile may be partially filled, this indicates how many 2x2 vertex blocks are filled.
 	Int	m_numBlockRowsInLastVB;///<a VB tile may be partially filled, this indicates how many 2x2 vertex blocks are filled.
 
+	// TheSuperHackers @perf andytraber 12/09/2026 Take whatever heightMapChanged accumulated and
+	// hand it to doPartialUpdate, measured as PHASE_TERRAINPATCH. Only updateCenter calls this, and
+	// only where the full-update flag is not already set -- see both sites there for the priority
+	// rule and for why it must run before the scroll rather than after it.
+	void consumePendingHeightMapRegion(RefRenderObjListIterator *pLightsIterator);
+
 	DX8VertexBufferClass *getVertexBufferTile(Int x, Int y);
 	VERTEX_FORMAT *getVertexBufferBackup(Int x, Int y);
 	Int getXWithOrigin(Int x);

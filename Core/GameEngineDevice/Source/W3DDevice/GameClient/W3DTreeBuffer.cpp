@@ -725,7 +725,11 @@ void W3DTreeBuffer::loadTreesInVertexAndIndexBuffers(RefRenderObjListIterator *p
 	m_anythingChanged = false;
 	Int curTree=0;
 	Int bNdx;
-	const GlobalData::TerrainLighting *objectLighting = TheGlobalData->m_terrainObjectsLighting[TheGlobalData->m_timeOfDay];
+	// TheSuperHackers @fix andytraber 12/09/2026 The interpolated objects lighting, not
+	// the authored per-time-of-day row. Identical when the day-night cycle is off (see
+	// GlobalData::setTimeOfDay, which seeds it); under the cycle it is what stops every
+	// tree and prop on the map jumping between four states while the ground creeps.
+	const GlobalData::TerrainLighting *objectLighting = TheGlobalData->m_terrainObjectsCurrent;
 	for (bNdx=0; bNdx<MAX_BUFFERS; bNdx++) {
 		m_curNumTreeVertices[bNdx] = 0;
 		m_curNumTreeIndices[bNdx] = 0;

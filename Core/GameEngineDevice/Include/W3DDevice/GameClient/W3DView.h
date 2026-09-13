@@ -329,6 +329,14 @@ private:
 	bool getDesiredTerrainDrawSize(ICoord2D &dimensions) const;
 	///< enlarge that window so the terrain casting into the view from up-sun is drawn at all
 	void widenTerrainDrawSizeForShadows(ICoord2D &dimensions) const;
+	// TheSuperHackers @perf andytraber 12/09/2026 Hysteresis state for the above. The window
+	// size it computes is quantised to whole 32-cell tiles, and changing it tears down and
+	// rebuilds every terrain vertex buffer plus the shroud. With a fixed sun that happened
+	// once at map load; with the day-night cycle the input drifts continuously and the
+	// window oscillated across a tile boundary roughly every nine seconds, forever.
+	// mutable because the sizing query is const and this is a cache, not a decision.
+	mutable Int			m_shadowWidenHeldCells;		///< the widening currently in force, in cells
+	mutable UnsignedInt	m_shadowWidenShrinkSince;	///< when the requirement first dropped a full tile below it; 0 = not below
 	void updateTerrain();
 
 	// (gth) C&C3 animation controlled camera feature

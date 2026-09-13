@@ -50,6 +50,7 @@
 #include "W3DDevice/GameClient/HeightMap.h"
 #include "W3DDevice/GameClient/W3DScene.h"
 #include "W3DDevice/GameClient/W3DDynamicLight.h"
+#include "Common/FrameTiming.h"
 #include "W3DDevice/GameClient/W3DShadow.h"
 #include "W3DDevice/GameClient/W3DStatusCircle.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
@@ -1764,16 +1765,28 @@ void RTS3DScene::addDynamicLight(W3DDynamicLight * obj)
 //=============================================================================
 W3DDynamicLight * RTS3DScene::getADynamicLight()
 {
+	// TheSuperHackers @instrument andytraber 12/09/2026 Count the walk, not just the result.
+	// This is a linear scan of a pool that only ever grows, and every caller that wants a
+	// light walks it from the front until it finds a free one -- so the cost is
+	// requests x pool size, per frame. That was harmless while the only callers were muzzle
+	// flashes and light pulses, which are a handful at a time. Bone-parented headlights are
+	// not: at night every vehicle on the map wants one, they occupy the front of the pool,
+	// and anything else asking has to walk past all of them. "dynscan" on F10 is that
+	// product, and it is the number that says whether the pool needs a free list.
 	RefRenderObjListIterator dynaLightIt(&m_dynamicLightList);
 	W3DDynamicLight *pLight;
+	Int scanned = 0;
 	for (dynaLightIt.First(); !dynaLightIt.Is_Done(); dynaLightIt.Next())
 	{
+		++scanned;
 		pLight = (W3DDynamicLight*)dynaLightIt.Peek_Obj();
 		if (!pLight->isEnabled()) {
 			pLight->setEnabled(true);
+			FrameTiming::addCounter(FrameTiming::COUNTER_DYNLIGHT_SCAN, scanned);
 			return(pLight);
 		}
 	}
+	FrameTiming::addCounter(FrameTiming::COUNTER_DYNLIGHT_SCAN, scanned);
 	pLight = NEW_REF(W3DDynamicLight, ());
 	addDynamicLight( pLight );
 	pLight->Release_Ref();

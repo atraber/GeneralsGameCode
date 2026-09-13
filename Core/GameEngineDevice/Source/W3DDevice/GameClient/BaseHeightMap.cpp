@@ -56,6 +56,7 @@
 #include <WW3D2/camera.h>
 
 #include "Common/GlobalData.h"
+#include "Common/FrameTiming.h"
 #include "Common/PerfTimer.h"
 #include "Common/Xfer.h"
 
@@ -241,6 +242,9 @@ BaseHeightMapRenderObjClass::BaseHeightMapRenderObjClass()
 	m_x=0;
 	m_y=0;
 	m_needFullUpdate = false;
+	// TheSuperHackers @perf andytraber 12/09/2026 See heightMapChanged.
+	m_needPartialUpdate = false;
+	m_partialUpdateRegion.zero();
 	m_showImpassableAreas = false;
 	m_updating = false;
 	//Set height to the maximum value that can be stored.
@@ -625,6 +629,14 @@ void BaseHeightMapRenderObjClass::reset()
 	}
 
 	m_showAsVisibleCliff.clear();
+
+	// TheSuperHackers @perf andytraber 12/09/2026 A rect describes cells of the map being torn
+	// down, so it must not outlive it. The next initHeightData sets m_needFullUpdate and the
+	// consumer would supersede a stale rect anyway, but between reset() and that load m_map is
+	// null, so updateCenter returns without taking it -- and doesNeedPartialUpdate() would then
+	// have W3DView::update call updateTerrain() once per frame of the loading screen to no effect.
+	m_needPartialUpdate = false;
+	m_partialUpdateRegion.zero();
 
 	if (m_shroud)
 	{	m_shroud->reset();
@@ -2329,8 +2341,20 @@ void BaseHeightMapRenderObjClass::removeTerrainBibDrawable(DrawableID id)
 //=============================================================================
 void BaseHeightMapRenderObjClass::staticLightingChanged()
 {
+	// TheSuperHackers @instrument andytraber 12/09/2026 Every request, whatever named it. The
+	// named causes are counted at their own call sites, so anything this exceeds their sum by
+	// is a caller nobody has looked at.
+	FrameTiming::recordEvent(FrameTiming::EVENT_TERRDIRTY_ALL);
+
 	// Cause the terrain to get updated with new lighting.
 	m_needFullUpdate = true;
+
+	// TheSuperHackers @perf andytraber 12/09/2026 A full update is a strict superset of any
+	// pending region -- it re-lights every vertex of the drawn window -- so drop the rect rather
+	// than leave it to be consumed afterwards and pay for the same cells twice. This is the
+	// priority rule in one line: a real lighting change wins, and consuming it clears the other.
+	m_needPartialUpdate = false;
+	m_partialUpdateRegion.zero();
 
 	// Cause the scorches to get updated with new lighting.
 	m_scorchesInBuffer = 0; // If we just allocated the buffers, we got no scorches in the buffer.
@@ -2339,6 +2363,74 @@ void BaseHeightMapRenderObjClass::staticLightingChanged()
 	if (m_roadBuffer)
 		m_roadBuffer->updateLighting();
 
+}
+
+//=============================================================================
+// BaseHeightMapRenderObjClass::heightMapChanged
+//=============================================================================
+/** Notification that the height field changed shape in this region. */
+//=============================================================================
+void BaseHeightMapRenderObjClass::heightMapChanged(const IRegion2D &region)
+{
+	// TheSuperHackers @perf andytraber 12/09/2026 What this deliberately does NOT do, because
+	// getting that wrong is how the 2003 code ended up calling staticLightingChanged here:
+	//
+	//  - it does not re-light the roads. RoadSegment::updateSegLighting only rewrites a road
+	//    vertex's `diffuse`, sampled from the terrain's baked diffuse, so it answers a lighting
+	//    change and nothing else. A road over a re-shaped cell keeps a marginally stale tint
+	//    until the next genuine lighting change; a road under a building foundation is close to
+	//    unheard of, and the old code's re-light read the PRE-bake diffuse anyway (it runs
+	//    immediately, the re-bake happens in the next updateCenter), so its correctness here was
+	//    always notional.
+	//
+	//  - it does not set m_needFullUpdate. That is the 26-47 ms this change exists to stop paying.
+	//
+	// What it DOES do beyond accumulating the rect is invalidate the scorch buffer, and that is a
+	// deliberate departure from "a lowered vertex needs neither of the last two": a scorch mark's
+	// vertex Z is sampled from the height field at buffer-build time (updateScorches ->
+	// getClipHeight), so lowering ground under an existing scorch really does move its geometry
+	// and it would otherwise hang in the air above a fresh crater until something else happened
+	// to invalidate it. The cost is bounded by MAX_SCORCH_VERTEX (8194 trivial vertices, no
+	// normals and no lighting) against the 66049 vertices-with-normals of a full re-bake on a
+	// 257-cell window, and it coalesces to once per frame like everything else here.
+	if (!m_needPartialUpdate)
+	{
+		m_partialUpdateRegion = region;
+		m_needPartialUpdate = true;
+	}
+	else
+	{
+		// Union. A single growing rect rather than a list of rects -- see the member declaration
+		// for why, and note the worst case degenerates to exactly the full update this replaces.
+		if (region.lo.x < m_partialUpdateRegion.lo.x) m_partialUpdateRegion.lo.x = region.lo.x;
+		if (region.lo.y < m_partialUpdateRegion.lo.y) m_partialUpdateRegion.lo.y = region.lo.y;
+		if (region.hi.x > m_partialUpdateRegion.hi.x) m_partialUpdateRegion.hi.x = region.hi.x;
+		if (region.hi.y > m_partialUpdateRegion.hi.y) m_partialUpdateRegion.hi.y = region.hi.y;
+	}
+
+#ifdef DO_SCORCH
+	m_scorchesInBuffer = 0;	// re-seat every scorch's Z onto the new ground; see above.
+#endif
+}
+
+//=============================================================================
+// BaseHeightMapRenderObjClass::takePendingHeightMapRegion
+//=============================================================================
+/** Hands the accumulated shape-change rect to a consumer and clears it. */
+//=============================================================================
+Bool BaseHeightMapRenderObjClass::takePendingHeightMapRegion(IRegion2D &regionOut)
+{
+	// TheSuperHackers @perf andytraber 12/09/2026 Clearing on take, not on use: the consumer may
+	// decide the rect lies entirely outside the drawn window and do nothing with it, and that is
+	// still a consumed request. Leaving the flag up in that case would re-offer the same offscreen
+	// rect every frame for the rest of the map.
+	if (!m_needPartialUpdate)
+		return FALSE;
+
+	regionOut = m_partialUpdateRegion;
+	m_needPartialUpdate = false;
+	m_partialUpdateRegion.zero();
+	return TRUE;
 }
 
 //=============================================================================
@@ -2393,6 +2485,13 @@ void BaseHeightMapRenderObjClass::updateCenter(CameraClass *camera, const Vector
 		m_roadBuffer->updateCenter();
 	}
 #endif
+	// TheSuperHackers @info andytraber 12/09/2026 This is the third reader of m_needFullUpdate and
+	// it deliberately gets NO regional counterpart. It is asking "did the scene's lighting change,
+	// so must every bridge re-light", and a bridge's geometry does not follow the height field --
+	// W3DBridgeBuffer::doFullUpdate re-runs doTheLight over authored bridge vertices whose Z comes
+	// from the bridge, not from getDisplayHeight. A crater under a bridge span therefore needs
+	// nothing from this. Note also that it only READS the flag and never clears it, so the derived
+	// updateCenter below still sees it and still owns consuming it.
 	if (m_needFullUpdate) {
 		m_bridgeBuffer->doFullUpdate();
 		m_bridgeBuffer->updateCenter(camera, pLightsIterator);

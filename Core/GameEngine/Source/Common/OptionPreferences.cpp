@@ -140,6 +140,20 @@ Bool OptionPreferences::getBloomEnabled() const
 	return parseIniBool(it->second.str(), TRUE);
 }
 
+Bool OptionPreferences::getVolumetricFogEnabled() const
+{
+	// Froxel volumetric fog and light scattering. Defaults to on, which is the behaviour it
+	// has had since it landed -- but it now HAS a switch, which matters more than the
+	// default: the fog forces the camera depth prepass (a second full pass over the scene
+	// geometry, measured at roughly a thousand extra draws and ~15 ms of CPU per frame in a
+	// late-game 1440p session) and until now the only way to turn that off was an
+	// environment variable that no player is going to set.
+	OptionPreferences::const_iterator it = find("UseVolumetricFog");
+	if (it == end())
+		return TRUE;
+	return parseIniBool(it->second.str(), TRUE);
+}
+
 Bool OptionPreferences::getHdrEnabled() const
 {
 	// High dynamic range scene target with tone mapping. Defaults to on when the key is

@@ -48,6 +48,15 @@ public:
 	void setShadowColor(UnsignedInt color) { m_shadowColor=color;}	///<sets the shadow color and alpha, value in ARGB format.
 	UnsignedInt getShadowColor() { return m_shadowColor;}	///<gets the shadow color and alpha, value in ARGB format.
 	void setLightPosition(Int lightIndex, Real x, Real y, Real z);	///<sets the position of a specific light source.
+
+	// TheSuperHackers @perf andytraber 12/09/2026 The day/night entry point, and the reason it is
+	// not just setLightPosition. Takes the continuously interpolated sun/moon RAY (direction of
+	// travel, unnormalised is fine) and republishes the light position only once that direction has
+	// moved past a threshold. W3DProjectedShadow::update tests the light position for EXACT Vector3
+	// inequality and re-renders the caster's shadow texture on any difference, so handing it a
+	// vector that changes every frame re-renders every projected shadow every frame.
+	void updateSunLightPosition(const Vector3 &lightRay);
+
 	void setTimeOfDay(TimeOfDay tod);
 	void invalidateCachedLightPositions();	///<forces shadow volumes to update regardless of last lightposition
 	Vector3 &getLightPosWorld(Int lightIndex);	///<returns the position of specified light source.

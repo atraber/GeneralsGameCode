@@ -765,6 +765,15 @@ GlobalData::GlobalData()
 		m_terrainLightPos[i].x = 0.0f;
 		m_terrainLightPos[i].y = 0.0f;
 		m_terrainLightPos[i].z = -1.0f;
+		m_terrainObjectsCurrent[i].ambient.red = 0.0f;
+		m_terrainObjectsCurrent[i].ambient.green = 0.0f;
+		m_terrainObjectsCurrent[i].ambient.blue = 0.0f;
+		m_terrainObjectsCurrent[i].diffuse.red = 0.0f;
+		m_terrainObjectsCurrent[i].diffuse.green = 0.0f;
+		m_terrainObjectsCurrent[i].diffuse.blue = 0.0f;
+		m_terrainObjectsCurrent[i].lightPos.x = 0.0f;
+		m_terrainObjectsCurrent[i].lightPos.y = 0.0f;
+		m_terrainObjectsCurrent[i].lightPos.z = -1.0f;
 
 		for (j=0; j<TIME_OF_DAY_COUNT; j++)
 		{	m_terrainLighting[ j ][i].ambient.red=0;
@@ -957,6 +966,7 @@ GlobalData::GlobalData()
 	m_textureFilteringMode = TextureFilterClass::TextureFilterMode::TEXTURE_FILTER_BILINEAR;
 	m_textureAnisotropyLevel = TextureFilterClass::AnisotropicFilterMode::TEXTURE_FILTER_ANISOTROPIC_2X;
 	m_useBloom = TRUE;
+	m_useVolumetricFog = TRUE;
 	m_useHdr = TRUE;
 
 //	m_languageFilterPref = false;
@@ -1124,6 +1134,10 @@ Bool GlobalData::setTimeOfDay( TimeOfDay tod )
 	{	m_terrainAmbient[i] = m_terrainLighting[ tod ][i].ambient;
 		m_terrainDiffuse[i] = m_terrainLighting[ tod ][i].diffuse;
 		m_terrainLightPos[i] = m_terrainLighting[ tod ][i].lightPos;
+		// TheSuperHackers @fix andytraber 12/09/2026 ...and the objects set beside it, so a
+		// reader that wants "the objects light right now" has one to ask. Seeded here means the
+		// values are correct before the day-night cycle exists and correct when it is disabled.
+		m_terrainObjectsCurrent[i] = m_terrainObjectsLighting[ tod ][i];
 	}
 
 	return TRUE;
@@ -1227,6 +1241,15 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	// parse the ini weapon definition
 	ini->initFromINI( TheWritableGlobalData, s_GlobalDataFieldParseTable );
 
+	// TheSuperHackers @fix andytraber 12/09/2026 NumberGlobalLights sizes loops that index arrays
+	// of MAX_GLOBAL_LIGHTS, and it is read from INI -- including from a loose Data\INI\Patch file --
+	// with nothing to stop it naming a fourth light that no array has room for. Clamped here, once,
+	// where every load path (including an override) passes through.
+	if (TheWritableGlobalData->m_numGlobalLights > MAX_GLOBAL_LIGHTS)
+		TheWritableGlobalData->m_numGlobalLights = MAX_GLOBAL_LIGHTS;
+	if (TheWritableGlobalData->m_numGlobalLights < 0)
+		TheWritableGlobalData->m_numGlobalLights = 0;
+
 	TheWritableGlobalData->m_userDataDir.clear();
 	TheWritableGlobalData->m_userDataDir = BuildUserDataPathFromIni();
 	CreateDirectory(TheWritableGlobalData->m_userDataDir.str(), nullptr);
@@ -1263,6 +1286,7 @@ void GlobalData::parseGameDataDefinition( INI* ini )
 	TheWritableGlobalData->m_textureFilteringMode = optionPref.getTextureFilterMode();
 	TheWritableGlobalData->m_textureAnisotropyLevel = optionPref.getTextureAnisotropyLevel();
 	TheWritableGlobalData->m_useBloom = optionPref.getBloomEnabled();
+	TheWritableGlobalData->m_useVolumetricFog = optionPref.getVolumetricFogEnabled();
 	TheWritableGlobalData->m_useHdr = optionPref.getHdrEnabled();
 	TheWritableGlobalData->m_useShadowMapping = optionPref.getShadowMappingEnabled();
 	TheWritableGlobalData->m_useParticleShadows = optionPref.getParticleShadowsEnabled();

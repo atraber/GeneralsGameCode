@@ -2582,7 +2582,13 @@ void TerrainLogic::flattenTerrain(Object *obj)
 			Real totalHeight = 0;
 			Int numSamples = 0;
 			for (i=iMin.x; i<=iMax.x; i++) {
-				for (j=0; j<=iMax.y; j++) {
+			// TheSuperHackers @perf andytraber 12/09/2026 iMin.y, not 0. Every one of these
+			// loops computed iMin.y and then scanned from map row 0, so a building at map y=300
+			// ran ~60x the necessary iterations of the test below. The cells outside the
+			// footprint all fail that test, so the set of cells that match -- and therefore
+			// avgHeight and every setRawMapHeight call -- is bit-identical either way. This is
+			// a pure work reduction on the logic thread and is replay-safe.
+				for (j=iMin.y; j<=iMax.y; j++) {
 					Vector3	testPt(i*MAP_XY_FACTOR, j*MAP_XY_FACTOR, 0);
 					Bool match = false;
 					unsigned char flags;
@@ -2608,7 +2614,7 @@ void TerrainLogic::flattenTerrain(Object *obj)
 			if (rawDataHeight>centerHeight) rawDataHeight = centerHeight;
 
 			for (i=iMin.x; i<=iMax.x; i++) {
-				for (j=0; j<=iMax.y; j++) {
+				for (j=iMin.y; j<=iMax.y; j++) {
 					Vector3	testPt(i*MAP_XY_FACTOR, j*MAP_XY_FACTOR, 0);
 					Bool match = false;
 					unsigned char flags;
@@ -2673,7 +2679,13 @@ void TerrainLogic::flattenTerrain(Object *obj)
 			Real totalHeight = 0;
 			Int numSamples = 0;
 			for (i=iMin.x; i<=iMax.x; i++) {
-				for (j=0; j<=iMax.y; j++) {
+			// TheSuperHackers @perf andytraber 12/09/2026 iMin.y, not 0. Every one of these
+			// loops computed iMin.y and then scanned from map row 0, so a building at map y=300
+			// ran ~60x the necessary iterations of the test below. The cells outside the
+			// footprint all fail that test, so the set of cells that match -- and therefore
+			// avgHeight and every setRawMapHeight call -- is bit-identical either way. This is
+			// a pure work reduction on the logic thread and is replay-safe.
+				for (j=iMin.y; j<=iMax.y; j++) {
 					Vector3	testPt(i*MAP_XY_FACTOR, j*MAP_XY_FACTOR, 0);
 					Bool match = false;
 					Real dx = testPt.X - pos->x;
@@ -2691,7 +2703,7 @@ void TerrainLogic::flattenTerrain(Object *obj)
 			Real avgHeight = totalHeight/numSamples;
 			Int rawDataHeight = REAL_TO_INT_FLOOR(0.5f + avgHeight/MAP_HEIGHT_SCALE);
 			for (i=iMin.x; i<=iMax.x; i++) {
-				for (j=0; j<=iMax.y; j++) {
+				for (j=iMin.y; j<=iMax.y; j++) {
 					Vector3	testPt(i*MAP_XY_FACTOR, j*MAP_XY_FACTOR, 0);
 					Bool match = false;
 					Real dx = testPt.X - pos->x;
@@ -2768,7 +2780,10 @@ void TerrainLogic::createCraterInTerrain(Object *obj)
 
 	for (Int i = iMin.x; i <= iMax.x; i++ )
   {
-		for ( Int j=0; j <= iMax.y; j++ )
+		// TheSuperHackers @perf andytraber 12/09/2026 iMin.y, not 0 -- same bug as
+		// flattenTerrain above, same reasoning: the distance test rejects everything
+		// below the crater, so this only ever wasted the iterations.
+		for ( Int j=iMin.y; j <= iMax.y; j++ )
     {
 			deltaX = ( i * MAP_XY_FACTOR ) - pos->x;
 			deltaY = ( j * MAP_XY_FACTOR ) - pos->y;

@@ -49,6 +49,7 @@
 #include "W3DDevice/GameClient/W3DProjectedShadow.h"
 #include "WW3D2/statistics.h"
 #include "Common/Debug.h"
+#include "Common/FrameTiming.h"
 #include "GameLogic/Object.h"
 #include "GameLogic/PartitionManager.h"
 #include "GameLogic/TerrainLogic.h"
@@ -313,12 +314,34 @@ void W3DProjectedShadowManager::updateRenderTargetTextures()
 	if (!TheGlobalData->m_useShadowDecals)
 		return;
 
+	// TheSuperHackers @perf andytraber 12/09/2026 THE PER-FRAME CAP on shadow texture re-renders.
+	//
+	// Each one is a render of the caster into the 512x512 dynamic target plus a 512x512 surface
+	// copy, and with a moving sun they all want to happen on the same frame: the published light
+	// direction steps once (see W3DShadowManager::updateSunLightPosition) and every projected
+	// shadow in the scene sees a stale texture simultaneously. Without a cap the hitch scales with
+	// how many distinct shadowed models are on screen, which is exactly the kind of cost that only
+	// shows up on a busy map and is then blamed on something else.
+	//
+	// FOUR per frame. The arithmetic: that threshold steps roughly 200 times over a 20-minute
+	// cycle -- about once every 4 seconds, or once per ~120 frames at 30 fps -- so the budget has
+	// two orders of magnitude of room before one step's work could fail to drain before the next
+	// one arrives. At four a step costing twenty distinct models drains in five frames, and no
+	// single frame ever carries more than four render-target switches. Larger buys nothing; smaller
+	// starts to matter if a map has a hundred projected-shadow models.
+	//
+	// Note the budget is across the WHOLE LIST, not per shadow: it is a frame budget, and the
+	// shadows that do not get served simply find the texture still stale next frame. Nothing
+	// advances a texture's history except the render itself, so no work is dropped.
+	const Int MAX_SHADOW_TEXTURE_RENDERS_PER_FRAME = 4;
+	Int textureBudget = MAX_SHADOW_TEXTURE_RENDERS_PER_FRAME;
+
 	if (m_numProjectionShadows)
 	for( shadow = m_shadowList; shadow; shadow = shadow->m_next )
 	{	//decals don't need any updates on a per-frame basis since
 		//the image never changes.
 		if (shadow->m_type != SHADOW_DECAL)
-			shadow->update();
+			shadow->update(textureBudget);
 	}
 }
 
@@ -1999,6 +2022,10 @@ W3DProjectedShadow::W3DProjectedShadow()
 	m_diffuse=0xffffffff;
 	m_shadowProjector=nullptr;
 	m_lastObjPosition.Set(0,0,0);
+	// Zero can never equal a real light position (they are SUN_DISTANCE_FROM_GROUND long), so a
+	// fresh shadow always takes its first update -- the same trick invalidateCachedLightPositions
+	// uses on the texture side.
+	m_lightPosHistory.Set(0,0,0);
 	m_type = SHADOW_NONE;		/// type of projection
 	m_allowWorldAlign = FALSE;	/// wrap shadow around world geometry - else align perpendicular to local z-axis.
 	m_isEnabled = TRUE;
@@ -2113,25 +2140,77 @@ void W3DProjectedShadow::updateProjectionParameters(const Matrix3D &cameraXform)
 		m_shadowProjector->Pre_Render_Update(cameraXform);
 }
 
-void W3DProjectedShadow::update()
+/** Recompute just this shadow's projection matrix for a light position. Pure matrix arithmetic --
+	a Look_At, two 3x4 multiplies and two arctangents -- and in particular no render target, no
+	surface copy and no draw. That is why it is separated out from updateTexture: it is the half
+	that every instance has to do when the sun moves, and the cheap half. */
+void W3DProjectedShadow::recomputeProjection(const Vector3 &lightPos)
 {
-	if (m_shadowTexture[0]->getLightPosHistory() != TheW3DShadowManager->getLightPosWorld(0))
-	{	//light has moved since last time this shadow was calculated. Need update
-		updateTexture(TheW3DShadowManager->getLightPosWorld(0));
-	}
-	if (m_lastObjPosition != m_robj->Get_Position())
-	{	//object has moved.  Texture stays the same but projection matrix needs updating.
-		//force light always 2000 units from object - for some reason projection fails if
-		//light is too far.
-		///@todo: See why infinite light sources don't project shadows correctly.
-		if (m_type == SHADOW_PROJECTION)
-		{
-			Vector3 objToLight=TheW3DShadowManager->getLightPosWorld(0) - m_robj->Get_Position();
-			objToLight.Normalize();
-			objToLight =  m_robj->Get_Position() + objToLight * 2000.0f;
+	if (m_type != SHADOW_PROJECTION || m_shadowProjector == nullptr || m_robj == nullptr)
+		return;
 
-			m_shadowProjector->Compute_Perspective_Projection(m_robj,objToLight);
+	//force light always 2000 units from object - for some reason projection fails if
+	//light is too far.
+	///@todo: See why infinite light sources don't project shadows correctly.
+	Vector3 objToLight=lightPos - m_robj->Get_Position();
+	objToLight.Normalize();
+	objToLight =  m_robj->Get_Position() + objToLight * 2000.0f;
+
+	m_shadowProjector->Compute_Perspective_Projection(m_robj,objToLight);
+}
+
+// TheSuperHackers @perf andytraber 12/09/2026 Split into the expensive half and the cheap half, and
+// budgeted.
+//
+// Before the day/night cycle the sun never moved, so the light test below fired once per shadow at
+// map load and this function was effectively "has the object moved". With a moving sun it fires
+// whenever the published direction steps (see W3DShadowManager::updateSunLightPosition for the
+// threshold), and what it fires is updateTexture: a render of the caster into a 512x512 target plus
+// a 512x512 surface copy. Every shadow of that model crossing the threshold on the same frame meant
+// every one of those renders on the same frame.
+//
+// So the two halves are now separate and treated differently:
+//
+//  - the shared TEXTURE (one per model, see m_lightPosHistory) is re-rendered at most
+//    textureBudget times per frame across the whole scene. Running out means this shadow simply
+//    tries again next frame: nothing advances the texture's history until the render actually
+//    happens, so the work is deferred rather than lost;
+//  - this instance's PROJECTION MATRIX is recomputed unconditionally when the light has moved,
+//    budget or no budget, because it is cheap and because it is the thing that makes this
+//    instance's shadow point the right way. A frame or two of a slightly stale silhouette under a
+//    correctly placed shadow is invisible; a correctly drawn silhouette in the wrong place is not.
+void W3DProjectedShadow::update(Int &textureBudget)
+{
+	Vector3 &lightPos = TheW3DShadowManager->getLightPosWorld(0);
+
+	if (m_shadowTexture[0]->getLightPosHistory() != lightPos)
+	{	//light has moved since the shared texture for this model was rendered. Need update
+		if (textureBudget > 0)
+		{
+			--textureBudget;
+			FrameTiming::recordEvent(FrameTiming::EVENT_SHADOW_TEX_RENDER);
+			FrameTiming::addCounter(FrameTiming::COUNTER_SHADOW_TEX_RENDER, 1);
+
+			// updateTexture re-renders the shared texture AND recomputes this shadow's projector,
+			// so both histories are satisfied by the one call.
+			updateTexture(lightPos);
+			m_lightPosHistory = lightPos;
+			setObjPosHistory(m_robj->Get_Position());
+			return;
 		}
+		// Out of budget. Fall through and at least get this instance pointing the right way.
+	}
+
+	if (m_lightPosHistory != lightPos)
+	{	//the texture is current (another instance of this model paid for it) but this instance's
+		//projection matrix still describes the old light direction.
+		recomputeProjection(lightPos);
+		m_lightPosHistory = lightPos;
+		setObjPosHistory(m_robj->Get_Position());
+	}
+	else if (m_lastObjPosition != m_robj->Get_Position())
+	{	//object has moved.  Texture stays the same but projection matrix needs updating.
+		recomputeProjection(lightPos);
 		setObjPosHistory(m_robj->Get_Position());
 	}
 }

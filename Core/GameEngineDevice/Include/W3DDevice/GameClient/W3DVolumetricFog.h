@@ -59,6 +59,14 @@ public:
 	static Bool Is_Active();
 	static void Set_Active(Bool active);
 
+	// Is_Active says the feature is switched on. This says the frame would actually SEE
+	// anything if it ran, and it is a different question with a different consumer: the
+	// camera depth prepass is a second full pass over the scene geometry and it exists only
+	// to feed this. Running it to composite a volume that integrates to nothing is the most
+	// expensive no-op in the frame. localLightCount is this frame's clustered light list
+	// size -- the punctual lights are the only term that varies per frame.
+	static Bool Would_Contribute(unsigned localLightCount);
+
 	static float Get_Density() { return s_density; }
 	static void  Set_Density(float d) { s_density = d; }
 

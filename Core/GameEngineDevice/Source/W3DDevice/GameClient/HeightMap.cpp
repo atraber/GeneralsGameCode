@@ -59,6 +59,7 @@
 #include <WW3D2/camera.h>
 #include "Common/GlobalData.h"
 #include "Common/PerfTimer.h"
+#include "Common/FrameTiming.h"
 
 #include "GameClient/TerrainVisual.h"
 #include "GameClient/View.h"
@@ -466,6 +467,14 @@ void HeightMapRenderObjClass::doPartialUpdate(const IRegion2D &partialRange, Wor
 	if (maxY > m_y-1) maxY = m_y-1;
 	if (maxX < minX) return;
 	if (maxY < minY) return;
+
+	// TheSuperHackers @info andytraber 12/09/2026 Keep the draw-window rect before the scroll-wrap
+	// branch below overwrites minY/maxY with RING coordinates. Two consumers at the bottom of this
+	// function need their own spaces and used to be handed whichever happened to be in the
+	// variables: updateViewImpassableAreas indexes a whole-map table, and only the updateBlock
+	// calls want ring coordinates. See the fix at the call site.
+	const Int drawMinX = minX, drawMaxX = maxX, drawMinY = minY, drawMaxY = maxY;
+
 	if (m_originX == 0 && m_originY == 0) {
 		// simple case.
 		updateBlock(minX, minY, maxX, maxY,
@@ -473,6 +482,20 @@ void HeightMapRenderObjClass::doPartialUpdate(const IRegion2D &partialRange, Wor
 	}
 	else
 	{
+		// TheSuperHackers @info andytraber 12/09/2026 The scrolled case, which until 12/09/2026 had
+		// no in-game caller at all -- only WorldBuilder, whose view never scrolls the ring, so
+		// m_originX/m_originY are 0 there and this branch has effectively never run. Read with
+		// suspicion. What it does: the drawn terrain is a ring buffer in Y of period m_y-1, so a
+		// map row maps to ring row ((row - drawOrgY) + m_originY) mod (m_y-1), and a rect that
+		// straddles the seam becomes two blocks.
+		//
+		// Note that it deliberately does NOT narrow X and does not apply m_originX at all: it
+		// updates whole rows, 0..m_x-1. That is coarse rather than wrong -- the full X range
+		// covers every column whatever the X rotation is -- and it is why a 5x5 deform costs a
+		// few hundred cells here instead of 25 while the camera is mid-scroll. Still three orders
+		// of magnitude below the 16641-cell whole-window re-bake this replaces, so it is left
+		// alone: narrowing X correctly means reasoning about m_originX in a branch no test
+		// exercises, for a win that does not change the shape of the frame.
 		minY = minY+m_originY;
 		maxY = maxY+m_originY;
 
@@ -536,7 +559,29 @@ void HeightMapRenderObjClass::doPartialUpdate(const IRegion2D &partialRange, Wor
 		}
 	updateShorelineTiles(partialRange.lo.x,partialRange.lo.y,partialRange.hi.x,partialRange.hi.y,htMap);
 
-	updateViewImpassableAreas(TRUE, minX, maxX, minY, maxY);
+	// TheSuperHackers @fix andytraber 12/09/2026 MAP coordinates, not draw-window ones, and bounded
+	// by the map rather than by the draw window. updateViewImpassableAreas writes
+	// m_showAsVisibleCliff[i + j * m_map->getXExtent()] for i in [minX, maxX) and
+	// showAsVisibleCliff() reads it with whole-map indices, so feeding it minX/maxX/minY/maxY --
+	// which are relative to getDrawOrgX/Y, and which the scroll-wrap branch above had further
+	// rewritten into ring coordinates -- marked the wrong cells as cliffs and left the right ones
+	// stale. Worse, the clamp above is to m_x-1, the DRAW width, and on a map smaller than the
+	// draw window (where updateCenter takes its "no need to center" path) m_x exceeds the map
+	// extent, so the old call could index past the end of that vector outright.
+	//
+	// Invisible until now for two reasons: the partial form of this function has exactly one
+	// caller, and that caller was WorldBuilder, which draws from draw origin 0,0 with
+	// m_originX/m_originY at 0 -- the one configuration in which every one of these spaces
+	// coincides. The game's terrain scrolls, so it does not get that luxury.
+	Int mapMinX = drawMinX + htMap->getDrawOrgX();
+	Int mapMinY = drawMinY + htMap->getDrawOrgY();
+	Int mapMaxX = drawMaxX + htMap->getDrawOrgX();
+	Int mapMaxY = drawMaxY + htMap->getDrawOrgY();
+	if (mapMinX < 0) mapMinX = 0;
+	if (mapMinY < 0) mapMinY = 0;
+	if (mapMaxX > htMap->getXExtent()) mapMaxX = htMap->getXExtent();
+	if (mapMaxY > htMap->getYExtent()) mapMaxY = htMap->getYExtent();
+	updateViewImpassableAreas(TRUE, mapMinX, mapMaxX, mapMinY, mapMaxY);
 }
 
 //=============================================================================
@@ -778,6 +823,11 @@ void HeightMapRenderObjClass::setTerrainDrawSize(Int width, Int height)
 		m_shroud->reset();
 	//delete m_shroud;
 	//m_shroud = nullptr;
+	// TheSuperHackers @instrument andytraber 12/09/2026 This is the expensive half of a draw
+	// window change -- every terrain vertex and index buffer freed and recreated, the shroud
+	// re-initialised -- and the re-light below is the other half. Counted separately from the
+	// other reasons the terrain goes dirty so the F10 readout can say which one is firing.
+	FrameTiming::recordEvent(FrameTiming::EVENT_TERRDIRTY_WINDOW);
 	initHeightData(m_map->getDrawWidth(), m_map->getDrawHeight(), m_map, nullptr, FALSE);
 	m_needFullUpdate = true;
 }
@@ -950,6 +1000,31 @@ void HeightMapRenderObjClass::staticLightingChanged()
 	BaseHeightMapRenderObjClass::staticLightingChanged();
 }
 
+//=============================================================================
+// HeightMapRenderObjClass::consumePendingHeightMapRegion
+//=============================================================================
+/** Applies the rect heightMapChanged accumulated, if any. */
+//=============================================================================
+void HeightMapRenderObjClass::consumePendingHeightMapRegion(RefRenderObjListIterator *pLightsIterator)
+{
+	IRegion2D region;
+	if (!takePendingHeightMapRegion(region))
+		return;
+
+	// TheSuperHackers @instrument andytraber 12/09/2026 Measured in its own phase and counted in
+	// its own event, because the claim this change makes is a comparison: that the thing which used
+	// to cost 26-47 ms now costs a fraction of a millisecond. A fix that cannot be seen on the
+	// readout cannot be shown to have worked -- and the cell count matters as much as the time,
+	// since a rect that has grown to the size of the draw window is the one way this path can be
+	// firing happily and still be expensive.
+	FRAME_TIMING_SCOPE(PHASE_TERRAINPATCH);
+	FrameTiming::recordEvent(FrameTiming::EVENT_TERRAIN_PATCH);
+	FrameTiming::addCounter(FrameTiming::COUNTER_TERRPATCH_CELLS,
+		region.width() * region.height());
+
+	doPartialUpdate(region, m_map, pLightsIterator);
+}
+
 #define CENTER_LIMIT 2
 #define BIG_JUMP 16
 #define WIDE_STEP 32
@@ -1061,8 +1136,30 @@ void HeightMapRenderObjClass::updateCenter(CameraClass *camera, const Vector3 *c
 	{
 		if (m_needFullUpdate)
 		{
+			// TheSuperHackers @instrument andytraber 12/09/2026 The terrain re-bake, given its
+			// own bucket because it is a hitch and not a cost. staticLightingChanged sets
+			// m_needFullUpdate and this is where the bill arrives: every vertex of the drawn
+			// terrain re-lit on the CPU, inside one frame. Under the day-night cycle that is
+			// four times a cycle rather than once a map load, so it stopped being a load-time
+			// cost and became a gameplay one -- and nothing on screen said so.
+			FRAME_TIMING_SCOPE(PHASE_TERRAINBAKE);
+			FrameTiming::recordEvent(FrameTiming::EVENT_TERRAIN_BAKE);
 			m_needFullUpdate = false;
+			// TheSuperHackers @perf andytraber 12/09/2026 A full bake re-lights every vertex of the
+			// drawn window, so it is a strict superset of any rect that was waiting. Dropping it
+			// here -- rather than letting the else below pick it up on the next frame -- is what
+			// makes "m_needFullUpdate takes priority over a pending rect" actually mean something,
+			// and it is done at the CONSUMER so that it holds for every one of the five places
+			// that set m_needFullUpdate, present and future, not just staticLightingChanged.
+			IRegion2D superseded;
+			takePendingHeightMapRegion(superseded);
 			updateBlock(0, 0, m_x-1, m_y-1, m_map, pLightsIterator);
+		}
+		else
+		{
+			// The whole map is drawn, so there is no scroll to ride along with and this is the only
+			// place a deform can be serviced on such a map.
+			consumePendingHeightMapRegion(pLightsIterator);
 		}
 
 		m_updating = false;
@@ -1188,7 +1285,12 @@ void HeightMapRenderObjClass::updateCenter(CameraClass *camera, const Vector3 *c
 
 	if (m_needFullUpdate)
 	{
+		FRAME_TIMING_SCOPE(PHASE_TERRAINBAKE);
+		FrameTiming::recordEvent(FrameTiming::EVENT_TERRAIN_BAKE);
 		m_needFullUpdate = false;
+		// See the companion comment above: the bake supersedes any pending rect.
+		IRegion2D superseded;
+		takePendingHeightMapRegion(superseded);
 		m_map->setDrawArea(newDrawArea);
 		updateBlock(0, 0, m_x-1, m_y-1, m_map, pLightsIterator);
 		m_updating = false;
@@ -1196,6 +1298,14 @@ void HeightMapRenderObjClass::updateCenter(CameraClass *camera, const Vector3 *c
 	}
 	else
 	{
+		// TheSuperHackers @perf andytraber 12/09/2026 Service a deform BEFORE the scroll below,
+		// while m_map's draw origin and m_originX/m_originY still agree with each other. The scroll
+		// path calls setDrawOrg and then advances m_origin*, and doPartialUpdate reads both to turn
+		// a map rect into ring rows -- so running it mid-scroll would convert against a half-updated
+		// pair. Going first is also harmless in the other direction: whatever the scroll exposes, it
+		// re-lights itself, and the big-jump case re-lights the whole window anyway.
+		consumePendingHeightMapRegion(pLightsIterator);
+
 		constexpr const Int cellOffset = 1;
 		const Int deltaX = newDrawArea.originX - m_map->getDrawOrgX();
 		const Int deltaY = newDrawArea.originY - m_map->getDrawOrgY();

@@ -2026,6 +2026,12 @@ void W3DDisplay::draw()
 				// its own toggle (F10) and is drawn independently of the debug display above,
 				// so both can be on at once -- stacked below the counters when they are up,
 				// in their place when they are not.
+
+				// TheSuperHackers @instrument andytraber 12/09/2026 ...and the unattended half of
+				// it, which needs no key and no viewer: logged on its own timer, whether or not the
+				// overlay is up, when W3D_FRAME_TIMING_LOG names an interval.
+				logFrameTimingSnapshot();
+
 				if (isFrameTimingOverlayEnabled())
 				{
 					drawFrameTimingOverlay(debugDisplayBottomY);
@@ -2375,7 +2381,14 @@ void W3DDisplay::setTimeOfDay( TimeOfDay tod )
 		m_3DScene->Set_Ambient_Light( Vector3(ol->ambient.red, ol->ambient.green, ol->ambient.blue) );
 	}
 
-	for (Int i=0; i<LightEnvironmentClass::MAX_LIGHTS; i++)
+	// TheSuperHackers @fix andytraber 12/09/2026 MAX_GLOBAL_LIGHTS, not MAX_LIGHTS. The two
+	// are 3 and 4, and the arrays indexed below have MAX_GLOBAL_LIGHTS entries: setTimeOfDay
+	// reads m_terrainObjectsLighting[tod][3], which is the next row for every time of day
+	// except the last and past the end of the array for TIME_OF_DAY_NIGHT; updateSceneLighting
+	// reads a genuinely 3-element stack array in DayNightCycle_Update. Both were held up only
+	// by m_myLight[3] being null, which holds only while NumberGlobalLights <= 3 -- and that
+	// key is parsed straight out of INI with no clamp (see GlobalData::parse).
+	for (Int i=0; i<MAX_GLOBAL_LIGHTS && i<LightEnvironmentClass::MAX_LIGHTS; i++)
 	{
 		if( m_myLight[i] )
 		{
@@ -2405,7 +2418,14 @@ void W3DDisplay::updateSceneLighting( const GlobalData::TerrainLighting *objects
 		m_3DScene->Set_Ambient_Light( Vector3(objectsLighting[0].ambient.red, objectsLighting[0].ambient.green, objectsLighting[0].ambient.blue) );
 	}
 
-	for (Int i=0; i<LightEnvironmentClass::MAX_LIGHTS; i++)
+	// TheSuperHackers @fix andytraber 12/09/2026 MAX_GLOBAL_LIGHTS, not MAX_LIGHTS. The two
+	// are 3 and 4, and the arrays indexed below have MAX_GLOBAL_LIGHTS entries: setTimeOfDay
+	// reads m_terrainObjectsLighting[tod][3], which is the next row for every time of day
+	// except the last and past the end of the array for TIME_OF_DAY_NIGHT; updateSceneLighting
+	// reads a genuinely 3-element stack array in DayNightCycle_Update. Both were held up only
+	// by m_myLight[3] being null, which holds only while NumberGlobalLights <= 3 -- and that
+	// key is parsed straight out of INI with no clamp (see GlobalData::parse).
+	for (Int i=0; i<MAX_GLOBAL_LIGHTS && i<LightEnvironmentClass::MAX_LIGHTS; i++)
 	{
 		if( m_myLight[i] && objectsLighting )
 		{
@@ -2420,19 +2440,26 @@ void W3DDisplay::updateSceneLighting( const GlobalData::TerrainLighting *objects
 		}
 	}
 
+	// TheSuperHackers @perf andytraber 12/09/2026 Through the quantiser, not straight at
+	// setLightPosition. This call used to publish the freshly interpolated direction verbatim every
+	// client frame, and W3DProjectedShadow::update tests that value for EXACT inequality and
+	// re-renders the caster's shadow texture whenever it differs -- so every projected shadow in
+	// the scene was re-rendering on every frame for as long as the cycle was running. The
+	// threshold and its reasoning are at W3DShadowManager::updateSunLightPosition; the per-frame
+	// cap that keeps one threshold crossing from landing all at once is in
+	// W3DProjectedShadowManager::updateRenderTargetTextures.
+	//
+	// Note this hands over the RAY (direction of travel) and lets the shadow manager do the
+	// negation and the scaling, because the quantiser has to compare normalised directions anyway.
 	if( TheW3DShadowManager && objectsLighting )
 	{
-		Vector3 lightRay(-objectsLighting[0].lightPos.x, -objectsLighting[0].lightPos.y, -objectsLighting[0].lightPos.z);
-		if (lightRay.Length2() > 1e-4f)
-		{
-			lightRay.Normalize();
-			lightRay *= 10000.0f; // SUN_DISTANCE_FROM_GROUND
-			TheW3DShadowManager->setLightPosition(0, lightRay.X, lightRay.Y, lightRay.Z);
-		}
+		const Vector3 lightRay(objectsLighting[0].lightPos.x, objectsLighting[0].lightPos.y, objectsLighting[0].lightPos.z);
+		TheW3DShadowManager->updateSunLightPosition(lightRay);
 	}
 
 	if( TheTerrainRenderObject && updateTerrainMesh )
 	{
+		FrameTiming::recordEvent(FrameTiming::EVENT_TERRDIRTY_TOD);
 		TheTerrainRenderObject->staticLightingChanged();
 		TheTacticalView->forceRedraw();
 	}

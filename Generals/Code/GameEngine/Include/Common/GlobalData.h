@@ -252,6 +252,21 @@ public:
 	RGBColor m_terrainDiffuse[MAX_GLOBAL_LIGHTS];
 	Coord3D m_terrainLightPos[MAX_GLOBAL_LIGHTS];
 
+	// TheSuperHackers @fix andytraber 12/09/2026 The objects lighting as it is RIGHT NOW.
+	//
+	// Terrain has had a "what the light is this instant" set since forever (the three arrays
+	// above) and objects never did, so every objects-lit drawer reached straight into
+	// m_terrainObjectsLighting[m_timeOfDay] -- the AUTHORED, per-time-of-day array. That was
+	// fine while a map was one time of day for its whole life. Under the day-night cycle it
+	// means every tree and prop on the map snaps between four states at the nominal boundaries
+	// while the terrain and the units beside them creep.
+	//
+	// One array of TerrainLighting rather than the split triple above, because that is the
+	// shape both readers (W3DTreeBuffer, W3DPropBuffer) already take. setTimeOfDay seeds it
+	// from the authored array, so with the cycle disabled it is exactly what those readers saw
+	// before; DayNightCycle_Update overwrites it with the interpolated values.
+	TerrainLighting m_terrainObjectsCurrent[MAX_GLOBAL_LIGHTS];
+
 	Real m_infantryLightScale[TIME_OF_DAY_COUNT];
 	Real m_scriptOverrideInfantryLightScale;
 
@@ -423,6 +438,7 @@ public:
 	UnsignedInt m_textureFilteringMode;       ///< value related to TextureFilterClass::TextureFilterModeEnum
 	UnsignedInt m_textureAnisotropyLevel;     ///< value related to TextureFilterClass::AnisotropicFilterMode
 	Bool m_useBloom;                          ///< enable the screen-space bloom post-process
+	Bool m_useVolumetricFog;                  ///< enable froxel volumetric fog; also what forces the camera depth prepass
 	Bool m_useHdr;                            ///< render the scene into a floating-point target and tone map it back
 	Bool m_languageFilterPref;        ///< Bool if user wants to filter language
 	Bool m_loadScreenDemo;						///< Bool if true, run the loadscreen demo movie

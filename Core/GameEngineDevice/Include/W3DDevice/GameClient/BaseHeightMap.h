@@ -120,6 +120,22 @@ public:
  	virtual void adjustTerrainLOD(Int adj);
 	virtual void doPartialUpdate(const IRegion2D &partialRange, WorldHeightMap *htMap, RefRenderObjListIterator *pLightsIterator) = 0;
 	virtual void staticLightingChanged();
+
+	// TheSuperHackers @perf andytraber 12/09/2026 Notification that the height field CHANGED
+	// SHAPE in this region -- the geometry moved, the lighting did not. That distinction is the
+	// whole point of a second notification existing: staticLightingChanged marks the entire drawn
+	// window for a CPU re-light (26-47 ms, MEASURED), resets the scorch buffer and re-lights every
+	// road, and W3DTerrainVisual::setRawMapHeight called it once per LOWERED VERTEX -- nine per
+	// footprint cell under every building, 647 requests in one 5.5 minute replay, coalescing into
+	// 37 whole-window re-bakes. Roads genuinely only need the lighting case (RoadSegment::
+	// updateSegLighting writes nothing but `diffuse`), so a shape change must not pay for them.
+	//
+	// `region` is in BORDERED MAP CELL coordinates -- the same space as WorldHeightMap's own
+	// indices and as getDrawOrgX/Y, i.e. grid position PLUS getBorderSizeInline(). `hi` is
+	// EXCLUSIVE, matching doPartialUpdate's own convention (its consumers all loop `< hi`).
+	// Regions accumulate into one rect until a consumer takes them, because hundreds of calls
+	// arrive inside a single logic frame and updating per call would be worse than the bug.
+	virtual void heightMapChanged(const IRegion2D &region);
 	virtual void oversizeTerrain(Int tilesToOversize) = 0; ///< Oversize the visible terrain area.
 	virtual void setTerrainDrawSize(Int width, Int height) = 0; ///< Resize the visible terrain area. Always defaults to oversize dimensions when oversize is set.
 	virtual void reset();
@@ -222,6 +238,14 @@ public:
 
 	Bool doesNeedFullUpdate() {return m_needFullUpdate;}
 
+	// TheSuperHackers @perf andytraber 12/09/2026 Its counterpart, and it exists for the same
+	// reason: W3DView::update pumps updateTerrain() when a full update is outstanding, so that a
+	// pending re-bake is flushed even with the camera stationary. A pending REGION needs exactly
+	// the same pump, or a building placed while nobody is scrolling would not show its foundation
+	// until the next camera move. (setCameraTransform also calls updateTerrain every frame in
+	// practice, but relying on that is relying on an accident.)
+	Bool doesNeedPartialUpdate() const {return m_needPartialUpdate;}
+
 
 	virtual int updateBlock(Int x0, Int y0, Int x1, Int y1, WorldHeightMap *pMap, RefRenderObjListIterator *pLightsIterator) = 0;
 
@@ -265,6 +289,20 @@ protected:
 	Vector3 m_depthFade;	///<depth based fall off values for r,g,b
 	Bool m_disableTextures;
 	Bool m_needFullUpdate; ///< True if lighting changed, and we need to update all instead of what moved.
+
+	// TheSuperHackers @perf andytraber 12/09/2026 The accumulated shape-change rect, in bordered
+	// map cell coordinates with an exclusive `hi`. A single rect and not a list: the cost of a
+	// regional update is its area, and the union of a handful of nearby foundation cells is
+	// essentially free, while a list would need its own merge policy and a bound on its length to
+	// stop a battle's worth of craters turning into thousands of tiny updates. A pathological
+	// frame -- two craters at opposite map corners -- degenerates to the whole-window cost this
+	// replaces and no worse, so the bad case is the old behaviour rather than a new one.
+	Bool m_needPartialUpdate;
+	IRegion2D m_partialUpdateRegion;
+
+	/// Hand the accumulated rect to a consumer and clear it. Returns false when none is pending.
+	Bool takePendingHeightMapRegion(IRegion2D &regionOut);
+
 	Bool m_doXNextTime; ///< True if we updated y scroll, and need to do x scroll next frame.
 	Real	m_minHeight;	///<minimum value of height samples in heightmap
 	Real	m_maxHeight;	///<maximum value of height samples in heightmap

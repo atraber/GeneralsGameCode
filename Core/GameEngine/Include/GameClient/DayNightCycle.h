@@ -27,9 +27,34 @@
 
 void DayNightCycle_Init();
 void DayNightCycle_Reset();
+// The cosmetic half: interpolate the sun and push it at the lights. Called once per
+// rendered frame from GameClient::update.
 void DayNightCycle_Update(UnsignedInt logicFrame);
+
+// The boundary half: cross a nominal time of day, flip MODELCONDITION_NIGHT on every
+// drawable, ask for the terrain re-bake. Called from GameLogic::update and NOWHERE ELSE --
+// the model-condition change reaches code that refuses to run outside a logic update, and
+// calling it from the client is what used to crash the game at nightfall. See the comment
+// on the definition.
+void DayNightCycle_UpdateLogic(UnsignedInt logicFrame);
 void DayNightCycle_SetTimeOfDay(TimeOfDay tod);
 
 Bool DayNightCycle_IsEnabled();
 Real DayNightCycle_GetCurrentGameHour();
 TimeOfDay DayNightCycle_GetCurrentTimeOfDay();
+
+// For the F10 frame-timing readout: where the cycle is, so a lighting cost can be read
+// against the moment that produced it.
+Real DayNightCycle_GetBlendAlpha();			///< 0..1 between the two key times of day
+Int  DayNightCycle_GetDurationMinutes();	///< the configured cycle length; <= 0 means disabled
+
+// TheSuperHackers @feature andytraber 12/09/2026 THE ORBIT. The light direction is analytic now
+// and no longer comes from the authored TerrainLighting tables (those remain the colour source),
+// so the geometry has to be readable from outside or a wrong-looking shadow cannot be attributed.
+// All three report the light that was actually PUBLISHED, i.e. the sun/moon blend -- during the
+// dusk and dawn handover that is neither body exactly, which is the honest answer because it is
+// also where the shadows are.
+Real DayNightCycle_GetSunElevationDegrees();	///< degrees above the horizon of the active body
+Real DayNightCycle_GetLightAzimuthDegrees();	///< degrees about +Z from +X towards +Y, towards the body
+Real DayNightCycle_GetMoonBlend();				///< 0 = the sun owns the light, 1 = the moon does
+Bool DayNightCycle_IsMoonLit();					///< the moon is the dominant body

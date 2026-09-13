@@ -32,6 +32,7 @@
 
 #include "Common/GameState.h"
 #include "Common/GlobalData.h"
+#include "Common/FrameTiming.h"
 #include "Common/PerfTimer.h"
 #include "Common/MapReaderWriterInfo.h"
 #include "Common/ThingTemplate.h"
@@ -935,7 +936,51 @@ void W3DTerrainVisual::setRawMapHeight(const ICoord2D *gridPos, Int height)
  		if (m_logicHeightMap->getHeight(x,y) > height)
 		{
 			m_logicHeightMap->setRawHeight(x, y, height);
-			m_terrainRenderObject->staticLightingChanged(); // OOH! this could benefit from the new Seismic update code
+			// TheSuperHackers @instrument andytraber 12/09/2026 ONE lowered vertex used to mark the
+			// whole drawn terrain for a CPU re-light. Every building foundation and every crater does
+			// this, so it is by far the most frequent reason the terrain goes dirty -- which is not
+			// what the day-night investigation first assumed, and is why the cause is now counted
+			// rather than inferred. MEASURED: 647 of these in one 5.5 minute replay of a
+			// base-building game, against 6 time-of-day changes and 2 draw-window resizes.
+			FrameTiming::recordEvent(FrameTiming::EVENT_TERRDIRTY_DEFORM);
+
+			// TheSuperHackers @perf andytraber 12/09/2026 The 2003 comment that used to sit on the
+			// staticLightingChanged() call here -- "OOH! this could benefit from the new Seismic
+			// update code" -- was right, and this is that: the geometry changed, the lighting did
+			// not, so ask for a REGIONAL height-map update instead of a whole-window re-light plus a
+			// scorch reset plus a re-light of every road on the map. TerrainLogic::flattenTerrain
+			// lowers nine vertices per footprint cell and createCraterInTerrain does the same, so
+			// hundreds of these arrive inside one logic frame; heightMapChanged unions them and the
+			// render object services one rect per frame.
+			//
+			// COORDINATE SPACES -- get this wrong and you get a perfectly correct update in the
+			// wrong place, which is exactly the kind of bug that survives review:
+			//   * gridPos is a LOGIC grid position, border-relative.
+			//   * x,y above are that PLUS getBorderSizeInline(), i.e. a WorldHeightMap array index.
+			//     That is the same space as getDrawOrgX()/getDrawOrgY() (updateCenter adds the border
+			//     size before computing a draw origin), and it is the space heightMapChanged and
+			//     doPartialUpdate document -- doPartialUpdate subtracts the draw origin itself, so
+			//     nothing here may subtract it as well.
+			//   * `hi` is EXCLUSIVE, matching every loop doPartialUpdate feeds.
+			//
+			// THE MARGIN, which is not a guess. updateVB derives each of a cell's four vertex normals
+			// from central differences of getDisplayHeight, and the widest reach in cell (cx,cy) is
+			// un0 = cx-1 through up1 = cx+2 (and cy-1 through cy+2). So a height change at (x,y)
+			// invalidates the normals of cells cx in [x-2, x+1] and cy in [y-2, y+1]: two cells of
+			// reach on the low side, one on the high side. Anything less and a seam of stale normals
+			// appears along every foundation and crater border, which is the whole risk in this
+			// change. Two on all four sides covers that exactly on the low side with one cell to
+			// spare on the high side, and the spare is wanted: at the draw window's ring seam
+			// getXWithOrigin(i+1) is not cx+1, so up1 there is not a bounded offset from cx.
+			// evaluateAsVisibleCliff (reach [x-1,x]) and updateShorelineTile (same) are both well
+			// inside it.
+			constexpr const Int lightingKernelCells = 2;
+			IRegion2D dirty;
+			dirty.lo.x = x - lightingKernelCells;
+			dirty.lo.y = y - lightingKernelCells;
+			dirty.hi.x = x + lightingKernelCells + 1;	// exclusive
+			dirty.hi.y = y + lightingKernelCells + 1;	// exclusive
+			m_terrainRenderObject->heightMapChanged(dirty);
 
 
 #ifdef DO_SEISMIC_SIMULATIONS

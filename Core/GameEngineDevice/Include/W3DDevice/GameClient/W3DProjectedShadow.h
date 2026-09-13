@@ -114,7 +114,11 @@ class W3DProjectedShadow	: public Shadow
 		void setRenderObject( RenderObjClass	*robj) {m_robj=robj;}
 		void setObjPosHistory(const Vector3 &pos)	{m_lastObjPosition=pos;}	///<position of object when projection matrix was updated.
 		void setTexture(Int lightIndex,W3DShadowTexture *texture)	{m_shadowTexture[lightIndex]=texture;}	///<texture with light's shadow
-		void update();	///<updates the texture and/or projection parameters when the object or light moves.
+		/// Updates the texture and/or projection parameters when the object or light moves.
+		/// textureBudget is how many shadow textures may still be re-rendered this frame; it is
+		/// decremented when this shadow spends one. See updateRenderTargetTextures.
+		void update(Int &textureBudget);
+		void recomputeProjection(const Vector3 &lightPos);	///<projection matrix only; no render target work
 		void init();		///<allocates local member variables used for projection
 		void updateTexture(Vector3 &lightPos);	///<updates the shadow texture image using render object and given light position.
 		void updateProjectionParameters(const Matrix3D &cameraXform);	///<recompute projection matrix - needed when light or object moves.
@@ -130,6 +134,17 @@ class W3DProjectedShadow	: public Shadow
 		TexProjectClass	 *m_shadowProjector;										///<object used to generate texture and projection matrix.
 		RenderObjClass	*m_robj;						///<render object used to cast the shadow.
 		Vector3		m_lastObjPosition;	///<position of  object at time of projection matrix update.
+
+		// TheSuperHackers @fix andytraber 12/09/2026 Light position at this instance's last
+		// PROJECTION MATRIX update, which is NOT the same thing as the texture's own history.
+		// W3DShadowTexture is shared by every instance of a model (getTexture is keyed on the model
+		// name), so the first instance in the list to notice a stale texture re-rendered it and set
+		// the shared history -- and every other instance of that model then compared equal and
+		// never recomputed its own projector. Their shadows only moved when the object did, so
+		// static casters kept pointing at whatever direction the sun had when the map loaded. One
+		// per shadow is what makes "shadows follow the sun" true for all of them; it costs a
+		// Look_At and two matrix multiplies, not a render target.
+		Vector3		m_lightPosHistory;
 		W3DProjectedShadow *m_next;	/// for the shadow manager list
 		Bool	m_allowWorldAlign;	/// wrap shadow around world geometry - else align perpendicular to local z-axis.
 		Real	m_decalOffsetU;		/// texture coordinate offset so not centered at object origin.

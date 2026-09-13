@@ -330,7 +330,11 @@ void W3DPropBuffer::drawProps(RenderInfoClass &rinfo)
 	if (m_doCull) {
 		cull(&rinfo.Camera);
 	}
-	const GlobalData::TerrainLighting *objectLighting = TheGlobalData->m_terrainObjectsLighting[TheGlobalData->m_timeOfDay];
+	// TheSuperHackers @fix andytraber 12/09/2026 The interpolated objects lighting, not
+	// the authored per-time-of-day row. Identical when the day-night cycle is off (see
+	// GlobalData::setTimeOfDay, which seeds it); under the cycle it is what stops every
+	// tree and prop on the map jumping between four states while the ground creeps.
+	const GlobalData::TerrainLighting *objectLighting = TheGlobalData->m_terrainObjectsCurrent;
 
 	LightEnvironmentClass lightEnv;
 	Vector3 center(0,0,0); // arbitrary center point. [6/6/2003]

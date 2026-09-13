@@ -77,10 +77,12 @@
 #include "GameClient/Water.h"
 #include "GameLogic/GameLogic.h"
 #include "Common/GlobalData.h"
+#include "Common/FrameTiming.h"
 #include "Common/OptionPreferences.h"
 #include "Common/GameLOD.h"
 #include "WWMath/gfxmatrix4.h"
 #include "WW3D2/dx8caps.h"
+#include "WW3D2/ww3d.h"
 
 
 // Turn this on to turn off pixel shaders. jba[4/3/2003]
@@ -3032,6 +3034,22 @@ static float s_envBakedSunColor[3];
 static float s_envBakedSky[3];
 static float s_envBakedGround[3];
 
+// THE AMORTISED BAKE. A bake in progress owns these: the parameters it started with (so
+// six faces written on six different frames still describe one sky), the running texel sum,
+// and which face is next. s_envBakeNextFace < 0 means idle.
+static int    s_envBakeNextFace = -1;
+static float  s_envBakeSunDir[3];
+static float  s_envBakeSunColor[3];
+static float  s_envBakeSky[3];
+static float  s_envBakeGround[3];
+static double s_envBakeSum[3];
+// The render frame the last face was written on. updateEnvMap is called from the terrain's
+// Render, and the terrain renders up to three times a frame -- shadow map, camera depth
+// prepass, main scene -- so without this the "one face per frame" budget is really three
+// and the 96 ms bake lands as 48 ms on each of two frames instead of 16 ms on each of six.
+// Measured exactly that way before the guard went in.
+static unsigned s_envBakeLastFrame = 0xFFFFFFFFu;
+
 // Cloud structure for the sky.
 //
 // Without this the sky is a pure vertical gradient, so its reflection carries no
@@ -3102,10 +3120,150 @@ static float envCloudFbm(float x, float y, float z)
 	return sum * (1.0f / 0.9375f);   // 0.5 + 0.25 + 0.125 + 0.0625
 }
 
+// TheSuperHackers @perf andytraber 12/09/2026 THE CLOUD FIELD IS PRECOMPUTED, and the
+// reason it can be is the whole point: envCloudFbm above depends on the direction vector
+// and on nothing else. Not on the sun, not on the sky colour, not on the time of day --
+// look at the call site. Neither does horizonFade. So the product of the two is a constant
+// field over the cube, and a re-bake has no business evaluating it again.
+//
+// It was worth finding. Four octaves is 32 envHash3 calls and 12 floorf per texel, against
+// roughly twenty flops for everything else a texel needs, so this was essentially the whole
+// of the measured 16 ms a face. Amortising the bake (one face per frame) only spread that
+// cost; this removes it.
+//
+// Stored as the product mask*horizonFade, in [0,1], at 16 bits. **Not 8.** At 8 bits the
+// quantisation error is 1/512, which after the 0.90 strength multiply and the lerp into an
+// 8-bit channel is 0.45 of a colour step -- enough to move the rounded byte, which would
+// make this a visible change rather than a free one. At 16 bits the error is 7.6e-6, or
+// 0.002 of a colour step: it cannot change the output byte except where a channel already
+// sits within 0.002 of a rounding boundary. The extra 384 KB buys the right to call this a
+// no-op on the picture.
+//
+// Process lifetime, deliberately not freed with the cube in shutdownUnitShaders: the field
+// is pure CPU arithmetic over direction and the compile-time cloud constants, so it is
+// unaffected by a device reset and rebuilding it on every alt-tab would be the same waste
+// this change exists to remove.
+static unsigned short *s_envCloudTable = nullptr;
+static bool            s_envCloudTableTried = false;
+
+// The direction a cube-face texel looks along. Shared by the table builder and the bake so
+// the two cannot drift: a table indexed by a different mapping than the bake reads it with
+// would put the clouds on the wrong faces, which is exactly the sort of failure that looks
+// like a shader bug.
+static void envFaceDirection(int face, int x, int y, float &dx, float &dy, float &dz)
+{
+	const float t = ((float)y + 0.5f) / ENV_MAP_SIZE * 2.0f - 1.0f;
+	const float s = ((float)x + 0.5f) / ENV_MAP_SIZE * 2.0f - 1.0f;
+	switch (face) {
+		case 0: dx = 1;  dy = -t; dz = -s; break; // +X
+		case 1: dx = -1; dy = -t; dz = s;  break; // -X
+		case 2: dx = s;  dy = 1;  dz = t;  break; // +Y
+		case 3: dx = s;  dy = -1; dz = -t; break; // -Y
+		case 4: dx = s;  dy = -t; dz = 1;  break; // +Z
+		default: dx = -s; dy = -t; dz = -1; break; // -Z
+	}
+	const float il = 1.0f / sqrtf(dx*dx + dy*dy + dz*dz);
+	dx *= il; dy *= il; dz *= il;
+}
+
+// mask * horizonFade for one direction, in [0,1]. The expression the bake used to carry
+// inline; kept as a function so the table builder and the no-table fallback share it.
+static float envCloudFactor(float dx, float dy, float dz)
+{
+	if (dz <= 0.0f)
+		return 0.0f;
+	const float n = envCloudFbm(dx*ENV_CLOUD_FREQ, dy*ENV_CLOUD_FREQ, dz*ENV_CLOUD_FREQ);
+	float mask = (n - ENV_CLOUD_COVER) * ENV_CLOUD_SHARPNESS;
+	if (mask < 0.0f) mask = 0.0f; else if (mask > 1.0f) mask = 1.0f;
+	const float horizonFade = dz * (2.0f - dz);   // 0 at the horizon, 1 overhead
+	return mask * horizonFade;
+}
+
+// Build it once, on the first bake. Costs about what one old six-face bake cost, and that
+// bake happens at map load where the stall is already being paid.
+static void ensureEnvCloudTable()
+{
+	if (s_envCloudTableTried)
+		return;
+	s_envCloudTableTried = true;
+
+	const int texels = 6 * ENV_MAP_SIZE * ENV_MAP_SIZE;
+	s_envCloudTable = new unsigned short[texels];
+	if (s_envCloudTable == nullptr)
+		return;		// the bake falls back to evaluating the noise; slow, not wrong
+
+	unsigned short *out = s_envCloudTable;
+	for (int face = 0; face < 6; ++face) {
+		for (int y = 0; y < ENV_MAP_SIZE; ++y) {
+			for (int x = 0; x < ENV_MAP_SIZE; ++x) {
+				float dx, dy, dz;
+				envFaceDirection(face, x, y, dx, dy, dz);
+				const float cf = envCloudFactor(dx, dy, dz);
+				*out++ = (unsigned short)(cf * 65535.0f + 0.5f);
+			}
+		}
+	}
+
+#ifdef RTS_DEBUG
+	// TheSuperHackers @instrument andytraber 12/09/2026 The claim this change rests on is
+	// "no pixel moves", and the two ways it could be false are not the same: the
+	// quantisation error is arithmetic and bounded, but an indexing or face-mapping mistake
+	// would be unbounded and would put the clouds on the wrong faces. Re-deriving a sample
+	// the way the bake indexes it tests BOTH at once, and needs no baseline binary to
+	// compare against -- which a frame diff would.
+	//
+	// Unconditional under RTS_DEBUG rather than behind an environment variable, for the
+	// reason this codebase has written down elsewhere: a control you have to remember to
+	// enable is a control that is off. A prime stride so the sample is not aligned to the
+	// face or row size.
+	{
+		double worstColourSteps = 0.0;
+		int worstFace = -1, worstX = -1, worstY = -1;
+		const int total = 6 * ENV_MAP_SIZE * ENV_MAP_SIZE;
+		for (int i = 0; i < total; i += 997) {
+			const int face = i / (ENV_MAP_SIZE * ENV_MAP_SIZE);
+			const int rem  = i % (ENV_MAP_SIZE * ENV_MAP_SIZE);
+			const int y    = rem / ENV_MAP_SIZE;
+			const int x    = rem % ENV_MAP_SIZE;
+			float dx, dy, dz;
+			envFaceDirection(face, x, y, dx, dy, dz);
+			const float want = envCloudFactor(dx, dy, dz);
+			const float got  = s_envCloudTable[(size_t)(face * ENV_MAP_SIZE + y) * ENV_MAP_SIZE + x]
+								* (1.0f / 65535.0f);
+			// What the reader actually cares about: the error expressed in 8-bit colour
+			// steps after the strength multiply, since that is what reaches the cube. The
+			// lerp weight is |cloudCol - channel| <= 1, so this is the worst case.
+			const double steps = fabs((double)want - (double)got) * ENV_CLOUD_STRENGTH * 255.0;
+			if (steps > worstColourSteps) {
+				worstColourSteps = steps; worstFace = face; worstX = x; worstY = y;
+			}
+		}
+		DEBUG_LOG(("ENV CLOUD TABLE SELF-TEST: worst %.4f colour steps (face %d at %d,%d) over "
+			"%d sampled texels -- under 0.5 means no output byte can move",
+			worstColourSteps, worstFace, worstX, worstY, (total + 996) / 997));
+	}
+#endif
+}
+
 // Fill all six faces of a locked cubemap with the sky/ground gradient + sun disc.
+// Bake [firstFace, firstFace+faceCount) of the six, accumulating the texel sum into
+// envSum rather than owning it.
+//
+// TheSuperHackers @perf andytraber 12/09/2026 The face range is the whole point. All six
+// faces at once is 6 x 256 x 256 texels of CPU work and it was measured at **96 ms in a
+// single frame** -- three frames of budget at 30 fps, spent in one. That was tolerable
+// while a map had one sun for its whole life; under the day-night cycle the sun drifts and
+// this fires every time the drift threshold is crossed, which is about once a minute at the
+// default cycle length and once every nine seconds at a short one.
+//
+// Shrinking ENV_MAP_SIZE would be simpler and is NOT free: unit_pbr_ps taps this cube at
+// ENV_IRRADIANCE_LOD 5.0 (8x8 per face at 256, 2x2 at 64 -- a different amount of blur),
+// and both unit_pbr_ps and water_ps take a LOD 0 mirror reflection off it. Spreading the
+// same work over six frames changes no pixel at all once it settles.
 static void bakeEnvMapFaces(GfxTexture* cube,
                             const float sunDir[3], const float sunColor[3],
-                            const float sky[3], const float ground[3])
+                            const float sky[3], const float ground[3],
+                            int firstFace, int faceCount, double envSum[3])
 {
 	// Clouds are lit by the sun and sit against the sky, so their colour is the sky
 	// lifted towards white in proportion to how bright the sun is. Tying them to the
@@ -3122,41 +3280,53 @@ static void bakeEnvMapFaces(GfxTexture* cube,
 	// Mean colour over all six faces. The shader divides its irradiance tap by this, so
 	// the directional ambient it derives averages to exactly 1.0 and can scale the
 	// engine's own ambient without changing the overall exposure -- only its direction.
+	// Owned by the caller now, because a face at a time cannot see the other five.
 	double envSumR = 0.0, envSumG = 0.0, envSumB = 0.0;
 
-	for (int face = 0; face < 6; ++face) {
+	ensureEnvCloudTable();
+
+	for (int face = firstFace; face < firstFace + faceCount && face < 6; ++face) {
+		// TheSuperHackers @instrument andytraber 12/09/2026 The transfer, timed apart from the
+		// arithmetic. Nested scopes are exclusive, so whatever these two cost comes off
+		// PHASE_ENVMAP and the remainder really is the texel loop. Added because the bake was
+		// amortised from six faces to one per frame and the worst frame fell only from 96ms to
+		// ~30, not to the 16 that 96/6 predicts -- and the first guess at the difference (mip
+		// generation) measured under 0.5ms, so it was wrong.
 		GfxMappedRect lr;
-		if (!DX8Wrapper::Map_DX8_Cube_Texture(cube, face, 0, nullptr, GFX_MAP_WRITE, lr))
-			continue;
+		{
+			FRAME_TIMING_SCOPE(PHASE_ENVUPLOAD);
+			if (!DX8Wrapper::Map_DX8_Cube_Texture(cube, face, 0, nullptr, GFX_MAP_WRITE, lr))
+				continue;
+		}
 		for (int y = 0; y < ENV_MAP_SIZE; ++y) {
 			unsigned* row = (unsigned*)((unsigned char*)lr.Data + y * lr.Pitch);
-			float t = ((float)y + 0.5f) / ENV_MAP_SIZE * 2.0f - 1.0f;
+			// One row of the precomputed cloud field, or null when the allocation failed
+			// and the noise has to be evaluated after all.
+			const unsigned short* cloudRow = (s_envCloudTable != nullptr)
+				? s_envCloudTable + ((size_t)(face * ENV_MAP_SIZE + y) * ENV_MAP_SIZE)
+				: nullptr;
 			for (int x = 0; x < ENV_MAP_SIZE; ++x) {
-				float s = ((float)x + 0.5f) / ENV_MAP_SIZE * 2.0f - 1.0f;
+				// The direction is still computed exactly, per texel, and is deliberately
+				// NOT quantised into the table alongside the cloud factor. The sun disc is
+				// sd^256: at 16-bit direction error its derivative puts roughly two colour
+				// steps on the rim, so a packed direction would be a visible change where
+				// the packed cloud factor is not.
 				float dx, dy, dz;
-				switch (face) {
-					case 0: dx = 1;  dy = -t; dz = -s; break; // +X
-					case 1: dx = -1; dy = -t; dz = s;  break; // -X
-					case 2: dx = s;  dy = 1;  dz = t;  break; // +Y
-					case 3: dx = s;  dy = -1; dz = -t; break; // -Y
-					case 4: dx = s;  dy = -t; dz = 1;  break; // +Z
-					default: dx = -s; dy = -t; dz = -1; break; // -Z
-				}
-				float il = 1.0f / sqrtf(dx*dx + dy*dy + dz*dz);
-				dx *= il; dy *= il; dz *= il;
+				envFaceDirection(face, x, y, dx, dy, dz);
 				float up = dz * 0.5f + 0.5f; // world up = +Z
 				if (up < 0.0f) up = 0.0f; else if (up > 1.0f) up = 1.0f;
 				float r = ground[0] + (sky[0] - ground[0]) * up;
 				float g = ground[1] + (sky[1] - ground[1]) * up;
 				float b = ground[2] + (sky[2] - ground[2]) * up;
 				// Cloud masses, upper hemisphere only and faded out towards the horizon
-				// so none of them appear below it.
+				// so none of them appear below it. Both of those are properties of the
+				// direction alone, which is why this is a table lookup -- see
+				// ensureEnvCloudTable.
 				if (dz > 0.0f) {
-					const float n = envCloudFbm(dx*ENV_CLOUD_FREQ, dy*ENV_CLOUD_FREQ, dz*ENV_CLOUD_FREQ);
-					float mask = (n - ENV_CLOUD_COVER) * ENV_CLOUD_SHARPNESS;
-					if (mask < 0.0f) mask = 0.0f; else if (mask > 1.0f) mask = 1.0f;
-					const float horizonFade = dz * (2.0f - dz);   // 0 at the horizon, 1 overhead
-					const float cf = mask * horizonFade * ENV_CLOUD_STRENGTH;
+					const float cfBase = (cloudRow != nullptr)
+						? cloudRow[x] * (1.0f / 65535.0f)
+						: envCloudFactor(dx, dy, dz);
+					const float cf = cfBase * ENV_CLOUD_STRENGTH;
 					r += (cloudCol[0] - r) * cf;
 					g += (cloudCol[1] - g) * cf;
 					b += (cloudCol[2] - b) * cf;
@@ -3181,21 +3351,41 @@ static void bakeEnvMapFaces(GfxTexture* cube,
 				envSumR += ri; envSumG += gi; envSumB += bi;
 			}
 		}
-		DX8Wrapper::Unmap_DX8_Cube_Texture(cube, face, 0);
+		{
+			FRAME_TIMING_SCOPE(PHASE_ENVUPLOAD);
+			DX8Wrapper::Unmap_DX8_Cube_Texture(cube, face, 0);
+		}
 	}
 
-	{
-		const double texels = 6.0 * ENV_MAP_SIZE * ENV_MAP_SIZE * 255.0;
-		DX8Wrapper::m_envAverage[0] = (float)(envSumR / texels);
-		DX8Wrapper::m_envAverage[1] = (float)(envSumG / texels);
-		DX8Wrapper::m_envAverage[2] = (float)(envSumB / texels);
-		DX8Wrapper::m_envAverage[3] = 1.0f;
-	}
+	envSum[0] += envSumR;
+	envSum[1] += envSumG;
+	envSum[2] += envSumB;
+}
+
+// Publish the mean colour and rebuild the mip chain. Called once a bake has written all six
+// faces -- never per face, because both of these read the whole cube.
+static void finishEnvMapBake(GfxTexture* cube, const double envSum[3])
+{
+	const double texels = 6.0 * ENV_MAP_SIZE * ENV_MAP_SIZE * 255.0;
+	DX8Wrapper::m_envAverage[0] = (float)(envSum[0] / texels);
+	DX8Wrapper::m_envAverage[1] = (float)(envSum[1] / texels);
+	DX8Wrapper::m_envAverage[2] = (float)(envSum[2] / texels);
+	DX8Wrapper::m_envAverage[3] = 1.0f;
 
 	// Rebuild the mip chain from the level 0 we just wrote. Required now that the faces
 	// carry cloud detail: the reflection vector can sweep most of a face across a single
 	// pixel on a curved surface, and without mips that undersampling sparkles.
-	DX8Wrapper::Generate_DX8_Mips(cube, 0);
+	//
+	// TheSuperHackers @instrument andytraber 12/09/2026 Its own phase, nested inside
+	// PHASE_ENVMAP so the two are exclusive. Amortising the bake to one face a frame should
+	// have left a 16ms worst frame (96.6 / 6) and left 39ms. This call runs on the sixth
+	// face's frame and is the only other thing on it, so it is the first hypothesis -- but it
+	// is a hypothesis, and the last time a cause was deduced rather than counted in this
+	// investigation the answer was wrong. See the day/night cycle cost investigation, P2.
+	{
+		FRAME_TIMING_SCOPE(PHASE_ENVMIPS);
+		DX8Wrapper::Generate_DX8_Mips(cube, 0);
+	}
 }
 
 // The scene's dominant light, for the env bake.
@@ -4309,7 +4499,14 @@ void W3DShaderManager::initEnvMap()
 	getSceneEnvLight(sunDir, sunColor, ambient);
 	float sky[3], ground[3];
 	deriveEnvColors(sunColor, ambient, sky, ground);
-	bakeEnvMapFaces(cube, sunDir, sunColor, sky, ground);
+	// All six at once here and only here: there is no previous cube to show while this one
+	double envSum[3] = { 0.0, 0.0, 0.0 };
+	bakeEnvMapFaces(cube, sunDir, sunColor, sky, ground, 0, 6, envSum);
+	finishEnvMapBake(cube, envSum);
+	// A bake left half done against the previous cube (a device reset releases and
+	// recreates this texture) would otherwise resume into the fresh one and overwrite part
+	// of what was just written with a stale sky.
+	s_envBakeNextFace = -1;
 
 	DX8Wrapper::m_envCubeMap = cube;
 	memcpy(s_envBakedSunDir, sunDir, sizeof(sunDir));
@@ -4317,6 +4514,28 @@ void W3DShaderManager::initEnvMap()
 	memcpy(s_envBakedSky, sky, sizeof(sky));
 	memcpy(s_envBakedGround, ground, sizeof(ground));
 	s_envBaked = true;
+}
+
+// One face, then bookkeeping. On the sixth it publishes the average, rebuilds the mips and
+// promotes the latched parameters to the "what is currently baked" baseline that the drift
+// test measures against -- not before, or a bake interrupted half way would leave the
+// baseline claiming a sky the cube does not hold.
+static void bakeOneEnvMapFace(GfxTexture* cube)
+{
+	bakeEnvMapFaces(cube, s_envBakeSunDir, s_envBakeSunColor, s_envBakeSky, s_envBakeGround,
+		s_envBakeNextFace, 1, s_envBakeSum);
+	++s_envBakeNextFace;
+
+	if (s_envBakeNextFace >= 6)
+	{
+		finishEnvMapBake(cube, s_envBakeSum);
+		memcpy(s_envBakedSunDir, s_envBakeSunDir, sizeof(s_envBakedSunDir));
+		memcpy(s_envBakedSunColor, s_envBakeSunColor, sizeof(s_envBakedSunColor));
+		memcpy(s_envBakedSky, s_envBakeSky, sizeof(s_envBakedSky));
+		memcpy(s_envBakedGround, s_envBakeGround, sizeof(s_envBakedGround));
+		s_envBaked = true;
+		s_envBakeNextFace = -1;
+	}
 }
 
 //=============================================================================
@@ -4330,6 +4549,21 @@ void W3DShaderManager::updateEnvMap()
 	GfxTexture* cube = (GfxTexture*)DX8Wrapper::m_envCubeMap;
 	if (cube == nullptr)
 		return;
+
+	// A bake already under way finishes before a new one is considered. Re-testing the drift
+	// mid-bake would restart it every frame while the sun keeps moving, and the cube would
+	// never hold six faces of the same sky.
+	if (s_envBakeNextFace >= 0)
+	{
+		const unsigned renderFrame = WW3D::Get_Frame_Count();
+		if (renderFrame == s_envBakeLastFrame)
+			return;			// already spent this frame's face on an earlier pass
+		s_envBakeLastFrame = renderFrame;
+
+		FRAME_TIMING_SCOPE(PHASE_ENVMAP);
+		bakeOneEnvMapFace(cube);
+		return;
+	}
 
 	float sunDir[3], sunColor[3], ambient[3];
 	getSceneEnvLight(sunDir, sunColor, ambient);
@@ -4352,12 +4586,24 @@ void W3DShaderManager::updateEnvMap()
 	if (s_envBaked && drift < 0.60f)
 		return;
 
-	bakeEnvMapFaces(cube, sunDir, sunColor, sky, ground);
-	memcpy(s_envBakedSunDir, sunDir, sizeof(sunDir));
-	memcpy(s_envBakedSunColor, sunColor, sizeof(s_envBakedSunColor));
-	memcpy(s_envBakedSky, sky, sizeof(sky));
-	memcpy(s_envBakedGround, ground, sizeof(ground));
-	s_envBaked = true;
+	// TheSuperHackers @instrument andytraber 12/09/2026 Its own phase and its own event
+	// total. The threshold above is a perf tuning knob with no readout, which is the worst
+	// kind: raising it from 0.03 to 0.60 was a guess about how often this fires and nothing
+	// measured whether the guess was right. "envbake N" on F10 is that measurement, and the
+	// envmap phase max is what one bake costs.
+	FRAME_TIMING_SCOPE(PHASE_ENVMAP);
+	FrameTiming::recordEvent(FrameTiming::EVENT_ENVMAP_BAKE);
+
+	// Start a new bake: latch the parameters so all six faces agree on one sun even though
+	// they are written over six frames, and lay down the first face now.
+	memcpy(s_envBakeSunDir, sunDir, sizeof(s_envBakeSunDir));
+	memcpy(s_envBakeSunColor, sunColor, sizeof(s_envBakeSunColor));
+	memcpy(s_envBakeSky, sky, sizeof(s_envBakeSky));
+	memcpy(s_envBakeGround, ground, sizeof(s_envBakeGround));
+	s_envBakeSum[0] = s_envBakeSum[1] = s_envBakeSum[2] = 0.0;
+	s_envBakeNextFace = 0;
+	s_envBakeLastFrame = WW3D::Get_Frame_Count();
+	bakeOneEnvMapFace(cube);
 }
 
 //=============================================================================

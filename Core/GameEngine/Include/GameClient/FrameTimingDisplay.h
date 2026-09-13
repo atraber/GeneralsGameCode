@@ -42,4 +42,12 @@ void drawFrameTimingOverlay( Int topY );
 /// Release the readout's display strings. Called when the display shuts down.
 void shutdownFrameTimingOverlay();
 
+// Write the same numbers the overlay shows to the debug log, once every
+// W3D_FRAME_TIMING_LOG seconds. The overlay answers "what is it doing now" and needs
+// somebody at the keyboard to press F10; an unattended run has neither, and a
+// regression that only appears twelve minutes into a session is exactly the kind
+// nobody is watching for when it arrives. Unset or 0 and this costs one integer test
+// per frame.
+void logFrameTimingSnapshot();
+
 #endif // defined(RTS_DEBUG)

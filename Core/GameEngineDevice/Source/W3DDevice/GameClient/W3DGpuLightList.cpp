@@ -72,6 +72,8 @@
 #include <string.h>
 
 #include "W3DDevice/GameClient/W3DGpuLightList.h"
+
+#include "Common/FrameTiming.h"
 #include "W3DDevice/GameClient/W3DClusterGrid.h"
 #include "W3DDevice/GameClient/W3DScene.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
@@ -252,6 +254,14 @@ void GpuLightListClass::Update(RTS3DScene & scene, CameraClass & camera)
 
 #ifdef RTS_DEBUG
 	Report_Census();
+
+	// TheSuperHackers @instrument andytraber 12/09/2026 The same three census figures the
+	// log prints every REPORT_INTERVAL frames, published per frame for the F10 readout. The
+	// log line is the wrong instrument for a population that changes with the time of day:
+	// it averages over a hundred frames and arrives after the moment you were looking at.
+	FrameTiming::setCounter(FrameTiming::COUNTER_LOCAL_LIGHTS, (Int)m_lightCount);
+	FrameTiming::setCounter(FrameTiming::COUNTER_LIGHTS_CULLED, (Int)m_censusCulled);
+	FrameTiming::setCounter(FrameTiming::COUNTER_LIGHTS_DROPPED, (Int)m_censusDropped);
 #endif
 }
 
@@ -288,13 +298,29 @@ void GpuLightListClass::Collect_Dynamic_Lights(RTS3DScene & scene, const Frustum
 {
 	// Muzzle flashes, explosions and the like. Render_Seg skips a disabled one
 	// (W3DScene.cpp, around line 800) and so do we.
+	// TheSuperHackers @instrument andytraber 12/09/2026 This walk is already paid for, so
+	// it is also where the pool census is taken: how big the pool has grown and how much of
+	// it is lit. The pool never shrinks, so "dynpool" rising and staying risen through a
+	// night is the shape to look for.
+	Int pooled = 0;
+	Int enabled = 0;
 	RefRenderObjListIterator it(scene.getDynamicLights());
 	for (it.First(); !it.Is_Done(); it.Next())
 	{
 		W3DDynamicLight * light = (W3DDynamicLight *)it.Peek_Obj();
-		if (light != nullptr && light->isEnabled())
+		if (light == nullptr)
+			continue;
+		++pooled;
+		if (light->isEnabled())
+		{
+			++enabled;
 			Consider_Light(*light, frustum, cameraPos);
+		}
 	}
+#ifdef RTS_DEBUG
+	FrameTiming::setCounter(FrameTiming::COUNTER_DYNLIGHT_POOL, pooled);
+	FrameTiming::setCounter(FrameTiming::COUNTER_DYNLIGHT_ON, enabled);
+#endif
 }
 
 void GpuLightListClass::Consider_Light(const LightClass & light, const FrustumClass & frustum, const Vector3 & cameraPos)

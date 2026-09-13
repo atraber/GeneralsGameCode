@@ -89,6 +89,7 @@
 #include "WWMath/gfxmatrix4.h"
 #include "W3DDevice/GameClient/W3DShaderManager.h"
 #include "W3DDevice/GameClient/W3DVolumetricFog.h"
+#include "WW3D2/statistics.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
 #include "W3DDevice/GameClient/Module/W3DModelDraw.h"
 #include "W3DDevice/GameClient/W3DCustomScene.h"
@@ -173,6 +174,8 @@ W3DView::W3DView()
 	m_viewFilterMode = FM_VIEW_DEFAULT;
 	m_viewFilter = FT_VIEW_DEFAULT;
 	m_isWireFrameEnabled = m_nextWireFrameEnabled = FALSE;
+	m_shadowWidenHeldCells = 0;
+	m_shadowWidenShrinkSince = 0;
 	m_shakeOffset.x = 0.0f;
 	m_shakeOffset.y = 0.0f;
 	m_shakeIntensity = 0.0f;
@@ -926,6 +929,11 @@ void W3DView::reset()
 {
 	View::reset();
 
+	// A new map is a new relief and a new sun; carrying the held widening across would keep a
+	// previous map's window size until the shrink timer expired.
+	m_shadowWidenHeldCells = 0;
+	m_shadowWidenShrinkSince = 0;
+
 	// Just in case...
 	setTimeMultiplier(1); // Set time rate back to 1.
 
@@ -1385,7 +1393,12 @@ void W3DView::update()
 
 //	Int elapsedTimeMs = TheW3DFrameLengthInMsec; // Assume a constant time flow.  It just works out better.  jba.
 
-	if (TheTerrainRenderObject && TheTerrainRenderObject->doesNeedFullUpdate())
+	// TheSuperHackers @perf andytraber 12/09/2026 A pending REGION needs the same pump as a pending
+	// full update, for the same reason: a building placed or a crater blown while nobody is
+	// scrolling must still show its new ground. (setCameraTransform also reaches updateTerrain
+	// every frame in practice, but that is an accident of the camera path and not a guarantee.)
+	if (TheTerrainRenderObject &&
+		(TheTerrainRenderObject->doesNeedFullUpdate() || TheTerrainRenderObject->doesNeedPartialUpdate()))
 	{
 		updateTerrain();
 	}
@@ -1879,6 +1892,13 @@ void W3DView::draw()
 	//USE_PERF_TIMER(W3DView_drawView)
 	Bool skipRender = false;
 	Bool doExtraRender = false;
+	// TheSuperHackers @perf andytraber 12/09/2026 Decided ONCE, after the light list is
+	// built and before anything reads it. The volumetric fog is what forces the camera depth
+	// prepass -- a second full pass over the scene geometry, about a thousand extra draws a
+	// frame in a late-game session -- and that pass exists only to feed a volume that may
+	// integrate to nothing. Asking Is_Active() at each of the three sites could also answer
+	// differently at each, which would mean submitting the prepass and then not using it.
+	Bool fogThisFrame = false;
 	CustomScenePassModes customScenePassMode  = SCENE_PASS_DEFAULT;
 	Bool preRenderResult = false;
 
@@ -1910,7 +1930,9 @@ void W3DView::draw()
 			FRAME_TIMING_SCOPE(PHASE_LIGHTCLUSTER);
 			W3DDisplay::m_3DScene->updateClusterGrid(*m_3DCamera);
 		}
-		if (VolumetricFogClass::Is_Active())
+		fogThisFrame = VolumetricFogClass::Would_Contribute(
+			W3DDisplay::m_3DScene->getGpuLightList().Get_Light_Count());
+		if (fogThisFrame)
 		{
 			W3DDisplay::m_3DScene->updateVolumetricFogConstants(*m_3DCamera);
 		}
@@ -2258,12 +2280,21 @@ void W3DView::draw()
 		// (The depth pass forces the full square viewport itself, inside the
 		// scene's SCENE_PASS_SHADOW_MAP branch, since the camera's Apply sets a
 		// screen-sized viewport that would only fill part of the square map.)
+		// TheSuperHackers @instrument andytraber 12/09/2026 Draw calls per pass, sampled
+		// either side of each one. The engine has counted draws per *frame* for twenty years
+		// and that number cannot answer the question that matters here: the scene geometry is
+		// submitted up to three times a frame -- once for the sun, once for the camera depth
+		// prepass, once for the picture -- and a single total hides which of the three is
+		// paying for what. On F10 these sit next to the phase times they explain.
 		FRAME_TIMING_SCOPE(PHASE_SHADOWMAP);
+		const Int drawsBeforeShadow = Debug_Statistics::Get_Draw_Calls_This_Frame();
 		W3DShaderManager::startShadowMapRendering();
 		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_SHADOW_MAP);
 		W3DDisplay::m_3DScene->doRender(m_3DCamera);
 		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_DEFAULT);
 		W3DShaderManager::endShadowMapRendering();
+		FrameTiming::setCounter(FrameTiming::COUNTER_DRAWS_SHADOW,
+			Debug_Statistics::Get_Draw_Calls_This_Frame() - drawsBeforeShadow);
 	}
 	else
 	{
@@ -2280,14 +2311,17 @@ void W3DView::draw()
 	// the two share the depth shaders but not the feature, so this runs either way.
 	// It is a second full pass over the scene's geometry, which is the price of D3D9
 	// not handing back its depth buffer as something samplable.
-	if (W3DShaderManager::isSsrActive() || VolumetricFogClass::Is_Active())
+	if (W3DShaderManager::isSsrActive() || fogThisFrame)
 	{
 		FRAME_TIMING_SCOPE(PHASE_DEPTHPREPASS);
+		const Int drawsBeforeDepth = Debug_Statistics::Get_Draw_Calls_This_Frame();
 		W3DShaderManager::startCameraDepthRendering();
 		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_CAMERA_DEPTH);
 		W3DDisplay::m_3DScene->doRender(m_3DCamera);
 		W3DDisplay::m_3DScene->setCustomPassMode(SCENE_PASS_DEFAULT);
 		W3DShaderManager::endCameraDepthRendering();
+		FrameTiming::setCounter(FrameTiming::COUNTER_DRAWS_DEPTH,
+			Debug_Statistics::Get_Draw_Calls_This_Frame() - drawsBeforeDepth);
 	}
 
 	// Select the base view filter when no transient effect filter (BW, motion blur,
@@ -2329,6 +2363,7 @@ void W3DView::draw()
 	if (!skipRender)
 	{
 		FRAME_TIMING_SCOPE(PHASE_SCENE);
+		const Int drawsBeforeScene = Debug_Statistics::Get_Draw_Calls_This_Frame();
 		// Render 3D scene from our camera
 		W3DDisplay::m_3DScene->setCustomPassMode(customScenePassMode);
 		if (m_isWireFrameEnabled)
@@ -2336,8 +2371,10 @@ void W3DView::draw()
 		W3DDisplay::m_3DScene->doRender( m_3DCamera );
 		W3DDisplay::m_3DScene->Set_Extra_Pass_Polygon_Mode(SceneClass::EXTRA_PASS_DISABLE);
 		m_isWireFrameEnabled = m_nextWireFrameEnabled;
+		FrameTiming::setCounter(FrameTiming::COUNTER_DRAWS_SCENE,
+			Debug_Statistics::Get_Draw_Calls_This_Frame() - drawsBeforeScene);
 
-		if (VolumetricFogClass::Is_Active())
+		if (fogThisFrame)
 		{
 			FRAME_TIMING_SCOPE(PHASE_VOLUMETRICFOG);
 			W3DDisplay::m_3DScene->renderVolumetricFog(*m_3DCamera);
@@ -4286,12 +4323,69 @@ void W3DView::widenTerrainDrawSizeForShadows(ICoord2D &dimensions) const
 	const Real sinSun = max(fabsf(sunDir.Z), 0.10f);
 	const Real cosSun = sqrtf(max(1.0f - sinSun * sinSun, 0.0f));
 
-	const Real reliefAbove = max(0.0f, TheTerrainRenderObject->getMaxHeight() - m_pos.z);
+	// TheSuperHackers @perf andytraber 12/09/2026 Quantised, and that is the point.
+	// reliefAbove is measured against m_pos.z -- the camera's own focus height -- so it moves
+	// whenever the camera scrolls onto different ground. Feeding a continuously varying number
+	// into a three-valued step function means the camera and the sun each dither the answer
+	// independently and beat against each other. Rounding UP to a coarse step keeps the window
+	// conservative (never smaller than the exact answer asks for) while making small camera
+	// moves produce the identical answer. 64 units is about a fifth of a tile's worth of reach
+	// at a 45 degree sun.
+	const Real RELIEF_QUANTUM = 64.0f;
+	Real reliefAbove = max(0.0f, TheTerrainRenderObject->getMaxHeight() - m_pos.z);
+	reliefAbove = ceilf(reliefAbove / RELIEF_QUANTUM) * RELIEF_QUANTUM;
 	const Real reach = reliefAbove * (cosSun / sinSun);
 
 	const Int tile = VERTEX_BUFFER_TILE_LENGTH;
 	Int extraCells = (Int)ceilf(reach / MAP_XY_FACTOR);
 	extraCells = ((extraCells + tile - 1) / tile) * tile;   // whole tiles
+
+	// TheSuperHackers @perf andytraber 12/09/2026 HYSTERESIS, and it is not a nicety.
+	//
+	// The quantisation above has exactly three outcomes on a normal-pitch camera -- 0, one
+	// tile, two tiles -- and the value it is quantising drifts continuously once the sun
+	// moves. Sitting near a boundary, it flips every few seconds. Each flip reaches
+	// HeightMapRenderObjClass::setTerrainDrawSize, which resets the shroud, frees and
+	// recreates every terrain vertex and index buffer, and marks the whole drawn terrain for
+	// a CPU re-light: measured at 26-48 ms a time, 37 times in a 19 minute game of which only
+	// 3 were actual time-of-day boundaries.
+	//
+	// So: grow immediately -- a shadow that should be drawn and is not is a visible fault and
+	// must be fixed on the frame it appears -- and shrink only after the requirement has sat a
+	// full tile below the held size for several seconds. Shrinking late costs nothing but a
+	// slightly larger draw window; shrinking eagerly costs the rebuild above.
+	//
+	// Note the requirement also depends on m_pos.z through reliefAbove, so the camera and the
+	// sun beat against each other: this damps both.
+	// Twenty seconds, not five. A rebuild costs 26-48 ms; holding a window one tile larger
+	// than strictly needed costs a fraction of a millisecond of extra terrain per frame. At
+	// this delay a worst-case flap is one grow and one shrink per 20 s -- about 0.3% of the
+	// frame budget amortised -- against the measured 37 rebuilds in 19 minutes before.
+	const UnsignedInt SHRINK_DELAY_MS = 20000;
+	const UnsignedInt now = timeGetTime();
+	if (extraCells >= m_shadowWidenHeldCells)
+	{
+		m_shadowWidenHeldCells = extraCells;
+		m_shadowWidenShrinkSince = 0;
+	}
+	else if (extraCells <= m_shadowWidenHeldCells - tile)
+	{
+		if (m_shadowWidenShrinkSince == 0)
+			m_shadowWidenShrinkSince = now;
+		else if (now - m_shadowWidenShrinkSince >= SHRINK_DELAY_MS)
+		{
+			m_shadowWidenHeldCells = extraCells;
+			m_shadowWidenShrinkSince = 0;
+		}
+	}
+	else
+	{
+		// Within one tile of the held size: not a shrink worth timing, and restarting the
+		// clock here is what stops a value hovering on the boundary from ever shrinking.
+		m_shadowWidenShrinkSince = 0;
+	}
+	extraCells = m_shadowWidenHeldCells;
+
 	if (extraCells <= 0)
 		return;
 

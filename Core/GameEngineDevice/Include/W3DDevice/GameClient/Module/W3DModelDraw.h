@@ -503,6 +503,12 @@ private:
 	Int														m_hexColor;
 	Int														m_whichAnimInCurState;						///< the index of the currently playing anim in cur state (if any)
 	WeaponRecoilInfoVec						m_weaponRecoilInfoVec[WEAPONSLOT_COUNT];
+	// TheSuperHackers @fix andytraber 12/09/2026 FALSE while the vector above was sized from
+	// a model state whose barrels had not been validated yet -- which is to say, from nothing.
+	// validateWeaponBarrelInfo does nothing at all outside a logic update and does not say so,
+	// so a state set from the client leaves an empty barrel vector behind and the recoil vector
+	// inherits its length. ensureWeaponRecoilInfo re-runs the sizing once the barrels arrive.
+	Bool									m_recoilInfoValid;
 	Bool													m_needRecalcBoneParticleSystems;
 	Bool													m_fullyObscuredByShroud;
 	Bool													m_shadowEnabled;	///< cached state of shadow.  Used to determine if shadows should be enabled via options screen.
@@ -548,6 +554,7 @@ private:
 	void applyCorrectModelStateAnimation();
 	const ModelConditionInfo* findTransitionForSig(TransitionSig sig) const;
 	void rebuildWeaponRecoilInfo(const ModelConditionInfo* state);
+	void ensureWeaponRecoilInfo();	///< re-size the recoil vector if it was built before the barrels were known
 	void doHideShowProjectileObjects( UnsignedInt showCount, UnsignedInt maxCount, WeaponSlotType slot );///< Means effectively, show m of n.
 	void nukeCurrentRender(Matrix3D* xform);
 	void doStartOrStopParticleSys();

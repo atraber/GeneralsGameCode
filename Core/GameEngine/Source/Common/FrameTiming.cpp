@@ -75,8 +75,30 @@ namespace FrameTiming
 
 	static const char* s_phaseNames[PHASE_COUNT] =
 	{
-		"logic", "client", "draw", "lights", "cluster", "shadow", "depth", "scene", "fog", "postfx", "ui", "gpuwait", "wait"
+		"logic", "client", "daynight", "draw", "lights", "cluster", "shadow", "depth", "scene", "fog",
+		"terrbake", "terrpatch", "envmap", "envmips", "envupload", "postfx", "ui", "gpuwait", "wait"
 	};
+
+	static const char* s_counterNames[COUNTER_COUNT] =
+	{
+		"locallights", "culled", "dropped", "dynpool", "dynon", "dynscan",
+		"shadowdraws", "depthdraws", "scenedraws", "terrpatchcells", "shadowtex"
+	};
+
+	static const char* s_eventNames[EVENT_COUNT] =
+	{
+		"todchange", "terrainbake", "terrainpatch", "envbake",
+		"terrdirty:tod", "terrdirty:window", "terrdirty:deform", "terrdirty:all",
+		"shadowlightstep", "shadowtexrender"
+	};
+
+	// The counters ride the same ring as the phase times, written at the same moment by
+	// endFrame, so a counter and the phase it explains always describe the same frame. A
+	// counter sampled into its own buffer on its own schedule would be off by one against
+	// the cost it is meant to explain, which is exactly when it stops being usable.
+	static Int	s_counters[COUNTER_COUNT] = { 0 };
+	static Int	s_counterHistory[COUNTER_COUNT][HISTORY_SIZE] = { { 0 } };
+	static UnsignedInt s_events[EVENT_COUNT] = { 0 };
 
 
 	static Int64 nowTicks()
@@ -146,6 +168,28 @@ namespace FrameTiming
 	}
 
 
+	void setCounter( Counter counter, Int value )
+	{
+		if (counter < 0 || counter >= COUNTER_COUNT)
+			return;
+		s_counters[counter] = value;
+	}
+
+	void addCounter( Counter counter, Int delta )
+	{
+		if (counter < 0 || counter >= COUNTER_COUNT)
+			return;
+		s_counters[counter] += delta;
+	}
+
+	void recordEvent( Event event )
+	{
+		if (event < 0 || event >= EVENT_COUNT)
+			return;
+		++s_events[event];
+	}
+
+
 	void setPhaseBracketHook( PhaseBracketHook hook )
 	{
 		s_bracketHook = hook;
@@ -188,6 +232,12 @@ namespace FrameTiming
 
 		s_workHistory[s_historyHead] = workMs;
 
+		for (Int c = 0; c < COUNTER_COUNT; ++c)
+		{
+			s_counterHistory[c][s_historyHead] = s_counters[c];
+			s_counters[c] = 0;
+		}
+
 		// The frame period comes from the limiter rather than from summing the phases,
 		// because the phases only cover what is instrumented -- anything between the end of
 		// one frame's last phase and the start of the next belongs in the period and in
@@ -210,6 +260,9 @@ namespace FrameTiming
 
 		const Int count = s_historyCount;
 
+		// The most recently completed frame, which is the slot behind the write cursor.
+		const Int lastSlot = (s_historyHead + HISTORY_SIZE - 1) % HISTORY_SIZE;
+
 		Real workSum = 0.0f;
 		Real frameSum = 0.0f;
 		Real workMax = 0.0f;
@@ -227,11 +280,28 @@ namespace FrameTiming
 		for (Int p = 0; p < PHASE_COUNT; ++p)
 		{
 			Real sum = 0.0f;
+			Real worst = 0.0f;
 			for (Int i = 0; i < count; ++i)
+			{
 				sum += s_phaseHistory[p][i];
+				worst = max(worst, s_phaseHistory[p][i]);
+			}
 			out.phaseMs[p] = sum / count;
+			out.phaseMaxMs[p] = worst;
 		}
 		out.waitMs = out.phaseMs[PHASE_WAIT];
+
+		for (Int c = 0; c < COUNTER_COUNT; ++c)
+		{
+			Int worst = 0;
+			for (Int i = 0; i < count; ++i)
+				worst = max(worst, s_counterHistory[c][i]);
+			out.counterMax[c] = worst;
+			out.counterLast[c] = s_counterHistory[c][lastSlot];
+		}
+
+		for (Int e = 0; e < EVENT_COUNT; ++e)
+			out.eventCount[e] = s_events[e];
 
 		// p95 over a copy. A mean hides exactly the frames worth looking at, and the max
 		// alone cannot tell a single hitch from a fifth of them being slow.
@@ -301,6 +371,20 @@ namespace FrameTiming
 		if (phase < 0 || phase >= PHASE_COUNT)
 			return "?";
 		return s_phaseNames[phase];
+	}
+
+	const char* getCounterName( Counter counter )
+	{
+		if (counter < 0 || counter >= COUNTER_COUNT)
+			return "?";
+		return s_counterNames[counter];
+	}
+
+	const char* getEventName( Event event )
+	{
+		if (event < 0 || event >= EVENT_COUNT)
+			return "?";
+		return s_eventNames[event];
 	}
 
 }	// namespace FrameTiming

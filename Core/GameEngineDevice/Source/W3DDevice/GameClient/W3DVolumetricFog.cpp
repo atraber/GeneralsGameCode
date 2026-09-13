@@ -64,7 +64,11 @@ VolumetricFogClass::VolumetricFogClass()
 	  m_shadersLoaded(FALSE),
 	  m_loadFailed(FALSE)
 {
-	s_active = Env_Flag("W3D_VOLUMETRIC_FOG", true);
+	// options.ini decides, the environment variable overrides it. Before this the only
+	// control was the variable, so "on" was not a choice anybody had made.
+	const bool optionDefault = (TheGlobalData != nullptr)
+		? (TheGlobalData->m_useVolumetricFog != FALSE) : true;
+	s_active = Env_Flag("W3D_VOLUMETRIC_FOG", optionDefault);
 	s_density = Env_Float("W3D_FOG_DENSITY", s_density);
 	s_heightFalloff = Env_Float("W3D_FOG_HEIGHT_FALLOFF", s_heightFalloff);
 	s_anisotropy = Env_Float("W3D_FOG_ANISOTROPY", s_anisotropy);
@@ -97,6 +101,27 @@ Bool VolumetricFogClass::Is_Active()
 void VolumetricFogClass::Set_Active(Bool active)
 {
 	s_active = active;
+}
+
+Bool VolumetricFogClass::Would_Contribute(unsigned localLightCount)
+{
+	if (!s_active)
+		return FALSE;
+
+	// No medium, nothing to scatter in, whatever the lights do.
+	if (s_density <= 0.0f)
+		return FALSE;
+
+	// The three sources of in-scattering, all off: no ambient haze, no sun shafts, and no
+	// punctual light anywhere in the froxel volume. The pass would integrate to zero and
+	// composite a transparent quad, having first made the whole scene draw itself again to
+	// produce the depth it reads. At the shipped defaults ambient and sun shafts are both
+	// nonzero, so this fires only when somebody has tuned them to zero -- which is exactly
+	// the case where the cost is pure waste and nothing said so.
+	if (s_ambientIntensity <= 0.0f && s_sunShaftIntensity <= 0.0f && localLightCount == 0)
+		return FALSE;
+
+	return TRUE;
 }
 
 void VolumetricFogClass::Ensure_Textures()

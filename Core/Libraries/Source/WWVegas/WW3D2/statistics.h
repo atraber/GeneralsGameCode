@@ -59,6 +59,11 @@ namespace Debug_Statistics
 	int Get_Sorting_Polygons();
 	int Get_Sorting_Vertices();
 	int Get_Draw_Calls();
+	// Draw calls recorded so far in the frame in progress, as opposed to Get_Draw_Calls
+	// above, which reports the frame that has already ended. Sampled either side of a
+	// render pass, the difference is that pass's submission count -- which is the only way
+	// to tell a frame that draws its geometry once from one that draws it three times.
+	int Get_Draw_Calls_This_Frame();
 
 	void Begin_Statistics();
 	void End_Statistics();

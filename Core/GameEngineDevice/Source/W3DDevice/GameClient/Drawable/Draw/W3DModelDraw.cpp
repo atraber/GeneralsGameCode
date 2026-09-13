@@ -1743,6 +1743,7 @@ W3DModelDraw::W3DModelDraw(Thing *thing, const ModuleData* moduleData) : DrawMod
 	m_needRecalcBoneParticleSystems = false;
 	m_fullyObscuredByShroud = false;
 	m_dynamicLightsInitialized = false;
+	m_recoilInfoValid = false;
 	m_modelDynamicLights.clear();
 
 	// only validate the current time-of-day and weather conditions by default.
@@ -2523,6 +2524,8 @@ void W3DModelDraw::handleClientRecoil()
 	{
 		return;
 	}
+
+	ensureWeaponRecoilInfo();
 
 	// do recoil, if any
 	for (int wslot = 0; wslot < WEAPONSLOT_COUNT; ++wslot)
@@ -3974,6 +3977,8 @@ Bool W3DModelDraw::handleWeaponFireFX(WeaponSlotType wslot, Int specificBarrelTo
 	if (!m_curState || !(m_curState->m_validStuff & ModelConditionInfo::BARRELS_VALID))
 		return false;
 
+	ensureWeaponRecoilInfo();
+
 	const ModelConditionInfo::WeaponBarrelInfoVec& wbvec = m_curState->m_weaponBarrelInfoVec[wslot];
 	if (wbvec.empty())
 	{
@@ -3985,7 +3990,9 @@ Bool W3DModelDraw::handleWeaponFireFX(WeaponSlotType wslot, Int specificBarrelTo
 
 	Bool handled = false;
 
-	if (specificBarrelToUse < 0 || specificBarrelToUse > wbvec.size())
+	// TheSuperHackers @fix andytraber 12/09/2026 `>` let specificBarrelToUse == size()
+	// through, which is already one past the end.
+	if (specificBarrelToUse < 0 || specificBarrelToUse >= (Int)wbvec.size())
 		specificBarrelToUse = 0;
 
 	const ModelConditionInfo::WeaponBarrelInfo& info = wbvec[specificBarrelToUse];
@@ -4032,9 +4039,28 @@ Bool W3DModelDraw::handleWeaponFireFX(WeaponSlotType wslot, Int specificBarrelTo
 	if (info.m_recoilBone || info.m_muzzleFlashBone)
 	{
 		//DEBUG_LOG(("START muzzleflash %08lx for Draw %08lx state %s at frame %d",info.m_muzzleFlashBone,this,m_curState->m_description.str(),TheGameLogic->getFrame()));
-		WeaponRecoilInfo& recoil = m_weaponRecoilInfoVec[wslot][specificBarrelToUse];
-		recoil.m_state = WeaponRecoilInfo::RECOIL_START;
-		recoil.m_recoilRate = getW3DModelDrawModuleData()->m_initialRecoil;
+
+		// TheSuperHackers @fix andytraber 12/09/2026 Bound this by the RECOIL vector, not by
+		// the barrel vector the clamp above used. They are two different vectors and they do
+		// come apart: rebuildWeaponRecoilInfo sizes the recoil one from the barrel one at the
+		// moment a model state is set, and if the barrels had not been validated yet (see
+		// validateWeaponBarrelInfo, which silently does nothing outside a logic update) it
+		// records whatever was there -- zero. Nothing re-runs it when the barrels arrive.
+		// This was a live crash: barrels 2, recoils 0, specificBarrelToUse 1.
+		// handleClientRecoil has always defended itself the same way (`count = min(count,
+		// recoilCount)`) and asserts "Barrel count != recoil count!" when it has to; this
+		// site had neither guard. The root cause is fixed where the model condition is now
+		// changed (GameLogic::update, not GameClient::update) -- this is the seatbelt.
+		WeaponRecoilInfoVec& recoils = m_weaponRecoilInfoVec[wslot];
+		DEBUG_ASSERTCRASH(specificBarrelToUse < (Int)recoils.size(),
+			("Barrel %d fired but only %d recoil slots exist (%d barrels)",
+			specificBarrelToUse, (Int)recoils.size(), (Int)wbvec.size()));
+		if (specificBarrelToUse < (Int)recoils.size())
+		{
+			WeaponRecoilInfo& recoil = recoils[specificBarrelToUse];
+			recoil.m_state = WeaponRecoilInfo::RECOIL_START;
+			recoil.m_recoilRate = getW3DModelDrawModuleData()->m_initialRecoil;
+		}
 		if (info.m_muzzleFlashBone != 0)
 			info.setMuzzleFlashHidden(m_renderObject, false);
 	}
@@ -4149,6 +4175,13 @@ void W3DModelDraw::rebuildWeaponRecoilInfo(const ModelConditionInfo* state)
 {
 	Int wslot;
 
+	// TheSuperHackers @fix andytraber 12/09/2026 Remember whether the state we sized from
+	// actually knew its barrels. An unvalidated state reports zero barrels and is
+	// indistinguishable from a state that genuinely has none, which is how a two-barrel
+	// weapon ended up with a zero-length recoil vector and crashed on its next shot.
+	m_recoilInfoValid = (state != nullptr) &&
+		((state->m_validStuff & ModelConditionInfo::BARRELS_VALID) != 0);
+
 	if (state == nullptr)
 	{
 		for (wslot = 0; wslot < WEAPONSLOT_COUNT; ++wslot)
@@ -4173,6 +4206,19 @@ void W3DModelDraw::rebuildWeaponRecoilInfo(const ModelConditionInfo* state)
 			}
 		}
 	}
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Re-size the recoil vector if it was last built from a state that did not yet know how many
+	barrels it had. Cheap: one bool test in the common case, and it can only fire once per
+	model state. */
+void W3DModelDraw::ensureWeaponRecoilInfo()
+{
+	if (m_recoilInfoValid || m_curState == nullptr)
+		return;
+	if (!(m_curState->m_validStuff & ModelConditionInfo::BARRELS_VALID))
+		return;
+	rebuildWeaponRecoilInfo(m_curState);
 }
 
 //-------------------------------------------------------------------------------------------------

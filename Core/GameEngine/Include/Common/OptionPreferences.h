@@ -140,4 +140,5 @@ public:
 	Real getGameWindowTransitionSpeedMultiplier() const;
 
 	Int getDayNightCycleDuration() const;
+	Bool getVolumetricFogEnabled() const;
 };

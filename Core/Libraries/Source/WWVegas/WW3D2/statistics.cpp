@@ -349,6 +349,11 @@ int Debug_Statistics::Get_Draw_Calls()
 	return last_frame_draw_calls;
 }
 
+int Debug_Statistics::Get_Draw_Calls_This_Frame()
+{
+	return draw_calls;
+}
+
 // ----------------------------------------------------------------------------
 //
 //

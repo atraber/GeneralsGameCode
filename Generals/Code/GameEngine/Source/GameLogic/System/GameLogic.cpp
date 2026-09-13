@@ -63,6 +63,7 @@
 #include "GameClient/ControlBar.h"
 #include "GameClient/Drawable.h"
 #include "GameClient/GameClient.h"
+#include "GameClient/DayNightCycle.h"
 #include "GameClient/GameText.h"
 #include "GameClient/GUICallbacks.h"
 #include "GameClient/InGameUI.h"
@@ -3235,6 +3236,16 @@ void GameLogic::update()
 	{
 		TheTerrainLogic->UPDATE();
 	}
+
+	// TheSuperHackers @fix andytraber 12/09/2026 The day-night cycle's boundary work, here and
+	// not in GameClient::update. Crossing into night puts MODELCONDITION_NIGHT on every drawable,
+	// and that reaches ModelConditionInfo::validateWeaponBarrelInfo(), which refuses to compute
+	// anything outside a logic update -- silently, leaving the weapon barrel vector empty while
+	// the per-barrel recoil vector is resized from it. The next shot then ran off the end of the
+	// recoil vector, which is what took the game down about thirteen minutes into every match.
+	// Placed after the terrain logic and before the object updates so a time-of-day change is in
+	// effect for the same frame's firing. See Core/GameEngine/Source/GameClient/DayNightCycle.cpp.
+	DayNightCycle_UpdateLogic(getFrame());
 
 	// force CRC calculation, so we can keep a cache of the last N CRCs.  We do this right where the recorder
 	// would be getting the CRC anyway, so replays can get the CRCs from the exact instant in time as the original.
