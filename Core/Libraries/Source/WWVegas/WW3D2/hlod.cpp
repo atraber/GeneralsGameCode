@@ -724,9 +724,22 @@ WW3DErrorType HLodDefClass::Load_W3D(ChunkLoadClass & cload)
 							plDef.Intensity = inten / 10.0f;
 						}
 					}
-					// Check for always-on flag: _AL, _ALWAYS, _ON
-					if (strstr(name, "_AL") || strstr(name, "_ALWAYS") || strstr(name, "_ON")) {
-						plDef.Flags |= W3D_HLOD_LIGHT_FLAG_ALWAYS_ON;
+					// Always-on is a whole '_'-separated TOKEN, AL or ALWAYS.
+					//
+					// TheSuperHackers @bugfix andytraber 13/09/2026 This was a substring test that also
+					// accepted "_ON", and every PL_ bone in the installed HD vehicle and dozer mods ends
+					// in exactly that (PL_S_HL1_R99G91B74_A55D26I45_ON) -- so every one of them was
+					// flagged always-on and ignored night altogether. In those assets _ON is plainly the
+					// "light enabled" marker, not a schedule: it sits on the headlights too. A substring
+					// test would also have matched any token that merely starts with AL.
+					char tokens[128];
+					strncpy(tokens, name, sizeof(tokens) - 1);
+					tokens[sizeof(tokens) - 1] = '\0';
+					for (char * tok = strtok(tokens, "_"); tok != nullptr; tok = strtok(nullptr, "_")) {
+						if (stricmp(tok, "AL") == 0 || stricmp(tok, "ALWAYS") == 0) {
+							plDef.Flags |= W3D_HLOD_LIGHT_FLAG_ALWAYS_ON;
+							break;
+						}
 					}
 					(*LightArray)[lidx++].Init(plDef);
 				}

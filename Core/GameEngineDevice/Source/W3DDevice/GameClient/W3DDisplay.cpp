@@ -2460,7 +2460,9 @@ void W3DDisplay::updateSceneLighting( const GlobalData::TerrainLighting *objects
 	if( TheTerrainRenderObject && updateTerrainMesh )
 	{
 		FrameTiming::recordEvent(FrameTiming::EVENT_TERRDIRTY_TOD);
-		TheTerrainRenderObject->staticLightingChanged();
+		// TheSuperHackers @perf andytraber 13/09/2026 Not staticLightingChanged: the terrain tiles
+		// are lit per pixel now and do not need the full re-bake -- only roads and scorches do.
+		TheTerrainRenderObject->sceneLightingChanged();
 		TheTacticalView->forceRedraw();
 	}
 }

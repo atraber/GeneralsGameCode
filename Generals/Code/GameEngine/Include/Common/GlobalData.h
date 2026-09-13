@@ -267,6 +267,10 @@ public:
 	// before; DayNightCycle_Update overwrites it with the interpolated values.
 	TerrainLighting m_terrainObjectsCurrent[MAX_GLOBAL_LIGHTS];
 
+	// TheSuperHackers @feature andytraber 13/09/2026 Cast-shadow strength, 0..1. The day-night cycle
+	// fades it out as the sun sets and back in under the moon; 1 whenever the cycle is not running.
+	Real m_sunShadowStrength;
+
 	Real m_infantryLightScale[TIME_OF_DAY_COUNT];
 	Real m_scriptOverrideInfantryLightScale;
 

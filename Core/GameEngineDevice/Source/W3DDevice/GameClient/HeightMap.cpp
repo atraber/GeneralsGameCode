@@ -293,7 +293,7 @@ Int HeightMapRenderObjClass::updateVB(DX8VertexBufferClass	*pVB, VERTEX_FORMAT *
 				vb->v1=V[0];
 				vb->u2=UA[0];
 				vb->v2=VA[0];
-				doTheLight(vb, lightRay, &normalAtTexel, pLightsIterator, alpha[0]);
+				encodeTerrainNormal(vb, normalAtTexel, alpha[0]);
 				vb++;
 
 				//top-right sample
@@ -315,7 +315,7 @@ Int HeightMapRenderObjClass::updateVB(DX8VertexBufferClass	*pVB, VERTEX_FORMAT *
 				vb->v1=V[1];
 				vb->u2=UA[1];
 				vb->v2=VA[1];
-				doTheLight(vb, lightRay, &normalAtTexel, pLightsIterator, alpha[1]);
+				encodeTerrainNormal(vb, normalAtTexel, alpha[1]);
 				vb++;
 
 				//bottom-right sample
@@ -341,7 +341,7 @@ Int HeightMapRenderObjClass::updateVB(DX8VertexBufferClass	*pVB, VERTEX_FORMAT *
 				vb->v1=V[2];
 				vb->u2=UA[2];
 				vb->v2=VA[2];
-				doTheLight(vb, lightRay, &normalAtTexel, pLightsIterator, alpha[2]);
+				encodeTerrainNormal(vb, normalAtTexel, alpha[2]);
 				vb++;
 
 				//bottom-left sample
@@ -372,7 +372,7 @@ Int HeightMapRenderObjClass::updateVB(DX8VertexBufferClass	*pVB, VERTEX_FORMAT *
 				vb->v1=V[3];
 				vb->u2=UA[3];
 				vb->v2=VA[3];
-				doTheLight(vb, lightRay, &normalAtTexel, pLightsIterator, alpha[3]);
+				encodeTerrainNormal(vb, normalAtTexel, alpha[3]);
 				vb++;
 
 				VERTEX_FORMAT *pCurVertices = vb-4;
@@ -1597,6 +1597,26 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 				}
 			}
 #endif
+			// TheSuperHackers @feature andytraber 13/09/2026 The light terrain_ps applies to the
+			// normal the tiles now carry -- exactly the inputs doTheLight read, taken this frame
+			// rather than whenever a tile was last baked. See encodeTerrainNormal.
+			{
+				Vector4 lighting[DX8Wrapper::TERRAIN_LIGHTING_CONSTANTS];
+				lighting[0].Set(TheGlobalData->m_terrainAmbient[0].red,
+								TheGlobalData->m_terrainAmbient[0].green,
+								TheGlobalData->m_terrainAmbient[0].blue, 0.0f);
+				for (Int li = 0; li < MAX_GLOBAL_LIGHTS; ++li)
+				{
+					const Bool used = li < TheGlobalData->m_numGlobalLights;
+					const Coord3D &pos = TheGlobalData->m_terrainLightPos[li];
+					const RGBColor &dif = TheGlobalData->m_terrainDiffuse[li];
+					lighting[1 + li].Set(used ? -pos.x : 0.0f, used ? -pos.y : 0.0f, used ? -pos.z : 0.0f, 0.0f);
+					lighting[4 + li].Set(used ? dif.red : 0.0f, used ? dif.green : 0.0f, used ? dif.blue : 0.0f, 0.0f);
+				}
+				lighting[7].Set(m_depthFade.X, m_depthFade.Y, m_depthFade.Z, m_useDepthFade ? 1.0f : 0.0f);
+				lighting[8].Set(TheGlobalData->m_waterPositionZ, 0.0f, 0.0f, 0.0f);
+				DX8Wrapper::Set_Terrain_Lighting(lighting);
+			}
 			DX8Wrapper::Set_Terrain_Shader_Pass(true);
 		}
 		else if (!doMultiPassWireFrame && m_disableTextures)
@@ -1615,6 +1635,10 @@ void HeightMapRenderObjClass::Render(RenderInfoClass & rinfo)
 
 			}
 	}
+
+	// TheSuperHackers @fix andytraber 13/09/2026 Scorches and bridges bake the light on the CPU; re-bake
+	// them if it has moved since, before either is drawn below.
+	refreshBakedLighting();
 
 	if (!doMultiPassWireFrame)
 	{

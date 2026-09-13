@@ -758,6 +758,8 @@ GlobalData::GlobalData()
 	m_ammoPipScreenOffset.x = m_ammoPipScreenOffset.y = 0;
 	m_containerPipScreenOffset.x = m_containerPipScreenOffset.y = 0;
 
+	m_sunShadowStrength = 1.0f;
+
 	for (i=0; i<MAX_GLOBAL_LIGHTS; i++)
 	{
 		m_terrainAmbient[i].red = 0.0f;

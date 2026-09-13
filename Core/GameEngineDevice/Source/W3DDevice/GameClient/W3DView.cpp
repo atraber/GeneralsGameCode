@@ -2274,7 +2274,10 @@ void W3DView::draw()
 		const float SHADOW_MESH_BIAS_TEXELS = 0.5f;
 		const float meshBias = (SHADOW_MESH_BIAS_TEXELS * texelWorld) / (shadowFar - 1.0f);
 
-		DX8Wrapper::Set_Shadow_Params(groundBias, 1.0f, normalOffsetWorld, meshBias,
+		// TheSuperHackers @feature andytraber 13/09/2026 Strength from the day-night cycle, which fades
+		// the sun's shadows out before the light hands over to the moon and fades the moon's back in
+		// after -- the direction swaps only while this is zero. 1 whenever the cycle is off.
+		DX8Wrapper::Set_Shadow_Params(groundBias, TheGlobalData->m_sunShadowStrength, normalOffsetWorld, meshBias,
 									  filterRadiusTexels);
 
 		// (The depth pass forces the full square viewport itself, inside the
@@ -4328,7 +4331,12 @@ void W3DView::widenTerrainDrawSizeForShadows(ICoord2D &dimensions) const
 
 	// The same floor the frustum fit uses. A sun on the horizon throws shadows of unbounded
 	// length, and the window cannot follow it there.
-	const Real sinSun = max(fabsf(sunDir.Z), 0.10f);
+	//
+	// TheSuperHackers @perf andytraber 13/09/2026 Floored at 10 degrees here rather than the frustum's
+	// ~6. The cycle now carries the sun's own direction down to 4 degrees while fading its shadows out,
+	// so a lower floor would grow the window to its widest for shadows that are at most a third strength
+	// below 10 degrees and gone below 4. Past 10 a long shadow may be cut at the window edge, faintly.
+	const Real sinSun = max(fabsf(sunDir.Z), 0.1736f);
 	const Real cosSun = sqrtf(max(1.0f - sinSun * sinSun, 0.0f));
 
 	// TheSuperHackers @perf andytraber 12/09/2026 Quantised, and that is the point.

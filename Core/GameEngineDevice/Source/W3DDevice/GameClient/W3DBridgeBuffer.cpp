@@ -733,6 +733,7 @@ for the bridges. */
 W3DBridgeBuffer::W3DBridgeBuffer()
 {
 	m_initialized = false;
+	m_lightingChanged = false;
 	m_vertexMaterial = nullptr;
 	m_vertexBridge = nullptr;
 	m_indexBridge = nullptr;
@@ -1136,9 +1137,15 @@ void W3DBridgeBuffer::drawBridges(CameraClass * camera, Bool wireframe)
 				}
 			}
 		}
-		if (changed) {
+		// TheSuperHackers @fix andytraber 13/09/2026 ...or the scene light moved. A bridge's colour is
+		// baked per vertex from its own normals (getModelVertices -> doTheLight), and this reload was
+		// the only thing that re-baked it besides a visibility change, so under the day-night cycle
+		// the bridges kept whatever light they were last loaded with. BaseHeightMapRenderObjClass::
+		// refreshBakedLighting raises the flag when the published light has moved far enough to see.
+		if (changed || m_lightingChanged) {
 			loadBridgesInVertexAndIndexBuffers(nullptr);
 		}
+		m_lightingChanged = false;
 	}	else {
 		// In wb, all are enabled.
 		for (curBridge=0; curBridge<m_numBridges; curBridge++) {

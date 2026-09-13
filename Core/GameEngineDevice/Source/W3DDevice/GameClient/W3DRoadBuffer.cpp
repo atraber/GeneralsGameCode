@@ -336,7 +336,14 @@ Int RoadSegment::GetIndices(UnsignedShort *destination_ib, Int numToCopy, Int of
 //=============================================================================
 // RoadSegment::updateSegLighting
 //=============================================================================
-/** Updates the diffuse lighting in the vertex buffer. */
+/** Updates the diffuse lighting in the vertex buffer.
+
+TheSuperHackers @fix andytraber 13/09/2026 Writes the terrain NORMAL of the cell under each vertex,
+not a lit colour: road_ps lights it per pixel with the ground's own constants, as terrain_ps does.
+The baked colour it replaces went stale in two ways -- it was re-baked only at time-of-day
+boundaries, and drawRoads did not upload even those unless a segment's visibility had changed too,
+so the roads kept the light of map load for the whole cycle (bright blue at noon on a night map).
+A normal does not depend on the light, so this now only needs to run when the ground changes. */
 //=============================================================================
 void RoadSegment::updateSegLighting()
 {
@@ -347,7 +354,7 @@ void RoadSegment::updateSegLighting()
 		Int y = m_vb[i].y/MAP_XY_FACTOR+0.5;
 		x += borderSizeInLine;
 		y += borderSizeInLine;
-		m_vb[i].diffuse = (255<<24)|TheTerrainRenderObject->getStaticDiffuse(x, y);
+		m_vb[i].diffuse = (255<<24)|TheTerrainRenderObject->getStaticNormalColor(x, y);
 	}
 }
 
@@ -2768,7 +2775,9 @@ W3DRoadBuffer::W3DRoadBuffer()	:
 	m_maxRoadTypes(8),
 	m_maxRoadVertex(1000),
 	m_maxRoadIndex(2000),
-	m_curRoadType(0)
+	m_curRoadType(0),
+	m_updateBuffers(false),
+	m_lightingChanged(false)
 
 {
 	allocateRoadBuffers();
@@ -2941,6 +2950,7 @@ void W3DRoadBuffer::updateLighting()
 		m_roads[curRoad].updateSegLighting();
 	}
 	m_updateBuffers = true;
+	m_lightingChanged = true;
 }
 
 //=============================================================================
@@ -3025,11 +3035,15 @@ void W3DRoadBuffer::drawRoads(CameraClass * camera, TextureClass *cloudTexture, 
 
 	Bool loadBuffers = false;
 	if (m_updateBuffers) {
-		if (visibilityChanged(bounds)) {
+		// TheSuperHackers @fix andytraber 13/09/2026 visibilityChanged is always called: it is what
+		// records each segment's visibility. But rewritten vertices must reach the GPU whether or
+		// not any segment came into view -- see RoadSegment::updateSegLighting.
+		if (visibilityChanged(bounds) || m_lightingChanged) {
 			loadBuffers = true;
 		}
 	}
 	m_updateBuffers = false;
+	m_lightingChanged = false;
 
 	for (stacking=0; stacking <= maxStacking; stacking++) {
 		for (i=0; i<m_maxRoadTypes; i++) {

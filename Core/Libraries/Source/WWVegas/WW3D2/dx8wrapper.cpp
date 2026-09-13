@@ -3090,6 +3090,7 @@ Vector4							DX8Wrapper::m_terrainTilingParams(0.0f, 160.0f, 0.0f, 0.0f);
 Vector4							DX8Wrapper::m_terrainDetailParams(0.0f, 0.0f, 0.0f, 0.0f);
 Vector4							DX8Wrapper::m_terrainSunDir(0.0f, 0.0f, 1.0f, 0.0f);
 Vector4							DX8Wrapper::m_terrainColourParams(0.0f, 0.0f, 0.0f, 0.0f);
+Vector4							DX8Wrapper::m_terrainLighting[DX8Wrapper::TERRAIN_LIGHTING_CONSTANTS];
 static DWORD s_dwOriginalPS = 0;  // fixed-function pixel shader to restore after unit draws
 // True while a PBR draw's ORM map is still bound on texture stage 1. That bind goes
 // straight to the device, so nothing else knows to undo it -- but only a PBR draw can
@@ -7161,6 +7162,7 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			Set_Pixel_Shader_Constant(4, &m_terrainDetailParams, 1);
 			Set_Pixel_Shader_Constant(5, &m_terrainSunDir, 1);
 			Set_Pixel_Shader_Constant(6, &m_terrainColourParams, 1);
+			Set_Pixel_Shader_Constant(7, m_terrainLighting, TERRAIN_LIGHTING_CONSTANTS);
 
 			// Cloud/noise tile and wrap.
 			Set_Sampler(2, Get_Sampler(2)
@@ -7248,6 +7250,9 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			// terrain gets them -- this is what the fixed-function road path could not do.
 			Set_Vertex_Shader_Constant(5, reinterpret_cast<const GfxMatrix4*>(m_sunVP), 4);
 			Set_Pixel_Shader_Constant(1, m_shadowParams, 1);   // bias + strength + texel
+			// TheSuperHackers @fix andytraber 13/09/2026 The ground's light, the same c7..c15 the
+			// terrain pass binds: a road vertex carries the terrain normal now, lit per pixel.
+			Set_Pixel_Shader_Constant(7, m_terrainLighting, TERRAIN_LIGHTING_CONSTANTS);
 			if (m_pShadowMap != nullptr) {
 				Set_DX8_Texture(5, m_pShadowMap);
 				s_shadowStage5Bound = true;

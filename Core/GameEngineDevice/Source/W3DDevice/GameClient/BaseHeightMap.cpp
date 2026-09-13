@@ -242,6 +242,8 @@ BaseHeightMapRenderObjClass::BaseHeightMapRenderObjClass()
 	m_x=0;
 	m_y=0;
 	m_needFullUpdate = false;
+	m_bakedLightingValid = false;
+	m_bakedNumLights = 0;
 	// TheSuperHackers @perf andytraber 12/09/2026 See heightMapChanged.
 	m_needPartialUpdate = false;
 	m_partialUpdateRegion.zero();
@@ -585,6 +587,27 @@ void BaseHeightMapRenderObjClass::doTheLight(VERTEX_FORMAT *vb, Vector3*light, V
 	shadeB*=255.0f;
 	vb->diffuse = REAL_TO_INT(shadeB) | (REAL_TO_INT(shadeG) << 8) | (REAL_TO_INT(shadeR) << 16) | ((Int)alpha << 24);
 #endif
+}
+
+//=============================================================================
+// BaseHeightMapRenderObjClass::encodeTerrainNormal
+//=============================================================================
+/** TheSuperHackers @feature andytraber 13/09/2026 The terrain tiles no longer carry a lit
+colour: they carry the normal doTheLight would have lit, and terrain_ps lights it every frame
+with that frame's light (see terrainLight there). A baked colour could only be as current as the
+last bake, and the tiles are baked piecemeal -- the four nominal boundaries, every scrolled-in
+strip, every deform patch -- so under the day-night cycle the ground popped and showed seams.
+
+x and y are biased into [0,1]; z is stored as is, because a heightfield normal never points down,
+which buys it the full 8 bits. doTheLight itself stays: getStaticDiffuse and the bridges still
+want a finished colour on the CPU. */
+//=============================================================================
+void BaseHeightMapRenderObjClass::encodeTerrainNormal(VERTEX_FORMAT *vb, const Vector3 &normal, UnsignedByte alpha)
+{
+	const Int r = (Int)(clamp(0.0f, normal.X * 0.5f + 0.5f, 1.0f) * 255.0f + 0.5f);
+	const Int g = (Int)(clamp(0.0f, normal.Y * 0.5f + 0.5f, 1.0f) * 255.0f + 0.5f);
+	const Int b = (Int)(clamp(0.0f, normal.Z, 1.0f) * 255.0f + 0.5f);
+	vb->diffuse = b | (g << 8) | (r << 16) | ((Int)alpha << 24);
 }
 
 //=============================================================================
@@ -2130,6 +2153,49 @@ Int BaseHeightMapRenderObjClass::getStaticDiffuse(Int x, Int y)
 }
 
 //=============================================================================
+// BaseHeightMapRenderObjClass::getStaticNormalColor
+//=============================================================================
+/** TheSuperHackers @fix andytraber 13/09/2026 getStaticDiffuse without the light: the same
+normal, the same neighbourhood, packed the way the terrain tiles carry it so that a road over this
+cell and the ground under it are lit per pixel from one normal. */
+//=============================================================================
+Int BaseHeightMapRenderObjClass::getStaticNormalColor(Int x, Int y)
+{
+	if (m_map == nullptr) {
+		return(0);
+	}
+
+	if (x<0) x = 0;
+	if (y<0) y = 0;
+	if (x >= m_map->getXExtent())
+		x=m_map->getXExtent()-1;
+	if (y >= m_map->getYExtent())
+		y=m_map->getYExtent()-1;
+
+	constexpr const Int cellOffset = 1;
+	Int vn0 = y-cellOffset;
+	Int vp1 = y+cellOffset;
+	Int un0 = x-cellOffset;
+	Int up1 = x+cellOffset;
+	if (vp1 >= m_map->getYExtent())
+		vp1=m_map->getYExtent()-1;
+	if (vn0<0) vn0 = 0;
+	if (un0 < 0)
+		un0=0;
+	if (up1 >= m_map->getXExtent())
+		up1=m_map->getXExtent()-1;
+
+	Vector3 l2r(2*MAP_XY_FACTOR,0,MAP_HEIGHT_SCALE*(m_map->getHeight(up1, y) - m_map->getHeight(un0, y)));
+	Vector3 n2f(0,2*MAP_XY_FACTOR,MAP_HEIGHT_SCALE*(m_map->getHeight(x, vp1) - m_map->getHeight(x, vn0)));
+	Vector3 normalAtTexel;
+	Vector3::Normalized_Cross_Product(l2r,n2f, &normalAtTexel);
+
+	VERTEX_FORMAT vertex;
+	encodeTerrainNormal(&vertex, normalAtTexel, 0);
+	return vertex.diffuse;
+}
+
+//=============================================================================
 // BaseHeightMapRenderObjClass::On_Frame_Update
 //=============================================================================
 /** Updates the diffuse color values in the vertices as affected by the dynamic lights.*/
@@ -2366,6 +2432,94 @@ void BaseHeightMapRenderObjClass::staticLightingChanged()
 }
 
 //=============================================================================
+// BaseHeightMapRenderObjClass::sceneLightingChanged
+//=============================================================================
+/** TheSuperHackers @perf andytraber 13/09/2026 The light changed and the ground did not. The
+terrain tiles hold a normal and are lit per pixel, so re-baking them bought nothing and cost the
+26-48 ms full update the day-night cycle used to pay at every boundary. Scorches still bake their
+light on the CPU and are refreshed exactly as staticLightingChanged refreshes them. Roads are not:
+they carry the terrain normal too (RoadSegment::updateSegLighting), which a light change leaves
+exactly as it was. */
+//=============================================================================
+void BaseHeightMapRenderObjClass::sceneLightingChanged()
+{
+	m_scorchesInBuffer = 0;
+	m_curNumScorchVertices=0;
+	m_curNumScorchIndices=0;
+}
+
+//=============================================================================
+// BaseHeightMapRenderObjClass::refreshBakedLighting
+//=============================================================================
+/** TheSuperHackers @fix andytraber 13/09/2026 Scorch marks and bridges still bake the global light
+into their vertex colours on the CPU, and nothing re-baked them while the day-night cycle moved the
+light: scorches only at the four nominal boundaries (a visible snap), bridges only when a bridge came
+into view or changed damage state (so, in practice, never). Unlike the terrain and the roads they do
+not go through terrain_ps -- a scorch is one flat colour, a bridge is lit from its own model normals
+-- so the fix is to re-bake them, not to light them per pixel.
+
+Called once a frame before either is drawn. It compares the light being published now with the light
+they were last baked with, and re-bakes when the difference could show: a colour channel moved by
+more than BAKED_COLOUR_EPSILON, or a light direction by more than BAKED_DIRECTION_DEG. At the default
+20-minute cycle the sun crosses half a degree in about 1.7 seconds, so a bake every second or two;
+both bakes are small (at most MAX_SCORCH_VERTEX and MAX_BRIDGE_VERTEX vertices). */
+//=============================================================================
+void BaseHeightMapRenderObjClass::refreshBakedLighting()
+{
+	static_assert(MAX_GLOBAL_LIGHTS <= BAKED_LIGHT_SLOTS, "refreshBakedLighting stores MAX_GLOBAL_LIGHTS lights");
+	static const Real BAKED_COLOUR_EPSILON = 1.5f / 255.0f;
+	static const Real BAKED_DIRECTION_DEG = 0.5f;
+	static const Real BAKED_DIRECTION_COS = cosf(BAKED_DIRECTION_DEG * PI / 180.0f);
+
+	if (TheGlobalData == nullptr)
+		return;
+
+	const Int numLights = TheGlobalData->m_numGlobalLights < MAX_GLOBAL_LIGHTS ? TheGlobalData->m_numGlobalLights : MAX_GLOBAL_LIGHTS;
+	Vector3 ambient(TheGlobalData->m_terrainAmbient[0].red, TheGlobalData->m_terrainAmbient[0].green, TheGlobalData->m_terrainAmbient[0].blue);
+	Vector3 diffuse[BAKED_LIGHT_SLOTS];
+	Vector3 dir[BAKED_LIGHT_SLOTS];
+	for (Int i = 0; i < numLights; ++i)
+	{
+		const RGBColor &d = TheGlobalData->m_terrainDiffuse[i];
+		const Coord3D &p = TheGlobalData->m_terrainLightPos[i];
+		diffuse[i].Set(d.red, d.green, d.blue);
+		dir[i].Set(p.x, p.y, p.z);
+		if (dir[i].Length2() > 1e-8f)
+			dir[i].Normalize();
+	}
+
+	Bool changed = !m_bakedLightingValid || numLights != m_bakedNumLights;
+	for (Int i = 0; !changed && i < numLights; ++i)
+	{
+		const Vector3 dd = diffuse[i] - m_bakedDiffuse[i];
+		if (fabsf(dd.X) > BAKED_COLOUR_EPSILON || fabsf(dd.Y) > BAKED_COLOUR_EPSILON || fabsf(dd.Z) > BAKED_COLOUR_EPSILON)
+			changed = true;
+		else if (Vector3::Dot_Product(dir[i], m_bakedLightDir[i]) < BAKED_DIRECTION_COS)
+			changed = true;
+	}
+	if (!changed)
+	{
+		const Vector3 da = ambient - m_bakedAmbient;
+		changed = fabsf(da.X) > BAKED_COLOUR_EPSILON || fabsf(da.Y) > BAKED_COLOUR_EPSILON || fabsf(da.Z) > BAKED_COLOUR_EPSILON;
+	}
+	if (!changed)
+		return;
+
+	m_bakedLightingValid = true;
+	m_bakedNumLights = numLights;
+	m_bakedAmbient = ambient;
+	for (Int i = 0; i < numLights; ++i)
+	{
+		m_bakedDiffuse[i] = diffuse[i];
+		m_bakedLightDir[i] = dir[i];
+	}
+
+	sceneLightingChanged();
+	if (m_bridgeBuffer)
+		m_bridgeBuffer->lightingChanged();
+}
+
+//=============================================================================
 // BaseHeightMapRenderObjClass::heightMapChanged
 //=============================================================================
 /** Notification that the height field changed shape in this region. */
@@ -2440,7 +2594,7 @@ Bool BaseHeightMapRenderObjClass::takePendingHeightMapRegion(IRegion2D &regionOu
 //=============================================================================
 void BaseHeightMapRenderObjClass::setTimeOfDay( TimeOfDay tod )
 {
-	staticLightingChanged();
+	sceneLightingChanged();
 }
 
 //=============================================================================

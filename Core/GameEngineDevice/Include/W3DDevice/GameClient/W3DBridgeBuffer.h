@@ -159,6 +159,8 @@ public:
 	/// Called when the view changes, and sort key needs to be recalculated.
 	/// Normally sortKey gets calculated when a bridge becomes visible.
 	void doFullUpdate() {m_updateVis = true;};
+	/// TheSuperHackers @fix andytraber 13/09/2026 The scene light moved: re-bake the vertex colours on the next draw.
+	void lightingChanged() {m_lightingChanged = true;};
 	void loadBridges(W3DTerrainLogic *pTerrainLogic, Bool saveGame); ///< Loads the bridges from the map objects list.
 	void worldBuilderUpdateBridgeTowers( W3DAssetManager *assetManager, SimpleSceneClass *scene );			///< for the editor and showing visual bridge towers
 	void updateCenter(CameraClass *camera, RefRenderObjListIterator *pLightsIterator);
@@ -177,6 +179,7 @@ protected:
 	Bool		m_initialized;		///< True if the subsystem initialized.
 	Bool		m_updateVis;			///< True if the camera moved, and we need to recalculate visibility.
 	Bool		m_anythingChanged;	///< Set to true if visibility changed.
+	Bool		m_lightingChanged;	///< Set by lightingChanged(); consumed by drawBridges.
 	/// Add a bridge at location.  Name is the gdf item name.
 	void addBridge(Vector3 fromLoc, Vector3 toLoc, AsciiString name, W3DTerrainLogic *pTerrainLogic, Dict *props);
 	void loadBridgesInVertexAndIndexBuffers(RefRenderObjListIterator *pLightsIterator); ///< Fills the index and vertex buffers for drawing.

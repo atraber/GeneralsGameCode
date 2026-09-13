@@ -171,6 +171,12 @@ public:
 	void doTextures(Bool flag) {m_disableTextures = !flag;};
 	/// Update the diffuse value from static light info for one vertex.
 	void doTheLight(VERTEX_FORMAT *vb, Vector3*light, Vector3*normal, RefRenderObjListIterator *pLightsIterator, UnsignedByte alpha);
+	/// TheSuperHackers @feature andytraber 13/09/2026 What the terrain tiles store instead of a lit colour: the normal, for terrain_ps to light.
+	void encodeTerrainNormal(VERTEX_FORMAT *vb, const Vector3 &normal, UnsignedByte alpha);
+	/// The global light changed but the ground did not: re-light what is still baked on the CPU (scorches), not the terrain tiles.
+	void sceneLightingChanged();
+	/// TheSuperHackers @fix andytraber 13/09/2026 Once a frame: if the published light moved visibly since the last bake, re-bake scorches and bridges.
+	void refreshBakedLighting();
 	void addScorch(Vector3 location, Real radius, Scorches type);
 	void addTree(DrawableID id, Coord3D location, Real scale, Real angle,
 								Real randomScaleAmount,  const W3DTreeDrawModuleData *data);
@@ -213,6 +219,7 @@ public:
 	void loadRoadsAndBridges(W3DTerrainLogic *pTerrainLogic, Bool saveGame); ///< Load the roads from the map objects.
 	void worldBuilderUpdateBridgeTowers( W3DAssetManager *assetManager, SimpleSceneClass *scene );							///< for the editor updating of bridge tower visuals
 	Int  getStaticDiffuse(Int x, Int y); ///< Gets the diffuse terrain lighting value for a point on the mesh.
+	Int  getStaticNormalColor(Int x, Int y); ///< The terrain normal at a mesh point, encoded as encodeTerrainNormal packs it (alpha 0).
 
 	virtual Int	getNumExtraBlendTiles(Bool visible) { return 0;}
 	Int getNumShoreLineTiles(Bool visible)	{ return visible?m_numVisibleShoreLineTiles:m_numShoreLineTiles;}
@@ -274,6 +281,14 @@ protected:
 	Int			m_numScorches;
 
 	Int			m_scorchesInBuffer;		///< how many are in the buffers.  If less than numScorches, we need to update
+	// The light scorches and bridges were last baked with -- see refreshBakedLighting. Sized for
+	// MAX_GLOBAL_LIGHTS, which the .cpp checks at compile time.
+	enum { BAKED_LIGHT_SLOTS = 3 };
+	Bool		m_bakedLightingValid;
+	Int			m_bakedNumLights;
+	Vector3	m_bakedAmbient;
+	Vector3	m_bakedDiffuse[BAKED_LIGHT_SLOTS];
+	Vector3	m_bakedLightDir[BAKED_LIGHT_SLOTS];
 
 	// NOTE: This argument (contrary to most of the rest of the engine), is in degrees, not radians.
 	Real		m_curImpassableSlope;

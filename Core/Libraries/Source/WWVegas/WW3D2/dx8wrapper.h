@@ -1948,6 +1948,16 @@ public:
 		m_terrainSunDir.Set(towardSun.X, towardSun.Y, towardSun.Z, 0.0f);
 		m_terrainColourParams.Set(colourStrength, 0.0f, 0.0f, 0.0f);
 	}
+	// TheSuperHackers @feature andytraber 13/09/2026 The terrain's global light (terrain_ps c7..c15),
+	// published by the terrain every frame instead of baked into its vertex colour: [0] ambient,
+	// [1..3] negated light rays, [4..6] diffuse colours, [7] underwater fade rgb + on, [8] x = water Z.
+	enum { TERRAIN_LIGHTING_CONSTANTS = 9 };
+	static Vector4						m_terrainLighting[TERRAIN_LIGHTING_CONSTANTS];
+	static void Set_Terrain_Lighting(const Vector4 values[TERRAIN_LIGHTING_CONSTANTS])
+	{
+		for (int i = 0; i < TERRAIN_LIGHTING_CONSTANTS; ++i)
+			m_terrainLighting[i] = values[i];
+	}
 
 	friend void DX8_Assert();
 	friend class WW3D;

@@ -39,6 +39,12 @@ void DayNightCycle_Update(UnsignedInt logicFrame);
 void DayNightCycle_UpdateLogic(UnsignedInt logicFrame);
 void DayNightCycle_SetTimeOfDay(TimeOfDay tod);
 
+// TheSuperHackers @feature andytraber 13/09/2026 While the cycle runs it decides per drawable when
+// MODELCONDITION_NIGHT -- and with it the drawable's lights -- goes on and off, jittered across a
+// band of sun elevation at dusk and dawn. GameClient::setTimeOfDay asks this first; FALSE means the
+// cycle is not running and the caller should apply tod to every drawable itself, as it always did.
+Bool DayNightCycle_SyncDrawables(TimeOfDay nominalTod);
+
 Bool DayNightCycle_IsEnabled();
 Real DayNightCycle_GetCurrentGameHour();
 TimeOfDay DayNightCycle_GetCurrentTimeOfDay();

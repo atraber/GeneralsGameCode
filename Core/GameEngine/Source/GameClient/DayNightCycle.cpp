@@ -63,6 +63,13 @@ static Bool s_forceTerrainBake = FALSE;
 // this is the one thing that has to cross between them.
 static Bool s_pendingTerrainBake = FALSE;
 
+// Where the sun was on the last LOGIC step, for the per-drawable light switch (see WHEN THE LIGHTS
+// COME ON). Kept apart from the client's copies above because the switch compares one logic frame
+// against the one before it, and the client runs at a different rate.
+static Bool s_lightsStateValid = FALSE;
+static Real s_lightsHour = 0.0f;
+static Real s_lightsSunElevationDeg = 0.0f;
+
 static const Real PI_F       = 3.14159265f;
 static const Real DEG_TO_RAD = PI_F / 180.0f;
 static const Real RAD_TO_DEG = 180.0f / PI_F;
@@ -96,93 +103,59 @@ static const Real RAD_TO_DEG = 180.0f / PI_F;
 // night split the phase table in DayNightCycle_Init already assumes -- so sunrise is hour 0 and
 // sunset is hour 16, and the two meet across the wrap with no seam.
 static const Real SUN_SET_HOUR             = 16.0f;	///< hours 0..this are daylight; 2/3 of the cycle
-static const Real SUN_PEAK_ELEVATION_DEG   = 68.0f;	///< solar noon. The authored afternoon key was 63 deg, so midday barely moves
-static const Real SUN_RISE_AZIMUTH_DEG     = 210.0f;	///< where it comes up; matches the authored morning key (207 deg)
-static const Real SUN_AZIMUTH_SWEEP_DEG    = -180.0f;	///< half a turn across the day, in the direction the authored keys swept
 
-// --- THE MOON (requirements 3, 5, 6, 7, 8). Its own arc, deliberately wider than the night and
-// phase-shifted earlier, plus a hard floor on elevation.
-static const Real MOON_RISE_HOUR           = 13.0f;	///< req 6: up three hours BEFORE the sun sets at 16
-static const Real MOON_SET_HOUR            = 26.0f;	///< req 7: two hours past sunrise at hour 24, so it is still up when the sun returns
-static const Real MOON_MIN_ELEVATION_DEG   = 30.0f;	///< req 8: the floor. cot(30) = 1.73, so a moon shadow is never longer than ~1.7x its caster
-static const Real MOON_PEAK_ELEVATION_DEG  = 55.0f;	///< req 6: and it still has 25 degrees of arc to travel, so it visibly moves
-static const Real MOON_RISE_AZIMUTH_DEG    = 210.0f;	///< the same arc as the sun, just phase-shifted; so it rises where the sun rises
-static const Real MOON_AZIMUTH_SWEEP_DEG   = -180.0f;
+// TheSuperHackers @tweak andytraber 13/09/2026 A TILTED ORBIT. The sun used to be a half sine in
+// elevation (0..68..0) with the azimuth swept linearly, which is an equatorial sun: eight of the
+// sixteen daylight hours above 48 degrees, where a shadow is under 0.9x its caster and its tip
+// barely moves, and then all the lengthening crammed into the last hour. Measured on a 1-unit
+// caster over a 20-minute cycle, the shadow tip moved 280x faster at dusk than at noon.
+//
+// Now the sun runs on the circle a real sun draws at a mid latitude: sin(el) = sin(lat)sin(dec) +
+// cos(lat)cos(dec)cos(H). The hour angle H is remapped so that daylight still spans game hours
+// 0..SUN_SET_HOUR and night the rest, so the 16h/8h split and every schedule keyed to it survive.
+// The elevation keeps running below the horizon at night; the handover below keys on that.
+static const Real SUN_LATITUDE_DEG         = 45.0f;	///< tilt of the orbit; peak elevation is 90 - lat + dec = 55 deg
+static const Real SUN_DECLINATION_DEG      = 10.0f;	///< season: a little summer, so the day arc is wider than half a turn
+static const Real SUN_NOON_AZIMUTH_DEG     = 120.0f;	///< where the sun stands at noon; rise lands ~225 and set ~15, the sweep the authored keys described (207 -> 23)
 
-// --- THE HANDOVER (requirement 3, and the no-pop half of requirement 6). Driven by the SUN'S
-// ELEVATION and deliberately not by the clock, because the two things that must be bounded -- how
-// long the longest shadow gets, and how fast the direction swings -- are both functions of
-// elevation. Below SUN_HANDOVER_LOW_DEG the moon owns the light completely; above
-// SUN_HANDOVER_HIGH_DEG the sun does; in between they are slerped.
-//
-// Three consequences, and the second is the trade-off these two numbers ARE:
-//
-//  - the handover is automatically symmetric at dawn, with no second window and no hour-wrap
-//    arithmetic, because the sun's elevation is symmetric about noon;
-//
-//  - SUN_HANDOVER_HIGH_DEG IS the flattest direction the cycle ever publishes. Above it the light
-//    is the pure sun, so the minimum is reached exactly at it; below it the blend pulls towards a
-//    moon that is always at least MOON_MIN_ELEVATION_DEG up, which takes the light back UP rather
-//    than down.
-//
-//    RETUNED 22 -> 10 AFTER MEASURING, and this is the important entry in this note. At 22 the
-//    logged track over two full cycles never published a light below +21.7 degrees and the sun's
-//    lowest elevation as the active body was +25.6 -- so the sun did not set, which is the exact
-//    fault this whole feature exists to remove. The model swept 0..68..0 correctly; the handover
-//    simply took the light off it while it was still high, and the 22 was then documented as a
-//    feature rather than recognised as the bug. At 10 degrees, cot(10) = 5.7, so the flattest
-//    light in the cycle casts a shadow nearly six times its caster and reads unmistakably as
-//    sunset, against 1.17x for the best the authored tables could ever do.
-//
-//    It does NOT go lower, and the reason is a real limit rather than caution: at 4 degrees
-//    cot is 14.3, and a shadow fourteen times its caster's height exceeds what the shadow map
-//    can cover even at LOW_ANGLE_DRAW_WIDTH -- it would be clipped, not drawn, and the draw
-//    window would pay for the attempt. 10 is where the geometry stops paying off;
-//
-//  - but the window WIDTH is what sets how fast the direction swings, and the two bodies are over
-//    130 degrees apart in azimuth at dusk because the moon is roughly opposite the sun -- so the
-//    handover really does reverse the shadow direction, as dusk does in life, and all these
-//    numbers can choose is how long it takes. Measured over the whole cycle at a 20-minute
-//    setting, for a 20-unit caster (a terrain cell is 10 units):
-//
-//        lo / hi      longest shadow    peak direction rate    peak shadow-tip speed
-//         6 / 18         3.1 x h           4.04 deg/s               3.84 units/s
-//         4 / 22         2.5 x h           2.47 deg/s               1.82 units/s     <-- chosen
-//         3 / 24         2.2 x h           1.99 deg/s               1.32 units/s
-//         2 / 30         1.8 x h           1.54 deg/s               0.79 units/s
-//
-//    against 0.225 deg/s for the sun's own unhurried sweep. 4/22 keeps twice the authored rake
-//    while holding the dusk swing to about a fifth of a terrain cell per second over roughly 35
-//    seconds of wall clock. It is a sweep, not a pop, and it is the one part of this worth putting
-//    eyes on before it ships.
-//    The width is narrower than the table above explored (10 degrees of elevation rather than 18),
-//    so the swing is correspondingly quicker: at the DEFAULT 20-minute cycle the dusk handover
-//    takes about 37 seconds of wall clock, and at the 3-minute setting the test harness uses it
-//    takes about 6. The 3-minute figure is a harness artefact and not what a player sees; judge
-//    the swing at the default.
-static const Real SUN_HANDOVER_LOW_DEG     = 0.0f;	///< the sun contributes nothing once it is ON the horizon -- "once the sun sets, the shadows follow the moon", literally
-static const Real SUN_HANDOVER_HIGH_DEG    = 10.0f;	///< at or above this the moon contributes nothing; also the flattest light in the cycle, cot(10) = 5.7x caster
+// --- THE MOON. The same 30..55 degree arc as before, but it now sets out from where the sun went
+// down and ends where the sun comes up, travelling the far side of the sky. The light therefore
+// changes elevation at the handover and hardly changes azimuth, instead of reversing.
+static const Real MOON_MIN_ELEVATION_DEG   = 30.0f;	///< the floor. cot(30) = 1.73, so a moon shadow is never longer than ~1.7x its caster
+static const Real MOON_PEAK_ELEVATION_DEG  = 55.0f;	///< at midnight
 
-// --- NIGHT INTENSITY (requirement 4). The hue still comes from the authored NIGHT entry; this is
-// a single scale on top of it, keyed to the same moon weight that owns the direction, so the dim
-// and the swing happen together. Diffuse is cut much harder than ambient on purpose: ambient is
-// the floor that keeps unlit geometry readable, and a night nobody can play in is not a feature.
+// --- THE HANDOVER: FADE OUT, SWAP, FADE IN. TheSuperHackers @tweak andytraber 13/09/2026
 //
-// WHERE THIS BITES, and it is the reason these two are the numbers most likely to need a look
-// sign-off. Most shipped maps author all four times of day, so the thing being scaled is that
-// map's own NIGHT entry and 0.55 is a straightforward "half as bright again". But a map that
-// authored NOTHING falls back to the defaults in ensureValidLighting, whose NIGHT row was already
-// deliberately calibrated dark, and the two then STACK: diffuse lands at 0.083/0.099/0.143 and
-// ambient at 0.026/0.030/0.047, which is about a twelfth of the afternoon diffuse and a tenth of
-// its ambient. If night turns out unplayable it will be on one of those maps, and the fix is this
-// constant and not the fallback table.
-static const Real MOON_DIFFUSE_SCALE       = 0.55f;
-static const Real MOON_AMBIENT_SCALE       = 0.85f;
+// It used to cross-fade the light DIRECTION from sun to moon over the last 10 degrees of sunset,
+// with the moon roughly opposite the sun -- so the shadows swung round ~130 degrees at twenty
+// times the sun's own rate. Now the SHADOWS fade instead. As the sun drops from SUN_SHADOW_FADE
+// HIGH to LOW its shadows fade to nothing while still pointing where the sun is; the direction
+// then moves to the moon only inside +/- LIGHT_SWAP_HALF_BAND_DEG of the horizon, where both
+// shadow strengths are zero; and once the sun is MOON_SHADOW_FADE_LOW below the horizon the moon's
+// shadows fade back in. Dawn is the same in reverse, for free, because it is all keyed to the
+// sun's signed elevation. The swap band must stay inside both fade lows, or a swinging shadow
+// shows.
+//
+// At the default 20-minute cycle: sun shadows fade over ~60 s, ~40 s with no cast shadows, moon
+// shadows fade in over ~35 s (night hours pass faster than day hours).
+//
+// The flattest light published is ~4 degrees, reached while its shadows are gone. W3DView floors
+// the draw-window widening at 10 degrees so that does not buy a wide window for invisible shadows.
+static const Real SUN_SHADOW_FADE_LOW_DEG   = 4.0f;	///< sun shadows are gone at or below this sun elevation
+static const Real SUN_SHADOW_FADE_HIGH_DEG  = 14.0f;	///< and at full strength at or above it
+static const Real MOON_SHADOW_FADE_LOW_DEG  = 4.0f;	///< moon shadows start once the sun is this far BELOW the horizon
+static const Real MOON_SHADOW_FADE_HIGH_DEG = 14.0f;	///< and are at full strength this far below
+static const Real LIGHT_SWAP_HALF_BAND_DEG  = 4.0f;	///< the direction moves sun -> moon between +this and -this sun elevation
+
+// --- NIGHT INTENSITY. TheSuperHackers @tweak andytraber 13/09/2026 There is no extra night dim any
+// more. P7 multiplied diffuse by 0.55 and ambient by 0.85 under the moon, on top of the authored
+// NIGHT colour, and judged by eye the night was too dark to play in. The authored NIGHT entry is
+// the brightness again, as it was before P7.
 
 // The invariant, not the mechanism. Several consumers assume a downward ray -- W3DWater treats
 // -lightPos.z <= 0 as "no sun contribution", the terrain vertex bake dots it against upward
 // normals -- so nothing from strictly below the horizon may ever be published. With the
-// parameters above this never fires (the floor is SUN_HANDOVER_HIGH_DEG, see the note there);
+// parameters above this never fires (the floor is about SUN_SHADOW_FADE_LOW_DEG, see the handover);
 // it is here so that retuning any of them cannot quietly break the consumers.
 static const Real HORIZON_MIN_ELEVATION_DEG = 2.0f;
 
@@ -250,50 +223,203 @@ struct OrbitState
 {
 	Vector3 sunRay;				///< direction of travel of sunlight
 	Vector3 moonRay;			///< direction of travel of moonlight
-	Real    sunElevationDeg;	///< 0 while the sun is down; never negative, see below
+	Real    sunElevationDeg;	///< SIGNED: negative while the sun is below the horizon. sunRay itself never dips below it
 	Real    moonElevationDeg;
 	Real    sunAzimuthDeg;		///< kept so the handover can interpolate in spherical space -- see the publish site
 	Real    moonAzimuthDeg;
-	Real    moonWeight;			///< 0 = the sun owns the light, 1 = the moon does
+	Real    moonWeight;			///< 0 = the sun owns the light direction, 1 = the moon does
+	Real    shadowStrength;		///< 0..1, the cast-shadow fade of whichever body is up
 };
+
+// Degrees of azimuth the sun is past noon, positive in the afternoon, for hour angle H. The
+// standard horizontal-coordinates formula, measured from the noon meridian.
+static Real sunAzimuthFromNoonDeg(Real hourAngleRad, Real latRad, Real decRad)
+{
+	return atan2f(sinf(hourAngleRad),
+	              cosf(hourAngleRad) * sinf(latRad) - tanf(decRad) * cosf(latRad)) * RAD_TO_DEG;
+}
 
 static void computeOrbit(Real currentHour, OrbitState &out)
 {
-	// THE SUN. One half sine over the daylight hours, so it leaves and meets the horizon exactly
-	// at the two ends and peaks at solar noon in the middle. Outside [0, SUN_SET_HOUR) the
-	// parameter is CLAMPED rather than allowed to run on, which pins the sun to the horizon at
-	// the point it set (or is about to rise from) instead of carrying it below. Nothing reads a
-	// sub-horizon sun -- the handover has taken the light off it long before -- and a direction
-	// that is never used but is quietly invalid is a trap for the next reader.
-	Real dayT = clamp(0.0f, currentHour / SUN_SET_HOUR, 1.0f);
-	out.sunElevationDeg = SUN_PEAK_ELEVATION_DEG * sinf(PI_F * dayT);
-	out.sunAzimuthDeg   = SUN_RISE_AZIMUTH_DEG + dayT * SUN_AZIMUTH_SWEEP_DEG;
-	out.sunRay = rayFromAzimuthElevation(out.sunAzimuthDeg, out.sunElevationDeg);
+	const Real lat = SUN_LATITUDE_DEG * DEG_TO_RAD;
+	const Real dec = SUN_DECLINATION_DEG * DEG_TO_RAD;
 
-	// THE MOON. The same shape of arc with its own window, shifted so that it is already well up
-	// before the sun goes (requirement 6) and still up after the sun comes back (requirement 7).
-	// The sine rides on MOON_MIN_ELEVATION_DEG rather than starting at zero, so the moon never
-	// approaches the horizon at all -- which is requirement 8 expressed as geometry rather than
-	// as a clamp, and is also why it cannot "set" during the night however long the night is.
-	//
-	// The window is a superset of the hours in which the moon has any weight, and that containment
-	// is an invariant rather than a coincidence: weight needs sunElevation < SUN_HANDOVER_HIGH_DEG,
-	// which at 10 degrees is hours [15.25, 24) and [0, 0.75), and the arc covers [13, 24) and
-	// [0, 2.0). So the clamps below are belt and braces, never the behaviour. Raise
-	// SUN_HANDOVER_HIGH_DEG and MOON_SET_HOUR has to follow it, or the moon spends the last minutes
-	// of the dawn handover frozen at the end of its arc.
-	Real moonHour = currentHour;
-	if (moonHour < MOON_RISE_HOUR)
-		moonHour += 24.0f;
-	const Real moonT = clamp(0.0f, (moonHour - MOON_RISE_HOUR) / (MOON_SET_HOUR - MOON_RISE_HOUR), 1.0f);
+	// THE SUN. The hour angle at which this orbit meets the horizon, then daylight hours mapped
+	// linearly onto [-that, +that] and night hours onto the rest of the turn -- so the elevation is
+	// continuous through the night, and exactly zero at hour 0 and at SUN_SET_HOUR.
+	const Real halfDayDeg = acosf(clamp(-1.0f, -tanf(lat) * tanf(dec), 1.0f)) * RAD_TO_DEG;
+	Real hourAngleDeg;
+	if (currentHour < SUN_SET_HOUR)
+		hourAngleDeg = -halfDayDeg + 2.0f * halfDayDeg * (currentHour / SUN_SET_HOUR);
+	else
+		hourAngleDeg = halfDayDeg + (360.0f - 2.0f * halfDayDeg) * ((currentHour - SUN_SET_HOUR) / (24.0f - SUN_SET_HOUR));
+	const Real H = hourAngleDeg * DEG_TO_RAD;
+
+	const Real sinEl = sinf(lat) * sinf(dec) + cosf(lat) * cosf(dec) * cosf(H);
+	out.sunElevationDeg = asinf(clamp(-1.0f, sinEl, 1.0f)) * RAD_TO_DEG;
+	// Game azimuth DEcreases through the day (the authored keys ran 207 -> 117 -> 23), hence the minus.
+	out.sunAzimuthDeg = SUN_NOON_AZIMUTH_DEG - sunAzimuthFromNoonDeg(H, lat, dec);
+	// The ray is never built from below the horizon; the handover has taken the light off the sun
+	// long before, and nothing downstream may be handed an upward ray.
+	out.sunRay = rayFromAzimuthElevation(out.sunAzimuthDeg, out.sunElevationDeg > 0.0f ? out.sunElevationDeg : 0.0f);
+
+	// THE MOON. Its arc spans the night, from the sun's setting azimuth round the far side of the
+	// sky to its rising azimuth. During the day it waits at whichever end the next or last handover
+	// needs: at the setting point after noon, at the rising point before it.
+	const Real setFromNoonDeg = sunAzimuthFromNoonDeg(halfDayDeg * DEG_TO_RAD, lat, dec);
+	Real moonT;
+	if (currentHour >= SUN_SET_HOUR)
+		moonT = (currentHour - SUN_SET_HOUR) / (24.0f - SUN_SET_HOUR);
+	else
+		moonT = (currentHour < SUN_SET_HOUR * 0.5f) ? 1.0f : 0.0f;
 	out.moonElevationDeg = MOON_MIN_ELEVATION_DEG
 	                     + (MOON_PEAK_ELEVATION_DEG - MOON_MIN_ELEVATION_DEG) * sinf(PI_F * moonT);
-	out.moonAzimuthDeg = MOON_RISE_AZIMUTH_DEG + moonT * MOON_AZIMUTH_SWEEP_DEG;
+	out.moonAzimuthDeg = (SUN_NOON_AZIMUTH_DEG - setFromNoonDeg) - moonT * (360.0f - 2.0f * setFromNoonDeg);
 	out.moonRay = rayFromAzimuthElevation(out.moonAzimuthDeg, out.moonElevationDeg);
 
-	// WHO OWNS THE LIGHT. See the SUN_HANDOVER_* note: elevation, not clock.
+	// WHO OWNS THE LIGHT DIRECTION, and how strong its shadows are. See THE HANDOVER.
 	out.moonWeight = 1.0f - smoothStep01(
-		(out.sunElevationDeg - SUN_HANDOVER_LOW_DEG) / (SUN_HANDOVER_HIGH_DEG - SUN_HANDOVER_LOW_DEG));
+		(out.sunElevationDeg + LIGHT_SWAP_HALF_BAND_DEG) / (2.0f * LIGHT_SWAP_HALF_BAND_DEG));
+	const Real sunShadow = smoothStep01(
+		(out.sunElevationDeg - SUN_SHADOW_FADE_LOW_DEG) / (SUN_SHADOW_FADE_HIGH_DEG - SUN_SHADOW_FADE_LOW_DEG));
+	const Real moonShadow = smoothStep01(
+		(-out.sunElevationDeg - MOON_SHADOW_FADE_LOW_DEG) / (MOON_SHADOW_FADE_HIGH_DEG - MOON_SHADOW_FADE_LOW_DEG));
+	out.shadowStrength = (sunShadow > moonShadow) ? sunShadow : moonShadow;
+}
+
+// ================================================================================================
+// THE COLOUR SCHEDULE
+//
+// TheSuperHackers @tweak andytraber 13/09/2026 The four authored colour keys follow the SUN now, not
+// the clock. They used to sit at fixed hours -- AFTERNOON at 6, EVENING at 12, NIGHT at 16 -- which
+// matched the old sine sun and not the tilted orbit: at hour 12 the sun was still 35 degrees up and
+// the ground already brown, and by the time the light raked (sun under 14 degrees, hour ~14.3) the
+// colour was most of the way to night blue. The long shadows and the warm light never coincided.
+//
+// Now, by sun elevation, with the morning key on the rising side of the day and the evening key on
+// the setting side:
+//
+//   above COLOUR_HIGH_SUN_DEG          AFTERNOON
+//   COLOUR_LOW_SUN_DEG .. HIGH         low-sun key <-> AFTERNOON   (eased)
+//   horizon .. COLOUR_LOW_SUN_DEG      MORNING or EVENING, held -- the warm light and the rake together
+//   COLOUR_NIGHT_FULL_DEG .. horizon   NIGHT <-> low-sun key       (eased; dusk continues after sunset)
+//   below COLOUR_NIGHT_FULL_DEG        NIGHT
+//
+// With the orbit above that is roughly: afternoon 4..12, evening ramp 12..14.9, evening held
+// 14.9..16, into night by 16.9, night held to 23.1, dawn to 0, morning held to 1.15, into afternoon by
+// 4. Retuning the orbit moves all of it with the sun, as the lights and the shadow fade already do.
+//
+// The NOMINAL time of day (drawables, ambient audio, water textures, TheGlobalData->m_timeOfDay) is
+// the key the colour is closer to: it changes where a blend passes its halfway point. That runs on
+// the LOGIC thread, so it compares the clock against hours precomputed once from the orbit
+// (computeColourSchedule) instead of evaluating the elevation there.
+// ================================================================================================
+static const Real COLOUR_HIGH_SUN_DEG   = 35.0f;	///< full afternoon colour at or above this sun elevation
+static const Real COLOUR_LOW_SUN_DEG    = 10.0f;	///< full morning/evening colour between the horizon and this
+static const Real COLOUR_NIGHT_FULL_DEG = -12.0f;	///< full night colour at or below this (negative: below the horizon)
+
+// Hours at which the nominal time of day changes, ascending through the day. Filled by
+// computeColourSchedule; the defaults are the old clock positions, used only if the orbit is never
+// evaluated.
+static Real s_hourAfternoonBegins = 6.0f;
+static Real s_hourEveningBegins   = 12.0f;
+static Real s_hourNightBegins     = 16.0f;
+static Real s_hourMorningBegins   = 24.0f;
+static Real s_hourNightFull       = 16.0f;
+
+static Bool isMorningSideOfDay(Real hour)
+{
+	// Noon is halfway through the daylight hours and midnight halfway through the night.
+	return hour < SUN_SET_HOUR * 0.5f || hour >= SUN_SET_HOUR + (24.0f - SUN_SET_HOUR) * 0.5f;
+}
+
+// Which two authored keys the colour sits between, and how far, for a sun at this elevation.
+static void colourKeysFromSun(Real hour, Real sunElevationDeg, TimeOfDay &keyA, TimeOfDay &keyB, Real &alpha)
+{
+	const TimeOfDay lowSunKey = isMorningSideOfDay(hour) ? TIME_OF_DAY_MORNING : TIME_OF_DAY_EVENING;
+	if (sunElevationDeg >= COLOUR_LOW_SUN_DEG)
+	{
+		keyA = lowSunKey;
+		keyB = TIME_OF_DAY_AFTERNOON;
+		alpha = smoothStep01((sunElevationDeg - COLOUR_LOW_SUN_DEG) / (COLOUR_HIGH_SUN_DEG - COLOUR_LOW_SUN_DEG));
+	}
+	else if (sunElevationDeg >= 0.0f)
+	{
+		keyA = lowSunKey;
+		keyB = lowSunKey;
+		alpha = 0.0f;
+	}
+	else
+	{
+		keyA = TIME_OF_DAY_NIGHT;
+		keyB = lowSunKey;
+		alpha = smoothStep01((sunElevationDeg - COLOUR_NIGHT_FULL_DEG) / (0.0f - COLOUR_NIGHT_FULL_DEG));
+	}
+}
+
+// The hour in [loHour, hiHour] at which the sun reaches targetDeg. The span must be one on which the
+// elevation only rises or only falls: [0, noon], [noon, midnight] or [midnight, 24].
+static Real hourAtSunElevation(Real targetDeg, Real loHour, Real hiHour)
+{
+	OrbitState orbit;
+	computeOrbit(loHour, orbit);
+	const Bool belowAtLo = orbit.sunElevationDeg < targetDeg;
+	for (Int i = 0; i < 32; ++i)
+	{
+		const Real mid = 0.5f * (loHour + hiHour);
+		computeOrbit(mid, orbit);
+		if ((orbit.sunElevationDeg < targetDeg) == belowAtLo)
+			loHour = mid;
+		else
+			hiHour = mid;
+	}
+	return 0.5f * (loHour + hiHour);
+}
+
+static void computeColourSchedule()
+{
+	const Real noon = SUN_SET_HOUR * 0.5f;
+	const Real midnight = SUN_SET_HOUR + (24.0f - SUN_SET_HOUR) * 0.5f;
+	// smoothStep01 passes one half at the middle of its span, so these are the halfway points.
+	const Real dayMidDeg = 0.5f * (COLOUR_LOW_SUN_DEG + COLOUR_HIGH_SUN_DEG);
+	const Real nightMidDeg = 0.5f * COLOUR_NIGHT_FULL_DEG;
+
+	s_hourAfternoonBegins = hourAtSunElevation(dayMidDeg, 0.0f, noon);
+	s_hourEveningBegins   = hourAtSunElevation(dayMidDeg, noon, SUN_SET_HOUR);
+	s_hourNightBegins     = hourAtSunElevation(nightMidDeg, SUN_SET_HOUR, midnight);
+	s_hourMorningBegins   = hourAtSunElevation(nightMidDeg, midnight, 24.0f);
+	s_hourNightFull       = hourAtSunElevation(COLOUR_NIGHT_FULL_DEG, SUN_SET_HOUR, midnight);
+
+	DEBUG_LOG(("DAYNIGHT colour schedule: afternoon %.2f, evening %.2f, night %.2f (full %.2f), morning %.2f",
+		s_hourAfternoonBegins, s_hourEveningBegins, s_hourNightBegins, s_hourNightFull, s_hourMorningBegins));
+}
+
+static TimeOfDay nominalTimeOfDayAtHour(Real hour)
+{
+	if (hour >= s_hourMorningBegins || hour < s_hourAfternoonBegins)
+		return TIME_OF_DAY_MORNING;
+	if (hour < s_hourEveningBegins)
+		return TIME_OF_DAY_AFTERNOON;
+	if (hour < s_hourNightBegins)
+		return TIME_OF_DAY_EVENING;
+	return TIME_OF_DAY_NIGHT;
+}
+
+// Where the clock starts when a map (or a script, or the debug toggle) asks for a time of day. Each
+// lands inside that phase's nominal window, and where the colour is that key's: MORNING at sunrise,
+// where the morning key is held; AFTERNOON where it always was; NIGHT where the night colour is full.
+// EVENING is the exception and starts where the evening window opens rather than where its colour
+// peaks, because from the peak it would be night within a couple of game hours.
+static Real startHourForTimeOfDay(TimeOfDay tod)
+{
+	switch (tod)
+	{
+	case TIME_OF_DAY_MORNING:   return 0.0f;
+	case TIME_OF_DAY_AFTERNOON: return 6.0f;
+	case TIME_OF_DAY_EVENING:   return s_hourEveningBegins + 0.05f;	// a margin so frame rounding cannot land a frame early
+	case TIME_OF_DAY_NIGHT:     return s_hourNightFull;
+	default:                    return 6.0f;
+	}
 }
 
 // Table-driven direction interpolation, which is now used ONLY for the fill lights at index >= 1.
@@ -348,7 +474,7 @@ static void ensureValidLighting(TimeOfDay tod)
 		// read for light 0 -- the orbit supplies that direction now -- but they are kept rather
 		// than deleted because they are the only record of the direction each phase was authored
 		// to be lit from, and the colours beside them, which ARE still live, were tuned against
-		// them. Anyone retuning SUN_RISE_AZIMUTH_DEG should read them first.
+		// them. Anyone retuning SUN_NOON_AZIMUTH_DEG should read them first.
 		switch (tod)
 		{
 		case TIME_OF_DAY_MORNING:
@@ -368,10 +494,9 @@ static void ensureValidLighting(TimeOfDay tod)
 			break;
 		case TIME_OF_DAY_NIGHT:
 		default:
-			// TheSuperHackers @feature andytraber 09/09/2026 Calibrate nocturnal ambient and diffuse for realistic darkness.
-			s_mapTerrainLighting[tod][0].ambient.red = 0.030f; s_mapTerrainLighting[tod][0].ambient.green = 0.035f; s_mapTerrainLighting[tod][0].ambient.blue = 0.055f;
-			s_mapTerrainLighting[tod][0].diffuse.red = 0.150f; s_mapTerrainLighting[tod][0].diffuse.green = 0.180f; s_mapTerrainLighting[tod][0].diffuse.blue = 0.260f;
-			s_mapTerrainLighting[tod][0].lightPos.x = -0.40f;  s_mapTerrainLighting[tod][0].lightPos.y = 0.50f;   s_mapTerrainLighting[tod][0].lightPos.z = -0.77f;
+			s_mapTerrainLighting[tod][0].ambient.red = 0.12f; s_mapTerrainLighting[tod][0].ambient.green = 0.14f; s_mapTerrainLighting[tod][0].ambient.blue = 0.20f;
+			s_mapTerrainLighting[tod][0].diffuse.red = 0.25f; s_mapTerrainLighting[tod][0].diffuse.green = 0.30f; s_mapTerrainLighting[tod][0].diffuse.blue = 0.45f;
+			s_mapTerrainLighting[tod][0].lightPos.x = -0.40f; s_mapTerrainLighting[tod][0].lightPos.y = 0.50f;  s_mapTerrainLighting[tod][0].lightPos.z = -0.77f;
 			break;
 		}
 		s_mapObjectsLighting[tod][0] = s_mapTerrainLighting[tod][0];
@@ -404,6 +529,8 @@ void DayNightCycle_Init()
 	OptionPreferences prefs;
 	s_durationMinutes = prefs.getDayNightCycleDuration();
 
+	computeColourSchedule();
+
 	if (s_durationMinutes <= 0)
 	{
 		s_cycleEnabled = FALSE;
@@ -431,21 +558,9 @@ void DayNightCycle_Init()
 		ensureValidLighting((TimeOfDay)tod);
 	}
 
-	// 24-hour clock division:
-	// Morning:   0.0h to  6.0h (6 hours, 25%)
-	// Afternoon: 6.0h to 12.0h (6 hours, 25%)
-	// Evening:  12.0h to 16.0h (4 hours, 16.67%)
-	// Night:    16.0h to 24.0h (8 hours, 33.33%)
-	// Day = 16h (2/3), Night = 8h (1/3)
-	Real startHour = 6.0f; // default Afternoon
-	switch (s_initialTod)
-	{
-	case TIME_OF_DAY_MORNING:   startHour = 0.0f;  break;
-	case TIME_OF_DAY_AFTERNOON: startHour = 6.0f;  break;
-	case TIME_OF_DAY_EVENING:   startHour = 12.0f; break;
-	case TIME_OF_DAY_NIGHT:     startHour = 16.0f; break;
-	default: break;
-	}
+	// Daylight is hours 0..SUN_SET_HOUR (16h, 2/3) and night the rest; where each nominal phase
+	// begins and ends follows the sun -- see THE COLOUR SCHEDULE.
+	const Real startHour = startHourForTimeOfDay(s_initialTod);
 
 	const UnsignedInt totalCycleFrames = (UnsignedInt)s_durationMinutes * 60u * (UnsignedInt)LOGICFRAMES_PER_SECOND;
 	if (totalCycleFrames > 0)
@@ -459,6 +574,7 @@ void DayNightCycle_Init()
 
 	s_forceTerrainBake = FALSE;
 	s_pendingTerrainBake = FALSE;
+	s_lightsStateValid = FALSE;
 	s_currentGameHour = startHour;
 }
 
@@ -466,6 +582,9 @@ void DayNightCycle_Reset()
 {
 	s_initialized = FALSE;
 	s_cycleEnabled = FALSE;
+	s_lightsStateValid = FALSE;
+	if (TheWritableGlobalData)
+		TheWritableGlobalData->m_sunShadowStrength = 1.0f;
 	s_startOffsetFrames = 0;
 	s_lastNominalTod = TIME_OF_DAY_INVALID;
 	s_forceTerrainBake = FALSE;
@@ -477,15 +596,7 @@ void DayNightCycle_SetTimeOfDay(TimeOfDay tod)
 	if (tod < TIME_OF_DAY_FIRST || tod >= TIME_OF_DAY_COUNT)
 		return;
 
-	Real targetHour = 6.0f;
-	switch (tod)
-	{
-	case TIME_OF_DAY_MORNING:   targetHour = 0.0f;  break;
-	case TIME_OF_DAY_AFTERNOON: targetHour = 6.0f;  break;
-	case TIME_OF_DAY_EVENING:   targetHour = 12.0f; break;
-	case TIME_OF_DAY_NIGHT:     targetHour = 16.0f; break;
-	default: break;
-	}
+	const Real targetHour = startHourForTimeOfDay(tod);
 
 	const UnsignedInt totalCycleFrames = (UnsignedInt)s_durationMinutes * 60u * (UnsignedInt)LOGICFRAMES_PER_SECOND;
 	if (totalCycleFrames > 0 && TheGameLogic)
@@ -501,8 +612,7 @@ void DayNightCycle_SetTimeOfDay(TimeOfDay tod)
 // Where the cycle is, from the logic frame alone. Both halves derive their answer from
 // this, so the client's interpolation and the logic's boundary test can never disagree
 // about what time it is.
-static Bool computeCycleState(UnsignedInt logicFrame, TimeOfDay &keyA, TimeOfDay &keyB,
-                              Real &alpha, TimeOfDay &nominalTod, Real &currentHour)
+static Bool computeCycleState(UnsignedInt logicFrame, TimeOfDay &nominalTod, Real &currentHour)
 {
 	if (!s_initialized)
 	{
@@ -525,43 +635,117 @@ static Bool computeCycleState(UnsignedInt logicFrame, TimeOfDay &keyA, TimeOfDay
 	UnsignedInt currentCycleFrame = (logicFrame + s_startOffsetFrames) % totalCycleFrames;
 	Real normalizedTime = (Real)currentCycleFrame / (Real)totalCycleFrames;
 	currentHour = normalizedTime * 24.0f;
-
-	keyA = TIME_OF_DAY_MORNING;
-	keyB = TIME_OF_DAY_AFTERNOON;
-	alpha = 0.0f;
-	nominalTod = TIME_OF_DAY_MORNING;
-
-	if (currentHour < 6.0f)
-	{
-		keyA = TIME_OF_DAY_MORNING;
-		keyB = TIME_OF_DAY_AFTERNOON;
-		alpha = currentHour / 6.0f;
-		nominalTod = TIME_OF_DAY_MORNING;
-	}
-	else if (currentHour < 12.0f)
-	{
-		keyA = TIME_OF_DAY_AFTERNOON;
-		keyB = TIME_OF_DAY_EVENING;
-		alpha = (currentHour - 6.0f) / 6.0f;
-		nominalTod = TIME_OF_DAY_AFTERNOON;
-	}
-	else if (currentHour < 16.0f)
-	{
-		keyA = TIME_OF_DAY_EVENING;
-		keyB = TIME_OF_DAY_NIGHT;
-		alpha = (currentHour - 12.0f) / 4.0f;
-		nominalTod = TIME_OF_DAY_EVENING;
-	}
-	else
-	{
-		keyA = TIME_OF_DAY_NIGHT;
-		keyB = TIME_OF_DAY_MORNING;
-		alpha = (currentHour - 16.0f) / 8.0f;
-		nominalTod = TIME_OF_DAY_NIGHT;
-	}
-
-	alpha = clamp(0.0f, alpha, 1.0f);
+	nominalTod = nominalTimeOfDayAtHour(currentHour);
 	return TRUE;
+}
+
+// ================================================================================================
+// WHEN THE LIGHTS COME ON
+//
+// TheSuperHackers @feature andytraber 13/09/2026 MODELCONDITION_NIGHT is what turns a vehicle's or a
+// building's lights on: the HEADLIGHT sub-objects un-hide, the bone-parented spot and point lights in
+// W3DModelDraw::updateModelDynamicLights follow it, and night model states swap in. It used to be set
+// on every drawable in the same frame at the nominal NIGHT boundary -- hour 16, with the sun already
+// on the horizon -- and cleared on all of them at once at hour 0.
+//
+// Now each drawable has its own threshold inside a band of SUN ELEVATION, so the lights come on while
+// it is getting dark, roughly together but one operator after another, and go off the same way at
+// dawn. Elevation rather than the clock so that retuning the orbit moves the switch with the light it
+// answers to. The threshold is a pure function of the drawable's ID: nothing is stored per drawable,
+// and the same drawable always reacts at the same moment.
+//
+// At the default 20-minute cycle the dusk band spans about 60 seconds of wall clock, dawn about 45.
+// ================================================================================================
+static const Real LIGHTS_ON_FIRST_DEG  = 14.0f;	///< dusk: the most attentive operators switch on at this sun elevation...
+static const Real LIGHTS_ON_LAST_DEG   = 3.0f;	///< ...and the last have by the time the sun is this low
+static const Real LIGHTS_OFF_FIRST_DEG = 4.0f;	///< dawn: the first switch off once the sun clears this...
+static const Real LIGHTS_OFF_LAST_DEG  = 16.0f;	///< ...and the last once it clears this
+static const Real LIGHTS_BAND_TOP_DEG  = 16.0f;	///< above this at both ends of a step, no drawable can change its mind
+
+// 0..1, triangular (the mean of two hashes), so most operators react near the middle of the band and
+// a few noticeably early or late. A uniform spread reads as a mechanical ramp.
+static Real lightsJitter01(DrawableID id, UnsignedInt salt)
+{
+	UnsignedInt x = (UnsignedInt)id * 0x9E3779B1u + salt * 0x85EBCA77u;
+	x ^= x >> 16; x *= 0x7feb352du;
+	x ^= x >> 15; x *= 0x846ca68bu;
+	x ^= x >> 16;
+	const Real a = (Real)(x & 0xFFFFu) / 65535.0f;
+	const Real b = (Real)((x >> 16) & 0xFFFFu) / 65535.0f;
+	return 0.5f * (a + b);
+}
+
+static Bool drawableWantsNight(DrawableID id, Real hour, Real sunElevationDeg)
+{
+	if (sunElevationDeg <= 0.0f)
+		return TRUE;
+
+	// The first half of the daylight hours is the sun climbing, so it is dawn's band that applies.
+	// Separate salts so an operator who is late to switch on is not also late to switch off.
+	if (hour < SUN_SET_HOUR * 0.5f)
+	{
+		const Real off = LIGHTS_OFF_FIRST_DEG + (LIGHTS_OFF_LAST_DEG - LIGHTS_OFF_FIRST_DEG) * lightsJitter01(id, 2u);
+		return sunElevationDeg < off;
+	}
+
+	const Real on = LIGHTS_ON_FIRST_DEG + (LIGHTS_ON_LAST_DEG - LIGHTS_ON_FIRST_DEG) * lightsJitter01(id, 1u);
+	return sunElevationDeg < on;
+}
+
+// The time of day a drawable is told. A drawable whose lights are still on is told NIGHT whatever the
+// nominal phase says, and one whose lights are off is never told NIGHT -- setTimeOfDay derives the
+// model condition from exactly that comparison.
+static TimeOfDay drawableTimeOfDay(Bool night, TimeOfDay nominalTod)
+{
+	if (night)
+		return TIME_OF_DAY_NIGHT;
+	return (nominalTod == TIME_OF_DAY_NIGHT) ? TIME_OF_DAY_EVENING : nominalTod;
+}
+
+// The LEVEL sweep, at a nominal boundary: every drawable is told, as GameClient::setTimeOfDay always
+// did -- ambient sounds key on the phase as well as on night, so skipping unchanged drawables here
+// would leave them on the old phase. replaceModelConditionFlags is a no-op for an unchanged flag.
+//
+// That this runs only at boundaries and the per-frame sweep only acts on a drawable's own crossing is
+// deliberate. A map can author a single object as always-day or always-night (Object.cpp,
+// TheKey_objectTime), and a level sweep every frame would erase that on the first frame of the match;
+// the boundaries already overrode it before this change, four times a cycle, and still do.
+Bool DayNightCycle_SyncDrawables(TimeOfDay nominalTod)
+{
+	if (!s_cycleEnabled || !s_lightsStateValid || !TheGameClient)
+		return FALSE;
+
+	for (Drawable *draw = TheGameClient->firstDrawable(); draw; draw = draw->getNextDrawable())
+	{
+		const Bool night = drawableWantsNight(draw->getID(), s_lightsHour, s_lightsSunElevationDeg);
+		draw->setTimeOfDay(drawableTimeOfDay(night, nominalTod));
+	}
+	return TRUE;
+}
+
+// The EDGE sweep, every logic step: only drawables whose own threshold the sun crossed since the last
+// step are touched. A drawable created mid-band takes the global phase like any new drawable and falls
+// into line at the next boundary -- a unit rolled out at dusk has not had its lights switched on yet.
+static void syncDrawablesCrossingThreshold(Real prevHour, Real prevElevationDeg,
+                                           Real hour, Real elevationDeg, TimeOfDay nominalTod)
+{
+	if (!TheGameClient)
+		return;
+	if (prevElevationDeg >= LIGHTS_BAND_TOP_DEG && elevationDeg >= LIGHTS_BAND_TOP_DEG)
+		return;
+	if (prevElevationDeg <= 0.0f && elevationDeg <= 0.0f)
+		return;
+
+	for (Drawable *draw = TheGameClient->firstDrawable(); draw; draw = draw->getNextDrawable())
+	{
+		const DrawableID id = draw->getID();
+		const Bool night = drawableWantsNight(id, hour, elevationDeg);
+		if (night == drawableWantsNight(id, prevHour, prevElevationDeg))
+			continue;
+		if (draw->getModelConditionFlags().test(MODELCONDITION_NIGHT) == night)
+			continue;
+		draw->setTimeOfDay(drawableTimeOfDay(night, nominalTod));
+	}
 }
 
 // THE BOUNDARY HALF, AND IT MUST RUN ON THE LOGIC THREAD.
@@ -587,10 +771,22 @@ void DayNightCycle_UpdateLogic(UnsignedInt logicFrame)
 {
 	FRAME_TIMING_SCOPE(PHASE_DAYNIGHT);
 
-	TimeOfDay keyA, keyB, nominalTod;
-	Real alpha, currentHour;
-	if (!computeCycleState(logicFrame, keyA, keyB, alpha, nominalTod, currentHour))
+	TimeOfDay nominalTod;
+	Real currentHour;
+	if (!computeCycleState(logicFrame, nominalTod, currentHour))
 		return;
+
+	// The sun's elevation for the light switch. Pure arithmetic over the hour, the same call the
+	// client half makes, so both halves agree about where the sun is.
+	OrbitState orbit;
+	computeOrbit(currentHour, orbit);
+
+	const Bool hadLightsState = s_lightsStateValid;
+	const Real prevHour = s_lightsHour;
+	const Real prevElevationDeg = s_lightsSunElevationDeg;
+	s_lightsHour = currentHour;
+	s_lightsSunElevationDeg = orbit.sunElevationDeg;
+	s_lightsStateValid = TRUE;
 
 	// On nominal phase changes (e.g. crossing into night or day) or debug TOD toggles,
 	// trigger drawable headlights, ambient audio, and re-bake CPU terrain vertex colors
@@ -601,12 +797,18 @@ void DayNightCycle_UpdateLogic(UnsignedInt logicFrame)
 		FrameTiming::recordEvent(FrameTiming::EVENT_TOD_CHANGE);
 		TheWritableGlobalData->m_timeOfDay = nominalTod;
 
+		// Still the one call: water, shadows and the display take the phase from here, and the
+		// drawables are routed back through DayNightCycle_SyncDrawables.
 		if (TheGameClient)
 		{
 			TheGameClient->setTimeOfDay(nominalTod);
 		}
 
 		s_pendingTerrainBake = TRUE;
+	}
+	else if (hadLightsState)
+	{
+		syncDrawablesCrossingThreshold(prevHour, prevElevationDeg, currentHour, orbit.sunElevationDeg, nominalTod);
 	}
 }
 
@@ -615,13 +817,12 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 {
 	FRAME_TIMING_SCOPE(PHASE_DAYNIGHT);
 
-	TimeOfDay keyA, keyB, nominalTod;
-	Real alpha, currentHour;
-	if (!computeCycleState(logicFrame, keyA, keyB, alpha, nominalTod, currentHour))
+	TimeOfDay nominalTod;
+	Real currentHour;
+	if (!computeCycleState(logicFrame, nominalTod, currentHour))
 		return;
 
 	s_currentGameHour = currentHour;
-	s_currentAlpha = alpha;
 
 	// TheSuperHackers @feature andytraber 12/09/2026 The orbit, and the one place it is evaluated.
 	// This belongs on the CLIENT side with the rest of the interpolation: it is pure arithmetic
@@ -631,6 +832,10 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 	OrbitState orbit;
 	computeOrbit(currentHour, orbit);
 
+	// (13/09/2026: the moon now sets out from where the sun went down, and the swing happens only
+	// while both shadow strengths are zero, so the azimuth gap described below is a few degrees now,
+	// not 150. The argument for interpolating the two angles separately still holds.)
+	//
 	// The light that is actually published. ELEVATION AND AZIMUTH SEPARATELY, and not a slerp of
 	// the two rays, which is what this did first and which was wrong in a way only the log showed.
 	//
@@ -667,27 +872,15 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 
 	s_currentLightDir = lightRay;
 	s_currentMoonWeight = orbit.moonWeight;
+	// TheSuperHackers @feature andytraber 13/09/2026 The cast-shadow fade; W3DView hands it to every
+	// receiver as the shadow strength.
+	TheWritableGlobalData->m_sunShadowStrength = orbit.shadowStrength;
 
-	// KNOWN, DELIBERATE, AND NOT FIXED HERE: the colour schedule and the orbit are out of phase.
-	//
-	// The colour still comes from the four authored keys on the clock positions this file has always
-	// used -- EVENING at hour 12, NIGHT at hour 16 -- while the orbit puts the sun at 48 degrees at
-	// hour 12 and on the horizon at 16. So the evening orange peaks in what is geometrically
-	// mid-afternoon, and by the time the light actually rakes (the handover, hours 14.3 to 15.4) the
-	// colour is already 58 to 86 per cent of the way to the night key. The raking shadows and the
-	// warm light do not coincide, which is the opposite of what makes an evening read.
-	//
-	// Moving the EVENING key to hour 14 and NIGHT to 15.5 would line them up and is a two-line
-	// change to computeCycleState. It is NOT made here because it re-times every map's authored
-	// colours, including the nominal time-of-day boundaries that drive headlights, ambient audio and
-	// the terrain re-bake -- a separate behaviour change that deserves its own look sign-off rather
-	// than being smuggled in under a direction change.
-
-	// Requirement 4: night is dimmer, not merely bluer. Keyed to the same weight that owns the
-	// direction so the dim and the swing arrive together, and applied as a scale on top of the
-	// authored colour so a map that authored its own NIGHT entry keeps its hue.
-	const Real diffuseScale = 1.0f - orbit.moonWeight * (1.0f - MOON_DIFFUSE_SCALE);
-	const Real ambientScale = 1.0f - orbit.moonWeight * (1.0f - MOON_AMBIENT_SCALE);
+	// The colour, from the sun's elevation -- see THE COLOUR SCHEDULE.
+	TimeOfDay keyA, keyB;
+	Real alpha;
+	colourKeysFromSun(currentHour, orbit.sunElevationDeg, keyA, keyB, alpha);
+	s_currentAlpha = alpha;
 
 	GlobalData::TerrainLighting interpTerrain[MAX_GLOBAL_LIGHTS];
 	GlobalData::TerrainLighting interpObjects[MAX_GLOBAL_LIGHTS];
@@ -697,13 +890,13 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 		const GlobalData::TerrainLighting &tA = s_mapTerrainLighting[keyA][i];
 		const GlobalData::TerrainLighting &tB = s_mapTerrainLighting[keyB][i];
 
-		interpTerrain[i].diffuse.red   = (tA.diffuse.red   * (1.0f - alpha) + tB.diffuse.red   * alpha) * diffuseScale;
-		interpTerrain[i].diffuse.green = (tA.diffuse.green * (1.0f - alpha) + tB.diffuse.green * alpha) * diffuseScale;
-		interpTerrain[i].diffuse.blue  = (tA.diffuse.blue  * (1.0f - alpha) + tB.diffuse.blue  * alpha) * diffuseScale;
+		interpTerrain[i].diffuse.red   = tA.diffuse.red   * (1.0f - alpha) + tB.diffuse.red   * alpha;
+		interpTerrain[i].diffuse.green = tA.diffuse.green * (1.0f - alpha) + tB.diffuse.green * alpha;
+		interpTerrain[i].diffuse.blue  = tA.diffuse.blue  * (1.0f - alpha) + tB.diffuse.blue  * alpha;
 
-		interpTerrain[i].ambient.red   = (tA.ambient.red   * (1.0f - alpha) + tB.ambient.red   * alpha) * ambientScale;
-		interpTerrain[i].ambient.green = (tA.ambient.green * (1.0f - alpha) + tB.ambient.green * alpha) * ambientScale;
-		interpTerrain[i].ambient.blue  = (tA.ambient.blue  * (1.0f - alpha) + tB.ambient.blue  * alpha) * ambientScale;
+		interpTerrain[i].ambient.red   = tA.ambient.red   * (1.0f - alpha) + tB.ambient.red   * alpha;
+		interpTerrain[i].ambient.green = tA.ambient.green * (1.0f - alpha) + tB.ambient.green * alpha;
+		interpTerrain[i].ambient.blue  = tA.ambient.blue  * (1.0f - alpha) + tB.ambient.blue  * alpha;
 
 		// Light 0 is the sun/moon and takes the analytic direction; the fills keep theirs from the
 		// tables. Note that the TERRAIN and the OBJECTS set now get the IDENTICAL vector for light
@@ -728,13 +921,13 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 		const GlobalData::TerrainLighting &oA = s_mapObjectsLighting[keyA][i];
 		const GlobalData::TerrainLighting &oB = s_mapObjectsLighting[keyB][i];
 
-		interpObjects[i].diffuse.red   = (oA.diffuse.red   * (1.0f - alpha) + oB.diffuse.red   * alpha) * diffuseScale;
-		interpObjects[i].diffuse.green = (oA.diffuse.green * (1.0f - alpha) + oB.diffuse.green * alpha) * diffuseScale;
-		interpObjects[i].diffuse.blue  = (oA.diffuse.blue  * (1.0f - alpha) + oB.diffuse.blue  * alpha) * diffuseScale;
+		interpObjects[i].diffuse.red   = oA.diffuse.red   * (1.0f - alpha) + oB.diffuse.red   * alpha;
+		interpObjects[i].diffuse.green = oA.diffuse.green * (1.0f - alpha) + oB.diffuse.green * alpha;
+		interpObjects[i].diffuse.blue  = oA.diffuse.blue  * (1.0f - alpha) + oB.diffuse.blue  * alpha;
 
-		interpObjects[i].ambient.red   = (oA.ambient.red   * (1.0f - alpha) + oB.ambient.red   * alpha) * ambientScale;
-		interpObjects[i].ambient.green = (oA.ambient.green * (1.0f - alpha) + oB.ambient.green * alpha) * ambientScale;
-		interpObjects[i].ambient.blue  = (oA.ambient.blue  * (1.0f - alpha) + oB.ambient.blue  * alpha) * ambientScale;
+		interpObjects[i].ambient.red   = oA.ambient.red   * (1.0f - alpha) + oB.ambient.red   * alpha;
+		interpObjects[i].ambient.green = oA.ambient.green * (1.0f - alpha) + oB.ambient.green * alpha;
+		interpObjects[i].ambient.blue  = oA.ambient.blue  * (1.0f - alpha) + oB.ambient.blue  * alpha;
 
 		if (i == 0)
 		{

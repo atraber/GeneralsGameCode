@@ -896,6 +896,11 @@ void GameClient::unloadMap( AsciiString mapName )
 //-------------------------------------------------------------------------------------------------
 void GameClient::setTimeOfDay( TimeOfDay tod )
 {
+	// TheSuperHackers @feature andytraber 13/09/2026 Under the day-night cycle each drawable gets its
+	// own moment to switch its lights on; flipping all of them here in one frame is what that replaces.
+	if (DayNightCycle_SyncDrawables(tod))
+		return;
+
 	Drawable *draw = firstDrawable();
 
 	while( draw )

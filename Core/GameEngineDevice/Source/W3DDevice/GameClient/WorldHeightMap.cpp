@@ -806,40 +806,6 @@ Bool WorldHeightMap::ParseLightingDataChunk(DataChunkInput &file, DataChunkInfo 
 			}
 		}
 
-		// TheSuperHackers @feature andytraber 09/09/2026 Calibrate night ambient and diffuse to realistic nocturnal levels.
-		// Maps authored in 2003 carry overly bright ambient (0.10 to 0.50+), destroying nocturnal contrast.
-		// Scale ambient down proportionally while preserving authored tint, clamping to a realistic ceiling.
-		const Real NIGHT_AMBIENT_SCALE = 0.30f;
-		const Real NIGHT_AMBIENT_MAX   = 0.06f;
-		const Real NIGHT_DIFFUSE_SCALE = 0.80f;
-
-		for (Int j = 0; j < MAX_GLOBAL_LIGHTS; ++j)
-		{
-			GlobalData::TerrainLighting &tl = TheWritableGlobalData->m_terrainLighting[TIME_OF_DAY_NIGHT][j];
-			tl.ambient.red   *= NIGHT_AMBIENT_SCALE;
-			tl.ambient.green *= NIGHT_AMBIENT_SCALE;
-			tl.ambient.blue  *= NIGHT_AMBIENT_SCALE;
-			if (tl.ambient.red   > NIGHT_AMBIENT_MAX) tl.ambient.red   = NIGHT_AMBIENT_MAX;
-			if (tl.ambient.green > NIGHT_AMBIENT_MAX) tl.ambient.green = NIGHT_AMBIENT_MAX;
-			if (tl.ambient.blue  > NIGHT_AMBIENT_MAX) tl.ambient.blue  = NIGHT_AMBIENT_MAX;
-
-			tl.diffuse.red   *= NIGHT_DIFFUSE_SCALE;
-			tl.diffuse.green *= NIGHT_DIFFUSE_SCALE;
-			tl.diffuse.blue  *= NIGHT_DIFFUSE_SCALE;
-
-			GlobalData::TerrainLighting &ol = TheWritableGlobalData->m_terrainObjectsLighting[TIME_OF_DAY_NIGHT][j];
-			ol.ambient.red   *= NIGHT_AMBIENT_SCALE;
-			ol.ambient.green *= NIGHT_AMBIENT_SCALE;
-			ol.ambient.blue  *= NIGHT_AMBIENT_SCALE;
-			if (ol.ambient.red   > NIGHT_AMBIENT_MAX) ol.ambient.red   = NIGHT_AMBIENT_MAX;
-			if (ol.ambient.green > NIGHT_AMBIENT_MAX) ol.ambient.green = NIGHT_AMBIENT_MAX;
-			if (ol.ambient.blue  > NIGHT_AMBIENT_MAX) ol.ambient.blue  = NIGHT_AMBIENT_MAX;
-
-			ol.diffuse.red   *= NIGHT_DIFFUSE_SCALE;
-			ol.diffuse.green *= NIGHT_DIFFUSE_SCALE;
-			ol.diffuse.blue  *= NIGHT_DIFFUSE_SCALE;
-		}
-
 		if (!file.atEndOfChunk()) {
 			UnsignedInt shadowColor = file.readInt();
 			if (TheW3DShadowManager) {

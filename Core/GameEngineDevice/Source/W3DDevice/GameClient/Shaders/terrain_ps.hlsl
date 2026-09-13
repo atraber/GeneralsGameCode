@@ -36,6 +36,9 @@ float4 DetailParams  : register(c4); // x = detail on, y = albedo strength, z = 
 float4 SunDir        : register(c5); // xyz = direction toward the sun, world space
 float4 ColourParams  : register(c6); // x = macro colour variation strength
 
+// The terrain's global light, per frame, at c7..c15 -- shared with road_ps. See the header.
+#include "terrain_lighting.hlsli"
+
 // The clustered light path's three buffers (C5.3), at the absolute slots clustergrid.hlsli
 // assigns them -- above the eight texture stages, bound once per frame rather than per draw
 // by W3DShaderManager::bindClusteredLightBuffers. No sampler for any of them: they are read
@@ -470,7 +473,10 @@ float4 main(PS_INPUT input) : PS_TARGET
     // frame wrong and read as a much larger disagreement than any real one. The control
     // belongs to unit_pbr_ps, where the four directionals are still separate terms at the
     // point it is read; it is deliberately left alone here rather than approximated.
-    float3 litColor = input.color.rgb;
+    // (Since 13/09/2026 COLOR0.rgb is the normal and terrainLight is the sun, ambient and fills --
+    // see the constants at the top. Everything said above about input.color.rgb now applies to
+    // litColor.)
+    float3 litColor = terrainLight(input.color.rgb, input.worldPos);
     [branch] if (ClusteredLightingEnabled())
     {
         litColor += clusteredLight(input.position, input.worldPos, Ngeo);

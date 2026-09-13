@@ -27,6 +27,11 @@ DECLARE_SAMPLER_2D_CMP(ShadowMap, 5);   // directional shadow map (R32F depth, h
 float4 OverlayEnable : register(c0); // x = cloud on, y = noise on, z = cloud shade strength
 float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 = off), z = texel
 
+// The ground's global light at c7..c15, the same constants and function terrain_ps lights with.
+// TheSuperHackers @fix andytraber 13/09/2026 COLOR0.rgb of a road is now the terrain normal of the
+// cell under it, not a baked colour -- see terrain_lighting.hlsli for why the baked one was wrong.
+#include "terrain_lighting.hlsli"
+
 // The clustered light path's three buffers (C5.3), at the absolute slots clustergrid.hlsli
 // assigns them -- above the eight texture stages, bound once per frame rather than per draw
 // by W3DShaderManager::bindClusteredLightBuffers. No sampler for any of them: they are read
@@ -162,7 +167,10 @@ float4 main(PS_INPUT input) : PS_TARGET
     // note in terrain_ps. The sun arrives already summed with the ambient inside COLOR0,
     // with no way to recover the parts, so there is no directional term to suppress and
     // scaling the lot would take the ambient down with it.
-    float3 litColor = input.color.rgb;
+    // (Since 13/09/2026 COLOR0.rgb is the terrain normal and terrainLight is the sun, ambient and
+    // fills, exactly as on the ground beside the road. What is said above about input.color.rgb
+    // applies to litColor.)
+    float3 litColor = terrainLight(input.color.rgb, input.worldPos);
     [branch] if (ClusteredLightingEnabled())
     {
         litColor += clusteredLight(input.position, input.worldPos, Ngeo);

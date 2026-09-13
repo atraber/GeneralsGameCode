@@ -290,7 +290,9 @@ void VolumetricFogClass::Update_Constants(CameraClass & camera)
 	fogConstants[10].Set(DX8Wrapper::m_sunVP[12], DX8Wrapper::m_sunVP[13], DX8Wrapper::m_sunVP[14], DX8Wrapper::m_sunVP[15]);
 
 	// Slot 20: FogShadowParams
-	fogConstants[11].Set(DX8Wrapper::m_shadowParams[0], DX8Wrapper::m_shadowParams[1],
+	// y is on/off only, not the strength: the day-night cycle fades the strength to zero around
+	// sunset, and the fog reads zero as "do not shadow the volume at all".
+	fogConstants[11].Set(DX8Wrapper::m_shadowParams[0], DX8Wrapper::m_shadowParams[1] > 0.0f ? 1.0f : 0.0f,
 		DX8Wrapper::m_shadowParams[2], (float)DX8Wrapper::SHADOW_MAP_SIZE);
 
 	DX8Wrapper::Set_Frame_Constants_At(9, fogConstants, 12);
