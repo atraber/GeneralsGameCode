@@ -260,7 +260,9 @@ enum {
 	TSS_ADDRESSU = 13, TSS_ADDRESSV = 14, TSS_BORDERCOLOR = 15,
 	TSS_MAGFILTER = 16, TSS_MINFILTER = 17, TSS_MIPFILTER = 18,
 	TSS_MIPMAPLODBIAS = 19, TSS_MAXMIPLEVEL = 20, TSS_MAXANISOTROPY = 21,
-	TSS_ADDRESSW = 25
+	TSS_ADDRESSW = 25,
+	// The engine's own word, not D3D's: see D3DTSS_COMPAREFUNC in gfxstatewords.h.
+	TSS_COMPAREFUNC = 29
 };
 
 // D3DPRIMITIVETYPE.
@@ -367,7 +369,7 @@ static unsigned s_sampler_stage_no_sampler = 0;
 // off the cache because the report is a static member and has no device to ask. Ten fields
 // in declaration order: address u/v/w, mag, min, mip, lod bias (as a float's bit pattern),
 // max lod, max anisotropy, border.
-static unsigned s_sampler_keys[64][10];
+static unsigned s_sampler_keys[64][11];
 static unsigned s_sampler_key_uses[64];
 static int s_sampler_key_count = 0;
 // The SRV/UAV hazard, which is the render-target hazard above in its other clothes.
@@ -842,7 +844,7 @@ struct RasterKey
 
 struct SamplerKey
 {
-	unsigned address_u, address_v, address_w, mag, min, mip, lod_bias, max_lod, max_aniso, border;
+	unsigned address_u, address_v, address_w, mag, min, mip, lod_bias, max_lod, max_aniso, border, compare;
 };
 
 struct LayoutKey
@@ -2616,6 +2618,7 @@ void GfxDeviceD3D11::Set_Texture_Stage_State(unsigned stage, unsigned state, uns
 	case TSS_ADDRESSU: case TSS_ADDRESSV: case TSS_ADDRESSW: case TSS_BORDERCOLOR:
 	case TSS_MAGFILTER: case TSS_MINFILTER: case TSS_MIPFILTER:
 	case TSS_MIPMAPLODBIAS: case TSS_MAXMIPLEVEL: case TSS_MAXANISOTROPY:
+	case TSS_COMPAREFUNC:
 		m_impl->sampler_dirty[stage] = true;
 		return;
 	default:
@@ -3504,14 +3507,15 @@ namespace
 		key.max_lod = impl->tss[stage][TSS_MAXMIPLEVEL];
 		key.max_aniso = impl->tss[stage][TSS_MAXANISOTROPY];
 		key.border = impl->tss[stage][TSS_BORDERCOLOR];
+		key.compare = impl->tss[stage][TSS_COMPAREFUNC];
 
 #ifdef RTS_DEBUG
 		// Which sampler descriptions the frame is actually built out of, and how much of
-		// it each one draws. Ten fields, in SamplerKey's declaration order.
+		// it each one draws. Eleven fields, in SamplerKey's declaration order.
 		{
-			const unsigned fields[10] = { key.address_u, key.address_v, key.address_w,
+			const unsigned fields[11] = { key.address_u, key.address_v, key.address_w,
 				key.mag, key.min, key.mip, key.lod_bias, key.max_lod, key.max_aniso,
-				key.border };
+				key.border, key.compare };
 			int slot = -1;
 			for (int i = 0; i < s_sampler_key_count; ++i) {
 				if (memcmp(s_sampler_keys[i], fields, sizeof(fields)) == 0) { slot = i; break; }
@@ -3535,7 +3539,16 @@ namespace
 			desc.AddressW = To_Address(key.address_w != 0 ? key.address_w : 1);
 			memcpy(&desc.MipLODBias, &key.lod_bias, sizeof(float));
 			desc.MaxAnisotropy = key.max_aniso != 0 ? key.max_aniso : 1;
-			desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+			// A comparison sampler is the same filter with the comparison bit set
+			// (D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT is 0x94 = 0x14 | 0x80, and
+			// likewise for every other entry including anisotropic). A shader declaring
+			// SamplerComparisonState must be bound one of these and nothing else.
+			if (key.compare >= 1 && key.compare <= 8) {
+				desc.Filter = (D3D11_FILTER)(desc.Filter | 0x80);
+				desc.ComparisonFunc = (D3D11_COMPARISON_FUNC)key.compare;
+			} else {
+				desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+			}
 			desc.MinLOD = (float)key.max_lod;
 			// D3DTEXF_NONE on the mip filter means no mipmapping at all, which D3D11
 			// expresses as a point mip filter clamped to the top level rather than as a

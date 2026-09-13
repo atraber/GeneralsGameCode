@@ -79,6 +79,12 @@
 #define D3DTSS_MAXANISOTROPY ((D3DTEXTURESTAGESTATETYPE)21)
 #define D3DTSS_ADDRESSW ((D3DTEXTURESTAGESTATETYPE)25)
 
+// Not a D3D8 or D3D9 word at all: the comparison function of a comparison sampler, which
+// D3D9 expressed only through a depth-format texture's driver magic and D3D11 makes part
+// of the sampler description. 29 is unused by both APIs' stage-state numbering. 0 means an
+// ordinary sampler; otherwise the value is a D3DCMP_* / D3D11_COMPARISON_FUNC (they agree).
+#define D3DTSS_COMPAREFUNC ((D3DTEXTURESTAGESTATETYPE)29)
+
 // Render states D3D8 had and D3D9 dropped, kept at numbers that are free inside
 // RenderStates[256]. Only D3DRS_ZBIAS has a live writer -- the two terrain shroud passes --
 // and the D3D11 backend converts it at RS_COMPAT_ZBIAS. The rest are written once at

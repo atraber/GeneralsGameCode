@@ -51,7 +51,7 @@ float4 Stage1AArg1 : register(c5);
 float4 Stage1AArg2 : register(c6);
 float4 Stage1AOp   : register(c7);
 
-DECLARE_SAMPLER_2D(ShadowMap, 5);      // directional shadow map (R32F depth)
+DECLARE_SAMPLER_2D_CMP(ShadowMap, 5);  // directional shadow map (R32F depth, hardware PCF)
 float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow strength (0 = off)
 // y = this mesh's depth bias, small because unit_vs has already lifted the lookup off the
 // surface along its normal. See the note in unit_ps.

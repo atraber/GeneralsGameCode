@@ -92,7 +92,8 @@ enum SamplerShiftConstants
 	SAMPLER_SHIFT_ADDRESSU		= 6,	// 3 bits
 	SAMPLER_SHIFT_ADDRESSV		= 9,	// 3 bits
 	SAMPLER_SHIFT_ADDRESSW		= 12,	// 3 bits
-	SAMPLER_SHIFT_ANISOTROPY	= 15	// 5 bits, 1..16
+	SAMPLER_SHIFT_ANISOTROPY	= 15,	// 5 bits, 1..16
+	SAMPLER_SHIFT_COMPARE		= 20	// 4 bits
 };
 
 class SamplerStateClass
@@ -116,6 +117,17 @@ public:
 		ADDRESS_MIRROR_ONCE
 	};
 
+	// A comparison sampler: the read returns the result of comparing a reference value
+	// against each texel, filtered, instead of the texel. This is hardware PCF -- with a
+	// linear filter the four texels around the lookup are each compared and the results
+	// bilinearly weighted. COMPARE_NONE is an ordinary sampler.
+	enum CompareType
+	{
+		COMPARE_NONE = 0,
+		COMPARE_LESS_EQUAL,		// passes (1) when reference <= texel
+		COMPARE_GREATER_EQUAL
+	};
+
 	SamplerStateClass() : Bits(0) {}
 
 	// The value nothing a caller builds can equal, so that every field of the next
@@ -130,6 +142,7 @@ public:
 	AddressType	Get_V_Address() const	{ return (AddressType)Get(SAMPLER_SHIFT_ADDRESSV, 7); }
 	AddressType	Get_W_Address() const	{ return (AddressType)Get(SAMPLER_SHIFT_ADDRESSW, 7); }
 	unsigned	Get_Anisotropy() const	{ return Get(SAMPLER_SHIFT_ANISOTROPY, 31); }
+	CompareType	Get_Compare() const		{ return (CompareType)Get(SAMPLER_SHIFT_COMPARE, 15); }
 
 	void Set_Min_Filter(FilterType f)	{ Set(SAMPLER_SHIFT_MINFILTER, 3, (unsigned)f); }
 	void Set_Mag_Filter(FilterType f)	{ Set(SAMPLER_SHIFT_MAGFILTER, 3, (unsigned)f); }
@@ -138,6 +151,7 @@ public:
 	void Set_V_Address(AddressType a)	{ Set(SAMPLER_SHIFT_ADDRESSV, 7, (unsigned)a); }
 	void Set_W_Address(AddressType a)	{ Set(SAMPLER_SHIFT_ADDRESSW, 7, (unsigned)a); }
 	void Set_Anisotropy(unsigned n)		{ Set(SAMPLER_SHIFT_ANISOTROPY, 31, n); }
+	void Set_Compare(CompareType c)		{ Set(SAMPLER_SHIFT_COMPARE, 15, (unsigned)c); }
 
 	// The two shapes almost every caller wants, stated once. Both set the minification,
 	// magnification and addressing and leave the mip filter alone, because whether a
@@ -178,6 +192,8 @@ public:
 	{ SamplerStateClass s(*this); s.Set_W_Address(w); return s; }
 	SamplerStateClass With_Anisotropy(unsigned n) const
 	{ SamplerStateClass s(*this); s.Set_Anisotropy(n); return s; }
+	SamplerStateClass With_Compare(CompareType c) const
+	{ SamplerStateClass s(*this); s.Set_Compare(c); return s; }
 
 	unsigned Get_Key() const { return Bits; }
 

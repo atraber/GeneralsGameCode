@@ -12,8 +12,9 @@
 // every shader depend on all of them, so editing the filter here rebuilds every receiver.
 //
 // What this does NOT own: the sampler and the constant registers. Every receiver binds
-// the map on stage 5, but ShadowParams lands on a different register in each shader
-// (c1 terrain/road, c8 unit, c16 unit_pbr), so the caller passes those in.
+// the map on stage 5 -- declared with DECLARE_SAMPLER_2D_CMP, because the CPU binds a
+// LESS_EQUAL comparison sampler there -- but ShadowParams lands on a different register in
+// each shader (c1 terrain/road, c8 unit, c16 unit_pbr), so the caller passes those in.
 
 #include "shadermodel.hlsli"
 
@@ -25,18 +26,22 @@
 // ---------------------------------------------------------------------------
 
 // Depth is stored as a single 32-bit float in the R channel (R32F render target).
-// Direct read: no packing or channel-weight arithmetic needed.
 //
-// tex2Dlod, not tex2D, and deliberately so for every caller rather than only the ones that
-// need it. unit_ps and unit_detail_ps call the filter inside dynamic flow control, where
-// tex2D would want the implicit screen-space gradients a branch makes unavailable
-// ("can't force branch with gradients on non-inputs"). An explicit level is not an
-// approximation: the map is a single-level render target sampled with point filtering, so
-// level 0 is the only level there has ever been. Using it everywhere means the filter has
-// one form and any receiver may branch around it without the filter caring.
-float shadowSampleDepth(SAMPLER_2D_PARAM(shadowMap), float2 uv)
+// The compare is done by the sampler, not here: hardware PCF. Stage 5 carries a LESS_EQUAL
+// comparison sampler with a linear filter, so one read compares the reference against the
+// four texels around the lookup and returns the bilinearly weighted fraction that pass --
+// 1 lit, 0 shadowed. That makes each Poisson tap a small smooth kernel of its own instead of
+// a hard step, which is what fills the gaps between taps and turns the rotated disk's grain
+// (and the Bayer-dithered translucent casters) back into an even grey.
+//
+// SampleCmpLevelZero, deliberately, for every caller. unit_ps and unit_detail_ps call the
+// filter inside dynamic flow control, where a gradient-taking read is unavailable ("can't
+// force branch with gradients on non-inputs"). Level zero is not an approximation: the map
+// is a single-level render target. So the filter has one form and any receiver may branch
+// around it without the filter caring.
+float shadowSampleCompare(SAMPLER_2D_CMP_PARAM(shadowMap), float2 uv, float zRef)
 {
-    return SAMPLE_2D_LOD(shadowMap, uv, 0.0).r;
+    return SAMPLE_2D_CMP_LOD0(shadowMap, uv, zRef);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,14 +186,16 @@ float2 shadowReceiverGradient(float2 uv, float z)
 // ---------------------------------------------------------------------------
 
 // One tap: offset within the kernel, plane-corrected compare, and the out-of-map guard.
-float shadowTap(SAMPLER_2D_PARAM(shadowMap), float2 uv, float2 offsetUv,
+float shadowTap(SAMPLER_2D_CMP_PARAM(shadowMap), float2 uv, float2 offsetUv,
                 float zRef, float2 dzduv, float bias, float planeLimit)
 {
     float2 t = uv + offsetUv;
 
-    // The depth this same surface would have at the tap, not the depth it has here.
+    // The depth this same surface would have at the tap, not the depth it has here. The
+    // plane is evaluated at the tap centre; across the one-texel bilinear footprint around
+    // it the remaining slope error is what the constant bias covers.
     float plane = clamp(dot(dzduv, offsetUv), -planeLimit, planeLimit);
-    float lit = ((zRef + plane) - bias > shadowSampleDepth(SAMPLER_2D_ARG(shadowMap), t)) ? 0.0 : 1.0;
+    float lit = shadowSampleCompare(SAMPLER_2D_ARG(shadowMap), t, (zRef + plane) - bias);
 
     // Taps that leave the map are the wide kernel's own problem: stage 5 is CLAMP, so an
     // out-of-range tap silently reads the border texel, which holds some unrelated
@@ -207,7 +214,7 @@ float shadowTap(SAMPLER_2D_PARAM(shadowMap), float2 uv, float2 offsetUv,
 //
 // zRef is the pixel's own depth in sun-clip units; bias is what is left for numerical
 // slack once the normal offset (meshes) or the slope allowance (terrain) has done its job.
-float shadowFilter16(SAMPLER_2D_PARAM(shadowMap), float2 uv, float zRef,
+float shadowFilter16(SAMPLER_2D_CMP_PARAM(shadowMap), float2 uv, float zRef,
                      float texel, float radiusTexels, float2 dzduv, float bias)
 {
     float2 rot   = shadowRotation(uv, texel);
@@ -228,7 +235,7 @@ float shadowFilter16(SAMPLER_2D_PARAM(shadowMap), float2 uv, float zRef,
 // Eight taps, for water. Half the cost, and the surface it shades is large, smooth and
 // already broken up by its own normals -- there is nothing on the water sharp enough to
 // show the difference. It also only gates a specular highlight and a partial darkening.
-float shadowFilter8(SAMPLER_2D_PARAM(shadowMap), float2 uv, float zRef,
+float shadowFilter8(SAMPLER_2D_CMP_PARAM(shadowMap), float2 uv, float zRef,
                     float texel, float radiusTexels, float2 dzduv, float bias)
 {
     float2 rot   = shadowRotation(uv, texel);

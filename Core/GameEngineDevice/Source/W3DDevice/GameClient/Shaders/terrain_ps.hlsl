@@ -26,7 +26,7 @@ DECLARE_SAMPLER(ClassMap, 1);   // per-slot class table (point sampled)
 DECLARE_SAMPLER(CloudSampler, 2);
 DECLARE_SAMPLER(NoiseSampler, 3);
 DECLARE_SAMPLER(DetailMap, 4);   // procedural detail: RG = gradient, B = height
-DECLARE_SAMPLER_2D(ShadowMap, 5);   // directional shadow map (R32F depth)
+DECLARE_SAMPLER_2D_CMP(ShadowMap, 5);   // directional shadow map (R32F depth, hardware PCF)
 
 float4 OverlayEnable : register(c0); // x = cloud on, y = noise on, z = cloud shade strength
 float4 ShadowParams  : register(c1); // x = depth bias, y = shadow strength (0 = off)

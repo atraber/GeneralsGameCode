@@ -33,10 +33,19 @@
 #define SAMPLER_2D_PARAM(name)  Texture2D name##_texture, SamplerState name
 #define SAMPLER_2D_ARG(name)    name##_texture, name
 
+// A comparison sampler (hardware PCF). The CPU side must bind a sampler built with a
+// comparison function on the same slot -- see SamplerStateClass::With_Compare -- because
+// D3D11 will not filter a SamplerComparisonState with an ordinary sampler, nor the reverse.
+// Passed across functions with SAMPLER_2D_ARG like any other.
+#define DECLARE_SAMPLER_2D_CMP(name, slot)  Texture2D name##_texture : register(t##slot); \
+                                            SamplerComparisonState name : register(s##slot)
+#define SAMPLER_2D_CMP_PARAM(name)          Texture2D name##_texture, SamplerComparisonState name
+
 // The reads themselves.
 #define SAMPLE_2D(name, uv)                     name##_texture.Sample(name, uv)
 #define SAMPLE_2D_LOD(name, uv, lod)            name##_texture.SampleLevel(name, uv, lod)
 #define SAMPLE_2D_GRAD(name, uv, ddxUv, ddyUv)  name##_texture.SampleGrad(name, uv, ddxUv, ddyUv)
+#define SAMPLE_2D_CMP_LOD0(name, uv, ref)       name##_texture.SampleCmpLevelZero(name, uv, ref)
 #define SAMPLE_CUBE(name, dir)                  name##_texture.Sample(name, dir)
 #define SAMPLE_CUBE_LOD(name, dir, lod)         name##_texture.SampleLevel(name, dir, lod)
 

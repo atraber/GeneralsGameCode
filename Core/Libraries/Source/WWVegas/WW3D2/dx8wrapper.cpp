@@ -373,6 +373,15 @@ void DX8Wrapper::Set_Sampler(unsigned stage, const SamplerStateClass & sampler)
 		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_ADDRESSW, Sampler_Address_To_D3D(sampler.Get_W_Address()));
 	if (current.Get_Anisotropy() != sampler.Get_Anisotropy())
 		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_MAXANISOTROPY, sampler.Get_Anisotropy());
+	if (current.Get_Compare() != sampler.Get_Compare()) {
+		unsigned func = 0;
+		switch (sampler.Get_Compare()) {
+			case SamplerStateClass::COMPARE_LESS_EQUAL:		func = D3DCMP_LESSEQUAL; break;
+			case SamplerStateClass::COMPARE_GREATER_EQUAL:	func = D3DCMP_GREATEREQUAL; break;
+			default:										func = 0; break;
+		}
+		Set_DX8_Stage_State_Unguarded(stage, D3DTSS_COMPAREFUNC, func);
+	}
 
 	current = sampler;
 }
@@ -3147,6 +3156,9 @@ void DX8Wrapper::Restore_Stage5_After_Shadow()
 	Set_DX8_Texture(5, render_state.Textures[5] != nullptr
 					   ? render_state.Textures[5]->Peek_D3D_Base_Texture()
 					   : NULL);
+	// The shadow binds leave a comparison sampler on the slot, which no ordinary
+	// SamplerState may be handed.
+	Set_Sampler(5, Get_Sampler(5).With_Compare(SamplerStateClass::COMPARE_NONE));
 	Set_DX8_Texture_Stage_State(5, D3DTSS_COLOROP, D3DTOP_DISABLE);
 	Set_DX8_Texture_Stage_State(5, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 }
@@ -7096,8 +7108,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_DX8_Texture(5, m_pShadowMap);
 				s_shadowStage5Bound = true;
 				Set_Sampler(5, Get_Sampler(5)
-					.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
-					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
+					.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+					.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP)
+					.With_Compare(SamplerStateClass::COMPARE_LESS_EQUAL));
 			}
 
 			// Smooth (bi/tri-linear) filtering + clamp, matching the fixed-function
@@ -7238,8 +7252,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_DX8_Texture(5, m_pShadowMap);
 				s_shadowStage5Bound = true;
 				Set_Sampler(5, Get_Sampler(5)
-					.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
-					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
+					.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+					.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP)
+					.With_Compare(SamplerStateClass::COMPARE_LESS_EQUAL));
 			}
 
 			// The road texture is an atlas: clamp, and filter smoothly (the fixed-function
@@ -7379,8 +7395,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 				Set_DX8_Texture(5, m_pShadowMap);
 				s_shadowStage5Bound = true;
 				Set_Sampler(5, Get_Sampler(5)
-					.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
-					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
+					.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+					.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+					.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP)
+					.With_Compare(SamplerStateClass::COMPARE_LESS_EQUAL));
 			}
 			// The shroud on 6, where the PBR path keeps the scene colour. Nothing samples
 			// both, and putting it here leaves 0-3 exactly as the old path arranged them.
@@ -7705,8 +7723,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					Set_DX8_Texture(5, m_pShadowMap);
 					s_shadowStage5Bound = true;
 					Set_Sampler(5, Get_Sampler(5)
-						.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
-						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
+						.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+						.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP)
+						.With_Compare(SamplerStateClass::COMPARE_LESS_EQUAL));
 				}
 			}
 
@@ -7780,8 +7800,10 @@ void DX8Wrapper::Apply_Render_State_Changes()
 					Set_DX8_Texture(5, m_pShadowMap);
 					s_shadowStage5Bound = true;
 					Set_Sampler(5, Get_Sampler(5)
-						.With_Filter(SamplerStateClass::FILTER_POINT, SamplerStateClass::FILTER_POINT)
-						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP));
+						.With_Filter(SamplerStateClass::FILTER_LINEAR, SamplerStateClass::FILTER_LINEAR)
+						.With_Mip_Filter(SamplerStateClass::FILTER_NONE)
+						.With_Address(SamplerStateClass::ADDRESS_CLAMP, SamplerStateClass::ADDRESS_CLAMP)
+						.With_Compare(SamplerStateClass::COMPARE_LESS_EQUAL));
 				}
 				Set_Pixel_Shader_Constant(16, m_shadowParams, 1);   // bias + strength
 				// c23: normal offset + the bias left over once the lookup is offset. The
@@ -9551,6 +9573,7 @@ const char* DX8Wrapper::Get_DX8_Texture_Stage_State_Name(D3DTEXTURESTAGESTATETYP
 	case D3DTSS_BUMPENVLOFFSET            : return "D3DTSS_BUMPENVLOFFSET";
 	case D3DTSS_TEXTURETRANSFORMFLAGS     : return "D3DTSS_TEXTURETRANSFORMFLAGS";
 	case D3DTSS_ADDRESSW                  : return "D3DTSS_ADDRESSW";
+	case D3DTSS_COMPAREFUNC               : return "D3DTSS_COMPAREFUNC";
 	case D3DTSS_COLORARG0                 : return "D3DTSS_COLORARG0";
 	case D3DTSS_ALPHAARG0                 : return "D3DTSS_ALPHAARG0";
 	case D3DTSS_RESULTARG                 : return "D3DTSS_RESULTARG";

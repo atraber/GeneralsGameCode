@@ -2727,7 +2727,7 @@ WWINLINE bool DX8Wrapper::Is_Sampler_Stage_State(unsigned state)
 	switch (state) {
 		case D3DTSS_MINFILTER: case D3DTSS_MAGFILTER: case D3DTSS_MIPFILTER:
 		case D3DTSS_ADDRESSU:  case D3DTSS_ADDRESSV:  case D3DTSS_ADDRESSW:
-		case D3DTSS_MAXANISOTROPY:
+		case D3DTSS_MAXANISOTROPY: case D3DTSS_COMPAREFUNC:
 			return true;
 		default:
 			return false;

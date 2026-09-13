@@ -35,7 +35,7 @@
 DECLARE_SAMPLER_2D(AlbedoSampler, 0);
 DECLARE_SAMPLER_2D(OrmSampler, 1);
 DECLARE_SAMPLER_CUBE(EnvSampler, 4);   // shared environment cubemap (reflections)
-DECLARE_SAMPLER_2D(ShadowMap, 5);   // directional shadow map (R32F depth)
+DECLARE_SAMPLER_2D_CMP(ShadowMap, 5);   // directional shadow map (R32F depth, hardware PCF)
 DECLARE_SAMPLER_2D(SceneColor, 6);   // previous frame's resolved scene
 DECLARE_SAMPLER_2D(SceneDepth, 7);   // this frame's camera-view depth (R32F)
 
@@ -776,7 +776,9 @@ float4 main(PS_INPUT input) : PS_TARGET
         float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;
         if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
             return float4(1.0, 0.0, 0.0, 1.0);
-        float stored = SAMPLE_2D(ShadowMap, uv).r;   // R32F: depth is the red channel
+        // R32F: depth is the red channel. Load, not a sample: the slot holds a comparison
+        // sampler, which cannot return the raw texel.
+        float stored = ShadowMap_texture.Load(int3(uv * (1.0 / ShadowParams.z), 0)).r;
         return float4(0.0, saturate(ndc.z), saturate(stored), 1.0);
     }
 #elif PBR_DEBUG_MODE == 15

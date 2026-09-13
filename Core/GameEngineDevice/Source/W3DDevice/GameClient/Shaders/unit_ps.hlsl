@@ -31,7 +31,7 @@ DECLARE_SAMPLER(BaseSampler, 0);
 // w = 1 when stage 0's alpha combine uses the texture alpha, 0 when it does not.
 float4 TexCtl : register(c1);
 
-DECLARE_SAMPLER_2D(ShadowMap, 5);      // directional shadow map (R32F depth)
+DECLARE_SAMPLER_2D_CMP(ShadowMap, 5);  // directional shadow map (R32F depth, hardware PCF)
 float4 ShadowParams : register(c8);    // x = ground depth bias, y = shadow strength (0 = off)
 // y = the depth bias for this mesh. The vertex shader has already lifted the lookup off
 // the surface along its normal (see unit_vs), so what is left here is numerical slack
