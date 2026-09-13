@@ -315,6 +315,12 @@ public:
 	static bool Is_Initted() { return IsInitted; }
 
 	static bool Has_Stencil ();
+	// TheSuperHackers @perf andytraber 13/09/2026 The depth format the scene is actually
+	// drawing into. Needed because the camera-depth snapshot is a straight resource copy of
+	// the bound depth buffer, and a copy is only the fast path while both sides agree on
+	// format exactly -- so the destination has to be created from this rather than from a
+	// guess. Find_Z_Mode picks it at device creation and nothing else exposes it.
+	static WW3DZFormat Get_Depth_Stencil_Format();
 	static void Get_Format_Name(unsigned int format, StringClass *tex_format);
 	// How many bytes a surface of this shape occupies. Said in the engine's own format
 	// vocabulary: the two callers both have a WW3DSurfaceDescription now, and the answer
@@ -589,6 +595,14 @@ public:
 		unsigned levels, WW3DFormat format, unsigned usage);
 	static GfxTexture* Create_DX8_Cube_Texture_Resource(unsigned edge_length, unsigned levels,
 		WW3DFormat format, unsigned usage);
+	// TheSuperHackers @perf andytraber 13/09/2026 A texture in the depth format vocabulary,
+	// which a shader can sample and a copy of the scene's depth buffer can land in. The seam
+	// has offered this since Phase 3.6; the only caller until now was _Create_DX8_ZTexture,
+	// reached from ZTextureClass, which this engine never instantiates -- so the plain
+	// spelling is added here rather than going through a path that takes an extra reference
+	// on the caller's behalf ("don't release this texture") that a normal owner does not want.
+	static GfxTexture* Create_DX8_Depth_Texture(unsigned width, unsigned height,
+		unsigned levels, WW3DZFormat format, unsigned usage);
 	static void Release_DX8_Texture_Resource(GfxTexture* texture);
 	/*
 	** Release and forget, in one call that picks the right one by the handle's type.
@@ -1839,6 +1853,15 @@ public:
 	static float						m_depthVP[16];    // camera view*projection, row-major
 	static void Set_Depth_Prepass(bool active) { m_bDepthPrepass = active; }
 	static void Set_Depth_VP(const float* m16);
+	// TheSuperHackers @perf andytraber 13/09/2026 The one expression of the camera
+	// view-projection and the projection's _33/_43, built from the transforms the pipeline
+	// is drawing with. Two producers now need it -- the prepass above, and the camera-depth
+	// snapshot that replaces it -- and a second copy of this arithmetic is precisely the
+	// disagreement the in-tree comment at the definition exists to prevent. Build_ writes
+	// into the caller's storage (out_vp is 16 floats, out_proj is 2) so a check can compare
+	// what *would* be published against what already is; Publish_ stores it.
+	static void Build_Camera_Depth_Params(float * out_vp, float * out_proj);
+	static void Publish_Camera_Depth_Params();
 	// Bound for sampling by the PBR shader: the depth just described, and the scene
 	// colour the rays actually read. That colour is the *previous* frame's -- the
 	// current one is the live render target while units are drawing, and D3D9 leaves
@@ -2486,6 +2509,13 @@ WWINLINE GfxTexture* DX8Wrapper::Create_DX8_Cube_Texture_Resource(unsigned edge_
 {
 	if (Gfx == nullptr) return nullptr;
 	return Gfx->Create_Cube_Texture(edge_length, levels, format, usage);
+}
+
+WWINLINE GfxTexture* DX8Wrapper::Create_DX8_Depth_Texture(unsigned width, unsigned height,
+	unsigned levels, WW3DZFormat format, unsigned usage)
+{
+	if (Gfx == nullptr) return nullptr;
+	return Gfx->Create_Depth_Texture(width, height, levels, format, usage);
 }
 
 WWINLINE void DX8Wrapper::Reference_DX8_Texture(GfxTexture* texture)

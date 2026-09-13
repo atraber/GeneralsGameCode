@@ -3710,6 +3710,88 @@ GfxSurface *W3DShaderManager::m_ssrDepthSurface = nullptr;
 GfxSurface *W3DShaderManager::m_ssrDepthStencil = nullptr;
 GfxTexture *W3DShaderManager::m_sceneHistoryTexture = nullptr;
 GfxSurface *W3DShaderManager::m_sceneHistorySurface = nullptr;
+Bool W3DShaderManager::m_sceneDepthIsHardware = FALSE;
+#ifdef RTS_DEBUG
+Bool W3DShaderManager::m_cameraDepthPrepassRan = FALSE;
+#endif
+
+/*
+** TheSuperHackers @perf andytraber 13/09/2026 The camera depth without a second pass over
+** the scene.
+**
+** The prepass below exists for one reason: D3D9 would not hand back its depth buffer as
+** something a shader could sample, so the scene was drawn a second time through the shadow
+** map's depth shaders into an R32F colour target. D3D9 has been gone since Phase 10. The
+** hardware depth buffer already holds the same number -- shadowdepth_ps writes
+** min(lightPos.z / lightPos.w, 0.9999), which is clip-space z/w, which is what the depth
+** test stores -- so the whole pass is paying for a constraint that no longer applies.
+**
+** What replaces it is a straight resource copy of the bound depth buffer, taken once a
+** frame. The copy rather than a read-only depth-stencil view plus an SRV of the live
+** buffer, which is the pattern the D3D11 documentation sanctions, for two reasons:
+**
+**   * a read-only view silently drops every depth write that follows it, and the frame is
+**     not finished writing depth when the water reads it -- flushTranslucentObjects runs
+**     *after* the water and draws meshes whose own shaders declare depth writes. Proving
+**     that set empty is a measurement this change does not need to make, and the failure
+**     mode if the proof were wrong is invisible.
+**   * a copy has the prepass's semantics exactly. The prepass produced a snapshot, fixed
+**     for the whole frame; the live buffer would hand later consumers depth that later
+**     geometry had written. That is arguably better and is certainly different, and
+**     different is what a change like this should not also be.
+**
+** Where the two *do* differ, the hardware buffer is the better input: the prepass only ever
+** saw geometry admitted to the shadow-caster path, so opaque geometry that writes depth
+** without being flagged as a caster was missing from it. Frames therefore legitimately
+** change, which is why "0 differing pixels" is not the gate here.
+**
+** Nothing in the sampling changes. Every consumer reads .r and a depth SRV's .r is the
+** depth; the empty-sky sentinel matches too, since a depth clear is 1.0 and the prepass
+** cleared its red channel to 1.0.
+*/
+static Bool camera_depth_snapshot_available(WW3DMultiSampleType &multisampleOut)
+{
+	multisampleOut = WW3D_MULTISAMPLE_NONE;
+
+	// The positive control, and the reason it is worth a knob rather than a rebuild: the two
+	// paths produce legitimately different pictures -- the snapshot sees opaque geometry the
+	// prepass never admitted -- so "0 differing pixels" cannot be the gate here, and the only
+	// way to say what changed is to render the same frame both ways. W3D_CAMERA_DEPTH=prepass
+	// forces the old pass on a device that could do without it. It doubles as the escape hatch
+	// if a driver ever refuses the depth copy.
+	const char *forced = ::getenv("W3D_CAMERA_DEPTH");
+	if (forced != nullptr && stricmp(forced, "prepass") == 0)
+	{
+		DEBUG_LOG(("SSR: W3D_CAMERA_DEPTH=prepass -- taking the depth prepass even though the "
+			"depth buffer could have been copied\n"));
+		return FALSE;
+	}
+
+	if (DX8Wrapper::Get_Depth_Stencil_Format() == WW3D_ZFORMAT_UNKNOWN)
+		return FALSE;
+
+	// Asked of the depth buffer itself rather than of the antialiasing setting. A depth
+	// buffer's sample count equals its colour target's, and a driver profile can force
+	// multisampling the options file never asked for -- the comment in startRenderToTexture
+	// records that happening here already, as a target bind that failed for a reason
+	// D3DSURFACE_DESC would not report. Reading the live surface is the difference between
+	// knowing and assuming.
+	//
+	// It matters because CopySubresourceRegion will not cross a sample count and says so
+	// only to the debug layer, so the copy would silently produce nothing at all;
+	// ResolveSubresource is the call that crosses one, and it has no depth format to
+	// resolve with. With a multisampled frame the prepass is the only way to get this.
+	GfxSurface *ds = DX8Wrapper::Get_DX8_Depth_Target_Surface();
+	if (ds == nullptr)
+		return FALSE;
+	WW3DSurfaceDescription dsDesc;
+	const bool haveDesc = DX8Wrapper::Describe_DX8_Surface(ds, dsDesc);
+	DX8Wrapper::Release_DX8_Surface_Resource(ds);
+	if (!haveDesc)
+		return FALSE;
+	multisampleOut = dsDesc.MultiSample;
+	return dsDesc.MultiSample == WW3D_MULTISAMPLE_NONE;
+}
 
 void W3DShaderManager::initSsr()
 {
@@ -3719,6 +3801,10 @@ void W3DShaderManager::initSsr()
 		return;
 	// The depth pass is the shadow map's, pointed elsewhere. Without those shaders
 	// there is nothing to render depth with, and SSR simply stays off.
+	//
+	// This still gates the snapshot path, which needs neither shader. It is deliberate: the
+	// same two shaders are what the shadow map runs on, and a device that failed to load
+	// them has bigger problems than SSR. Keeping one gate keeps the two paths comparable.
 	if (DX8Wrapper::m_dwShadowDepthVS == 0 || DX8Wrapper::m_dwShadowDepthPS == 0)
 	{
 		DEBUG_LOG(("SSR: disabled -- the shadow depth shaders did not load\n"));
@@ -3742,39 +3828,86 @@ void W3DShaderManager::initSsr()
 
 	// Both targets are screen-sized: the depth one because the shader reprojects
 	// straight into screen UV and any other size would need a scale factor nothing
-	// else knows about, the history one because it is a copy of the frame. The depth
-	// buffer is deliberately non-multisampled -- this target is never resolved and
-	// nothing samples its edges, so MSAA would only cost fill rate.
-	// R32F, for the same reason the shadow map is: the depth pass writes a single float.
-	// It used to be A8R8G8B8 with the depth split across three 8-bit channels, and the
-	// two targets share one pixel shader -- so when the shadow map moved to R32F and the
-	// packing came out of shadowdepth_ps, this target kept the packed format and started
-	// receiving an unpacked float, leaving it quantised to 8 bits. Over a ground plane
-	// that is one or two distinct depths and it reads as horizontal banding.
-	if (nullptr == (m_ssrDepthTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_R32F, GFX_USAGE_RENDER_TARGET)) ||
-		nullptr == (m_ssrDepthSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_ssrDepthTexture, 0)) ||
-		nullptr == (m_sceneHistoryTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET)) ||
-		nullptr == (m_sceneHistorySurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_sceneHistoryTexture, 0)) ||
-		nullptr == (m_ssrDepthStencil = DX8Wrapper::Create_DX8_Depth_Stencil_Surface(
-				desc.Width, desc.Height, WW3D_ZFORMAT_D16, WW3D_MULTISAMPLE_NONE)))
+	// else knows about, the history one because it is a copy of the frame.
+	WW3DMultiSampleType sceneDepthMultisample = WW3D_MULTISAMPLE_NONE;
+	m_sceneDepthIsHardware = camera_depth_snapshot_available(sceneDepthMultisample);
+
+	Bool made = FALSE;
+	if (m_sceneDepthIsHardware)
 	{
-		DEBUG_LOG(("SSR: disabled -- could not create the %dx%d targets\n",
-			desc.Width, desc.Height));
+		// The destination of the once-a-frame copy: a typeless depth resource, viewed typed
+		// to write it and as colour to read it. Created in the *same* depth format the swap
+		// chain chose, because Copy_Surface only takes its CopySubresourceRegion fast path
+		// while both sides agree on format exactly -- anything else falls through to a blit
+		// or a CPU convert, which for a depth resource would be neither.
+		const WW3DZFormat zfmt = DX8Wrapper::Get_Depth_Stencil_Format();
+		made =
+			nullptr != (m_ssrDepthTexture = DX8Wrapper::Create_DX8_Depth_Texture(
+				desc.Width, desc.Height, 1, zfmt, GFX_USAGE_RENDER_TARGET)) &&
+			nullptr != (m_ssrDepthSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_ssrDepthTexture, 0)) &&
+			nullptr != (m_sceneHistoryTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET)) &&
+			nullptr != (m_sceneHistorySurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_sceneHistoryTexture, 0));
+		if (made)
+			DEBUG_LOG(("SSR: active, %dx%d camera depth is a snapshot of the hardware depth "
+				"buffer (zformat %d) -- no depth prepass\n",
+				desc.Width, desc.Height, (Int)zfmt));
+	}
+	else
+	{
+		// The prepass's own target. R32F, for the same reason the shadow map is: the depth
+		// pass writes a single float. It used to be A8R8G8B8 with the depth split across
+		// three 8-bit channels, and the two targets share one pixel shader -- so when the
+		// shadow map moved to R32F and the packing came out of shadowdepth_ps, this target
+		// kept the packed format and started receiving an unpacked float, leaving it
+		// quantised to 8 bits. Over a ground plane that is one or two distinct depths and it
+		// reads as horizontal banding.
+		//
+		// Its depth buffer is deliberately non-multisampled even when the frame is -- this
+		// target is never resolved and nothing samples its edges, so MSAA would only cost
+		// fill rate. That is also exactly why the snapshot path cannot serve a multisampled
+		// frame: there the *scene's* depth buffer carries the sample count, and no copy
+		// crosses one.
+		made =
+			nullptr != (m_ssrDepthTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_R32F, GFX_USAGE_RENDER_TARGET)) &&
+			nullptr != (m_ssrDepthSurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_ssrDepthTexture, 0)) &&
+			nullptr != (m_sceneHistoryTexture = DX8Wrapper::Create_DX8_Texture_Resource(desc.Width, desc.Height, 1, WW3D_FORMAT_A8R8G8B8, GFX_USAGE_RENDER_TARGET)) &&
+			nullptr != (m_sceneHistorySurface = DX8Wrapper::Get_DX8_Texture_Surface_Level(m_sceneHistoryTexture, 0)) &&
+			nullptr != (m_ssrDepthStencil = DX8Wrapper::Create_DX8_Depth_Stencil_Surface(
+				desc.Width, desc.Height, WW3D_ZFORMAT_D16, WW3D_MULTISAMPLE_NONE));
+		if (made)
+			DEBUG_LOG(("SSR: active, %dx%d depth prepass + scene history -- the scene depth "
+				"buffer reports multisample %d, so it cannot be copied\n",
+				desc.Width, desc.Height, (Int)sceneDepthMultisample));
+	}
+
+	if (!made)
+	{
+		DEBUG_LOG(("SSR: disabled -- could not create the %dx%d targets (hardware depth %d)\n",
+			desc.Width, desc.Height, (Int)m_sceneDepthIsHardware));
 		shutdownSsr();
+		m_sceneDepthIsHardware = FALSE;
 		return;
 	}
-	DEBUG_LOG(("SSR: active, %dx%d depth + scene history\n", desc.Width, desc.Height));
 
 	// Clear both before anything can sample them. A render target's contents are
 	// undefined until something writes them, and undefined does not mean black -- it
 	// means whatever was last in that memory. The shader reflects it perfectly happily,
 	// which shows up as reflections in colours that appear nowhere in the scene, and
 	// the "is the history still black" check never fires to say so.
+	//
+	// The snapshot target is cleared by binding it as a depth buffer and clearing z, which
+	// is the same "far" it holds after a copy of an untouched frame. Its sample count is 1
+	// and so is the back buffer's on this path, which is what makes that binding legal.
 	GfxSurface *savedRT = nullptr;
 	GfxSurface *savedDS = nullptr;
 	savedRT = DX8Wrapper::Get_DX8_Render_Target_Surface(0);
 	savedDS = DX8Wrapper::Get_DX8_Depth_Target_Surface();
-	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_ssrDepthSurface, m_ssrDepthStencil)))
+	if (m_sceneDepthIsHardware)
+	{
+		if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(savedRT, m_ssrDepthSurface)))
+			DX8Wrapper::Clear(false, true, Vector3(0.0f, 0.0f, 0.0f), 1.0f, 1.0f);
+	}
+	else if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_ssrDepthSurface, m_ssrDepthStencil)))
 		DX8Wrapper::Clear(true, true, Vector3(1.0f, 0.0f, 0.0f), 1.0f, 1.0f);   // red = far
 	if (SUCCEEDED(DX8Wrapper::Set_DX8_Render_Target(m_sceneHistorySurface, nullptr)))
 		DX8Wrapper::Clear(true, false, Vector3(0.0f, 0.0f, 0.0f), 1.0f, 1.0f);
@@ -4298,6 +4431,10 @@ void W3DShaderManager::shutdownSsr()
 	DX8Wrapper::Release_DX8_Resource(m_ssrDepthTexture);
 	DX8Wrapper::Release_DX8_Resource(m_sceneHistorySurface);
 	DX8Wrapper::Release_DX8_Resource(m_sceneHistoryTexture);
+	// Which path is live is a property of the resources, so it dies with them. Left set, a
+	// re-init after a device reset would ask W3DView to skip the prepass while nothing at
+	// all was producing a camera depth.
+	m_sceneDepthIsHardware = FALSE;
 }
 
 Bool W3DShaderManager::isSsrActive()
@@ -4344,6 +4481,9 @@ void W3DShaderManager::startCameraDepthRendering()
 
 	DX8Wrapper::Set_Shadow_Depth_Pass(true);
 	DX8Wrapper::Set_Depth_Prepass(true);
+#ifdef RTS_DEBUG
+	m_cameraDepthPrepassRan = TRUE;
+#endif
 	// Red is depth 1.0 exactly: the target is R32F and the receivers read the red channel
 	// alone. Anywhere the pass rasterises nothing then reads as empty sky, and a ray
 	// crossing it finds no hit rather than one at the near plane.
@@ -4358,6 +4498,93 @@ void W3DShaderManager::endCameraDepthRendering()
 	// New frame's scene colour has not been captured yet. This runs once per frame,
 	// before the scene is drawn, which is exactly where the flag needs clearing.
 	resetSceneHistoryCaptured();
+}
+
+/*
+** TheSuperHackers @perf andytraber 13/09/2026 The camera depth, without the second pass.
+**
+** Called once a frame from RTS3DScene::Flush, at the boundary between the geometry that
+** writes depth and the blended geometry that reads it -- after the terrain, the opaque
+** meshes, the occlusion pass, the shader meshes, the trees and the stencil shadows, and
+** immediately before the static sort list, which is where the water draws.
+**
+** Two things are published together and that is the whole of why this is one function. The
+** texture holds a depth image, and the consumers reproject their world position through a
+** matrix to find where in it to look. If the two ever came from different frames, every
+** lookup would be wrong by the camera's motion between them. Publishing both here makes
+** the pairing automatic in *both* directions:
+**
+**   * water, soft particles and the fog composite draw after this call, so they read this
+**     frame's depth with this frame's matrix;
+**   * the PBR units' screen-space reflections draw *before* it -- they are opaque geometry
+**     and go down in the mesh flush -- so they read the copy made at the previous frame's
+**     seam, with the matrix published alongside it, which is still what m_depthVP holds
+**     when they run. That is a change from the prepass, which ran before all geometry and
+**     so handed the units this frame's depth. It is also more coherent than what it
+**     replaces: the colour those rays actually read has always been the *previous* frame's
+**     scene history, so a ray now marches, resolves and samples all in one frame's frame of
+**     reference instead of testing against this frame and reading last frame's colour.
+*/
+void W3DShaderManager::captureSceneDepth()
+{
+	if (!DX8Wrapper::Has_Device())
+		return;
+
+#ifdef RTS_DEBUG
+	// The control for "is this the same matrix the prepass used to publish", and it is
+	// deliberately ahead of the early-out below: the only configuration in which both
+	// producers run is the multisampled fallback, where the snapshot itself does nothing.
+	// The prepass publishes before any geometry draws, this runs mid-scene, so comparing
+	// what *would* be published now against what is there says whether the two agree to the
+	// bit. Built rather than published, so a mismatch cannot also become a live change.
+	if (m_cameraDepthPrepassRan)
+	{
+		m_cameraDepthPrepassRan = FALSE;
+		float vp[16];
+		DX8Wrapper::Build_Camera_Depth_Params(vp, nullptr);
+		Bool same = TRUE;
+		for (Int i = 0; i < 16; ++i)
+			if (vp[i] != DX8Wrapper::m_depthVP[i]) { same = FALSE; break; }
+		static Bool s_said = FALSE;
+		if (!s_said)
+		{
+			s_said = TRUE;
+			DEBUG_LOG(("SSR SEAM VP CHECK: the snapshot's camera view-projection is %s the "
+				"depth prepass's\n", same ? "BIT-IDENTICAL to" : "DIFFERENT FROM"));
+		}
+	}
+#endif
+
+	if (!m_sceneDepthIsHardware || m_ssrDepthSurface == nullptr)
+		return;
+
+	// Whatever depth buffer the scene is drawing into right now. Asked rather than
+	// remembered: with a screen filter active the scene goes into a render texture, and the
+	// depth surface that travels with it is bound by startRenderToTexture. Reading it here
+	// gets the buffer this frame's geometry actually wrote, whichever arrangement is live.
+	GfxSurface *src = DX8Wrapper::Get_DX8_Depth_Target_Surface();
+	if (src == nullptr)
+		return;
+
+	const Bool copied = DX8Wrapper::Copy_DX8_Surface(src, m_ssrDepthSurface) ? TRUE : FALSE;
+	DX8Wrapper::Release_DX8_Surface_Resource(src);
+
+	if (!copied)
+	{
+		// Said once. A failed copy leaves the previous frame's depth in place, which reads
+		// as reflections and soft-particle fades that lag the camera rather than as anything
+		// obviously broken -- exactly the kind of fault that needs to announce itself.
+		static Bool s_reported = FALSE;
+		if (!s_reported)
+		{
+			s_reported = TRUE;
+			DEBUG_LOG(("SSR: the scene depth snapshot failed -- camera depth is stale from "
+				"here on\n"));
+		}
+		return;
+	}
+
+	DX8Wrapper::Publish_Camera_Depth_Params();
 }
 
 void W3DShaderManager::captureSceneHistory()

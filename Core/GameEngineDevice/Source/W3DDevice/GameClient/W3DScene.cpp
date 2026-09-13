@@ -886,6 +886,33 @@ void RTS3DScene::Flush(RenderInfoClass & rinfo)
 	if (m_customPassMode == SCENE_PASS_DEFAULT && Get_Extra_Pass_Polygon_Mode() == EXTRA_PASS_DISABLE)
 		DoShadows(rinfo, true);	//draw all stencil shadows
 
+	// TheSuperHackers @perf andytraber 13/09/2026 The opaque/transparent seam, and the one
+	// moment in the frame at which the hardware depth buffer holds exactly what a camera
+	// depth pass used to be run to produce.
+	//
+	// Everything above this line either writes depth (the terrain in Customized_Render, the
+	// mesh flush, the occlusion pass, the shader meshes, the trees) or writes only stencil
+	// (DoShadows). Everything below it is blended and writes no depth: the water presets are
+	// both DEPTH_WRITE_DISABLE and the legacy bump-env path clears ZWRITEENABLE explicitly,
+	// particles are sorted sprites, and the smoke and rotor discs the prepass had to exclude
+	// by name are excluded here for free by not writing depth in the first place.
+	//
+	// So this is where the snapshot is taken, and it is taken rather than the live buffer
+	// being sampled through a read-only view: flushTranslucentObjects runs *below* this and
+	// does draw meshes that declare depth writes, and a read-only view would drop those
+	// silently. See W3DShaderManager::captureSceneDepth.
+	//
+	// Guarded on the reflection pass as well as on the custom modes. The water mirror runs
+	// the whole scene again with culling inverted and its own target, and a snapshot of
+	// *that* depth buffer would be a picture of the world upside down.
+	if (m_customPassMode == SCENE_PASS_DEFAULT &&
+		Get_Extra_Pass_Polygon_Mode() == EXTRA_PASS_DISABLE &&
+		!ShaderClass::Is_Backface_Culling_Inverted())
+	{
+		FRAME_TIMING_SCOPE(PHASE_DEPTHPREPASS);
+		W3DShaderManager::captureSceneDepth();
+	}
+
 	WW3D::Render_And_Clear_Static_Sort_Lists(rinfo);	//draws things like water
 
 	if (m_customPassMode == SCENE_PASS_DEFAULT && Get_Extra_Pass_Polygon_Mode() == EXTRA_PASS_DISABLE)

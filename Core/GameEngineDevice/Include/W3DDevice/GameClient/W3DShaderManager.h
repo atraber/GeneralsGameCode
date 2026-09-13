@@ -197,6 +197,14 @@ public:
 	static GfxTexture * getCameraDepthTexture() { return m_ssrDepthTexture; }	///<camera-view depth texture
 	static void startCameraDepthRendering();	///<redirect rendering into the camera-view depth target.
 	static void endCameraDepthRendering();	///<restore the back buffer after the camera depth pass.
+	///TRUE when the camera depth comes from the hardware depth buffer, so the prepass must
+	///not run. Asked by W3DView::draw, which owns the decision to submit that pass at all.
+	static Bool isHardwareSceneDepth() { return m_sceneDepthIsHardware; }
+	///Snapshot the hardware depth buffer into the texture every camera-depth consumer
+	///samples, and publish the matrix they reproject through. Called once per frame from
+	///RTS3DScene::Flush at the boundary between the depth-writing geometry and the blended
+	///geometry that reads it. Does nothing on the prepass path.
+	static void captureSceneDepth();
 	static void captureSceneHistory();	///<copy the resolved scene into the history texture for next frame.
 	static void captureSceneHistoryFromBackBuffer();	///<same, straight off the back buffer, for when the filter chain did not capture.
 	static Bool sceneHistoryCaptured() { return m_sceneHistoryCaptured; }	///<true once this frame's scene colour has been copied to the history.
@@ -308,9 +316,21 @@ protected:
 	// Screen-space reflections. The depth target is the shadow map's arrangement at
 	// screen size and from the camera; the history texture is last frame's scene, which
 	// is what the rays actually read (this frame's is the live render target).
-	static GfxTexture *m_ssrDepthTexture;	///<camera-view depth-packed target (A8R8G8B8)
-	static GfxSurface *m_ssrDepthSurface;	///<colour surface of the depth target
-	static GfxSurface *m_ssrDepthStencil;	///<the depth pass's own depth buffer
+	static GfxTexture *m_ssrDepthTexture;	///<camera-view depth: the hardware buffer's snapshot, or the prepass's R32F target
+	static GfxSurface *m_ssrDepthSurface;	///<its level-0 surface (the prepass's render target, or the copy destination)
+	static GfxSurface *m_ssrDepthStencil;	///<the prepass's own depth buffer; null on the snapshot path
+	// TheSuperHackers @perf andytraber 13/09/2026 Which of the two camera-depth paths is
+	// live. TRUE means the scene depth is a copy of the hardware depth buffer taken at the
+	// opaque/transparent seam, and there is no second geometry pass at all; FALSE means the
+	// prepass, which is kept for the multisampled configuration where a depth buffer cannot
+	// be copied into a single-sampled texture (CopySubresourceRegion will not cross a sample
+	// count, and ResolveSubresource has no depth format to resolve with).
+	static Bool m_sceneDepthIsHardware;
+#ifdef RTS_DEBUG
+	///Set by the prepass, read and cleared by the snapshot, so the two publishes of the
+	///camera view-projection can be compared on a frame where both of them run.
+	static Bool m_cameraDepthPrepassRan;
+#endif
 	static GfxTexture *m_sceneHistoryTexture;	///<previous frame's resolved scene colour
 	static GfxSurface *m_sceneHistorySurface;	///<its surface, the StretchRect destination
 	static GfxTexture *m_refractionTexture;	///<scene as it stood just before the water drew

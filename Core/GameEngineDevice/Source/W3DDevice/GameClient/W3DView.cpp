@@ -2311,7 +2311,15 @@ void W3DView::draw()
 	// the two share the depth shaders but not the feature, so this runs either way.
 	// It is a second full pass over the scene's geometry, which is the price of D3D9
 	// not handing back its depth buffer as something samplable.
-	if (W3DShaderManager::isSsrActive() || fogThisFrame)
+	//
+	// TheSuperHackers @perf andytraber 13/09/2026 D3D9 is gone, so that price is only paid
+	// where the frame is multisampled and the depth buffer therefore cannot be copied into a
+	// texture. Everywhere else the camera depth is a snapshot of the hardware buffer taken
+	// mid-scene (RTS3DScene::Flush -> W3DShaderManager::captureSceneDepth) and this whole
+	// second walk over the scene -- measured at 4.5 ms and 250-600 draws a frame at 720p,
+	// and around 15 ms and ~1000 draws in a late-game session at 1440p -- does not happen.
+	if ((W3DShaderManager::isSsrActive() || fogThisFrame) &&
+		!W3DShaderManager::isHardwareSceneDepth())
 	{
 		FRAME_TIMING_SCOPE(PHASE_DEPTHPREPASS);
 		const Int drawsBeforeDepth = Debug_Statistics::Get_Draw_Calls_This_Frame();

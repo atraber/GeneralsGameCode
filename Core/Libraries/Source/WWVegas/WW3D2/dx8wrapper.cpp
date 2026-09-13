@@ -3014,6 +3014,57 @@ void DX8Wrapper::Set_Depth_VP(const float* m16)
 {
 	for (int i = 0; i < 16; ++i) m_depthVP[i] = m16[i];
 }
+
+/*
+** The camera view-projection every consumer of the scene depth reprojects through, and the
+** two projection coefficients that turn a stored z/w back into a view-space distance.
+**
+** Built from the state the pipeline is actually drawing with, rather than having the view
+** push its own copy. Two copies would be free to disagree, and unit_pbr_ps and water_ps
+** reproject against this depth expecting an exact match -- a matrix that is merely close
+** puts every hit test a fraction of a pixel out, and near a silhouette a fraction of a
+** pixel is the difference between the river bed and the tank standing in it.
+**
+** TheSuperHackers @perf andytraber 13/09/2026 This is a function rather than a block inside
+** the depth prepass because there are now two places that produce the value -- the prepass
+** (kept only for the multisampled configuration) and the camera-depth snapshot that copies
+** the hardware depth buffer instead. The whole point of the comment above is that there
+** must be one account of this matrix, so there is one expression of it.
+**
+** The two projection elements go over as they are. This used to recover the near and far
+** planes from them and rebuild the transform from those in the shader -- the same algebra
+** with two extra divisions in the middle, each of which goes through zero for projections
+** this code does not anticipate, and all of it landing where the stored depth sits closest
+** to 1.0 and tolerates error least. Passing the coefficients removes the round trip.
+**
+** The projection in use is right-handed, so the inversion is
+**   ndcZ = -_33 - _43/viewZ  ->  viewZ = abs(_43 / (_33 + ndcZ))
+** which is what unit_pbr_ps and debugdepth_ps both compute, abs() included so the
+** expression survives a left-handed projection too. An earlier comment here stated the
+** left-handed pair, and every consumer written from it got a negative distance for every
+** pixel; the depth inspector, built from that line, came out uniformly white until it was
+** checked against the shader. Measured here: _33 = -1.006, _43 = -10.06, near 10, far 1677.
+*/
+void DX8Wrapper::Build_Camera_Depth_Params(float * out_vp, float * out_proj)
+{
+	GfxMatrix4 camView = render_state.view;
+	const GfxMatrix4 camProj = DX8Transforms[D3DTS_PROJECTION];
+	GfxMatrix4 camVP;
+	Gfx_Matrix_Multiply(&camVP, &camView, &camProj);
+	if (out_vp != nullptr) memcpy(out_vp, &camVP, 16 * sizeof(float));
+	if (out_proj != nullptr) { out_proj[0] = camProj._33; out_proj[1] = camProj._43; }
+}
+
+void DX8Wrapper::Publish_Camera_Depth_Params()
+{
+	float proj[2];
+	Build_Camera_Depth_Params(m_depthVP, proj);
+	// How far a reflection may travel before giving up and leaving the cubemap in place.
+	// Long enough to cross a vehicle and reach the ground beside it, short enough that the
+	// march stays fine-grained.
+	const float SSR_MAX_RAY = 150.0f;
+	Set_Ssr_Params(1.0f, SSR_MAX_RAY, proj[0], proj[1]);
+}
 bool							DX8Wrapper::m_bUnitShaderBound = false;
 bool							DX8Wrapper::m_bTerrainShaderPass = false;
 bool							DX8Wrapper::m_terrainCloudEnable = false;
@@ -4395,6 +4446,11 @@ bool DX8Wrapper::Has_Stencil()
 {
 	return SwapChain.DepthStencilFormat == WW3D_ZFORMAT_D24S8 ||
 		   SwapChain.DepthStencilFormat == WW3D_ZFORMAT_D24X4S4;
+}
+
+WW3DZFormat DX8Wrapper::Get_Depth_Stencil_Format()
+{
+	return SwapChain.DepthStencilFormat;
 }
 
 int DX8Wrapper::Get_Render_Device_Count()
@@ -6937,41 +6993,15 @@ void DX8Wrapper::Apply_Render_State_Changes()
 			diagRouteBit = 16u;
 #endif
 			if (m_bDepthPrepass) {
-				// Build the camera view-projection from the state the pipeline is
-				// actually drawing with, rather than having the view push its own copy.
-				// Two copies would be free to disagree, and the PBR shader reprojects
-				// against this depth expecting an exact match -- a matrix that is merely
-				// close puts every hit test a fraction of a pixel out. Stashed so that
-				// shader is handed the very same one.
-				GfxMatrix4 camView = render_state.view;
-				const GfxMatrix4 camProj =
-					DX8Transforms[D3DTS_PROJECTION];
-				GfxMatrix4 camVP;
-				Gfx_Matrix_Multiply(&camVP, &camView, &camProj);
-				memcpy(m_depthVP, &camVP, sizeof(m_depthVP));
-				Set_Vertex_Shader_Constant(0, &camVP, 4);
-
-				// The two projection elements the shader needs to turn the stored z/w
-				// back into a view-space distance, handed over as they are. It used to
-				// recover the near and far planes from them here and rebuild the
-				// transform from those in the shader -- the same algebra with two extra
-				// divisions in the middle, each of which goes through zero for
-				// projections this code does not anticipate, and all of it landing where
-				// the stored depth sits closest to 1.0 and tolerates error least.
-				// Passing the coefficients removes the round trip entirely.
-				// The projection in use is right-handed, so the inversion is
-				//   ndcZ = -_33 - _43/viewZ  ->  viewZ = abs(_43 / (_33 + ndcZ))
-				// which is what unit_pbr_ps and debugdepth_ps both compute, abs() included
-				// so the expression survives a left-handed projection too. This comment
-				// used to state the left-handed pair, and every consumer written from it
-				// got a negative distance for every pixel; the depth inspector, built from
-				// this line, came out uniformly white until it was checked against the
-				// shader. Measured here: _33 = -1.006, _43 = -10.06, i.e. near 10, far 1677.
-				// How far a reflection may travel before giving up and leaving the
-				// cubemap in place. Long enough to cross a vehicle and reach the ground
-				// beside it, short enough that the march stays fine-grained.
-				const float SSR_MAX_RAY = 150.0f;
-				Set_Ssr_Params(1.0f, SSR_MAX_RAY, camProj._33, camProj._43);
+				// TheSuperHackers @perf andytraber 13/09/2026 The arithmetic that used to
+				// live here moved into Build_Camera_Depth_Params, because there are now two
+				// producers of this matrix -- this pass, and the camera-depth snapshot that
+				// replaces it where the depth buffer can simply be copied. They must agree
+				// to the bit, and the only way to guarantee that is for there to be one
+				// expression rather than two that look alike.
+				Publish_Camera_Depth_Params();
+				Set_Vertex_Shader_Constant(0,
+					reinterpret_cast<const GfxMatrix4*>(m_depthVP), 4);
 			}
 			else
 				Set_Vertex_Shader_Constant(0, reinterpret_cast<const GfxMatrix4*>(m_sunVP), 4);
