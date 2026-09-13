@@ -2451,56 +2451,76 @@ void BaseHeightMapRenderObjClass::sceneLightingChanged()
 //=============================================================================
 // BaseHeightMapRenderObjClass::refreshBakedLighting
 //=============================================================================
-/** TheSuperHackers @fix andytraber 13/09/2026 Scorch marks and bridges still bake the global light
-into their vertex colours on the CPU, and nothing re-baked them while the day-night cycle moved the
-light: scorches only at the four nominal boundaries (a visible snap), bridges only when a bridge came
-into view or changed damage state (so, in practice, never). Unlike the terrain and the roads they do
-not go through terrain_ps -- a scorch is one flat colour, a bridge is lit from its own model normals
--- so the fix is to re-bake them, not to light them per pixel.
+/** TheSuperHackers @fix andytraber 13/09/2026 Several decorations still bake the global light into
+their vertex colours on the CPU, and nothing re-baked them while the day-night cycle moved the light:
 
-Called once a frame before either is drawn. It compares the light being published now with the light
-they were last baked with, and re-bakes when the difference could show: a colour channel moved by
-more than BAKED_COLOUR_EPSILON, or a light direction by more than BAKED_DIRECTION_DEG. At the default
-20-minute cycle the sun crosses half a degree in about 1.7 seconds, so a bake every second or two;
-both bakes are small (at most MAX_SCORCH_VERTEX and MAX_BRIDGE_VERTEX vertices). */
+  scorch marks  one flat colour, rebuilt only at the four nominal boundaries (a visible snap)
+  bridges       lit from their model normals, rebuilt on a visibility or damage change
+  bibs          (building foundations) one flat colour, rebuilt when a bib is added or removed
+  trees         lit from their model normals with the OBJECTS set, rebuilt on a visibility change
+
+Unlike the terrain and the roads they do not go through terrain_ps, so the fix is to re-bake them,
+not to light them per pixel. (Tyre tracks, water tracks, river water and props already take the light
+every frame and need nothing.)
+
+Called once a frame before any of them is drawn. It compares the light being published now -- the
+terrain set and the objects set -- with the light they were last baked with, and re-bakes when the
+difference could show: a colour channel moved by more than BAKED_COLOUR_EPSILON, or a light direction
+by more than BAKED_DIRECTION_DEG. At the default 20-minute cycle the sun crosses half a degree in
+about 1.7 seconds, so a bake every second or two -- the same rebuild a camera scroll already causes. */
 //=============================================================================
+namespace
+{
+	const Real BAKED_COLOUR_EPSILON = 1.5f / 255.0f;
+	const Real BAKED_DIRECTION_DEG = 0.5f;
+
+	Bool colourMoved(const Vector3 &a, const Vector3 &b)
+	{
+		const Vector3 d = a - b;
+		return fabsf(d.X) > BAKED_COLOUR_EPSILON || fabsf(d.Y) > BAKED_COLOUR_EPSILON || fabsf(d.Z) > BAKED_COLOUR_EPSILON;
+	}
+
+	Vector3 unitDirection(const Coord3D &p)
+	{
+		Vector3 v(p.x, p.y, p.z);
+		if (v.Length2() > 1e-8f)
+			v.Normalize();
+		return v;
+	}
+}
+
 void BaseHeightMapRenderObjClass::refreshBakedLighting()
 {
 	static_assert(MAX_GLOBAL_LIGHTS <= BAKED_LIGHT_SLOTS, "refreshBakedLighting stores MAX_GLOBAL_LIGHTS lights");
-	static const Real BAKED_COLOUR_EPSILON = 1.5f / 255.0f;
-	static const Real BAKED_DIRECTION_DEG = 0.5f;
 	static const Real BAKED_DIRECTION_COS = cosf(BAKED_DIRECTION_DEG * PI / 180.0f);
 
 	if (TheGlobalData == nullptr)
 		return;
 
 	const Int numLights = TheGlobalData->m_numGlobalLights < MAX_GLOBAL_LIGHTS ? TheGlobalData->m_numGlobalLights : MAX_GLOBAL_LIGHTS;
+	const GlobalData::TerrainLighting *objects = TheGlobalData->m_terrainObjectsCurrent;
+
 	Vector3 ambient(TheGlobalData->m_terrainAmbient[0].red, TheGlobalData->m_terrainAmbient[0].green, TheGlobalData->m_terrainAmbient[0].blue);
-	Vector3 diffuse[BAKED_LIGHT_SLOTS];
-	Vector3 dir[BAKED_LIGHT_SLOTS];
+	Vector3 objAmbient(objects[0].ambient.red, objects[0].ambient.green, objects[0].ambient.blue);
+	Vector3 diffuse[BAKED_LIGHT_SLOTS], dir[BAKED_LIGHT_SLOTS];
+	Vector3 objDiffuse[BAKED_LIGHT_SLOTS], objDir[BAKED_LIGHT_SLOTS];
 	for (Int i = 0; i < numLights; ++i)
 	{
 		const RGBColor &d = TheGlobalData->m_terrainDiffuse[i];
-		const Coord3D &p = TheGlobalData->m_terrainLightPos[i];
 		diffuse[i].Set(d.red, d.green, d.blue);
-		dir[i].Set(p.x, p.y, p.z);
-		if (dir[i].Length2() > 1e-8f)
-			dir[i].Normalize();
+		dir[i] = unitDirection(TheGlobalData->m_terrainLightPos[i]);
+		objDiffuse[i].Set(objects[i].diffuse.red, objects[i].diffuse.green, objects[i].diffuse.blue);
+		objDir[i] = unitDirection(objects[i].lightPos);
 	}
 
-	Bool changed = !m_bakedLightingValid || numLights != m_bakedNumLights;
+	Bool changed = !m_bakedLightingValid || numLights != m_bakedNumLights
+		|| colourMoved(ambient, m_bakedAmbient) || colourMoved(objAmbient, m_bakedObjAmbient);
 	for (Int i = 0; !changed && i < numLights; ++i)
 	{
-		const Vector3 dd = diffuse[i] - m_bakedDiffuse[i];
-		if (fabsf(dd.X) > BAKED_COLOUR_EPSILON || fabsf(dd.Y) > BAKED_COLOUR_EPSILON || fabsf(dd.Z) > BAKED_COLOUR_EPSILON)
-			changed = true;
-		else if (Vector3::Dot_Product(dir[i], m_bakedLightDir[i]) < BAKED_DIRECTION_COS)
-			changed = true;
-	}
-	if (!changed)
-	{
-		const Vector3 da = ambient - m_bakedAmbient;
-		changed = fabsf(da.X) > BAKED_COLOUR_EPSILON || fabsf(da.Y) > BAKED_COLOUR_EPSILON || fabsf(da.Z) > BAKED_COLOUR_EPSILON;
+		changed = colourMoved(diffuse[i], m_bakedDiffuse[i])
+			|| colourMoved(objDiffuse[i], m_bakedObjDiffuse[i])
+			|| Vector3::Dot_Product(dir[i], m_bakedLightDir[i]) < BAKED_DIRECTION_COS
+			|| Vector3::Dot_Product(objDir[i], m_bakedObjLightDir[i]) < BAKED_DIRECTION_COS;
 	}
 	if (!changed)
 		return;
@@ -2508,15 +2528,22 @@ void BaseHeightMapRenderObjClass::refreshBakedLighting()
 	m_bakedLightingValid = true;
 	m_bakedNumLights = numLights;
 	m_bakedAmbient = ambient;
+	m_bakedObjAmbient = objAmbient;
 	for (Int i = 0; i < numLights; ++i)
 	{
 		m_bakedDiffuse[i] = diffuse[i];
 		m_bakedLightDir[i] = dir[i];
+		m_bakedObjDiffuse[i] = objDiffuse[i];
+		m_bakedObjLightDir[i] = objDir[i];
 	}
 
 	sceneLightingChanged();
 	if (m_bridgeBuffer)
 		m_bridgeBuffer->lightingChanged();
+	if (m_bibBuffer)
+		m_bibBuffer->lightingChanged();
+	if (m_treeBuffer)
+		m_treeBuffer->lightingChanged();
 }
 
 //=============================================================================

@@ -281,14 +281,18 @@ protected:
 	Int			m_numScorches;
 
 	Int			m_scorchesInBuffer;		///< how many are in the buffers.  If less than numScorches, we need to update
-	// The light scorches and bridges were last baked with -- see refreshBakedLighting. Sized for
-	// MAX_GLOBAL_LIGHTS, which the .cpp checks at compile time.
+	// The light the CPU-baked decorations (scorches, bridges, bibs, trees) were last baked with -- see
+	// refreshBakedLighting. Terrain set and objects set, because trees bake from the objects set. Sized
+	// for MAX_GLOBAL_LIGHTS, which the .cpp checks at compile time.
 	enum { BAKED_LIGHT_SLOTS = 3 };
 	Bool		m_bakedLightingValid;
 	Int			m_bakedNumLights;
 	Vector3	m_bakedAmbient;
 	Vector3	m_bakedDiffuse[BAKED_LIGHT_SLOTS];
 	Vector3	m_bakedLightDir[BAKED_LIGHT_SLOTS];
+	Vector3	m_bakedObjAmbient;
+	Vector3	m_bakedObjDiffuse[BAKED_LIGHT_SLOTS];
+	Vector3	m_bakedObjLightDir[BAKED_LIGHT_SLOTS];
 
 	// NOTE: This argument (contrary to most of the rest of the engine), is in degrees, not radians.
 	Real		m_curImpassableSlope;

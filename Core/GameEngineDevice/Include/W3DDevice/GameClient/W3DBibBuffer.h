@@ -100,6 +100,8 @@ public:
 	void removeHighlighting();
 	/// Draws the bibs.
 	void renderBibs();
+	/// TheSuperHackers @fix andytraber 13/09/2026 The scene light moved: re-bake the bib colour on the next draw.
+	void lightingChanged() { m_anythingChanged = true; }
 	/// Called when the view changes, and sort key needs to be recalculated.
 	/// Normally sortKey gets calculated when a bib becomes visible.
 protected:

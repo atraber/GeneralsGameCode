@@ -202,6 +202,8 @@ public:
 	/// Called when the view changes, and sort key needs to be recalculated.
 	/// Normally sortKey gets calculated when a tree becomes visible.
 	void doFullUpdate() {m_updateAllKeys = true;};
+	/// TheSuperHackers @fix andytraber 13/09/2026 The scene light moved: re-bake the tree vertex colours on the next load.
+	void lightingChanged() {m_anythingChanged = true;};
 	void setIsTerrain() {m_isTerrainPass = true;}; ///< Terrain calls this to tell trees to draw.
 	Bool needToDraw() {return m_isTerrainPass;};
 
