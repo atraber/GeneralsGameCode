@@ -137,6 +137,18 @@
 #include "sphere.h"
 #include "boxrobj.h"
 
+// The first "_<tag><digit>" in a PL_ helper bone name, e.g. find_pl_tag(name, 'R') finds the
+// "_R99" of PL_P_RB_R99G09B09 and not its "_RB". Null when there is none.
+static const char * find_pl_tag(const char * name, char tag)
+{
+	for (const char * p = strchr(name, '_'); p != nullptr; p = strchr(p + 1, '_'))
+	{
+		if (p[1] == tag && p[2] >= '0' && p[2] <= '9')
+			return p;
+	}
+	return nullptr;
+}
+
 
 /*
 ** Loader Instance
@@ -696,7 +708,12 @@ WW3DErrorType HLodDefClass::Load_W3D(ChunkLoadClass & cload)
 						plDef.Intensity = 3.0f;
 					}
 					// Parse RGB if present: _R<rr>G<gg>B<bb>
-					const char * rPos = strstr(name, "_R");
+					//
+					// TheSuperHackers @bugfix andytraber 13/09/2026 The tag is "_R" FOLLOWED BY A DIGIT.
+					// A bare strstr found the _RB / _RR token of the beacon bones first
+					// (PL_P_RB_R09G29B99), the parse failed on the letter, and the red and blue
+					// beacons silently kept the default warm white. Same guard for _A and _I.
+					const char * rPos = find_pl_tag(name, 'R');
 					if (rPos) {
 						int r = 99, g = 95, b = 85;
 						if (sscanf(rPos, "_R%2dG%2dB%2d", &r, &g, &b) == 3) {
@@ -704,23 +721,28 @@ WW3DErrorType HLodDefClass::Load_W3D(ChunkLoadClass & cload)
 						}
 					}
 					// Parse Angle, Distance and Intensity: _A<aa>D<dd>[I<ii>]
-					const char * aPos = strstr(name, "_A");
+					//
+					// TheSuperHackers @bugfix andytraber 13/09/2026 Unbounded %d, not %2d. Intensity is
+					// in tenths and the HD USA vehicle mod writes three digits (I170, I180 = 17.0, 18.0):
+					// %2d stopped after "17" and every one of its headlights loaded ten times too dim,
+					// while the dozer mods' I45 and I90 happened to fit. %d stops at the next letter.
+					const char * aPos = find_pl_tag(name, 'A');
 					if (aPos) {
 						int ang = 35, dist = 25, inten = 0;
-						if (sscanf(aPos, "_A%2dD%2dI%2d", &ang, &dist, &inten) == 3) {
+						if (sscanf(aPos, "_A%dD%dI%d", &ang, &dist, &inten) == 3) {
 							plDef.SpotAngle = DEG_TO_RADF((float)ang);
 							plDef.AttenEnd = (float)dist;
 							plDef.Intensity = inten / 10.0f;
-						} else if (sscanf(aPos, "_A%2dD%2d", &ang, &dist) >= 1) {
+						} else if (sscanf(aPos, "_A%dD%d", &ang, &dist) >= 1) {
 							plDef.SpotAngle = DEG_TO_RADF((float)ang);
 							plDef.AttenEnd = (float)dist;
 						}
 					}
 					// Also parse standalone _I<ii> if present
-					const char * iPos = strstr(name, "_I");
+					const char * iPos = find_pl_tag(name, 'I');
 					if (iPos) {
 						int inten = 45;
-						if (sscanf(iPos, "_I%2d", &inten) == 1) {
+						if (sscanf(iPos, "_I%d", &inten) == 1) {
 							plDef.Intensity = inten / 10.0f;
 						}
 					}
