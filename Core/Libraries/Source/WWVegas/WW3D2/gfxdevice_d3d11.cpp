@@ -998,6 +998,10 @@ struct GfxD3D11Impl
 	ID3D11BlendState *			blit_blend_state;
 	ID3D11DepthStencilState *	blit_depth_state;
 	ID3D11RasterizerState *		blit_raster_state;
+	// Set once the blit shaders failed to load or create. The blobs are loose files that
+	// cannot appear mid-run, so GPU_Blit declines from then on instead of re-reading (and
+	// re-logging) them on every surface copy.
+	bool						blit_shaders_failed;
 
 	// Intermediate texture cache for blit sources that cannot be sampled directly
 	ID3D11Texture2D *			blit_cache_tex;
@@ -3121,36 +3125,41 @@ namespace
 	{
 		if (impl == nullptr || impl->device == nullptr) return false;
 		if (impl->blit_vs != nullptr && impl->blit_ps != nullptr) return true;
+		if (impl->blit_shaders_failed) return false;
 
 		if (impl->blit_vs == nullptr) {
 			void * vs_data = nullptr;
 			unsigned vs_size = 0;
-			if (Load_Shader_Blob("shaders\\gpu_blit_vs.sm4", &vs_data, &vs_size)) {
+			if (Load_Shader_Blob("shaders\\gpu_blit_vs.sm5", &vs_data, &vs_size)) {
 				HRESULT hr = impl->device->CreateVertexShader(vs_data, vs_size, nullptr, &impl->blit_vs);
 				delete [] (char *)vs_data;
 				if (FAILED(hr)) {
 					WWDEBUG_SAY(("D3D11: Failed to create blit vertex shader (0x%08x)", (unsigned)hr));
 				}
 			} else {
-				WWDEBUG_SAY(("D3D11: Failed to load shaders\\gpu_blit_vs.sm4"));
+				WWDEBUG_SAY(("D3D11: Failed to load shaders\\gpu_blit_vs.sm5"));
 			}
 		}
 
 		if (impl->blit_ps == nullptr) {
 			void * ps_data = nullptr;
 			unsigned ps_size = 0;
-			if (Load_Shader_Blob("shaders\\gpu_blit_ps.sm4", &ps_data, &ps_size)) {
+			if (Load_Shader_Blob("shaders\\gpu_blit_ps.sm5", &ps_data, &ps_size)) {
 				HRESULT hr = impl->device->CreatePixelShader(ps_data, ps_size, nullptr, &impl->blit_ps);
 				delete [] (char *)ps_data;
 				if (FAILED(hr)) {
 					WWDEBUG_SAY(("D3D11: Failed to create blit pixel shader (0x%08x)", (unsigned)hr));
 				}
 			} else {
-				WWDEBUG_SAY(("D3D11: Failed to load shaders\\gpu_blit_ps.sm4"));
+				WWDEBUG_SAY(("D3D11: Failed to load shaders\\gpu_blit_ps.sm5"));
 			}
 		}
 
-		return (impl->blit_vs != nullptr && impl->blit_ps != nullptr);
+		if (impl->blit_vs == nullptr || impl->blit_ps == nullptr) {
+			impl->blit_shaders_failed = true;
+			return false;
+		}
+		return true;
 	}
 
 	bool Create_Device_Resources(GfxD3D11Impl * impl)
