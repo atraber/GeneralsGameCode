@@ -291,6 +291,13 @@ void ScreenDefaultFilter::reset()
 /// is here and not written out twice.
 static const float HDR_EXPOSURE = 1.0f;
 
+/// The exposure both tone map sites actually use: HDR_EXPOSURE times what the day-night cycle's
+/// look layer publishes (1 when the cycle is off), so a day can sit brighter than a night.
+static float sceneExposure()
+{
+	return HDR_EXPOSURE * (TheGlobalData != nullptr ? TheGlobalData->m_sceneExposure : 1.0f);
+}
+
 /// How much brighter than display white an additive effect may emit. See the note where the
 /// wrapper applies it: this is the one thing in the frame that actually produces high
 /// dynamic range content, because every other source is bounded by an 8-bit asset.
@@ -584,6 +591,11 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	{
 		brightSrc = W3DShaderManager::getHdrTexture();
 		threshold = Vector4(1.0f, 0.5f, 0.0f, 0.0f);   // above what the display can show
+		// TheSuperHackers @tweak andytraber 14/09/2026 Lower at night, so windows and headlights --
+		// which rarely exceed display white -- get a halo against the dark scene.
+		const float night = (TheGlobalData != nullptr) ? TheGlobalData->m_nightWeight : 0.0f;
+		threshold.X -= 0.30f * night;
+		threshold.Y -= 0.20f * night;
 	}
 	DX8Wrapper::Set_DX8_Render_Target(m_surfA, nullptr);
 	DX8Wrapper::Set_Pixel_Shader(m_brightPS);
@@ -627,7 +639,7 @@ Bool ScreenBloomFilter::postRender(FilterModes mode, Coord2D &scrollDelta, Bool 
 	// texture and all want a displayable image. They get the scene without the glow, which
 	// is the right answer for a reflection and an acceptable one for the rest.
 	GfxTexture *compositeSrc = sceneTex;
-	Vector4 toneMapCtl(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f);
+	Vector4 toneMapCtl(sceneExposure(), 0.0f, 0.0f, 0.0f);
 	if (W3DShaderManager::isHdrActive() && W3DShaderManager::getHdrTexture() != nullptr)
 	{
 		compositeSrc = W3DShaderManager::getHdrTexture();
@@ -4192,7 +4204,7 @@ void W3DShaderManager::toneMapSceneToRenderTexture()
 		DX8Wrapper::Set_Pixel_Shader(m_toneMapPS);
 		// y = 0: this site never adds bloom, it only curves. See the composite for the pass
 		// that does both and why it has to be the one the player actually sees.
-		const Vector4 toneMapOnly(HDR_EXPOSURE, 0.0f, 0.0f, 0.0f);
+		const Vector4 toneMapOnly(sceneExposure(), 0.0f, 0.0f, 0.0f);
 		DX8Wrapper::Set_Pixel_Shader_Constant(0, &toneMapOnly, 1);
 		DX8Wrapper::Set_DX8_Texture(0, m_hdrTexture);
 		// Point sampling: source and destination are the same size, so this is a copy, and a

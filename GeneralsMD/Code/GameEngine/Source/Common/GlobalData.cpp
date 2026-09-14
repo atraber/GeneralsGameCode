@@ -759,6 +759,8 @@ GlobalData::GlobalData()
 	m_containerPipScreenOffset.x = m_containerPipScreenOffset.y = 0;
 
 	m_sunShadowStrength = 1.0f;
+	m_sceneExposure = 1.0f;
+	m_nightWeight = 0.0f;
 
 	for (i=0; i<MAX_GLOBAL_LIGHTS; i++)
 	{

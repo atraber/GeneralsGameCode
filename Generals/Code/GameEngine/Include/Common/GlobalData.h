@@ -271,6 +271,12 @@ public:
 	// fades it out as the sun sets and back in under the moon; 1 whenever the cycle is not running.
 	Real m_sunShadowStrength;
 
+	// TheSuperHackers @tweak andytraber 14/09/2026 Published by the day-night cycle's look layer:
+	// the exposure the tone map applies (1 = unchanged) and how far into night the scene is (0 = day,
+	// 1 = full night; drives the night bloom threshold). 1 and 0 whenever the cycle is not running.
+	Real m_sceneExposure;
+	Real m_nightWeight;
+
 	Real m_infantryLightScale[TIME_OF_DAY_COUNT];
 	Real m_scriptOverrideInfantryLightScale;
 

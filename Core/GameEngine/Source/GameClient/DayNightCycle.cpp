@@ -524,6 +524,211 @@ static void ensureValidLighting(TimeOfDay tod)
 	}
 }
 
+// ================================================================================================
+// THE LOOK
+//
+// TheSuperHackers @tweak andytraber 14/09/2026 The authored keys were blended exactly as the map
+// wrote them, and a map's four keys are not a day/night set. Measured over one cycle on Lights Out,
+// a night map: MORNING is a byte copy of NIGHT, whose ambient is (0.09, 0.16, 0.50) -- three times
+// the blue of the afternoon's, flat and unshadowed -- and EVENING is a dim brown. The scene's mean
+// level ran noon 136, sunset 50, sunrise 44, night 68-87: the night was brighter than the sunset,
+// the dawn got DARKER as the sun rose, and at golden hour the snow turned to mud. The cycle has to
+// own the brightness; the map can only lend it a colour cast.
+//
+// Two layers:
+//  1. REPAIRED KEYS, at Init. A daytime key that is a copy of NIGHT, or no stronger than it, is
+//     rebuilt from the afternoon key -- warmed for morning and evening. An afternoon that is itself
+//     night-like falls back to a neutral daylight row.
+//  2. THE ENVELOPE, every frame. After the keys are blended, light 0's ambient and diffuse are
+//     scaled so that their brightest channel sits at a fraction of the afternoon key's, chosen by
+//     sun elevation (LOOK_ANCHORS), keeping the blended hue. The same table desaturates the night,
+//     warms the sun and cools the sky at low sun, sets the tone map exposure (a bright day), and
+//     says how far into night the scene is (night bloom threshold, and the units' ambient lift that
+//     keeps them readable against a dark ground).
+//
+// W3D_DAYNIGHT_LOOK=0 turns both layers off, so the look can be A/B'd on one binary.
+// ================================================================================================
+struct LookAnchor
+{
+	Real elevationDeg;
+	Real ambient;		///< brightest ambient channel, as a fraction of the afternoon key's
+	Real diffuse;		///< brightest diffuse channel, as a fraction of the afternoon key's
+	Real desaturate;	///< 0..1 pull of the ambient towards grey (half of it for the diffuse)
+	Real sunWarmth;		///< 0..1 of SUN_WARM_TINT multiplied into the diffuse
+	Real skyCool;		///< 0..1 of SKY_COOL_TINT multiplied into the ambient
+	Real exposure;		///< tone map exposure, linear
+	Real night;			///< 0 = day, 1 = full night
+	Real fill;			///< the fill lights' diffuse, relative to the sun's own scale
+};
+
+// Tuned 14/09/2026 against the published values (DAYNIGHT publish), not by eye alone:
+//  - FILL. Lights Out's two night fills sum to 0.41 blue against the moon's 0.32, so scaling them
+//    with the sun left the night ground lit mostly by saturated blue fills. At night they are cut to a
+//    third of the sun's scale, so the moon is the light that reads.
+//  - AMBIENT ABOVE 1 AT LOW SUN. At 10 degrees flat ground takes sin(10) = 0.17 of the sun, so golden
+//    hour is carried by the sky; with the afternoon's ambient it measured darker than the night.
+static const LookAnchor LOOK_ANCHORS[] =
+{
+	//  sun el    amb    dif    desat  warm   cool   expo   night  fill
+	{ -12.0f,   0.45f, 0.30f, 0.50f, 0.00f, 0.00f, 1.00f, 1.00f, 0.35f },	// full night: dark, the moon clearly the strongest light
+	{   0.0f,   1.00f, 0.65f, 0.15f, 0.50f, 0.60f, 1.00f, 0.30f, 0.80f },	// horizon: the sky still lit
+	{  10.0f,   1.35f, 1.00f, 0.00f, 0.60f, 0.60f, 1.12f, 0.00f, 1.00f },	// golden hour: warm sun, bright cool shade
+	{  35.0f,   1.00f, 1.00f, 0.00f, 0.25f, 0.25f, 1.25f, 0.00f, 1.00f },	// day
+};
+static const Int  LOOK_ANCHOR_COUNT = sizeof(LOOK_ANCHORS) / sizeof(LOOK_ANCHORS[0]);
+static const Real SUN_WARM_TINT[3] = { 1.00f, 0.90f, 0.75f };
+static const Real SKY_COOL_TINT[3] = { 0.88f, 0.95f, 1.12f };
+static const Real NIGHT_UNIT_AMBIENT_BOOST = 1.5f;	///< units' ambient at full night, relative to the ground's
+static const Real LOOK_SCALE_MIN = 0.25f;			///< the envelope never scales a colour further than this...
+static const Real LOOK_SCALE_MAX = 2.0f;			///< ...either way, so a black or blown-out key stays recognisable
+
+static Bool s_lookEnabled = TRUE;
+static Real s_refAmbientMax[2] = { 0.22f, 0.22f };	///< [0] terrain set, [1] objects set: the afternoon key's brightest channel
+static Real s_refDiffuseMax[2] = { 1.0f, 1.0f };
+
+static LookAnchor lookAt(Real elevationDeg)
+{
+	if (elevationDeg <= LOOK_ANCHORS[0].elevationDeg)
+		return LOOK_ANCHORS[0];
+	for (Int i = 1; i < LOOK_ANCHOR_COUNT; ++i)
+	{
+		const LookAnchor &b = LOOK_ANCHORS[i];
+		if (elevationDeg < b.elevationDeg)
+		{
+			const LookAnchor &a = LOOK_ANCHORS[i - 1];
+			const Real t = smoothStep01((elevationDeg - a.elevationDeg) / (b.elevationDeg - a.elevationDeg));
+			LookAnchor r;
+			r.elevationDeg = elevationDeg;
+			r.ambient    = a.ambient    + (b.ambient    - a.ambient)    * t;
+			r.diffuse    = a.diffuse    + (b.diffuse    - a.diffuse)    * t;
+			r.desaturate = a.desaturate + (b.desaturate - a.desaturate) * t;
+			r.sunWarmth  = a.sunWarmth  + (b.sunWarmth  - a.sunWarmth)  * t;
+			r.skyCool    = a.skyCool    + (b.skyCool    - a.skyCool)    * t;
+			r.exposure   = a.exposure   + (b.exposure   - a.exposure)   * t;
+			r.night      = a.night      + (b.night      - a.night)      * t;
+			r.fill       = a.fill       + (b.fill       - a.fill)       * t;
+			return r;
+		}
+	}
+	return LOOK_ANCHORS[LOOK_ANCHOR_COUNT - 1];
+}
+
+static Real maxChannel(const RGBColor &c)
+{
+	Real m = c.red;
+	if (c.green > m) m = c.green;
+	if (c.blue > m) m = c.blue;
+	return m;
+}
+
+static void setColour(RGBColor &c, Real r, Real g, Real b)
+{
+	c.red = r; c.green = g; c.blue = b;
+}
+
+static void scaleColour(RGBColor &c, Real s)
+{
+	c.red *= s; c.green *= s; c.blue *= s;
+}
+
+static void tintColour(RGBColor &c, const Real tint[3], Real amount)
+{
+	c.red   *= 1.0f + (tint[0] - 1.0f) * amount;
+	c.green *= 1.0f + (tint[1] - 1.0f) * amount;
+	c.blue  *= 1.0f + (tint[2] - 1.0f) * amount;
+}
+
+static void desaturateColour(RGBColor &c, Real amount)
+{
+	const Real grey = (c.red + c.green + c.blue) / 3.0f;
+	c.red   += (grey - c.red)   * amount;
+	c.green += (grey - c.green) * amount;
+	c.blue  += (grey - c.blue)  * amount;
+}
+
+static Real lookScale(Real current, Real target)
+{
+	if (current < 1e-4f)
+		return 1.0f;
+	return clamp(LOOK_SCALE_MIN, target / current, LOOK_SCALE_MAX);
+}
+
+// Light 0, the sun or moon. Returns the diffuse scale so the fill lights can follow it.
+static Real applyLookToSun(GlobalData::TerrainLighting &l, Int set, const LookAnchor &look)
+{
+	desaturateColour(l.ambient, look.desaturate);
+	desaturateColour(l.diffuse, look.desaturate * 0.5f);
+	tintColour(l.diffuse, SUN_WARM_TINT, look.sunWarmth);
+	tintColour(l.ambient, SKY_COOL_TINT, look.skyCool);
+	scaleColour(l.ambient, lookScale(maxChannel(l.ambient), s_refAmbientMax[set] * look.ambient));
+	const Real diffuseScale = lookScale(maxChannel(l.diffuse), s_refDiffuseMax[set] * look.diffuse);
+	scaleColour(l.diffuse, diffuseScale);
+	return diffuseScale;
+}
+
+// Fill lights have no brightness of their own to aim for; they follow the sun's scale, cut further at
+// night by look.fill, and desaturate as fully as the sky does.
+static void applyLookToFill(GlobalData::TerrainLighting &l, const LookAnchor &look, Real diffuseScale)
+{
+	desaturateColour(l.diffuse, look.desaturate);
+	scaleColour(l.diffuse, diffuseScale * look.fill);
+}
+
+static Bool sameColour(const RGBColor &a, const RGBColor &b)
+{
+	return fabsf(a.red - b.red) < 0.01f && fabsf(a.green - b.green) < 0.01f && fabsf(a.blue - b.blue) < 0.01f;
+}
+
+static Real keyStrength(const GlobalData::TerrainLighting &l)
+{
+	return maxChannel(l.ambient) + maxChannel(l.diffuse);
+}
+
+static Bool keyIsNightLike(const GlobalData::TerrainLighting &key, const GlobalData::TerrainLighting &night)
+{
+	if (sameColour(key.ambient, night.ambient) && sameColour(key.diffuse, night.diffuse))
+		return TRUE;
+	return keyStrength(key) <= keyStrength(night);
+}
+
+// Colours only; light 0's direction is the orbit's, and the fills keep theirs.
+static void repairKeys(GlobalData::TerrainLighting table[][MAX_GLOBAL_LIGHTS], const char *setName)
+{
+	const GlobalData::TerrainLighting &night = table[TIME_OF_DAY_NIGHT][0];
+
+	GlobalData::TerrainLighting &afternoon = table[TIME_OF_DAY_AFTERNOON][0];
+	if (keyIsNightLike(afternoon, night))
+	{
+		setColour(afternoon.ambient, 0.22f, 0.22f, 0.24f);
+		setColour(afternoon.diffuse, 1.00f, 0.97f, 0.90f);
+		DEBUG_LOG(("DAYNIGHT look: %s AFTERNOON key is night-like, replaced by neutral daylight", setName));
+	}
+
+	static const Real MORNING_AMBIENT_TINT[3] = { 0.95f, 0.95f, 1.10f };
+	static const Real MORNING_DIFFUSE_TINT[3] = { 0.95f, 0.78f, 0.60f };
+	GlobalData::TerrainLighting &morning = table[TIME_OF_DAY_MORNING][0];
+	if (keyIsNightLike(morning, night))
+	{
+		morning.ambient = afternoon.ambient;
+		morning.diffuse = afternoon.diffuse;
+		tintColour(morning.ambient, MORNING_AMBIENT_TINT, 1.0f);
+		tintColour(morning.diffuse, MORNING_DIFFUSE_TINT, 1.0f);
+		DEBUG_LOG(("DAYNIGHT look: %s MORNING key is night-like, rebuilt from AFTERNOON", setName));
+	}
+
+	static const Real EVENING_AMBIENT_TINT[3] = { 0.90f, 0.90f, 1.10f };
+	static const Real EVENING_DIFFUSE_TINT[3] = { 0.90f, 0.63f, 0.40f };
+	GlobalData::TerrainLighting &evening = table[TIME_OF_DAY_EVENING][0];
+	if (keyIsNightLike(evening, night))
+	{
+		evening.ambient = afternoon.ambient;
+		evening.diffuse = afternoon.diffuse;
+		tintColour(evening.ambient, EVENING_AMBIENT_TINT, 1.0f);
+		tintColour(evening.diffuse, EVENING_DIFFUSE_TINT, 1.0f);
+		DEBUG_LOG(("DAYNIGHT look: %s EVENING key is night-like, rebuilt from AFTERNOON", setName));
+	}
+}
+
 void DayNightCycle_Init()
 {
 	OptionPreferences prefs;
@@ -556,7 +761,28 @@ void DayNightCycle_Init()
 			s_mapObjectsLighting[tod][i] = TheGlobalData->m_terrainObjectsLighting[tod][i];
 		}
 		ensureValidLighting((TimeOfDay)tod);
+
+		const GlobalData::TerrainLighting &t = s_mapTerrainLighting[tod][0];
+		const GlobalData::TerrainLighting &o = s_mapObjectsLighting[tod][0];
+		DEBUG_LOG(("DAYNIGHT key %d: terrain amb %.3f %.3f %.3f dif %.3f %.3f %.3f | objects amb %.3f %.3f %.3f dif %.3f %.3f %.3f",
+			tod, t.ambient.red, t.ambient.green, t.ambient.blue, t.diffuse.red, t.diffuse.green, t.diffuse.blue,
+			o.ambient.red, o.ambient.green, o.ambient.blue, o.diffuse.red, o.diffuse.green, o.diffuse.blue));
 	}
+
+	// THE LOOK: repair the keys, then take the reference levels from the (repaired) afternoon.
+	const char *lookEnv = ::getenv("W3D_DAYNIGHT_LOOK");
+	s_lookEnabled = !(lookEnv != nullptr && ::atoi(lookEnv) == 0);
+	if (s_lookEnabled)
+	{
+		repairKeys(s_mapTerrainLighting, "terrain");
+		repairKeys(s_mapObjectsLighting, "objects");
+	}
+	s_refAmbientMax[0] = max(maxChannel(s_mapTerrainLighting[TIME_OF_DAY_AFTERNOON][0].ambient), 0.05f);
+	s_refDiffuseMax[0] = max(maxChannel(s_mapTerrainLighting[TIME_OF_DAY_AFTERNOON][0].diffuse), 0.30f);
+	s_refAmbientMax[1] = max(maxChannel(s_mapObjectsLighting[TIME_OF_DAY_AFTERNOON][0].ambient), 0.05f);
+	s_refDiffuseMax[1] = max(maxChannel(s_mapObjectsLighting[TIME_OF_DAY_AFTERNOON][0].diffuse), 0.30f);
+	DEBUG_LOG(("DAYNIGHT look %s: reference ambient %.3f / %.3f, diffuse %.3f / %.3f (terrain / objects)",
+		s_lookEnabled ? "ON" : "OFF", s_refAmbientMax[0], s_refAmbientMax[1], s_refDiffuseMax[0], s_refDiffuseMax[1]));
 
 	// Daylight is hours 0..SUN_SET_HOUR (16h, 2/3) and night the rest; where each nominal phase
 	// begins and ends follows the sun -- see THE COLOUR SCHEDULE.
@@ -584,7 +810,11 @@ void DayNightCycle_Reset()
 	s_cycleEnabled = FALSE;
 	s_lightsStateValid = FALSE;
 	if (TheWritableGlobalData)
+	{
 		TheWritableGlobalData->m_sunShadowStrength = 1.0f;
+		TheWritableGlobalData->m_sceneExposure = 1.0f;
+		TheWritableGlobalData->m_nightWeight = 0.0f;
+	}
 	s_startOffsetFrames = 0;
 	s_lastNominalTod = TIME_OF_DAY_INVALID;
 	s_forceTerrainBake = FALSE;
@@ -882,6 +1112,10 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 	colourKeysFromSun(currentHour, orbit.sunElevationDeg, keyA, keyB, alpha);
 	s_currentAlpha = alpha;
 
+	const LookAnchor look = lookAt(orbit.sunElevationDeg);
+	Real terrainDiffuseScale = 1.0f;
+	Real objectsDiffuseScale = 1.0f;
+
 	GlobalData::TerrainLighting interpTerrain[MAX_GLOBAL_LIGHTS];
 	GlobalData::TerrainLighting interpObjects[MAX_GLOBAL_LIGHTS];
 
@@ -943,6 +1177,22 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 			interpObjects[i].lightPos.z = oDir.Z;
 		}
 
+		// THE LOOK -- see the block above DayNightCycle_Init. Light 0 is processed first, so the fills
+		// can take its diffuse scale.
+		if (s_lookEnabled)
+		{
+			if (i == 0)
+			{
+				terrainDiffuseScale = applyLookToSun(interpTerrain[i], 0, look);
+				objectsDiffuseScale = applyLookToSun(interpObjects[i], 1, look);
+			}
+			else
+			{
+				applyLookToFill(interpTerrain[i], look, terrainDiffuseScale);
+				applyLookToFill(interpObjects[i], look, objectsDiffuseScale);
+			}
+		}
+
 		TheWritableGlobalData->m_terrainDiffuse[i]  = interpTerrain[i].diffuse;
 		TheWritableGlobalData->m_terrainAmbient[i]  = interpTerrain[i].ambient;
 		TheWritableGlobalData->m_terrainLightPos[i] = interpTerrain[i].lightPos;
@@ -958,6 +1208,33 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 	// Directional shadow maps and 3D objects update smoothly on the GPU every frame at 60+ FPS.
 	// Terrain vertex buffers on the CPU are only re-baked on major phase boundaries (or TOD toggles),
 	// completely eliminating CPU stutter and restoring full gameplay framerate.
+	TheWritableGlobalData->m_sceneExposure = s_lookEnabled ? look.exposure : 1.0f;
+	TheWritableGlobalData->m_nightWeight = s_lookEnabled ? look.night : 0.0f;
+
+	// The units' ambient is lifted at night so they stay readable against a dark ground. Only the copy
+	// handed to the scene, which is what lights units: m_terrainObjectsCurrent above also lights trees
+	// and props, and those glowing against the ground would read as wrong rather than as readable.
+	if (s_lookEnabled)
+		scaleColour(interpObjects[0].ambient, 1.0f + (NIGHT_UNIT_AMBIENT_BOOST - 1.0f) * look.night);
+
+	// What was actually published, every 150 logic frames, so a retune is read off the numbers rather
+	// than off a screenshot.
+	static UnsignedInt s_lastLookLogFrame = 0xFFFFFFFFu;
+	if (logicFrame % 150u == 0u && logicFrame != s_lastLookLogFrame)
+	{
+		s_lastLookLogFrame = logicFrame;
+		const GlobalData *gd = TheGlobalData;
+		DEBUG_LOG(("DAYNIGHT publish f%u hour %.2f sun %.1f keys %d->%d a%.2f | expo %.2f night %.2f | lights %d | "
+			"amb %.3f %.3f %.3f | dif0 %.3f %.3f %.3f | dif1 %.3f %.3f %.3f | dif2 %.3f %.3f %.3f | unitAmb %.3f %.3f %.3f",
+			logicFrame, currentHour, orbit.sunElevationDeg, (Int)keyA, (Int)keyB, alpha, gd->m_sceneExposure, gd->m_nightWeight,
+			gd->m_numGlobalLights,
+			gd->m_terrainAmbient[0].red, gd->m_terrainAmbient[0].green, gd->m_terrainAmbient[0].blue,
+			gd->m_terrainDiffuse[0].red, gd->m_terrainDiffuse[0].green, gd->m_terrainDiffuse[0].blue,
+			gd->m_terrainDiffuse[1].red, gd->m_terrainDiffuse[1].green, gd->m_terrainDiffuse[1].blue,
+			gd->m_terrainDiffuse[2].red, gd->m_terrainDiffuse[2].green, gd->m_terrainDiffuse[2].blue,
+			interpObjects[0].ambient.red, interpObjects[0].ambient.green, interpObjects[0].ambient.blue));
+	}
+
 	if (TheDisplay)
 	{
 		TheDisplay->updateSceneLighting(interpObjects, s_pendingTerrainBake);
