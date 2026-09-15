@@ -5253,9 +5253,14 @@ GfxSurface * GfxDeviceD3D11::Create_Offscreen_Surface(unsigned width, unsigned h
 	// so under D3D11 the first glyph of every atlas row ORed itself with somebody else's
 	// freed pixels. That is the stray vertical stroke down the left of the digits in the
 	// top-left readout, and it is not the half-pixel rule.
+	//
+	// A block-compressed format's RowPitch is one row of 4x4 blocks, not one row of pixels,
+	// so clearing `height` rows of it wrote four times past the end of the mapping. That
+	// is the team-colour crash: recolouring a DXT house-colour texture makes one of these.
 	D3D11_MAPPED_SUBRESOURCE m;
 	if (SUCCEEDED(m_impl->context->Map(texture, 0, D3D11_MAP_WRITE, 0, &m))) {
-		memset(m.pData, 0, (size_t)m.RowPitch * height);
+		const size_t rows = (Bytes_Per_Pixel(dxgi) != 0) ? height : (height + 3) / 4;
+		memset(m.pData, 0, (size_t)m.RowPitch * rows);
 		m_impl->context->Unmap(texture, 0);
 	}
 

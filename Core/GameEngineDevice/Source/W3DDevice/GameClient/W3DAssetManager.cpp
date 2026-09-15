@@ -600,6 +600,108 @@ static void remapAlphaTexture32Bit(Int dx, Int dy, Int pitch, SurfaceClass::Surf
 }
 
 //---------------------------------------------------------------------
+static Bool isBlockCompressed(WW3DFormat format)
+{
+	return format==WW3D_FORMAT_DXT1 || format==WW3D_FORMAT_DXT2 || format==WW3D_FORMAT_DXT3
+		|| format==WW3D_FORMAT_DXT4 || format==WW3D_FORMAT_DXT5;
+}
+
+//---------------------------------------------------------------------
+static UnsignedInt expandRGB565(UnsignedInt c)
+{
+	UnsignedInt r=(c>>11)&0x1f, g=(c>>5)&0x3f, b=c&0x1f;
+	return 0xff000000 | (((r<<3)|(r>>2))<<16) | (((g<<2)|(g>>4))<<8) | ((b<<3)|(b>>2));
+}
+
+//---------------------------------------------------------------------
+/// (wa*a + wb*b) / (wa+wb) per colour channel, opaque.
+static UnsignedInt blendRGB(UnsignedInt a, UnsignedInt b, UnsignedInt wa, UnsignedInt wb)
+{
+	UnsignedInt out=0xff000000;
+	for (Int shift=0; shift<24; shift+=8)
+		out |= ((((a>>shift)&0xff)*wa + ((b>>shift)&0xff)*wb) / (wa+wb)) << shift;
+	return out;
+}
+
+//---------------------------------------------------------------------
+/** Decode a DXT1-5 surface into 32-bit A8R8G8B8. srcPitch is bytes per row of 4x4 blocks;
+pitch is pixels per destination row. DXT2 and DXT4 are decoded as DXT3 and DXT5, which is
+how the loader fills them (DXT1 data lands in DXT2 with every alpha nibble opaque).
+*/
+static void decodeBlockTexture32Bit(Int dx, Int dy, WW3DFormat format, const unsigned char *src, Int srcPitch, UnsignedInt *data, Int pitch)
+{
+	const Bool dxt1 = format==WW3D_FORMAT_DXT1;
+	const Bool explicitAlpha = format==WW3D_FORMAT_DXT2 || format==WW3D_FORMAT_DXT3;
+	const Int blockBytes = dxt1 ? 8 : 16;
+
+	for (Int by=0; by<(dy+3)/4; by++)
+	{
+		const unsigned char *block=src+by*srcPitch;
+		for (Int bx=0; bx<(dx+3)/4; bx++, block+=blockBytes)
+		{
+			const unsigned char *colour = dxt1 ? block : block+8;
+			UnsignedInt c0=colour[0]|(colour[1]<<8);
+			UnsignedInt c1=colour[2]|(colour[3]<<8);
+			UnsignedInt pal[4];
+			pal[0]=expandRGB565(c0);
+			pal[1]=expandRGB565(c1);
+			if (!dxt1 || c0>c1)
+			{
+				pal[2]=blendRGB(pal[0],pal[1],2,1);
+				pal[3]=blendRGB(pal[0],pal[1],1,2);
+			}
+			else
+			{	//DXT1 three-colour mode: the fourth entry is transparent black.
+				pal[2]=blendRGB(pal[0],pal[1],1,1);
+				pal[3]=0;
+			}
+			UnsignedInt indices=colour[4]|(colour[5]<<8)|(colour[6]<<16)|((UnsignedInt)colour[7]<<24);
+
+			UnsignedInt alpha[8];
+			if (!dxt1 && !explicitAlpha)
+			{
+				alpha[0]=block[0];
+				alpha[1]=block[1];
+				if (alpha[0]>alpha[1])
+				{
+					for (Int k=2; k<8; k++)
+						alpha[k]=((8-k)*alpha[0] + (k-1)*alpha[1]) / 7;
+				}
+				else
+				{
+					for (Int k=2; k<6; k++)
+						alpha[k]=((6-k)*alpha[0] + (k-1)*alpha[1]) / 5;
+					alpha[6]=0;
+					alpha[7]=255;
+				}
+			}
+
+			for (Int y=0; y<4 && by*4+y<dy; y++)
+			{
+				UnsignedInt *row=data+(by*4+y)*pitch;
+				for (Int x=0; x<4 && bx*4+x<dx; x++)
+				{
+					Int i=y*4+x;
+					UnsignedInt pixel=pal[(indices>>(2*i))&3];
+					if (explicitAlpha)
+					{
+						UnsignedInt a=(block[i>>1]>>((i&1)*4))&0xf;
+						pixel=(pixel&0x00ffffff) | ((a*17)<<24);
+					}
+					else if (!dxt1)
+					{	//3-bit indices packed little-endian from byte 2
+						Int bit=3*i, byte=bit>>3;
+						UnsignedInt bits=block[2+byte] | (byte<5 ? (block[3+byte]<<8) : 0);
+						pixel=(pixel&0x00ffffff) | (alpha[(bits>>(bit&7))&7]<<24);
+					}
+					row[bx*4+x]=pixel;
+				}
+			}
+		}
+	}
+}
+
+//---------------------------------------------------------------------
 /** Surface is assumed to come in the following format:
 First 16 pixels are a palette composed of 24-Bit RGB values.
 Any pixels in remainder of image that use these 24-bit values
@@ -663,14 +765,31 @@ TextureClass * W3DAssetManager::Recolor_Texture_One_Time(TextureClass *texture, 
 	SurfaceClass *newsurf, *oldsurf;
 	texture->Get_Level_Description(desc);
 
-	Int psize;
-	psize=Get_Bytes_Per_Pixel(desc.Format);
-	DEBUG_ASSERTCRASH( psize == 2 || psize == 4, ("Can't Recolor Texture %s", name) );
-
 	oldsurf=texture->Get_Surface_Level();
 
-	newsurf=NEW_REF(SurfaceClass,(desc.Width,desc.Height,desc.Format));
-	newsurf->Copy(0,0,0,0,desc.Width,desc.Height,oldsurf);
+	if (isBlockCompressed(desc.Format))
+	{
+		// The remap only understands 16- and 32-bit pixels. A block-compressed house-colour
+		// texture (the HD mods ship them) is decoded to 32 bits first; copied as-is it came out
+		// with no team colour at all.
+		newsurf=NEW_REF(SurfaceClass,(desc.Width,desc.Height,WW3D_FORMAT_A8R8G8B8));
+		int srcPitch,dstPitch;
+		const unsigned char *src=(const unsigned char *)oldsurf->Lock(&srcPitch);
+		UnsignedInt *dst=(UnsignedInt *)newsurf->Lock(&dstPitch);
+		if (src && dst)
+			decodeBlockTexture32Bit(desc.Width, desc.Height, desc.Format, src, srcPitch, dst, dstPitch>>2);
+		newsurf->Unlock();
+		oldsurf->Unlock();
+	}
+	else
+	{
+		Int psize;
+		psize=Get_Bytes_Per_Pixel(desc.Format);
+		DEBUG_ASSERTCRASH( psize == 2 || psize == 4, ("Can't Recolor Texture %s", name) );
+
+		newsurf=NEW_REF(SurfaceClass,(desc.Width,desc.Height,desc.Format));
+		newsurf->Copy(0,0,0,0,desc.Width,desc.Height,oldsurf);
+	}
 
 	if (*(name+3) == 'D' || *(name+3) == 'd')
 		Remap_Palette(newsurf,color, true, false );	//texture only contains a palette stored in top row.
