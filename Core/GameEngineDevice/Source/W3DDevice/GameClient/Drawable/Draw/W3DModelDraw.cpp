@@ -54,6 +54,7 @@
 #include "GameLogic/FPUControl.h"
 #include "GameLogic/Module/AIUpdate.h"
 #include "GameLogic/Module/PhysicsUpdate.h"
+#include "GameClient/DayNightCycle.h"
 #include "W3DDevice/GameClient/Module/W3DModelDraw.h"
 #include "W3DDevice/GameClient/W3DAssetManager.h"
 #include "W3DDevice/GameClient/W3DDisplay.h"
@@ -85,6 +86,7 @@ static inline Bool isValidTimeToCalcLogicStuff()
 //-------------------------------------------------------------------------------------------------
 
 #if defined(DEBUG_CRC) && defined(RTS_DEBUG)
+#include <algorithm>
 #include <cstdarg>
 class LogClass
 {
@@ -1745,6 +1747,11 @@ W3DModelDraw::W3DModelDraw(Thing *thing, const ModuleData* moduleData) : DrawMod
 	m_dynamicLightsInitialized = false;
 	m_recoilInfoValid = false;
 	m_modelDynamicLights.clear();
+	m_lightsPowered = true;
+	m_prevLit = nullptr;
+	m_nextLit = nullptr;
+	m_inLitList = false;
+	m_litDrawStamp = 0;
 
 	// only validate the current time-of-day and weather conditions by default.
 	getW3DModelDrawModuleData()->validateStuffForTimeAndWeather(getDrawable(),
@@ -2125,7 +2132,12 @@ void W3DModelDraw::doDrawModule(const Matrix3D* transformMtx)
                                           // IT REPOSITIONS PARTICLESYSTEMS TO TSTAY IN SYNC WITH ANIMATED BONES
 
   handleClientRecoil();
-  updateModelDynamicLights();
+
+  // Only record that the drawable drew; its lights are updated with everyone else's later in the frame
+  // (updateAllModelDynamicLights), including when it did not draw at all.
+  if (!m_dynamicLightsInitialized)
+    initModelDynamicLights();
+  m_litDrawStamp = s_litFrame;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -2889,6 +2901,9 @@ void W3DModelDraw::hideAllHeadlights(Bool hide)
 void W3DModelDraw::initModelDynamicLights()
 {
 	releaseModelDynamicLights();
+	// Done for this render object even when it has no lights: doDrawModule asks every frame until it is,
+	// and nukeCurrentRender clears it again when the model changes.
+	m_dynamicLightsInitialized = true;
 
 	if (!m_renderObject || m_renderObject->Class_ID() != RenderObjClass::CLASSID_HLOD)
 		return;
@@ -2943,11 +2958,19 @@ void W3DModelDraw::initModelDynamicLights()
 			info.flags = lightDef.Flags;
 			info.pulseRate = lightDef.PulseRate > 0.0f ? lightDef.PulseRate : 2.0f;
 			info.strobeTimer = GameClientRandomValueReal(0.0f, 1.0f);
-			info.strobeState = true;
+			// A light that should be on right now starts on. A model swap -- damage, snow, and the day model
+			// giving way to the night model at dusk -- re-creates every light, and an always-on beacon or
+			// runway light must not dip and fade back in each time that happens.
+			const Bool scheduledOn = (lightDef.Flags & W3D_HLOD_LIGHT_FLAG_ALWAYS_ON) || !m_hideHeadlights;
+			info.level = (scheduledOn && modelDynamicLightsPowered()) ? 1.0f : 0.0f;
+			info.flickerTimer = 0.0f;
 			m_modelDynamicLights.push_back(info);
 		}
 	}
+	m_lightsPowered = modelDynamicLightsPowered();
 	m_dynamicLightsInitialized = true;
+	if (!m_modelDynamicLights.empty())
+		linkLit();
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -2964,98 +2987,217 @@ void W3DModelDraw::releaseModelDynamicLights()
 	}
 	m_modelDynamicLights.clear();
 	m_dynamicLightsInitialized = false;
+	unlinkLit();
 }
 
 //-------------------------------------------------------------------------------------------------
-/** Updates position, direction, and intensity of all dynamic lights for the current frame. */
-void W3DModelDraw::updateModelDynamicLights()
+// TheSuperHackers @bugfix andytraber 17/09/2026 WHEN BONE LIGHTS ARE UPDATED, AND WHO OWNS A POOLED LIGHT.
+//
+// Bone lights used to be updated from doDrawModule, and Drawable::draw only gets that far for a drawable
+// inside the view region that is neither hidden, stealthed nor fully shrouded. Every other drawable kept
+// whatever its lights did on the last frame it drew: a vehicle that drove off screen, garrisoned, boarded a
+// transport or stealthed left its headlights burning where it vanished, and the hidden test that used to
+// sit in the update below could never be reached. Every model draw that owns lights is now updated here,
+// once a frame, after the drawables have drawn and before the scene collects its lights. One that did not
+// draw this frame has no current transform to put a light at, so its lights go out.
+//
+// And a light that was switched off kept its pointer into RTS3DScene's pool, which hands out any light that
+// is not enabled. The next muzzle flash, explosion or drawable was given that same light, and the first
+// owner then switched it off again every frame -- or, once its own lights came back on, found it enabled
+// and wrote its headlight into it too. A light that goes out is handed back to the pool now.
+//-------------------------------------------------------------------------------------------------
+W3DModelDraw* W3DModelDraw::s_firstLit = nullptr;
+UnsignedInt W3DModelDraw::s_litFrame = 1;
+
+void W3DModelDraw::linkLit()
 {
+	if (m_inLitList)
+		return;
+	m_prevLit = nullptr;
+	m_nextLit = s_firstLit;
+	if (s_firstLit)
+		s_firstLit->m_prevLit = this;
+	s_firstLit = this;
+	m_inLitList = true;
+}
+
+void W3DModelDraw::unlinkLit()
+{
+	if (!m_inLitList)
+		return;
+	if (m_prevLit)
+		m_prevLit->m_nextLit = m_nextLit;
+	else
+		s_firstLit = m_nextLit;
+	if (m_nextLit)
+		m_nextLit->m_prevLit = m_prevLit;
+	m_prevLit = nullptr;
+	m_nextLit = nullptr;
+	m_inLitList = false;
+}
+
+void W3DModelDraw::updateAllModelDynamicLights()
+{
+	const Real dt = TheFramePacer ? (0.033f * TheFramePacer->getActualLogicTimeScaleOverFpsRatio()) : 0.033f;
+	for (W3DModelDraw* draw = s_firstLit; draw != nullptr; )
+	{
+		W3DModelDraw* next = draw->m_nextLit;
+		draw->updateModelDynamicLights(draw->m_litDrawStamp == s_litFrame, dt);
+		draw = next;
+	}
+
+#ifdef RTS_DEBUG
+	// A census every 300 frames. "shared" counts pooled lights held by more than one owner and must read 0;
+	// before the ownership fix it was the symptom, and nothing on screen tells it from a light that is off.
+	if (s_litFrame % 300 == 0)
+	{
+		Int models = 0, drawn = 0, unpowered = 0, lights = 0, on = 0, onNight = 0, shared = 0;
+		std::vector<W3DDynamicLight*> held;
+		for (W3DModelDraw* draw = s_firstLit; draw != nullptr; draw = draw->m_nextLit)
+		{
+			++models;
+			drawn += (draw->m_litDrawStamp == s_litFrame) ? 1 : 0;
+			unpowered += draw->m_lightsPowered ? 0 : 1;
+			for (size_t i = 0; i < draw->m_modelDynamicLights.size(); ++i)
+			{
+				++lights;
+				if (draw->m_modelDynamicLights[i].light)
+				{
+					held.push_back(draw->m_modelDynamicLights[i].light);
+					onNight += (draw->m_modelDynamicLights[i].flags & W3D_HLOD_LIGHT_FLAG_ALWAYS_ON) ? 0 : 1;
+				}
+			}
+		}
+		on = (Int)held.size();
+		std::sort(held.begin(), held.end());
+		for (size_t i = 1; i < held.size(); ++i)
+			shared += (held[i] == held[i - 1]) ? 1 : 0;
+		WWDEBUG_SAY(("BONE LIGHTS: frame %u, %d lit models (%d drawn, %d unpowered), %d lights, %d on (%d night-only), %d shared, sun %.1f deg",
+			s_litFrame, models, drawn, unpowered, lights, on, onNight, shared, DayNightCycle_GetSunElevationDegrees()));
+	}
+#endif
+	++s_litFrame;
+}
+
+//-------------------------------------------------------------------------------------------------
+// TheSuperHackers @feature andytraber 17/09/2026 A light needs something to run it. A building's lights go
+// out when its owner is short of power, and a vehicle's when it is knocked out: EMP, subdual, hacked, its
+// crew sniped, dead. Under construction is deliberately NOT a reason -- the scaffolding carries the
+// construction site's own lights, and they exist precisely while the building goes up.
+//-------------------------------------------------------------------------------------------------
+Bool W3DModelDraw::modelDynamicLightsPowered() const
+{
+	const Drawable* draw = getDrawable();
+	const Object* obj = draw ? draw->getObject() : nullptr;
+	if (obj == nullptr)
+		return TRUE;
+	if (obj->isEffectivelyDead())
+		return FALSE;
+	return !(obj->isDisabledByType(DISABLED_UNDERPOWERED) || obj->isDisabledByType(DISABLED_EMP)
+		|| obj->isDisabledByType(DISABLED_SUBDUED) || obj->isDisabledByType(DISABLED_HACKED)
+		|| obj->isDisabledByType(DISABLED_UNMANNED));
+}
+
+static const Real LIGHT_FADE_IN_SECONDS  = 0.35f;	///< a lamp coming on (its schedule, or back in view)
+static const Real LIGHT_FADE_OUT_SECONDS = 0.25f;
+static const Real LIGHT_WARMUP_SECONDS   = 0.8f;	///< stutter when power or crew comes back
+static const Real LIGHT_BROWNOUT_SECONDS = 0.4f;	///< stutter before the lights die with the power
+static const Real STROBE_DUTY            = 0.15f;	///< fraction of a STROBE cycle the flash is lit
+static const Real SOFT_FLASH_DUTY        = 0.35f;	///< STROBE|PULSING: a flash with soft edges, e.g. a rotating beacon
+
+// 0 or 1: a lamp striking or dying. A pure function of the time left and a per-light seed, so the lights on
+// one building stutter out of step with each other.
+static Real lightFlicker(Real timeLeft, Real seed)
+{
+	const Real t = timeLeft * 11.0f + seed * 7.0f;
+	return (sinf(t * 2.3f) + sinf(t * 5.1f + 1.3f) > -0.3f) ? 1.0f : 0.0f;
+}
+
+//-------------------------------------------------------------------------------------------------
+/** Updates on/off, envelope, position, direction and intensity of this model's lights for the frame. */
+void W3DModelDraw::updateModelDynamicLights(Bool drawnThisFrame, Real dt)
+{
+	if (m_modelDynamicLights.empty() || !W3DDisplay::m_3DScene)
+		return;
 	if (!m_renderObject || m_renderObject->Class_ID() != RenderObjClass::CLASSID_HLOD)
 		return;
 
-	if (!m_dynamicLightsInitialized)
+	static int s_forceLights = -1;
+	if (s_forceLights == -1)
 	{
-		initModelDynamicLights();
+		const char * env = ::getenv("W3D_FORCE_HEADLIGHTS");
+		s_forceLights = (env && ::atoi(env) > 0) ? 1 : 0;
 	}
 
-	if (m_modelDynamicLights.empty())
-		return;
-
-	if (!W3DDisplay::m_3DScene)
-		return;
-
-	Bool effectivelyHidden = getDrawable()->isDrawableEffectivelyHidden() || m_fullyObscuredByShroud;
+	const Bool powered = modelDynamicLightsPowered();
+	if (powered != m_lightsPowered)
+	{
+		for (size_t i = 0; i < m_modelDynamicLights.size(); ++i)
+			m_modelDynamicLights[i].flickerTimer = powered ? LIGHT_WARMUP_SECONDS : LIGHT_BROWNOUT_SECONDS;
+		m_lightsPowered = powered;
+	}
 
 	HLodClass* hlod = (HLodClass*)m_renderObject;
-	const Real dt = TheFramePacer ? (0.033f * TheFramePacer->getActualLogicTimeScaleOverFpsRatio()) : 0.033f;
 
 	for (size_t i = 0; i < m_modelDynamicLights.size(); ++i)
 	{
 		ModelDynamicLightInfo& li = m_modelDynamicLights[i];
 
-		Bool shouldBeOn = !effectivelyHidden;
+		// ALWAYS_ON runs at any time of day. NIGHT_ONLY, and a light that says neither, follows the drawable's
+		// MODELCONDITION_NIGHT (m_hideHeadlights), which the day-night cycle flips per drawable.
+		const Bool scheduledOn = s_forceLights == 1 || (li.flags & W3D_HLOD_LIGHT_FLAG_ALWAYS_ON) || !m_hideHeadlights;
+		// A brownout plays its stutter out before the light dies, so a light still wants to be on while it runs.
+		const Bool wanted = scheduledOn && (powered || li.flickerTimer > 0.0f);
 
-		// Check day/night flags
-		if (shouldBeOn)
+		if (!drawnThisFrame)
+			li.level = 0.0f;	// no transform to fade at: gone at once, fading back in when it draws again
+		else if (wanted)
+			li.level = min(1.0f, li.level + dt / LIGHT_FADE_IN_SECONDS);
+		else
+			li.level = max(0.0f, li.level - dt / LIGHT_FADE_OUT_SECONDS);
+
+		Real envelope = li.level;
+		if (li.flickerTimer > 0.0f)
 		{
-			static int s_forceLights = -1;
-			if (s_forceLights == -1)
+			li.flickerTimer = max(0.0f, li.flickerTimer - dt);
+			envelope *= lightFlicker(li.flickerTimer, (Real)li.boneIndex * 0.618f + (Real)i * 0.37f);
+		}
+
+		// STROBE is a short hard flash, PULSING a sine swell, and both together a flash with soft edges. It used
+		// to be a 50% square wave for any STROBE, which made every strobe read as a slow blink, and PULSING was
+		// ignored whenever STROBE was also set -- which it is on 578 of the HD lights.
+		if (envelope > 0.0f && (li.flags & (W3D_HLOD_LIGHT_FLAG_STROBE | W3D_HLOD_LIGHT_FLAG_PULSING)))
+		{
+			li.strobeTimer += dt * li.pulseRate;
+			const Real cycle = li.strobeTimer - floorf(li.strobeTimer);
+			if (li.flags & W3D_HLOD_LIGHT_FLAG_STROBE)
 			{
-				const char * env = ::getenv("W3D_FORCE_HEADLIGHTS");
-				s_forceLights = (env && ::atoi(env) > 0) ? 1 : 0;
-			}
-			if (s_forceLights == 1)
-			{
-				shouldBeOn = true;
-			}
-			else if (li.flags & W3D_HLOD_LIGHT_FLAG_ALWAYS_ON)
-			{
-				shouldBeOn = true;
-			}
-			else if (li.flags & W3D_HLOD_LIGHT_FLAG_NIGHT_ONLY)
-			{
-				shouldBeOn = !m_hideHeadlights;
+				if (li.flags & W3D_HLOD_LIGHT_FLAG_PULSING)
+					envelope *= (cycle < SOFT_FLASH_DUTY) ? 0.5f - 0.5f * cosf(cycle / SOFT_FLASH_DUTY * 6.2831853f) : 0.0f;
+				else
+					envelope *= (cycle < STROBE_DUTY) ? 1.0f : 0.0f;
 			}
 			else
 			{
-				// Default lights follow headlight day/night setting
-				shouldBeOn = !m_hideHeadlights;
+				envelope *= 0.3f + 0.7f * (0.5f + 0.5f * sinf(li.strobeTimer * 6.2831853f));
 			}
 		}
 
-		// Handle strobe / pulsing if active
-		Real currentIntensity = li.intensity;
-		if (shouldBeOn && (li.flags & (W3D_HLOD_LIGHT_FLAG_STROBE | W3D_HLOD_LIGHT_FLAG_PULSING)))
-		{
-			li.strobeTimer += dt * li.pulseRate;
-			if (li.flags & W3D_HLOD_LIGHT_FLAG_STROBE)
-			{
-				// Square wave strobe (on first half of cycle, off second half)
-				float cycle = li.strobeTimer - floorf(li.strobeTimer);
-				if (cycle > 0.5f)
-				{
-					shouldBeOn = false;
-				}
-			}
-			else if (li.flags & W3D_HLOD_LIGHT_FLAG_PULSING)
-			{
-				// Sine wave pulsing
-				float wave = 0.5f + 0.5f * sinf(li.strobeTimer * 6.2831853f);
-				currentIntensity *= (0.3f + 0.7f * wave);
-			}
-		}
-
-		if (!shouldBeOn)
+		if (envelope <= 0.001f)
 		{
 			if (li.light)
 			{
 				li.light->setEnabled(false);
+				li.light = nullptr;
 			}
 			continue;
 		}
 
-		// Obtain pooled dynamic light if needed
-		if (!li.light || !li.light->isEnabled())
+		// A light is only ever switched off by its owner (the pool's own decay never runs on a light this
+		// code configures), so one found disabled was taken from us and belongs to someone else by now.
+		if (li.light && !li.light->isEnabled())
+			li.light = nullptr;
+		if (!li.light)
 		{
 			li.light = W3DDisplay::m_3DScene->getADynamicLight();
 			if (!li.light)
@@ -3063,6 +3205,7 @@ void W3DModelDraw::updateModelDynamicLights()
 		}
 
 		li.light->setEnabled(true);
+		const Real currentIntensity = li.intensity * envelope;
 
 		// Get bone world transform
 		Matrix3D boneXform = hlod->Get_Bone_Transform(li.boneIndex);

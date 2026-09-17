@@ -101,6 +101,7 @@
 #include "GameLogic/Module/PowerPlantUpdate.h"
 
 #include "Common/CRCDebug.h"
+#include "GameClient/DayNightCycle.h"
 #include "Common/MiscAudio.h"
 
 
@@ -2778,7 +2779,13 @@ void Object::friend_bindToDrawable( Drawable *draw )
 		{
 			if (TheGlobalData->m_forceModelsToFollowTimeOfDay)
 			{
-				set.set(MODELCONDITION_NIGHT, (TheGlobalData->m_timeOfDay == TIME_OF_DAY_NIGHT) ? 1 : 0);
+				// Under the day-night cycle this drawable's own dusk/dawn threshold decides, as it does for every
+				// drawable already on the map (DayNightCycle_SyncDrawables); the global phase lags it by up to a
+				// quarter of the cycle.
+				Bool night = FALSE;
+				if (!DayNightCycle_DrawableWantsNight(m_drawable->getID(), night))
+					night = (TheGlobalData->m_timeOfDay == TIME_OF_DAY_NIGHT);
+				set.set(MODELCONDITION_NIGHT, night ? 1 : 0);
 			}
 
 			if (TheGlobalData->m_forceModelsToFollowWeather)

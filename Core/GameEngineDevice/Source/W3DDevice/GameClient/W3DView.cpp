@@ -83,6 +83,7 @@
 #include "W3DDevice/GameClient/HeightMap.h"
 #include "W3DDevice/GameClient/WorldHeightMap.h"
 #include "W3DDevice/GameClient/W3DAssetManager.h"
+#include "W3DDevice/GameClient/Module/W3DModelDraw.h"
 #include "W3DDevice/GameClient/W3DDisplay.h"
 #include "W3DDevice/GameClient/W3DScene.h"
 #include "W3DDevice/GameClient/W3DView.h"
@@ -1924,6 +1925,9 @@ void W3DView::draw()
 	{
 		{
 			FRAME_TIMING_SCOPE(PHASE_LIGHTLIST);
+			// Bone lights first: every drawable has drawn by now (W3DView::update), so this frame's transforms
+			// are in place, and a drawable that did not draw puts its lights out before they are collected.
+			W3DModelDraw::updateAllModelDynamicLights();
 			W3DDisplay::m_3DScene->updateGpuLightList(*m_3DCamera);
 		}
 		{

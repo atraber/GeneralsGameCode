@@ -539,15 +539,34 @@ private:
 		UnsignedInt			flags;
 		Real				pulseRate;
 		Real				strobeTimer;
-		Bool				strobeState;
+		Real				level;			///< 0..1, eased towards on/off so a light fades rather than pops
+		Real				flickerTimer;	///< > 0 while the light is warming up or browning out
 	};
 	typedef std::vector<ModelDynamicLightInfo> ModelDynamicLightVec;
 	ModelDynamicLightVec	m_modelDynamicLights;
 	Bool					m_dynamicLightsInitialized;
+	Bool					m_lightsPowered;		///< last frame's power/crew gate, to flicker on the change
+
+	// Every model draw that owns bone lights, so they can be updated once a frame whether or not the
+	// drawable was drawn -- see updateAllModelDynamicLights.
+	W3DModelDraw*			m_prevLit;
+	W3DModelDraw*			m_nextLit;
+	Bool					m_inLitList;
+	UnsignedInt				m_litDrawStamp;			///< s_litFrame of the last doDrawModule
+	static W3DModelDraw*	s_firstLit;
+	static UnsignedInt		s_litFrame;
 
 	void initModelDynamicLights();
-	void updateModelDynamicLights();
+	void updateModelDynamicLights(Bool drawnThisFrame, Real dt);
 	void releaseModelDynamicLights();
+	Bool modelDynamicLightsPowered() const;
+	void linkLit();
+	void unlinkLit();
+
+public:
+	/// Once a frame, after every drawable has drawn and before the scene collects its lights.
+	static void updateAllModelDynamicLights();
+private:
 
 	void adjustAnimation(const ModelConditionInfo* prevState, Real prevAnimFraction);
 	Real getCurrentAnimFraction() const;

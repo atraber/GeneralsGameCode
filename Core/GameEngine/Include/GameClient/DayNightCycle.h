@@ -45,6 +45,12 @@ void DayNightCycle_SetTimeOfDay(TimeOfDay tod);
 // cycle is not running and the caller should apply tod to every drawable itself, as it always did.
 Bool DayNightCycle_SyncDrawables(TimeOfDay nominalTod);
 
+// TheSuperHackers @bugfix andytraber 17/09/2026 The same per-drawable decision, for one drawable that is
+// being set up (Object::friend_bindToDrawable). FALSE when the cycle is not running, and the caller then
+// uses the global time of day as it always did. It used to use the global phase regardless, so a unit
+// built at dusk after its own threshold kept its lights off until the next nominal boundary.
+Bool DayNightCycle_DrawableWantsNight(DrawableID id, Bool &night);
+
 Bool DayNightCycle_IsEnabled();
 Real DayNightCycle_GetCurrentGameHour();
 TimeOfDay DayNightCycle_GetCurrentTimeOfDay();

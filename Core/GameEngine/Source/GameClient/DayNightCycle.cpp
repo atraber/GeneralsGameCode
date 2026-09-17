@@ -953,6 +953,14 @@ Bool DayNightCycle_SyncDrawables(TimeOfDay nominalTod)
 	return TRUE;
 }
 
+Bool DayNightCycle_DrawableWantsNight(DrawableID id, Bool &night)
+{
+	if (!s_cycleEnabled || !s_lightsStateValid)
+		return FALSE;
+	night = drawableWantsNight(id, s_lightsHour, s_lightsSunElevationDeg);
+	return TRUE;
+}
+
 // The EDGE sweep, every logic step: only drawables whose own threshold the sun crossed since the last
 // step are touched. A drawable created mid-band takes the global phase like any new drawable and falls
 // into line at the next boundary -- a unit rolled out at dusk has not had its lights switched on yet.
