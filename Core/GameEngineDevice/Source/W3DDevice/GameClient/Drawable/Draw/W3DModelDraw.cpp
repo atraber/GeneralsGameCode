@@ -2933,17 +2933,13 @@ void W3DModelDraw::initModelDynamicLights()
 			// for an unwritten field to mean -- so an absent exponent falls back to the 1.0
 			// the PL_ helper-bone parser writes (hlod.cpp), i.e. plain cosine falloff.
 			info.spotExponent = lightDef.SpotExponent > 0.0f ? lightDef.SpotExponent : 1.0f;
+			// The range is the model's, exactly as authored. It used to be raised to at least 120 for
+			// every spot (or W3D_HEADLIGHT_RANGE), which was a vehicle headlight rule applied to every
+			// bone light in the game: a building's short floodlight reached as far as a tank's
+			// headlight. The HD assets author the 120 into their vehicle headlights themselves, so the
+			// engine no longer needs to know what kind of fixture a light is.
 			info.nearAtten = lightDef.AttenStart;
 			info.farAtten = lightDef.AttenEnd;
-			if (info.lightType == W3D_HLOD_LIGHT_TYPE_SPOT)
-			{
-				const char * envRange = ::getenv("W3D_HEADLIGHT_RANGE");
-				float minRange = envRange ? (float)::atof(envRange) : 120.0f;
-				if (info.farAtten < minRange)
-				{
-					info.farAtten = minRange;
-				}
-			}
 			info.flags = lightDef.Flags;
 			info.pulseRate = lightDef.PulseRate > 0.0f ? lightDef.PulseRate : 2.0f;
 			info.strobeTimer = GameClientRandomValueReal(0.0f, 1.0f);
