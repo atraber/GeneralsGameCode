@@ -260,9 +260,9 @@ Int HeightMapRenderObjClass::updateVB(DX8VertexBufferClass	*pVB, VERTEX_FORMAT *
 				xCoord = mapX+pMap->getDrawOrgX();
 
 				//update the 4 vertices in this block
-				float U[4], V[4];
-				UnsignedByte alpha[4];
-				float UA[4], VA[4];
+				float U[4] = {0.0f, 0.0f, 0.0f, 0.0f}, V[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+				UnsignedByte alpha[4] = {0, 0, 0, 0};
+				float UA[4] = {0.0f, 0.0f, 0.0f, 0.0f}, VA[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 				Bool flipForBlend = false;			 // True if the blend needs the triangles flipped.
 
 				pMap->getUVData(mapX, mapY, U, V);
@@ -1888,7 +1888,7 @@ void HeightMapRenderObjClass::renderExtraBlendTiles()
 				vb->nx=0;
 				vb->ny=0;
 				vb->nz=0;
-				vb->diffuse=(alpha[0]<<24)|(getStaticDiffuse(x,y) & 0x00ffffff);
+				vb->diffuse=(alpha[0]<<24)|(getStaticNormalColor(x,y) & 0x00ffffff);
 				vb->u1=U[0];
 				vb->v1=V[0];
 				vb->u2=0;
@@ -1901,7 +1901,7 @@ void HeightMapRenderObjClass::renderExtraBlendTiles()
 				vb->nx=0;
 				vb->ny=0;
 				vb->nz=0;
-				vb->diffuse=(alpha[1]<<24)|(getStaticDiffuse(x+1,y) & 0x00ffffff);
+				vb->diffuse=(alpha[1]<<24)|(getStaticNormalColor(x+1,y) & 0x00ffffff);
 				vb->u1=U[1];
 				vb->v1=V[1];
 				vb->u2=0;
@@ -1914,7 +1914,7 @@ void HeightMapRenderObjClass::renderExtraBlendTiles()
 				vb->nx=0;
 				vb->ny=0;
 				vb->nz=0;
-				vb->diffuse=(alpha[2]<<24)|(getStaticDiffuse(x+1,y+1) & 0x00ffffff);
+				vb->diffuse=(alpha[2]<<24)|(getStaticNormalColor(x+1,y+1) & 0x00ffffff);
 				vb->u1=U[2];
 				vb->v1=V[2];
 				vb->u2=0;
@@ -1927,7 +1927,7 @@ void HeightMapRenderObjClass::renderExtraBlendTiles()
 				vb->nx=0;
 				vb->ny=0;
 				vb->nz=0;
-				vb->diffuse=(alpha[3]<<24)|(getStaticDiffuse(x,y+1) & 0x00ffffff);
+				vb->diffuse=(alpha[3]<<24)|(getStaticNormalColor(x,y+1) & 0x00ffffff);
 				vb->u1=U[3];
 				vb->v1=V[3];
 				vb->u2=0;

@@ -764,6 +764,8 @@ void DayNightCycle_Init()
 
 		const GlobalData::TerrainLighting &t = s_mapTerrainLighting[tod][0];
 		const GlobalData::TerrainLighting &o = s_mapObjectsLighting[tod][0];
+		(void)t;
+		(void)o;
 		DEBUG_LOG(("DAYNIGHT key %d: terrain amb %.3f %.3f %.3f dif %.3f %.3f %.3f | objects amb %.3f %.3f %.3f dif %.3f %.3f %.3f",
 			tod, t.ambient.red, t.ambient.green, t.ambient.blue, t.diffuse.red, t.diffuse.green, t.diffuse.blue,
 			o.ambient.red, o.ambient.green, o.ambient.blue, o.diffuse.red, o.diffuse.green, o.diffuse.blue));
@@ -1232,6 +1234,7 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 	{
 		s_lastLookLogFrame = logicFrame;
 		const GlobalData *gd = TheGlobalData;
+		(void)gd;
 		DEBUG_LOG(("DAYNIGHT publish f%u hour %.2f sun %.1f keys %d->%d a%.2f | expo %.2f night %.2f | lights %d | "
 			"amb %.3f %.3f %.3f | dif0 %.3f %.3f %.3f | dif1 %.3f %.3f %.3f | dif2 %.3f %.3f %.3f | unitAmb %.3f %.3f %.3f",
 			logicFrame, currentHour, orbit.sunElevationDeg, (Int)keyA, (Int)keyB, alpha, gd->m_sceneExposure, gd->m_nightWeight,

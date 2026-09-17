@@ -1576,12 +1576,25 @@ Int WorldHeightMap::updateTileTexturePositions(Int *edgeHeight)
 void WorldHeightMap::getUVForNdx(Int tileNdx, float *minU, float *minV, float *maxU, float*maxV)
 {
 	Short baseNdx = tileNdx>>2;
-	if (m_sourceTiles[baseNdx] == nullptr) {
-		// Missing texture.
+	TileData *tile = nullptr;
+	if (baseNdx >= 0 && baseNdx < NUM_SOURCE_TILES && m_sourceTiles[baseNdx] != nullptr && m_sourceTiles[baseNdx]->m_tileLocationInTexture.x > 0) {
+		tile = m_sourceTiles[baseNdx];
+	} else {
+		// Fallback to first valid placed tile in the atlas rather than returning (0, 0) black margin
+		for (Int i = 0; i < NUM_SOURCE_TILES; ++i) {
+			if (m_sourceTiles[i] != nullptr && m_sourceTiles[i]->m_tileLocationInTexture.x > 0) {
+				tile = m_sourceTiles[i];
+				break;
+			}
+		}
+	}
+
+	if (tile == nullptr) {
+		// Missing texture and no fallback available.
 		*minU = *minV = *maxU = *maxV = 0.0f;
 		return;
 	}
-	ICoord2D pos = m_sourceTiles[baseNdx]->m_tileLocationInTexture;
+	ICoord2D pos = tile->m_tileLocationInTexture;
 	*minU = pos.x;
 	*minV = pos.y;
 	*maxU = *minU+TILE_PIXEL_EXTENT;
@@ -1669,7 +1682,7 @@ Bool WorldHeightMap::getUVData(Int xIndex, Int yIndex, float U[4], float V[4])
 	xIndex += m_drawOriginX;
 	yIndex += m_drawOriginY;
 	Int ndx = (yIndex*m_width)+xIndex;
-	if ((ndx<m_dataSize) && m_tileNdxes) {
+	if ((ndx >= 0) && (ndx<m_dataSize) && m_tileNdxes) {
 		Short tileNdx = m_tileNdxes[ndx];
 		return getUVForTileIndex(ndx, tileNdx, U, V);
 	}
@@ -1690,7 +1703,7 @@ Bool WorldHeightMap::getUVForTileIndex(Int ndx, Short tileNdx, float U[4], float
 	Int tilesPerRow = TEXTURE_WIDTH/(2*TILE_PIXEL_EXTENT+TILE_OFFSET);
 	tilesPerRow *= 4;
 
-	if ((ndx<m_dataSize) && m_tileNdxes) {
+	if ((ndx >= 0) && (ndx<m_dataSize) && m_tileNdxes) {
 		getUVForNdx(tileNdx, &nU, &nV, &xU, &xV);
 		U[0] = nU; U[1] = xU; U[2] = xU; U[3] = nU;
 		V[0] = xV; V[1] = xV; V[2] = nV; V[3] = nV;
@@ -1700,7 +1713,7 @@ Bool WorldHeightMap::getUVForTileIndex(Int ndx, Short tileNdx, float U[4], float
 		if (nU==0.0) {
 			return false; // missing texture.
 		}
-		if (m_cliffInfoNdxes[ndx]) {
+		if (m_cliffInfoNdxes && m_cliffInfoNdxes[ndx] > 0 && m_cliffInfoNdxes[ndx] < m_numCliffInfo) {
 			TCliffInfo info = m_cliffInfo[m_cliffInfoNdxes[ndx]];
 			Bool tilesMatch = false;
 			Int ndx1 = tileNdx>>2;
@@ -1713,20 +1726,24 @@ Bool WorldHeightMap::getUVForTileIndex(Int ndx, Short tileNdx, float U[4], float
 					break;
 				}
 			}
-			if (tilesMatch) {
+			if (tilesMatch && m_textureClasses[i].positionInTexture.x > 0) {
 				Real minU = m_textureClasses[i].positionInTexture.x;
 				Real maxV = m_textureClasses[i].positionInTexture.y + m_textureClasses[i].width*TILE_PIXEL_EXTENT;
+				Real minV = m_textureClasses[i].positionInTexture.y;
+				Real maxU = m_textureClasses[i].positionInTexture.x + m_textureClasses[i].width*TILE_PIXEL_EXTENT;
 				minU/=TEXTURE_WIDTH;
 				maxV/=m_terrainTexHeight;
+				minV/=m_terrainTexHeight;
+				maxU/=TEXTURE_WIDTH;
 				Real vFactor = TEXTURE_WIDTH/m_terrainTexHeight;
-				U[0] = info.u0+minU;
-				U[1] = info.u1+minU;
-				U[2] = info.u2+minU;
-				U[3] = info.u3+minU;
-				V[0] = info.v0*vFactor+maxV;
-				V[1] = info.v1*vFactor+maxV;
-				V[2] = info.v2*vFactor+maxV;
-				V[3] = info.v3*vFactor+maxV;
+				U[0] = clamp(minU, (Real)(info.u0+minU), maxU);
+				U[1] = clamp(minU, (Real)(info.u1+minU), maxU);
+				U[2] = clamp(minU, (Real)(info.u2+minU), maxU);
+				U[3] = clamp(minU, (Real)(info.u3+minU), maxU);
+				V[0] = clamp(minV, (Real)(info.v0*vFactor+maxV), maxV);
+				V[1] = clamp(minV, (Real)(info.v1*vFactor+maxV), maxV);
+				V[2] = clamp(minV, (Real)(info.v2*vFactor+maxV), maxV);
+				V[3] = clamp(minV, (Real)(info.v3*vFactor+maxV), maxV);
 				return info.flip;
 			}
 		}
@@ -1805,6 +1822,7 @@ Bool WorldHeightMap::getUVForTileIndex(Int ndx, Short tileNdx, float U[4], float
 				}
 			}
 			if (texClass>= m_numTextureClasses) return false;
+			if (m_textureClasses[texClass].positionInTexture.x <= 0) return false;
 			Real nUb, nVb, xUb, xVb;
 			nUb = m_textureClasses[texClass].positionInTexture.x;
 			nVb = m_textureClasses[texClass].positionInTexture.y;
@@ -1923,6 +1941,10 @@ Bool WorldHeightMap::getUVForTileIndex(Int ndx, Short tileNdx, float U[4], float
 				U[i] -= adjU;
 				V[i] -= adjV;
 			}
+			for (i=0; i<4; i++) {
+				U[i] = clamp(nUb, (Real)U[i], xUb);
+				V[i] = clamp(nVb, (Real)V[i], xVb);
+			}
 		}
 		return true;
 //
@@ -1941,7 +1963,7 @@ Bool WorldHeightMap::getExtraAlphaUVData(Int xIndex, Int yIndex, float U[4], flo
 
 	if ( (ndx>=0) && (ndx<m_dataSize) && m_tileNdxes) {
 		Short blendNdx = m_extraBlendTileNdxes[ndx];
-		if (blendNdx == 0) {
+		if (blendNdx <= 0 || blendNdx >= m_numBlendedTiles) {
 			return FALSE;
 		} else {
 			*cliff = getUVForTileIndex(ndx, m_blendedTiles[blendNdx].blendNdx, U, V);
@@ -2025,9 +2047,9 @@ void WorldHeightMap::getAlphaUVData(Int xIndex, Int yIndex, float U[4], float V[
 	Bool stretchedForCliff = false;
 	Bool needFlip = false;
 
-	if ((ndx<m_dataSize) && m_tileNdxes) {
+	if ((ndx >= 0) && (ndx<m_dataSize) && m_tileNdxes) {
 		Short blendNdx = m_blendTileNdxes[ndx];
-		if (blendNdx == 0) {
+		if (blendNdx <= 0 || blendNdx >= m_numBlendedTiles) {
 			stretchedForCliff = getUVForTileIndex(ndx, m_tileNdxes[ndx], U, V);
 			alpha[0] = alpha[1] = alpha[2] = alpha[3] = 0;
 			// No alpha blend, so never need to flip.
