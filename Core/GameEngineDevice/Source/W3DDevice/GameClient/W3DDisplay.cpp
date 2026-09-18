@@ -65,6 +65,7 @@ static void drawFramerateBar();
 #include "GameClient/Mouse.h"
 #include "GameClient/GlobalLanguage.h"
 #include "GameClient/Water.h"
+#include "GameClient/DayNightCycle.h"
 
 #include "GameNetwork/NetworkInterface.h"
 #include "Common/ModelState.h"
@@ -2374,6 +2375,14 @@ void W3DDisplay::enableLetterBox(Bool enable)
 //=============================================================================
 void W3DDisplay::setTimeOfDay( TimeOfDay tod )
 {
+	// TheSuperHackers @fix andytraber 18/09/2026 Stand down while the cycle is driving the light.
+	// W3DGameClient::setTimeOfDay calls this at each nominal TOD boundary, which would snap
+	// scene ambient and directional lights to the raw authored INI keys.
+	if (DayNightCycle_IsEnabled())
+	{
+		return;
+	}
+
 	const GlobalData::TerrainLighting *ol=&TheGlobalData->m_terrainObjectsLighting[tod][0];
 
 	if( m_3DScene )

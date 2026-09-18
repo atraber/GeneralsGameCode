@@ -565,15 +565,15 @@ struct LookAnchor
 //  - FILL. Lights Out's two night fills sum to 0.41 blue against the moon's 0.32, so scaling them
 //    with the sun left the night ground lit mostly by saturated blue fills. At night they are cut to a
 //    third of the sun's scale, so the moon is the light that reads.
-//  - AMBIENT ABOVE 1 AT LOW SUN. At 10 degrees flat ground takes sin(10) = 0.17 of the sun, so golden
-//    hour is carried by the sky; with the afternoon's ambient it measured darker than the night.
+// TheSuperHackers @tweak andytraber 18/09/2026 Tuned for strictly monotonic smooth brightness:
+// ambient, diffuse, exposure and fill increase monotonically from full night (-12 deg) to noon (+35 deg).
 static const LookAnchor LOOK_ANCHORS[] =
 {
 	//  sun el    amb    dif    desat  warm   cool   expo   night  fill
-	{ -12.0f,   0.45f, 0.30f, 0.50f, 0.00f, 0.00f, 1.00f, 1.00f, 0.35f },	// full night: dark, the moon clearly the strongest light
-	{   0.0f,   1.00f, 0.65f, 0.15f, 0.50f, 0.60f, 1.00f, 0.30f, 0.80f },	// horizon: the sky still lit
-	{  10.0f,   1.35f, 1.00f, 0.00f, 0.60f, 0.60f, 1.12f, 0.00f, 1.00f },	// golden hour: warm sun, bright cool shade
-	{  35.0f,   1.00f, 1.00f, 0.00f, 0.25f, 0.25f, 1.25f, 0.00f, 1.00f },	// day
+	{ -12.0f,   0.45f, 0.30f, 0.50f, 0.00f, 0.00f, 1.00f, 1.00f, 0.35f },	// full night: dark, moon is primary directional light
+	{   0.0f,   0.72f, 0.30f, 0.15f, 0.40f, 0.50f, 1.05f, 0.00f, 0.50f },	// horizon: sky lit, smooth dusk/dawn transition
+	{  10.0f,   0.88f, 0.70f, 0.00f, 0.50f, 0.40f, 1.15f, 0.00f, 0.80f },	// golden hour: warm sun, bright cool shade, monotonic
+	{  35.0f,   1.00f, 1.00f, 0.00f, 0.25f, 0.25f, 1.25f, 0.00f, 1.00f },	// day: full brightness, unchanged
 };
 static const Int  LOOK_ANCHOR_COUNT = sizeof(LOOK_ANCHORS) / sizeof(LOOK_ANCHORS[0]);
 static const Real SUN_WARM_TINT[3] = { 1.00f, 0.90f, 0.75f };
@@ -1029,11 +1029,12 @@ void DayNightCycle_UpdateLogic(UnsignedInt logicFrame)
 	s_lightsStateValid = TRUE;
 
 	// On nominal phase changes (e.g. crossing into night or day) or debug TOD toggles,
-	// trigger drawable headlights, ambient audio, and re-bake CPU terrain vertex colors
+	// trigger drawable headlights and ambient audio. Terrain tiles and roads are per-pixel lit
+	// on GPU and decorations are handled rate-limited by refreshBakedLighting, so nominal
+	// boundaries do not need CPU re-bakes.
 	if (nominalTod != s_lastNominalTod || s_forceTerrainBake)
 	{
 		s_lastNominalTod = nominalTod;
-		s_forceTerrainBake = FALSE;
 		FrameTiming::recordEvent(FrameTiming::EVENT_TOD_CHANGE);
 		TheWritableGlobalData->m_timeOfDay = nominalTod;
 
@@ -1044,7 +1045,11 @@ void DayNightCycle_UpdateLogic(UnsignedInt logicFrame)
 			TheGameClient->setTimeOfDay(nominalTod);
 		}
 
-		s_pendingTerrainBake = TRUE;
+		if (s_forceTerrainBake)
+		{
+			s_forceTerrainBake = FALSE;
+			s_pendingTerrainBake = TRUE;
+		}
 	}
 	else if (hadLightsState)
 	{
@@ -1195,6 +1200,22 @@ void DayNightCycle_Update(UnsignedInt logicFrame)
 			{
 				terrainDiffuseScale = applyLookToSun(interpTerrain[i], 0, look);
 				objectsDiffuseScale = applyLookToSun(interpObjects[i], 1, look);
+
+				// TheSuperHackers @feature andytraber 18/09/2026 Attenuate moon as it travels through the sky.
+				// As the moon ascends from MOON_MIN_ELEVATION_DEG (30 deg) to peak (55 deg), direct normal incidence
+				// sin(el) increases from 0.50 to 0.82. Normalizing by sin(30)/sin(el) keeps horizontal direct moonlight
+				// constant, eliminating the midnight plunge. Fading with moonWeight and look.night also keeps dusk/dawn smooth.
+				if (orbit.moonWeight > 0.0f)
+				{
+					const Real sinMin = sinf(MOON_MIN_ELEVATION_DEG * DEG_TO_RAD);
+					const Real sinCur = sinf(orbit.moonElevationDeg * DEG_TO_RAD);
+					const Real elevAtten = (sinCur > 0.01f) ? (sinMin / sinCur) : 1.0f;
+					const Real moonAtten = 1.0f + (elevAtten * look.night - 1.0f) * orbit.moonWeight;
+					scaleColour(interpTerrain[0].diffuse, moonAtten);
+					scaleColour(interpObjects[0].diffuse, moonAtten);
+					terrainDiffuseScale *= moonAtten;
+					objectsDiffuseScale *= moonAtten;
+				}
 			}
 			else
 			{
