@@ -1,7 +1,7 @@
 // Volumetric fog composite pixel shader.
 //
 // Two jobs in one pass:
-//  1. The froxel volume -- ambient haze and sun shafts, both low frequency -- read at the
+//  1. The froxel volume -- ambient haze, low frequency -- read at the
 //     scene depth with trilinear filtering.
 //  2. Punctual lights (headlights, spot lights, light pulses), integrated PER PIXEL along
 //     the camera ray, clipped exactly to the light's sphere, its spot cone and the scene

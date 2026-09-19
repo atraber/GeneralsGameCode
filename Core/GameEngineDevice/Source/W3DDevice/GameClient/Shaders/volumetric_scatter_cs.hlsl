@@ -10,16 +10,9 @@
 #include "clustergrid.hlsli"
 #include "clustered.hlsli"
 
-// COMPILE-TIME OPTION: Set to 1 to enable volumetric sun shafts, 0 to disable.
-#define VOLUMETRIC_SUN_SHAFTS 1
-
 StructuredBuffer<GpuLight> LightBuffer       : register(t0);
 Buffer<uint>               ClusterGrid       : register(t1);
 Buffer<uint>               LightIndexList    : register(t2);
-
-#if VOLUMETRIC_SUN_SHAFTS
-Texture2D<float4>          ShadowMap         : register(t3);   // R32F: sun depth in .r
-#endif
 
 RWTexture3D<float4>        VolumeScatterRW   : register(u0);
 
@@ -99,46 +92,6 @@ void main(uint3 id : SV_DispatchThreadID)
     // 1. Ambient atmospheric in-scattering:
     inscatterRadiance += FogSunColor.rgb * FogCameraPos.w;
 
-    // 2. Directional Sun/Moon shafts (compile-time toggle):
-#if VOLUMETRIC_SUN_SHAFTS
-    if (FogSunDir.w > 0.0)
-    {
-        bool inSunLight = true;
-
-        // Evaluate shadows if shadow map is active and shadow strength > 0:
-        if (FogShadowParams.y > 0.0 && FogShadowParams.w > 0.0)
-        {
-            // Reconstruct SunVP row-major matrix:
-            float4x4 sunVP = float4x4(FogSunVP0, FogSunVP1, FogSunVP2, FogSunVP3);
-            float4 sunClip = mul(float4(worldPos, 1.0), sunVP);
-            float3 sunNdc = sunClip.xyz / sunClip.w;
-            float2 sunUv = sunNdc.xy * float2(0.5, -0.5) + 0.5;
-
-            // Only test shadow map when within the shadow frustum:
-            // Outside the frustum (e.g. higher in the sky), light travels freely (unshadowed)
-            if (all(sunUv >= 0.0) && all(sunUv <= 1.0) && sunNdc.z >= 0.0 && sunNdc.z <= 1.0)
-            {
-                int2 shadowTexel = (int2)(sunUv * FogShadowParams.w);
-                // The shadow map is R32F: the sun-clip depth is the red channel, whole.
-                // This used to unpack a three-channel RGB8 split; the map moved to a
-                // single float and this read had to move with it.
-                float shadowZ = ShadowMap.Load(int3(shadowTexel, 0)).r;
-
-                inSunLight = (sunNdc.z <= shadowZ + FogShadowParams.x);
-            }
-        }
-
-        if (inSunLight)
-        {
-            float cosThetaSun = dot(FogSunDir.xyz, V);
-            // Blend forward Mie scattering with isotropic baseline (60%) so sunlight illuminates
-            // the atmospheric volume when looking down at terrain, while keeping forward God-ray shafts:
-            float hgSun = HenyeyGreenstein(cosThetaSun, mieG);
-            float phaseSun = lerp(hgSun, isotropic, 0.60);
-            inscatterRadiance += FogSunColor.rgb * (FogSunDir.w * phaseSun);
-        }
-    }
-#endif
 
     // 3. Punctual lights (headlights, spot lights, point lights) from cluster grid.
     // Only on the legacy froxel path (W3D_FOG_LIGHTS=froxel): by default the composite

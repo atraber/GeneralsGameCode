@@ -54,7 +54,7 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/BuildVersion.h
 endif()
 
 if(MSVC)
-    target_link_options(g_generals PRIVATE "/NODEFAULTLIB:libci.lib")
+    target_link_options(g_generals PRIVATE "/NODEFAULTLIB:libci.lib" "/LARGEADDRESSAWARE")
 endif()
 
 target_include_directories(g_generals PRIVATE

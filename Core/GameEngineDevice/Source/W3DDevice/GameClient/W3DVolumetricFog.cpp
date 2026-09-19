@@ -33,11 +33,10 @@
 
 // Static configuration defaults
 Bool  VolumetricFogClass::s_active             = TRUE;
-float VolumetricFogClass::s_density            = 0.0006f;
+float VolumetricFogClass::s_density            = 0.00036f;
 float VolumetricFogClass::s_heightFalloff      = 0.005f;
 float VolumetricFogClass::s_groundHeight       = 0.0f;
 float VolumetricFogClass::s_anisotropy         = 0.55f;
-float VolumetricFogClass::s_sunShaftIntensity  = 0.35f;
 float VolumetricFogClass::s_ambientIntensity   = 0.15f;
 float VolumetricFogClass::s_lightBoost         = 25.0f;
 float VolumetricFogClass::s_lightScatter       = 0.3f;	// usa_lightsout at night: 0.05 invisible on moonlit snow, 0.15 faint, 0.3 a clear beam
@@ -76,7 +75,6 @@ VolumetricFogClass::VolumetricFogClass()
 	s_density = Env_Float("W3D_FOG_DENSITY", s_density);
 	s_heightFalloff = Env_Float("W3D_FOG_HEIGHT_FALLOFF", s_heightFalloff);
 	s_anisotropy = Env_Float("W3D_FOG_ANISOTROPY", s_anisotropy);
-	s_sunShaftIntensity = Env_Float("W3D_FOG_SUN_SHAFTS", s_sunShaftIntensity);
 	s_ambientIntensity = Env_Float("W3D_FOG_AMBIENT", s_ambientIntensity);
 	s_lightBoost = Env_Float("W3D_FOG_LIGHT_BOOST", s_lightBoost);
 	s_lightScatter = Env_Float("W3D_FOG_LIGHT_SCATTER", s_lightScatter);
@@ -86,9 +84,9 @@ VolumetricFogClass::VolumetricFogClass()
 	s_debugMode = (Int)Env_Float("W3D_FOG_DEBUG", 0.0f);
 
 	WWDEBUG_SAY(("VOLUMETRIC FOG: active %d, lights %s, light scatter %g, point weight %g, "
-		"density %g, ambient %g, sun shafts %g, debug %d\n",
+		"density %g, ambient %g, debug %d\n",
 		(int)s_active, s_lightsPerPixel ? "per-pixel" : "froxel", s_lightScatter, s_pointLightWeight,
-		s_density, s_ambientIntensity, s_sunShaftIntensity, (int)s_debugMode));
+		s_density, s_ambientIntensity, (int)s_debugMode));
 }
 
 VolumetricFogClass::~VolumetricFogClass()
@@ -126,13 +124,13 @@ Bool VolumetricFogClass::Would_Contribute(unsigned localLightCount)
 	if (s_density <= 0.0f)
 		return FALSE;
 
-	// The three sources of in-scattering, all off: no ambient haze, no sun shafts, and no
+	// The sources of in-scattering, all off: no ambient haze and no
 	// punctual light anywhere in the froxel volume. The pass would integrate to zero and
 	// composite a transparent quad, having first made the whole scene draw itself again to
-	// produce the depth it reads. At the shipped defaults ambient and sun shafts are both
-	// nonzero, so this fires only when somebody has tuned them to zero -- which is exactly
+	// produce the depth it reads. At the shipped defaults ambient is
+	// nonzero, so this fires only when somebody has tuned it to zero -- which is exactly
 	// the case where the cost is pure waste and nothing said so.
-	if (s_ambientIntensity <= 0.0f && s_sunShaftIntensity <= 0.0f && localLightCount == 0)
+	if (s_ambientIntensity <= 0.0f && localLightCount == 0)
 		return FALSE;
 
 	return TRUE;
@@ -259,21 +257,15 @@ void VolumetricFogClass::Update_Constants(CameraClass & camera)
 	const float proj33 = d3dProj[2][2];
 	const float proj43 = d3dProj[2][3];
 
-	Vector3 sunDir(0.0f, 0.0f, 1.0f);
 	Vector3 sunColor(1.0f, 1.0f, 1.0f);
 	if (TheGlobalData != nullptr)
 	{
-		sunDir.Set(-TheGlobalData->m_terrainLightPos[0].x,
-		           -TheGlobalData->m_terrainLightPos[0].y,
-		           -TheGlobalData->m_terrainLightPos[0].z);
-		sunDir.Normalize();
-
 		sunColor.Set(TheGlobalData->m_terrainDiffuse[0].red,
 		             TheGlobalData->m_terrainDiffuse[0].green,
 		             TheGlobalData->m_terrainDiffuse[0].blue);
 	}
 
-	Vector4 fogConstants[13];
+	Vector4 fogConstants[7];
 
 	// Slot 9: FogParams0
 	fogConstants[0].Set(s_density, s_heightFalloff, s_groundHeight, s_anisotropy);
@@ -281,38 +273,23 @@ void VolumetricFogClass::Update_Constants(CameraClass & camera)
 	// Slot 10: FogParams1
 	fogConstants[1].Set((float)FROXEL_GRID_X, (float)FROXEL_GRID_Y, (float)FROXEL_GRID_Z, s_lightBoost);
 
-	// Slot 11: FogSunDir
-	fogConstants[2].Set(sunDir.X, sunDir.Y, sunDir.Z, s_sunShaftIntensity);
-
-	// Slot 12: FogSunColor
+	// Slot 11: FogSunColor
 	const float activeFlag = (s_active && !m_loadFailed) ? 1.0f : 0.0f;
-	fogConstants[3].Set(sunColor.X, sunColor.Y, sunColor.Z, activeFlag);
+	fogConstants[2].Set(sunColor.X, sunColor.Y, sunColor.Z, activeFlag);
 
-	// Slot 13: FogCameraPos
-	fogConstants[4].Set(camPos.X, camPos.Y, camPos.Z, s_ambientIntensity);
+	// Slot 12: FogCameraPos
+	fogConstants[3].Set(camPos.X, camPos.Y, camPos.Z, s_ambientIntensity);
 
-	// Slot 14: FogCameraRight
-	fogConstants[5].Set(camRight.X, camRight.Y, camRight.Z, proj33);
+	// Slot 13: FogCameraRight
+	fogConstants[4].Set(camRight.X, camRight.Y, camRight.Z, proj33);
 
-	// Slot 15: FogCameraUp
-	fogConstants[6].Set(camUp.X, camUp.Y, camUp.Z, proj43);
+	// Slot 14: FogCameraUp
+	fogConstants[5].Set(camUp.X, camUp.Y, camUp.Z, proj43);
 
-	// Slots 16..19: FogSunVP0..3
-	fogConstants[7].Set(DX8Wrapper::m_sunVP[0],  DX8Wrapper::m_sunVP[1],  DX8Wrapper::m_sunVP[2],  DX8Wrapper::m_sunVP[3]);
-	fogConstants[8].Set(DX8Wrapper::m_sunVP[4],  DX8Wrapper::m_sunVP[5],  DX8Wrapper::m_sunVP[6],  DX8Wrapper::m_sunVP[7]);
-	fogConstants[9].Set(DX8Wrapper::m_sunVP[8],  DX8Wrapper::m_sunVP[9],  DX8Wrapper::m_sunVP[10], DX8Wrapper::m_sunVP[11]);
-	fogConstants[10].Set(DX8Wrapper::m_sunVP[12], DX8Wrapper::m_sunVP[13], DX8Wrapper::m_sunVP[14], DX8Wrapper::m_sunVP[15]);
+	// Slot 15: FogLightParams
+	fogConstants[6].Set(s_lightScatter, s_lightsPerPixel ? 1.0f : 0.0f, (float)s_debugMode, s_pointLightWeight);
 
-	// Slot 20: FogShadowParams
-	// y is on/off only, not the strength: the day-night cycle fades the strength to zero around
-	// sunset, and the fog reads zero as "do not shadow the volume at all".
-	fogConstants[11].Set(DX8Wrapper::m_shadowParams[0], DX8Wrapper::m_shadowParams[1] > 0.0f ? 1.0f : 0.0f,
-		DX8Wrapper::m_shadowParams[2], (float)DX8Wrapper::SHADOW_MAP_SIZE);
-
-	// Slot 21: FogLightParams
-	fogConstants[12].Set(s_lightScatter, s_lightsPerPixel ? 1.0f : 0.0f, (float)s_debugMode, s_pointLightWeight);
-
-	DX8Wrapper::Set_Frame_Constants_At(9, fogConstants, 13);
+	DX8Wrapper::Set_Frame_Constants_At(9, fogConstants, 7);
 }
 
 void VolumetricFogClass::Render(CameraClass & camera, GfxBuffer * lightBuffer,
@@ -340,15 +317,6 @@ void VolumetricFogClass::Render(CameraClass & camera, GfxBuffer * lightBuffer,
 	gfx->Set_Compute_Buffer(1, clusterGrid);
 	gfx->Set_Compute_Buffer(2, lightIndexList);
 
-	// The directional shadow map the depth pass writes -- the same texture every lit
-	// shader samples through shadow.hlsli. This used to read DX8Wrapper::Get_Shadow_Map(0),
-	// which is the legacy ZTextureClass array nothing in the engine ever writes: it was
-	// always null, so t3 was never bound and the sun-shaft term read zeros -- which the
-	// shader below cannot tell apart from "every froxel is in shadow".
-	GfxTexture * shadowTex = DX8Wrapper::Has_Shadow_Map() ? DX8Wrapper::m_pShadowMap : nullptr;
-	if (shadowTex != nullptr)
-		gfx->Set_Compute_Texture(3, shadowTex);
-
 	const unsigned groupsX = (FROXEL_GRID_X + 7) / 8;
 	const unsigned groupsY = (FROXEL_GRID_Y + 7) / 8;
 	gfx->Dispatch(groupsX, groupsY, FROXEL_GRID_Z);
@@ -357,8 +325,6 @@ void VolumetricFogClass::Render(CameraClass & camera, GfxBuffer * lightBuffer,
 	gfx->Set_Compute_Buffer(0, nullptr);
 	gfx->Set_Compute_Buffer(1, nullptr);
 	gfx->Set_Compute_Buffer(2, nullptr);
-	if (shadowTex != nullptr)
-		gfx->Set_Compute_Texture(3, nullptr);
 	gfx->Set_Compute_Shader(0);
 
 	// ---------------------------------------------------------------------------

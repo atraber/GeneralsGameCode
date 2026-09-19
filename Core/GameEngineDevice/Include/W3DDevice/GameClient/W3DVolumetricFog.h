@@ -29,7 +29,7 @@ struct GfxBuffer;
 // Volumetric fog manager: froxel-based Eulerian fog and light scattering pipeline.
 //
 // 120 x 68 x 32 froxels in camera frustum.
-// The froxels carry the low-frequency terms: ambient haze and sun shafts. Punctual lights
+// The froxels carry the low-frequency term: ambient haze. Punctual lights
 // (headlights, spotlights, point lights) from the clustered grid are integrated per pixel in
 // the composite instead, clipped to each light's sphere, cone and the scene depth -- a 26 unit
 // headlight cone is far thinner than one ~70 unit froxel slice. W3D_FOG_LIGHTS=froxel puts
@@ -50,7 +50,7 @@ public:
 	void Init();
 	void Shutdown();
 
-	// Updates volumetric fog constant registers (slots 9..20 of FrameConstants at b1)
+	// Updates volumetric fog constant registers (slots 9..15 of FrameConstants at b1)
 	void Update_Constants(CameraClass & camera);
 
 	// Evaluates in-scattering, integrates along rays, and composites onto active scene render target
@@ -79,9 +79,6 @@ public:
 
 	static float Get_Anisotropy() { return s_anisotropy; }
 	static void  Set_Anisotropy(float g) { s_anisotropy = g; }
-
-	static float Get_Sun_Shaft_Intensity() { return s_sunShaftIntensity; }
-	static void  Set_Sun_Shaft_Intensity(float i) { s_sunShaftIntensity = i; }
 
 	static float Get_Ambient_Intensity() { return s_ambientIntensity; }
 	static void  Set_Ambient_Intensity(float i) { s_ambientIntensity = i; }
@@ -114,7 +111,6 @@ private:
 	static float s_heightFalloff;
 	static float s_groundHeight;
 	static float s_anisotropy;
-	static float s_sunShaftIntensity;
 	static float s_ambientIntensity;
 	static float s_lightBoost;
 	static float s_lightScatter;

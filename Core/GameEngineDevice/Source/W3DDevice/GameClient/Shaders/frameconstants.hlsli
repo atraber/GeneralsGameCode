@@ -78,19 +78,13 @@ cbuffer FrameConstants : register(b1)
     float4 ClusterView1;
     float4 ClusterView2;
 
-    // Volumetric Fog fields (slots 9 to 21, 13 vec4s)
+    // Volumetric Fog fields (slots 9 to 15, 7 vec4s)
     float4 FogParams0;      // x = density, y = height falloff, z = ground level, w = anisotropy g
     float4 FogParams1;      // x = gridX (120), y = gridY (68), z = gridZ (32), w = froxel light boost (legacy path)
-    float4 FogSunDir;       // xyz = sun direction (world, toward sun), w = sun shaft intensity
     float4 FogSunColor;     // rgb = sun color, w = volumetric fog active (1.0 on, 0.0 off)
     float4 FogCameraPos;    // xyz = camera world position, w = ambient inscatter intensity
     float4 FogCameraRight;  // xyz = camera right vector (world), w = proj._33
     float4 FogCameraUp;     // xyz = camera up vector (world), w = proj._43
-    float4 FogSunVP0;       // SunVP matrix row 0
-    float4 FogSunVP1;       // SunVP matrix row 1
-    float4 FogSunVP2;       // SunVP matrix row 2
-    float4 FogSunVP3;       // SunVP matrix row 3
-    float4 FogShadowParams; // x = depth bias, y = shadow strength, z = 1/shadowMapSize, w = shadowMapSize
     float4 FogLightParams;  // x = punctual scattering coefficient, y = 1 lights per pixel / 0 in the froxels,
                             // z = debug probe (W3D_FOG_DEBUG), w = point light weight
 };
